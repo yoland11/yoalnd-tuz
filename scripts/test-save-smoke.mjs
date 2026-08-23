@@ -96,7 +96,9 @@ const taskMigration = readFileSync("lib/db/migrations/0102_task_photo_workflow.s
 const taskAdmin = readFileSync("src/views/admin/tasks.tsx", "utf8");
 const taskPortal = readFileSync("src/views/staff/unified-portal.tsx", "utf8");
 const taskPhotos = readFileSync("src/components/task-photo-gallery.tsx", "utf8");
+const taskUploads = readFileSync("src/lib/large-image-upload.ts", "utf8");
 const taskPhotoParser = api.slice(api.indexOf("function taskPhotoInputs"), api.indexOf("function formatTaskPhoto"));
+const taskHandler = api.slice(api.indexOf('if (section === "tasks")'), api.indexOf('if (section === "calendar")'));
 const staffWorkspaceHandler = api.slice(api.indexOf("async function handleUnifiedStaffPortal"), api.indexOf("async function handleStaffPortal"));
 check("all uncaught API writes use central PostgreSQL mapping", api.includes("mapWriteError(err)") && api.includes("createApiErrorPayload"));
 check("sales invoice save keeps a database transaction", api.includes("saved = await db.transaction(async (tx) =>"));
@@ -139,13 +141,20 @@ check("main approval screen exposes booking, customer, receipt and required reje
 // Task photo workflow reuses the original task and attachment records. The
 // source assertions are intentionally read-only and never touch storage or DB.
 check("task photo migration is additive and preserves all existing task data", taskMigration.includes("ADD COLUMN IF NOT EXISTS") && taskMigration.includes("task_attachments_task_category_idx") && !/^\s*(?:UPDATE|DELETE\s+FROM|TRUNCATE|DROP)\b/im.test(taskMigration));
-check("task manager and employee photos share the existing attachment table but remain categorized", taskSchema.includes('category: varchar("category"') && api.includes('category: "manager_photo"') && api.includes('category: "employee_photo"'));
+check("task manager and employee photos share the existing attachment table but remain categorized", taskSchema.includes('category: varchar("category"') && taskHandler.includes('"manager_photo"') && taskHandler.includes('"employee_photo"'));
 check("task create and edit keep task identity and photo metadata transactional", api.includes("const saved = await db.transaction(async (tx) =>") && api.includes("requestedManagerPhotos") && api.includes("const row = await db.transaction(async (tx) =>"));
-check("task completion accepts optional photos and records employee and notes", api.includes('parts[3] === "complete"') && api.includes("completionNotes") && api.includes("completedBy: auth.id"));
+check("task completion accepts optional uploads and records employee and notes without requiring optional columns", taskHandler.includes('parts[3] === "complete"') && taskHandler.includes("completionNotes") && taskHandler.includes("completionUpdate.completedBy = auth.id") && taskHandler.includes("taskStorageShape"));
 check("task image metadata rejects database-embedded data URLs", taskPhotoParser.includes("/api\\/media") && !taskPhotoParser.includes("data:"));
 check("manager task editing exposes separated manager and employee galleries", taskAdmin.includes("صور وتوضيحات من المدير") && taskAdmin.includes("صور إنجاز الموظف") && taskAdmin.includes("TaskEditDialog"));
 check("staff task completion keeps photos optional and uses the completion route", taskPortal.includes("صور إنجاز المهمة (اختياري)") && taskPortal.includes("تأكيد الإنجاز") && taskPortal.includes("/complete"));
 check("task photo uploader uses optimized storage and retains each successful upload", taskPhotos.includes('folder: "uploads/tasks"') && taskPhotos.includes("onChange(next)") && taskPhotos.includes("failures.push"));
+check("task employee selector loads active staff with search, multi-select and exact empty state", taskHandler.includes("eq(staffTable.isActive, true)") && taskAdmin.includes("تحديد الكل") && taskAdmin.includes("ابحث باسم الموظف") && taskAdmin.includes("لا يوجد موظفون نشطون."));
+check("task list load errors are structured and never silently become an empty staff list", taskHandler.includes("[INTERNAL_TASKS_LOAD_FAILED]") && taskHandler.includes('code: "DATABASE_ERROR"') && taskHandler.includes("تعذر تحميل المهام أو الموظفين النشطين.") && taskAdmin.includes("إعادة المحاولة"));
+check("task workflow supports accept, start, manager review and reopen", taskHandler.includes('"accepted"') && taskHandler.includes('statusAction === "accept"') && taskHandler.includes('statusAction === "start"') && taskHandler.includes('"reopen"') && taskAdmin.includes("إعادة فتح المهمة"));
+check("task assignment and manager decisions use staff notifications", taskHandler.includes('audienceType: "staff"') && taskHandler.includes('type: "task_assigned"') && taskHandler.includes('"task_approved"'));
+check("task employee uploads support videos and documents with progress through existing resumable storage", taskUploads.includes("uploadTaskFile") && taskUploads.includes("MAX_TASK_FILE_UPLOAD_BYTES") && taskPhotos.includes("TaskFilePicker") && taskPhotos.includes("uploadProgressLabel"));
+check("task execution files are categorized separately and one failed file keeps earlier successful uploads", taskHandler.includes('"employee_video"') && taskHandler.includes('"employee_document"') && taskPhotos.includes("onChange(next)") && taskPhotos.includes("failures.push"));
+check("employees only receive their own uploaded task media", taskHandler.includes("canManageAll || Number(photo.uploadedBy) === auth.id") && taskHandler.includes("canManageAll || attachment.staffId === auth.id"));
 check("staff workspace reads stable task columns instead of optional task wildcard fields", staffWorkspaceHandler.includes("columns: {\n            id: true") && !staffWorkspaceHandler.slice(staffWorkspaceHandler.indexOf('resource === "dashboard"'), staffWorkspaceHandler.indexOf('resource === "notifications"')).includes("location: true"));
 check("staff workspace distinguishes missing mapping and missing portal permission", staffWorkspaceHandler.includes("حساب المستخدم غير مرتبط بموظف") && staffWorkspaceHandler.includes("لا توجد صلاحية للوصول إلى بوابة الموظفين"));
 check("staff workspace failures include request IDs and safe server diagnostics", staffWorkspaceHandler.includes("[STAFF_PORTAL_WORKSPACE_LOAD_FAILED]") && staffWorkspaceHandler.includes('code: "DATABASE_ERROR"') && taskPortal.includes("Request ID:") && taskPortal.includes("إعادة المحاولة"));

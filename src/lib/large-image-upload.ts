@@ -7,11 +7,13 @@ export const MAX_LOGO_UPLOAD_BYTES = IMAGE_UPLOAD_CONFIG.maxSourceBytes;
 export const MAX_IMAGE_OUTPUT_BYTES = IMAGE_UPLOAD_CONFIG.maxOutputBytes;
 export const MAX_LOGO_OUTPUT_BYTES = IMAGE_UPLOAD_CONFIG.maxLogoOutputBytes;
 export const IMAGE_UPLOAD_CHUNK_BYTES = 3 * 1024 * 1024;
+export const MAX_TASK_FILE_UPLOAD_BYTES = 40 * 1024 * 1024;
 export const ALLOWED_IMAGE_MIME_TYPES = [
   "image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "image/heic", "image/heif", "image/avif", "image/tiff", "image/svg+xml",
 ] as const;
 
 export type StoredImageUpload = { originalUrl: string; thumbnailUrl: string; mediumUrl: string; largeUrl: string; checksum: string };
+export type StoredFileUpload = { url: string; checksum: string; mime: string };
 export type ImageUploadProgress = { percent: number; uploadedBytes: number; totalBytes: number; bytesPerSecond: number; remainingSeconds: number | null; phase: "original" | "optimizing" | "complete" };
 
 export class ImageUploadError extends Error {
@@ -70,6 +72,38 @@ async function checksum(file: File): Promise<string> {
     const hash = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
     return Array.from(new Uint8Array(hash)).map((value) => value.toString(16).padStart(2, "0")).join("");
   } catch { throw new ImageUploadError("تعذر تجهيز الصورة للرفع على هذا الجهاز. حاول بصورة أصغر.", true); }
+}
+
+const TASK_FILE_MIME_TYPES = new Set([
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/plain",
+]);
+
+function taskFileMime(file: File): string {
+  const supplied = file.type.toLowerCase();
+  if (TASK_FILE_MIME_TYPES.has(supplied)) return supplied;
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  const byExtension: Record<string, string> = {
+    mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime",
+    pdf: "application/pdf", doc: "application/msword",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    txt: "text/plain",
+  };
+  return byExtension[extension ?? ""] ?? supplied;
+}
+
+export function isSupportedTaskFile(file: File): boolean {
+  return ALLOWED_IMAGE_MIME_TYPES.includes(imageMimeFromFile(file) as (typeof ALLOWED_IMAGE_MIME_TYPES)[number])
+    || TASK_FILE_MIME_TYPES.has(taskFileMime(file));
 }
 
 function sessionKey(folder: string, digest: string, suffix: string) { return `ajn:image-upload:${folder}:${digest}:${suffix}`; }
@@ -153,6 +187,54 @@ export async function uploadImageWithVariants(file: File, options: {
   }
   emit(totalBytes, totalBytes, "complete");
   return { originalUrl, thumbnailUrl: uploaded.thumbnail, mediumUrl: uploaded.medium, largeUrl: uploaded.large, checksum: digest };
+}
+
+/**
+ * Upload videos and documents through the existing resumable AJN/Supabase
+ * pipeline. Images continue to use `uploadImageWithVariants` so thumbnails and
+ * optimized variants are preserved.
+ */
+export async function uploadTaskFile(
+  file: File,
+  options: {
+    folder?: string;
+    signal?: AbortSignal;
+    onProgress?: (progress: ImageUploadProgress) => void;
+  } = {},
+): Promise<StoredFileUpload> {
+  if (!file || file.size <= 0) throw new ImageUploadError("الملف فارغ. اختر ملفاً صالحاً.");
+  if (file.size > MAX_TASK_FILE_UPLOAD_BYTES)
+    throw new ImageUploadError("حجم الملف أكبر من الحد المسموح (40 ميغابايت).");
+  const mime = taskFileMime(file);
+  if (!TASK_FILE_MIME_TYPES.has(mime))
+    throw new ImageUploadError("نوع الملف غير مدعوم. استخدم فيديو MP4/WebM/MOV أو PDF/Word/Excel/Text.");
+  const digest = await checksum(file);
+  const startedAt = performance.now();
+  const emit = (uploadedBytes: number, phase: ImageUploadProgress["phase"]) => {
+    const elapsed = Math.max(1, (performance.now() - startedAt) / 1000);
+    const bytesPerSecond = uploadedBytes / elapsed;
+    const remaining = Math.max(0, file.size - uploadedBytes);
+    options.onProgress?.({
+      percent: Math.min(100, Math.round((uploadedBytes / Math.max(1, file.size)) * 100)),
+      uploadedBytes,
+      totalBytes: file.size,
+      bytesPerSecond,
+      remainingSeconds: bytesPerSecond > 0 ? Math.ceil(remaining / bytesPerSecond) : null,
+      phase,
+    });
+  };
+  emit(0, "original");
+  const url = await uploadChunked(
+    file,
+    options.folder ?? "uploads/tasks",
+    "original",
+    mime,
+    digest,
+    options.signal,
+    (uploaded) => emit(uploaded, "original"),
+  );
+  emit(file.size, "complete");
+  return { url, checksum: digest, mime };
 }
 
 export function uploadProgressLabel(progress: ImageUploadProgress): string {

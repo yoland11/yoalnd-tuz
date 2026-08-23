@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { TaskPhotoGallery, TaskPhotoPicker, type TaskPhoto } from "@/components/task-photo-gallery";
+import { TaskFileList, TaskFilePicker, TaskPhotoGallery, TaskPhotoPicker, type TaskFile, type TaskPhoto } from "@/components/task-photo-gallery";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/query-client";
 import {
@@ -23,10 +23,11 @@ type Tab = "home" | "tasks" | "bookings" | "notifications" | "account";
 type Task = {
   id: number; taskNo?: string | null; title: string; description: string; status: string; priority: string; dueAt: string | null; startAt: string | null;
   relatedType: string | null; relatedId: number | null; department?: string | null; location?: string | null; notes?: string; completionNotes?: string; submittedAt?: string | null; completedAt?: string | null;
-  managerPhotos?: TaskPhoto[]; employeePhotos?: TaskPhoto[];
+  managerPhotos?: TaskPhoto[]; employeePhotos?: TaskPhoto[]; employeeFiles?: TaskFile[];
   checklistItems?: Array<{ id: number; title: string; requiredQuantity: number; completedQuantity: number }>;
   comments?: Array<{ id: number; body: string; createdAt: string; staff?: { fullName?: string; username?: string } | null }>;
-  timeline?: Array<{ id: number; title: string; body?: string | null; createdAt: string; actorName?: string | null }>;
+  timeline?: Array<{ id: number; title: string; body?: string | null; createdAt: string; actorName?: string | null; metadata?: Record<string, unknown> }>;
+  completionPercent?: number;
 };
 type Booking = { id: number; source: string; service: string; customer: string; date: string | null; time: string | null; location: string | null; status: string; href: string };
 type Notice = { id: number; type: string; title: string; body: string; href: string | null; readAt: string | null; createdAt: string };
@@ -43,7 +44,7 @@ function textDate(value: string | null | undefined, withTime = false) {
 }
 
 function statusLabel(status: string) {
-  return ({ new: "جديدة", in_progress: "قيد التنفيذ", review: "بانتظار المراجعة", completed: "مكتملة", cancelled: "ملغاة", preparing: "تجهيز", ready: "جاهز", active: "نشط" } as Record<string, string>)[status] ?? status;
+  return ({ new: "جديدة", accepted: "تم استلام المهمة", in_progress: "جاري العمل", review: "بانتظار اعتماد المدير", completed: "مكتملة", cancelled: "ملغاة", preparing: "تجهيز", ready: "جاهز", active: "نشط" } as Record<string, string>)[status] ?? status;
 }
 
 function priorityClass(priority: string) {
@@ -134,7 +135,7 @@ export default function UnifiedStaffPortal() {
   const today = dashboard.data?.today ?? "";
   const todayBookings = bookingRows.filter((booking) => booking.date === today);
   const upcomingBookings = bookingRows.filter((booking) => booking.date && booking.date >= today).slice(0, 6);
-  const nextTask = tasks.find((task) => ["new", "in_progress"].includes(task.status));
+  const nextTask = tasks.find((task) => ["new", "accepted", "in_progress"].includes(task.status));
   const sessionError = dashboard.error ?? bookings.error ?? notifications.error ?? payroll.error;
 
   useEffect(() => {
@@ -146,8 +147,8 @@ export default function UnifiedStaffPortal() {
   }, [navigate, sessionError]);
 
   const taskAction = useMutation({
-    mutationFn: async ({ task }: { task: Task }) => adminFetch(`/admin/tasks/${task.id}/progress`, { method: "POST", body: JSON.stringify({ items: [] }) }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["staff-portal", "dashboard"] }); toast({ title: "بدأت المهمة" }); },
+    mutationFn: async ({ task, statusAction }: { task: Task; statusAction: "accept" | "start" }) => adminFetch(`/admin/tasks/${task.id}/progress`, { method: "POST", body: JSON.stringify({ items: [], statusAction }) }),
+    onSuccess: (_data, variables) => { queryClient.invalidateQueries({ queryKey: ["staff-portal", "dashboard"] }); toast({ title: variables.statusAction === "accept" ? "تم استلام المهمة" : "بدأ العمل بالمهمة" }); },
     onError: (error: any) => toast({ variant: "destructive", title: "تعذر تحديث المهمة", description: error?.message }),
   });
   const receipt = useMutation({
@@ -193,7 +194,7 @@ export default function UnifiedStaffPortal() {
       {tab === "home" && dashboard.isLoading ? <WorkspaceSkeleton /> : null}
       {tab === "home" && !dashboard.isLoading ? <div className="space-y-6">
         <section className="grid gap-4 lg:grid-cols-[1.25fr_.75fr]">
-          <div className="rounded-2xl bg-primary p-5 text-primary-foreground"><div className="flex items-start justify-between gap-3"><div><p className="text-sm text-primary-foreground/75">الخطوة التالية</p><h2 className="mt-2 text-xl font-black">{nextTask?.title ?? todayBookings[0]?.customer ?? "يومك مرتب"}</h2><p className="mt-2 max-w-xl text-sm leading-6 text-primary-foreground/80">{nextTask ? (nextTask.dueAt ? `موعد الإنجاز: ${textDate(nextTask.dueAt, true)}` : "هذه المهمة بانتظار البدء") : todayBookings[0] ? `${todayBookings[0].service} · ${todayBookings[0].location ?? "الموقع سيظهر في التفاصيل"}` : "لا توجد مهمة أو حجز عاجل الآن."}</p></div><CalendarDays className="h-6 w-6 text-primary-foreground/80" /></div>{nextTask ? <Button variant="secondary" className="mt-5 min-h-11" onClick={() => nextTask.status === "new" ? taskAction.mutate({ task: nextTask }) : setSelectedTaskId(nextTask.id)} disabled={taskAction.isPending}>{taskAction.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : nextTask.status === "new" ? "ابدأ المهمة" : "فتح تفاصيل المهمة"}</Button> : null}</div>
+          <div className="rounded-2xl bg-primary p-5 text-primary-foreground"><div className="flex items-start justify-between gap-3"><div><p className="text-sm text-primary-foreground/75">الخطوة التالية</p><h2 className="mt-2 text-xl font-black">{nextTask?.title ?? todayBookings[0]?.customer ?? "يومك مرتب"}</h2><p className="mt-2 max-w-xl text-sm leading-6 text-primary-foreground/80">{nextTask ? (nextTask.dueAt ? `موعد الإنجاز: ${textDate(nextTask.dueAt, true)}` : "هذه المهمة بانتظار البدء") : todayBookings[0] ? `${todayBookings[0].service} · ${todayBookings[0].location ?? "الموقع سيظهر في التفاصيل"}` : "لا توجد مهمة أو حجز عاجل الآن."}</p></div><CalendarDays className="h-6 w-6 text-primary-foreground/80" /></div>{nextTask ? <Button variant="secondary" className="mt-5 min-h-11" onClick={() => nextTask.status === "new" ? taskAction.mutate({ task: nextTask, statusAction: "accept" }) : nextTask.status === "accepted" ? taskAction.mutate({ task: nextTask, statusAction: "start" }) : setSelectedTaskId(nextTask.id)} disabled={taskAction.isPending}>{taskAction.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : nextTask.status === "new" ? "استلام المهمة" : nextTask.status === "accepted" ? "بدء العمل" : "فتح تفاصيل المهمة"}</Button> : null}</div>
           <dl className="grid grid-cols-3 divide-x divide-x-reverse divide-border rounded-2xl border border-border bg-card"><div className="p-4"><dt className="text-xs text-muted-foreground">مهام اليوم</dt><dd className="mt-2 text-2xl font-black">{dashboard.data?.summary.todayTasks ?? "—"}</dd></div><div className="p-4"><dt className="text-xs text-muted-foreground">حجوزات اليوم</dt><dd className="mt-2 text-2xl font-black">{bookings.isLoading ? "…" : todayBookings.length}</dd></div><div className="p-4"><dt className="text-xs text-muted-foreground">متأخرة</dt><dd className="mt-2 text-2xl font-black text-destructive">{dashboard.data?.summary.overdueTasks ?? "—"}</dd></div></dl>
         </section>
         <section className="grid gap-6 xl:grid-cols-[1.25fr_.75fr]">
@@ -205,7 +206,7 @@ export default function UnifiedStaffPortal() {
 
       {tab === "tasks" && dashboard.isLoading ? <WorkspaceSkeleton /> : null}
       {tab === "tasks" && dashboard.isError ? <Failure title="تعذر تحميل المهام المعيّنة" error={dashboard.error} onRetry={() => void dashboard.refetch()} /> : null}
-      {tab === "tasks" && dashboard.isSuccess ? <section className="rounded-2xl border border-border bg-card"><div className="border-b border-border p-5"><SectionTitle action={hasPerm(me, "task_create") ? <a className="text-sm font-bold text-primary" href="/admin/tasks">إسناد وإدارة المهام</a> : undefined}>المهام المعيّنة لك</SectionTitle><p className="mt-1 text-sm text-muted-foreground">تُحفظ كل الإجراءات في سجل المهمة الأصلي.</p></div><div className="divide-y divide-border">{tasks.map((task) => <div key={task.id} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold">{task.title}</h3><span className={`rounded-full px-2 py-0.5 text-xs font-bold ${priorityClass(task.priority)}`}>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "عالية" : task.priority === "low" ? "منخفضة" : "متوسطة"}</span></div>{task.description ? <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{task.description}</p> : null}<p className="mt-2 text-xs text-muted-foreground">{task.dueAt ? `موعد الإنجاز: ${textDate(task.dueAt, true)}` : "بدون موعد محدد"}</p></div><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-muted px-2 py-1 text-xs font-bold text-muted-foreground">{statusLabel(task.status)}</span>{task.status === "new" ? <Button size="sm" className="min-h-10" onClick={() => taskAction.mutate({ task })} disabled={taskAction.isPending}>ابدأ</Button> : null}<Button size="sm" variant="outline" className="min-h-10" onClick={() => setSelectedTaskId(task.id)}>التفاصيل</Button></div></div>)}{!tasks.length ? <div className="p-5"><Empty>لا توجد مهام معينة لك الآن.</Empty></div> : null}</div></section> : null}
+      {tab === "tasks" && dashboard.isSuccess ? <section className="rounded-2xl border border-border bg-card"><div className="border-b border-border p-5"><SectionTitle action={hasPerm(me, "task_create") ? <a className="text-sm font-bold text-primary" href="/admin/tasks">إسناد وإدارة المهام</a> : undefined}>المهام المعيّنة لك</SectionTitle><p className="mt-1 text-sm text-muted-foreground">تُحفظ كل الإجراءات في سجل المهمة الأصلي.</p></div><div className="divide-y divide-border">{tasks.map((task) => <div key={task.id} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold">{task.title}</h3><span className={`rounded-full px-2 py-0.5 text-xs font-bold ${priorityClass(task.priority)}`}>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "عالية" : task.priority === "low" ? "منخفضة" : "متوسطة"}</span></div>{task.description ? <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{task.description}</p> : null}<p className="mt-2 text-xs text-muted-foreground">{task.dueAt ? `موعد الإنجاز: ${textDate(task.dueAt, true)}` : "بدون موعد محدد"}</p></div><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-muted px-2 py-1 text-xs font-bold text-muted-foreground">{statusLabel(task.status)}</span>{task.status === "new" ? <Button size="sm" className="min-h-10" onClick={() => taskAction.mutate({ task, statusAction: "accept" })} disabled={taskAction.isPending}>استلام</Button> : null}{task.status === "accepted" ? <Button size="sm" className="min-h-10" onClick={() => taskAction.mutate({ task, statusAction: "start" })} disabled={taskAction.isPending}>بدء العمل</Button> : null}<Button size="sm" variant="outline" className="min-h-10" onClick={() => setSelectedTaskId(task.id)}>التفاصيل</Button></div></div>)}{!tasks.length ? <div className="p-5"><Empty>لا توجد مهام معينة لك الآن.</Empty></div> : null}</div></section> : null}
 
       {tab === "bookings" ? <section className="space-y-4"><div className="rounded-2xl border border-border bg-card p-5"><SectionTitle>الحجوزات المعينة لك</SectionTitle><p className="mt-1 text-sm text-muted-foreground">تُعرض الحجوزات الأصلية فقط؛ فتح التفاصيل ينقلك إلى بوابة الخدمة المناسبة.</p></div>{bookings.isLoading ? <WorkspaceSkeleton /> : null}{bookings.isError ? <Failure title="تعذر تحميل الحجوزات" error={bookings.error} onRetry={() => void bookings.refetch()} /> : null}<div className="grid gap-4 md:grid-cols-2">{upcomingBookings.map((booking) => <a key={`${booking.source}-${booking.id}`} href={booking.href} className="rounded-2xl border border-border bg-card p-5 transition-colors hover:border-primary/50"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="text-xs font-bold text-primary">{booking.service}</div><h3 className="mt-1 truncate text-lg font-extrabold">{booking.customer}</h3></div><ChevronLeft className="h-5 w-5 text-muted-foreground" /></div><div className="mt-5 space-y-2 text-sm text-muted-foreground"><div className="flex items-center gap-2"><CalendarDays className="h-4 w-4" />{booking.date ?? "غير محدد"}{booking.time ? ` · ${booking.time}` : ""}</div><div className="flex items-center gap-2"><MapPin className="h-4 w-4" />{booking.location ?? "الموقع غير محدد"}</div></div><div className="mt-4 text-xs font-bold text-muted-foreground">{statusLabel(booking.status)}</div></a>)}</div>{bookings.isSuccess && !upcomingBookings.length ? <Empty>لا توجد حجوزات مخصصة لك حالياً.</Empty> : null}</section> : null}
 
@@ -226,13 +227,24 @@ function StaffTaskDialog({ taskId, open, onOpenChange }: { taskId: number | null
     enabled: open && Boolean(taskId),
   });
   const [photos, setPhotos] = useState<TaskPhoto[]>([]);
+  const [files, setFiles] = useState<TaskFile[]>([]);
   const [progressNote, setProgressNote] = useState("");
   const [completionNotes, setCompletionNotes] = useState("");
+  const [completionPercent, setCompletionPercent] = useState(0);
   const [items, setItems] = useState<Array<{ id: number; title: string; requiredQuantity: number; completedQuantity: number }>>([]);
+  useEffect(() => {
+    setPhotos([]);
+    setFiles([]);
+    setProgressNote("");
+    setCompletionNotes("");
+    setCompletionPercent(0);
+    setItems([]);
+  }, [taskId]);
   useEffect(() => {
     if (!detail.data) return;
     setItems(detail.data.checklistItems ?? []);
     setCompletionNotes(detail.data.completionNotes ?? "");
+    setCompletionPercent(detail.data.completionPercent ?? 0);
   }, [detail.data]);
   const refresh = async () => {
     await Promise.all([
@@ -241,26 +253,31 @@ function StaffTaskDialog({ taskId, open, onOpenChange }: { taskId: number | null
       queryClient.invalidateQueries({ queryKey: ["staff-portal", "notifications"] }),
     ]);
   };
+  const transition = useMutation({
+    mutationFn: (statusAction: "accept" | "start") => adminFetch(`/admin/tasks/${taskId}/progress`, { method: "POST", body: JSON.stringify({ items: [], statusAction }) }),
+    onSuccess: async (_data, statusAction) => { await refresh(); toast({ title: statusAction === "accept" ? "تم استلام المهمة" : "بدأ العمل بالمهمة" }); },
+    onError: (error: any) => toast({ title: "تعذر تحديث حالة المهمة", description: error?.message, variant: "destructive" }),
+  });
   const saveProgress = useMutation({
     mutationFn: async () => {
-      if (items.length) await adminFetch(`/admin/tasks/${taskId}/progress`, { method: "POST", body: JSON.stringify({ items: items.map((item) => ({ id: item.id, completedQuantity: Number(item.completedQuantity) })) }) });
-      if (photos.length || progressNote.trim()) await adminFetch(`/admin/tasks/${taskId}/photos`, { method: "POST", body: JSON.stringify({ photos, progressNote }) });
+      await adminFetch(`/admin/tasks/${taskId}/progress`, { method: "POST", body: JSON.stringify({ items: items.map((item) => ({ id: item.id, completedQuantity: Number(item.completedQuantity) })), progressPercent: completionPercent }) });
+      if (photos.length || files.length || progressNote.trim()) await adminFetch(`/admin/tasks/${taskId}/photos`, { method: "POST", body: JSON.stringify({ photos, files, progressNote }) });
     },
-    onSuccess: async () => { setPhotos([]); setProgressNote(""); await refresh(); toast({ title: "تم حفظ تقدم المهمة" }); },
+    onSuccess: async () => { setPhotos([]); setFiles([]); setProgressNote(""); await refresh(); toast({ title: "تم حفظ تقدم المهمة" }); },
     onError: (error: any) => toast({ title: "تعذر حفظ التقدم", description: error?.message, variant: "destructive" }),
   });
   const complete = useMutation({
     mutationFn: async () => {
-      if (items.length) await adminFetch(`/admin/tasks/${taskId}/progress`, { method: "POST", body: JSON.stringify({ items: items.map((item) => ({ id: item.id, completedQuantity: Number(item.completedQuantity) })) }) });
-      return adminFetch(`/admin/tasks/${taskId}/complete`, { method: "POST", body: JSON.stringify({ photos, completionNotes }) });
+      await adminFetch(`/admin/tasks/${taskId}/progress`, { method: "POST", body: JSON.stringify({ items: items.map((item) => ({ id: item.id, completedQuantity: Number(item.completedQuantity) })), progressPercent: 100 }) });
+      return adminFetch(`/admin/tasks/${taskId}/complete`, { method: "POST", body: JSON.stringify({ photos, files, completionNotes }) });
     },
-    onSuccess: async () => { setPhotos([]); await refresh(); toast({ title: "تم تأكيد الإنجاز وإرسال المهمة للمراجعة" }); },
+    onSuccess: async () => { setPhotos([]); setFiles([]); await refresh(); toast({ title: "تم تأكيد الإنجاز وإرسال المهمة للمراجعة" }); },
     onError: (error: any) => toast({ title: "تعذر تأكيد الإنجاز", description: error?.message, variant: "destructive" }),
   });
   const removePhoto = useMutation({
     mutationFn: (photoId: number) => adminFetch(`/admin/tasks/${taskId}/photos/${photoId}`, { method: "DELETE" }),
-    onSuccess: async () => { await refresh(); toast({ title: "تم حذف صورة الإنجاز" }); },
-    onError: (error: any) => toast({ title: "تعذر حذف الصورة", description: error?.message, variant: "destructive" }),
+    onSuccess: async () => { await refresh(); toast({ title: "تم حذف مرفق الإنجاز" }); },
+    onError: (error: any) => toast({ title: "تعذر حذف المرفق", description: error?.message, variant: "destructive" }),
   });
   const task = detail.data;
   const locked = !task || ["review", "completed", "cancelled"].includes(task.status);
@@ -271,19 +288,22 @@ function StaffTaskDialog({ taskId, open, onOpenChange }: { taskId: number | null
         <DialogTitle>{task?.title || "تفاصيل المهمة"}</DialogTitle>
         <DialogDescription>{task?.taskNo || (taskId ? `المهمة #${taskId}` : "")}</DialogDescription>
       </DialogHeader>
-      {detail.isLoading ? <div className="space-y-3 p-5"><div className="h-10 animate-pulse rounded-lg bg-muted" /><div className="h-36 animate-pulse rounded-lg bg-muted" /></div> : detail.isError ? <div className="p-5"><Failure title="تعذر تحميل تفاصيل المهمة" error={detail.error} /></div> : task ? <div className="space-y-5 p-4 sm:p-5">
-        <div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${priorityClass(task.priority)}`}>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "عالية" : task.priority === "low" ? "منخفضة" : "متوسطة"}</span><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-bold text-muted-foreground">{statusLabel(task.status)}</span></div>
+      {detail.isLoading ? <div className="space-y-3 p-5"><div className="h-10 animate-pulse rounded-lg bg-muted" /><div className="h-36 animate-pulse rounded-lg bg-muted" /></div> : detail.isError ? <div className="p-5"><Failure title="تعذر تحميل تفاصيل المهمة" error={detail.error} onRetry={() => void detail.refetch()} /></div> : task ? <div className="space-y-5 p-4 sm:p-5">
+        <div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${priorityClass(task.priority)}`}>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "عالية" : task.priority === "low" ? "منخفضة" : "متوسطة"}</span><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-bold text-muted-foreground">{statusLabel(task.status)}</span>{task.status === "new" ? <Button type="button" size="sm" className="min-h-10" disabled={transition.isPending} onClick={() => transition.mutate("accept")}>استلام المهمة</Button> : null}{task.status === "accepted" ? <Button type="button" size="sm" className="min-h-10" disabled={transition.isPending} onClick={() => transition.mutate("start")}>بدء العمل</Button> : null}</div>
         <section className="space-y-3"><p className="text-sm leading-7 text-foreground">{task.description || "لا يوجد وصف إضافي."}</p><dl className="grid grid-cols-2 gap-3 rounded-xl bg-muted/35 p-3 text-sm"><div><dt className="text-xs text-muted-foreground">وقت البدء</dt><dd className="mt-1 font-bold">{textDate(task.startAt, true)}</dd></div><div><dt className="text-xs text-muted-foreground">الموعد النهائي</dt><dd className="mt-1 font-bold">{textDate(task.dueAt, true)}</dd></div><div><dt className="text-xs text-muted-foreground">القسم</dt><dd className="mt-1 font-bold">{task.department || "غير محدد"}</dd></div><div><dt className="text-xs text-muted-foreground">الموقع</dt><dd className="mt-1 font-bold">{task.location || "غير محدد"}</dd></div></dl>{task.notes ? <div className="rounded-lg border-r-4 border-primary bg-primary/5 p-3 text-sm"><strong>تعليمات المدير:</strong> {task.notes}</div> : null}</section>
         <section className="space-y-3"><h3 className="text-sm font-extrabold">صور وتوضيحات من المدير</h3><TaskPhotoGallery photos={task.managerPhotos ?? []} emptyText="لم يرفق المدير صوراً لهذه المهمة" /></section>
         {items.length ? <section className="space-y-2"><h3 className="text-sm font-extrabold">تقدم قائمة التنفيذ</h3>{items.map((item, index) => <label key={item.id} className="flex min-h-12 items-center gap-3 rounded-lg border border-border p-3"><span className="min-w-0 flex-1 text-sm font-bold">{item.title}</span><input disabled={locked} type="number" min="0" max={item.requiredQuantity} value={item.completedQuantity} onChange={(event) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, completedQuantity: Math.min(current.requiredQuantity, Math.max(0, Number(event.target.value))) } : current))} className="h-11 w-24 rounded-lg border bg-background px-2 text-center text-sm" /><span className="text-xs text-muted-foreground">/ {item.requiredQuantity}</span></label>)}</section> : null}
         <section className="space-y-3"><h3 className="text-sm font-extrabold">صور إنجاز الموظف</h3>{(task.employeePhotos ?? []).length ? <div className="space-y-3"><TaskPhotoGallery photos={task.employeePhotos ?? []} />{!locked ? <div className="flex flex-wrap gap-2">{(task.employeePhotos ?? []).filter((photo) => photo.id).map((photo, index) => <Button key={photo.id} type="button" size="sm" variant="outline" className="min-h-10 text-destructive hover:text-destructive" disabled={removePhoto.isPending} onClick={() => photo.id && removePhoto.mutate(photo.id)}>حذف صورة {index + 1}</Button>)}</div> : null}</div> : <p className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-sm text-muted-foreground">لم تتم إضافة صور إنجاز بعد</p>}</section>
+        <section className="space-y-3"><h3 className="text-sm font-extrabold">فيديوهات ومستندات الإنجاز</h3><TaskFileList files={task.employeeFiles ?? []} onRemove={!locked ? (file) => file.id && removePhoto.mutate(file.id) : undefined} removing={removePhoto.isPending} /></section>
         {!locked ? <>
           <TaskPhotoPicker photos={photos} onChange={setPhotos} label="صور إنجاز المهمة (اختياري)" description="يمكن التقاط عدة صور أو اختيارها من المعرض. الصور اختيارية ولا تمنع إكمال المهمة." />
-          <section className="space-y-2 rounded-xl border border-border p-3"><label htmlFor="task-progress-note" className="text-sm font-extrabold">ملاحظة تقدم (اختياري)</label><textarea id="task-progress-note" value={progressNote} onChange={(event) => setProgressNote(event.target.value)} rows={2} className="w-full rounded-lg border bg-background p-3 text-sm" placeholder="ما الذي تم إنجازه حتى الآن؟" /><Button type="button" variant="outline" className="min-h-11 w-full sm:w-auto" disabled={saveProgress.isPending} onClick={() => saveProgress.mutate()}>{saveProgress.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "حفظ التقدم"}</Button></section>
+          <TaskFilePicker files={files} onChange={setFiles} />
+          <section className="space-y-3 rounded-xl border border-border p-3"><div className="flex items-center justify-between gap-3"><label htmlFor="task-progress-percent" className="text-sm font-extrabold">نسبة الإنجاز</label><output htmlFor="task-progress-percent" className="text-sm font-black text-primary">{completionPercent}%</output></div><input id="task-progress-percent" type="range" min="0" max="100" step="5" value={completionPercent} onChange={(event) => setCompletionPercent(Number(event.target.value))} className="min-h-11 w-full accent-primary" /><label htmlFor="task-progress-note" className="text-sm font-extrabold">ملاحظة تقدم (اختياري)</label><textarea id="task-progress-note" value={progressNote} onChange={(event) => setProgressNote(event.target.value)} rows={2} className="w-full rounded-lg border bg-background p-3 text-sm" placeholder="ما الذي تم إنجازه حتى الآن؟" /><Button type="button" variant="outline" className="min-h-11 w-full sm:w-auto" disabled={saveProgress.isPending} onClick={() => saveProgress.mutate()}>{saveProgress.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "حفظ التقدم"}</Button></section>
           <section className="space-y-3 rounded-xl border-2 border-primary/25 bg-primary/5 p-4"><div><h3 className="text-base font-extrabold">تم إنجاز المهمة</h3><p className="mt-1 text-xs text-muted-foreground">صور إنجاز المهمة وملاحظاتها اختيارية.</p></div><label className="space-y-2"><span className="text-sm font-bold">ملاحظات الإنجاز (اختياري)</span><textarea value={completionNotes} onChange={(event) => setCompletionNotes(event.target.value)} rows={3} className="w-full rounded-lg border bg-background p-3 text-sm" /></label><Button type="button" className="min-h-12 w-full gap-2" disabled={complete.isPending} onClick={() => complete.mutate()}>{complete.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <><CheckCircle2 className="h-4 w-4" />تأكيد الإنجاز</>}</Button></section>
         </> : null}
         {(task.submittedAt || task.completedAt || task.completionNotes) ? <div className="rounded-lg bg-primary/5 p-3 text-sm">{task.submittedAt ? <p><strong>وقت إرسال الإنجاز:</strong> {textDate(task.submittedAt, true)}</p> : null}{task.completedAt ? <p className="mt-1"><strong>وقت الاعتماد:</strong> {textDate(task.completedAt, true)}</p> : null}{task.completionNotes ? <p className="mt-2"><strong>ملاحظات الإنجاز:</strong> {task.completionNotes}</p> : null}</div> : null}
         {(task.comments?.length ?? 0) > 0 ? <section><h3 className="mb-2 text-sm font-extrabold">ملاحظات وتحديثات المهمة</h3><div className="space-y-2">{task.comments?.map((comment) => <div key={comment.id} className="rounded-lg bg-muted/40 p-3 text-sm"><b>{comment.staff?.fullName || comment.staff?.username || "الموظف"}</b><p className="mt-1 leading-6">{comment.body}</p><time className="mt-1 block text-xs text-muted-foreground">{textDate(comment.createdAt, true)}</time></div>)}</div></section> : null}
+        {(task.timeline?.length ?? 0) > 0 ? <section><h3 className="mb-2 text-sm font-extrabold">سجل تنفيذ المهمة</h3><div className="space-y-2">{task.timeline?.map((entry) => <div key={entry.id} className="rounded-lg bg-muted/35 p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><b>{entry.title}</b>{entry.metadata?.status ? <span className="rounded-full bg-background px-2 py-0.5 text-xs text-muted-foreground">{statusLabel(String(entry.metadata.status))}</span> : null}</div>{entry.body ? <p className="mt-1 leading-6">{entry.body}</p> : null}<p className="mt-1 text-xs text-muted-foreground">{entry.actorName || "النظام"} · {textDate(entry.createdAt, true)}</p></div>)}</div></section> : null}
       </div> : null}
     </DialogContent>
   </Dialog>;
