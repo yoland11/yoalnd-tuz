@@ -170,7 +170,7 @@ export default function ClientGalleryPage() {
         <h1 className="text-xl font-bold text-foreground">{data.title}</h1>
         {data.expiresAt ? (
           <p className="mt-1 text-xs text-muted-foreground">
-            الرابط صالح حتى {new Date(data.expiresAt).toLocaleDateString("ar-IQ")}
+            الرابط صالح حتى {new Date(data.expiresAt).toLocaleDateString("ar-IQ-u-nu-latn")}
           </p>
         ) : null}
       </header>

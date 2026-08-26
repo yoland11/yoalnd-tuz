@@ -373,10 +373,10 @@ function DailyCashPage({ mode }: { mode: PageMode }) {
             )}
           </div>
           <div className="flex flex-col gap-2 border-t border-border/30 p-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-            <span>النتائج: {(cashQuery.data?.total ?? 0).toLocaleString("ar-IQ")}</span>
+            <span>النتائج: {(cashQuery.data?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>السابق</Button>
-              <span>{page.toLocaleString("ar-IQ")} / {totalPages.toLocaleString("ar-IQ")}</span>
+              <span>{page.toLocaleString("ar-IQ-u-nu-latn")} / {totalPages.toLocaleString("ar-IQ-u-nu-latn")}</span>
               <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((current) => current + 1)}>التالي</Button>
             </div>
           </div>

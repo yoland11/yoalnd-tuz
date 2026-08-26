@@ -364,7 +364,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
       ${qr ? `<img src="${qr}" width="110" height="110" alt="QR"/>` : ""}</div>
       <h1>${order.name || ""}</h1>${infoGrid()}
       <h1>القياسات</h1><table>${measureRows()}</table>
-      <div class="foot"><span>ملاحظات: ${(m.tailorNotes || order.productionNotes || "—")}</span><span>التاريخ: ${new Date().toLocaleDateString("ar")}</span></div>
+      <div class="foot"><span>ملاحظات: ${(m.tailorNotes || order.productionNotes || "—")}</span><span>التاريخ: ${new Date().toLocaleDateString("ar-u-nu-latn")}</span></div>
       </body></html>`);
   }
   async function printLabel() {
@@ -387,7 +387,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
       <h1>${order.name || ""} — <span style="color:#7a9b1a">${stageLabel}</span></h1>${infoGrid()}
       <h1>القياسات</h1><table>${measureRows()}</table>
       <h1>التعديلات المطلوبة</h1><table>${alts}</table>
-      <div class="foot"><span>تحذيرات: ${(order.notesTiers?.warning || "—")}</span><span>التاريخ: ${new Date().toLocaleDateString("ar")}</span></div>
+      <div class="foot"><span>تحذيرات: ${(order.notesTiers?.warning || "—")}</span><span>التاريخ: ${new Date().toLocaleDateString("ar-u-nu-latn")}</span></div>
       </body></html>`);
   }
   async function saveNotes() {
@@ -646,7 +646,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
               <li key={h.id} className="rounded-lg border border-border bg-background p-2 text-xs">
                 <div className="flex items-center justify-between">
                   <span className="font-medium">{h.action === "submit" ? "إرسال للاعتماد" : "تعديل قياسات"}</span>
-                  <span className="text-muted-foreground" dir="ltr">{new Date(h.created_at).toLocaleString("ar")}</span>
+                  <span className="text-muted-foreground" dir="ltr">{new Date(h.created_at).toLocaleString("ar-u-nu-latn")}</span>
                 </div>
                 <div className="mt-1 text-muted-foreground">{h.changed_by_name}{h.reason ? ` — ${h.reason}` : ""}</div>
               </li>
@@ -744,7 +744,7 @@ function GroupPage({ id }: { id: string }) {
       table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #ccc;padding:6px 8px;text-align:center}th{background:#f2f2f2}
       @media print{@page{size:A4 landscape;margin:10mm}}</style></head><body>
       <h1>قياسات المجموعة — ${group?.title || ""}</h1>
-      <div class="sub">${[group?.groupNo, group?.university, group?.department].filter(Boolean).join(" — ")} · ${rows.length} طالب · ${new Date().toLocaleDateString("ar")}</div>
+      <div class="sub">${[group?.groupNo, group?.university, group?.department].filter(Boolean).join(" — ")} · ${rows.length} طالب · ${new Date().toLocaleDateString("ar-u-nu-latn")}</div>
       <table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rowsHtml}</tbody></table>
       </body></html>`);
     w.document.close(); w.focus(); setTimeout(() => w.print(), 350);
@@ -884,7 +884,7 @@ function GroupPage({ id }: { id: string }) {
                 </td>
                 <td className="p-1.5 text-center"><span className={`rounded-full px-2 py-0.5 text-[10px] ${STATUS_BADGE[r.measurementStatus] ?? "bg-muted"}`}>{STATUS_LABEL[r.measurementStatus] ?? r.measurementStatus}</span></td>
                 <td className="p-1.5 whitespace-nowrap text-center text-muted-foreground">{r.tailorName || "—"}</td>
-                <td className="p-1.5 whitespace-nowrap text-center text-muted-foreground" dir="ltr">{r.updatedAt ? new Date(r.updatedAt).toLocaleDateString("ar") : "—"}</td>
+                <td className="p-1.5 whitespace-nowrap text-center text-muted-foreground" dir="ltr">{r.updatedAt ? new Date(r.updatedAt).toLocaleDateString("ar-u-nu-latn") : "—"}</td>
                 <td className="p-1.5 text-center">
                   <button type="button" title="حفظ هذا الطالب" onClick={() => saveItems([payloadFor(r)])} className="rounded-md border border-border p-1 hover:border-primary"><Save className="h-3.5 w-3.5" /></button>
                 </td>

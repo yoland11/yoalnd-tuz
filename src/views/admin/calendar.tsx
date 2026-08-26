@@ -178,7 +178,7 @@ export default function CalendarPage() {
             <div key={day} className="bg-card rounded-xl border border-border/30 p-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-foreground mb-3">
                 <CalendarDays className="w-4 h-4 text-primary" />
-                {new Date(`${day}T00:00:00`).toLocaleDateString("ar-IQ", { weekday: "long", month: "long", day: "numeric" })}
+                {new Date(`${day}T00:00:00`).toLocaleDateString("ar-IQ-u-nu-latn", { weekday: "long", month: "long", day: "numeric" })}
               </div>
               <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                 {events.map((event) => (

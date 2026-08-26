@@ -337,7 +337,7 @@ function dateTime(value?: string | Date | null) {
   const date = value ? new Date(value) : new Date();
   const valid = Number.isNaN(date.getTime()) ? new Date() : date;
   return {
-    date: new Intl.DateTimeFormat("ar-IQ", {
+    date: new Intl.DateTimeFormat("ar-IQ-u-nu-latn", {
       timeZone: "Asia/Baghdad",
       year: "numeric",
       month: "2-digit",

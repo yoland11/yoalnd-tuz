@@ -141,7 +141,7 @@ export default function ArchivePage() {
                   <p className="text-xs text-primary">{row.kind === "product" ? "طلب متجر" : row.serviceName}</p>
                   <p className="text-[11px] text-muted-foreground mt-1">
                     {STATUS_LABELS[row.status] ?? row.status}
-                    {row.archivedAt ? ` • أرشف في ${new Date(row.archivedAt).toLocaleDateString("ar-IQ")}` : ""}
+                    {row.archivedAt ? ` • أرشف في ${new Date(row.archivedAt).toLocaleDateString("ar-IQ-u-nu-latn")}` : ""}
                   </p>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -176,7 +176,7 @@ export default function ArchivePage() {
                 </div>
                 <div className="rounded-lg bg-background/50 border border-border/20 px-3 py-2">
                   <p className="text-muted-foreground">تاريخ الطلب</p>
-                  <p className="text-foreground font-semibold mt-1">{new Date(row.createdAt).toLocaleDateString("ar-IQ")}</p>
+                  <p className="text-foreground font-semibold mt-1">{new Date(row.createdAt).toLocaleDateString("ar-IQ-u-nu-latn")}</p>
                 </div>
               </div>
             </div>

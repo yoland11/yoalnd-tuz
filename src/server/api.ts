@@ -16,6 +16,11 @@ import webpush from "web-push";
 import { formatCurrency, formatMoney } from "@/lib/money";
 import { settlePaymentAmounts } from "@/lib/payment-settlement";
 import {
+  bookingPhotosFromFields,
+  fieldsWithBookingPhotos,
+  isStoredBookingPhoto,
+} from "@/lib/booking-photos";
+import {
   deriveInvoicePaymentStatus,
   invoiceRemainingBalance,
   INVOICE_PAYMENT_STATUSES,
@@ -8340,13 +8345,29 @@ const UNIFIED_BOOKING_SERVICE_STATUSES = new Set([
 ]);
 
 function normalizeUnifiedBookingCustomFields(fields: Record<string, any>) {
+  const hasBookingPhotos =
+    Object.prototype.hasOwnProperty.call(fields, "bookingPhotos") ||
+    Object.prototype.hasOwnProperty.call(fields, "bookingImage");
+  const bookingPhotos = hasBookingPhotos
+    ? bookingPhotosFromFields(fields)
+    : [];
+  if (bookingPhotos.length > 20)
+    throw new CheckoutError("الحد الأعلى لصور الحجز هو 20 صورة", 422);
+  if (bookingPhotos.some((photo) => !isStoredBookingPhoto(photo)))
+    throw new CheckoutError(
+      "يجب رفع صور الحجز إلى التخزين قبل حفظ الحجز",
+      422,
+    );
+  const safeFields: Record<string, any> = hasBookingPhotos
+    ? fieldsWithBookingPhotos(fields, bookingPhotos)
+    : fields;
   if (
-    fields.bookingCenterVersion == null &&
-    !Array.isArray(fields.bookingCenterServices)
+    safeFields.bookingCenterVersion == null &&
+    !Array.isArray(safeFields.bookingCenterServices)
   )
-    return fields;
-  const source = Array.isArray(fields.bookingCenterServices)
-    ? fields.bookingCenterServices
+    return safeFields;
+  const source = Array.isArray(safeFields.bookingCenterServices)
+    ? safeFields.bookingCenterServices
     : [];
   const seen = new Set<string>();
   const bookingCenterServices = source.flatMap((item: any) => {
@@ -8377,8 +8398,8 @@ function normalizeUnifiedBookingCustomFields(fields: Record<string, any>) {
       422,
     );
   return {
-    ...fields,
-    bookingCenterVersion: Math.max(1, Number(fields.bookingCenterVersion) || 1),
+    ...safeFields,
+    bookingCenterVersion: Math.max(1, Number(safeFields.bookingCenterVersion) || 1),
     departments: bookingCenterServices.map((item) => item.type),
     bookingCenterServices,
   };
@@ -10398,7 +10419,11 @@ async function insertServiceOrderWithTracking(
     typeof serviceOrdersTable.$inferInsert,
     "trackingCode" | "phoneLast4"
   >,
-  options?: { executor?: any; skipCustomerSync?: boolean },
+  options?: {
+    executor?: any;
+    skipCustomerSync?: boolean;
+    settleByAmount?: boolean;
+  },
 ) {
   // Surface the service customer on /admin/customers — create-or-link by phone.
   if (values.phone && !options?.skipCustomerSync)
@@ -10408,8 +10433,8 @@ async function insertServiceOrderWithTracking(
   const payment = paymentSummary(
     (values as any).totalAmount,
     (values as any).depositAmount,
-    (values as any).paymentStatus,
-    paymentMethod,
+    options?.settleByAmount ? undefined : (values as any).paymentStatus,
+    options?.settleByAmount ? undefined : paymentMethod,
   );
   const [row] = await executor
     .insert(serviceOrdersTable)
@@ -10446,6 +10471,7 @@ async function createServiceOrderWithHistory(
     "trackingCode" | "phoneLast4"
   >,
   historyNote: string,
+  options?: { settleByAmount?: boolean },
 ) {
   // Schema setup must complete before the transaction starts. The customer
   // upsert, booking row, and status-history row below use one transaction.
@@ -10476,7 +10502,11 @@ async function createServiceOrderWithHistory(
     });
     const order = await insertServiceOrderWithTracking(
       { ...values, customFields },
-      { executor: tx, skipCustomerSync: true },
+      {
+        executor: tx,
+        skipCustomerSync: true,
+        settleByAmount: options?.settleByAmount,
+      },
     );
     logServiceBookingStep({
       step: "services",
@@ -27915,7 +27945,7 @@ async function handleIntegrationOversight(
       const target = String(b?.target ?? "");
       const reason = String(b?.reason ?? "").trim();
       if (reason.length < 3)
-        return error("يجب إدخال سبب التسوية (٣ أحرف على الأقل)", 400);
+        return error("يجب إدخال سبب التسوية (3 أحرف على الأقل)", 400);
       const fActor = financialActor(auth);
       try {
         if (target === "cashbox") {
@@ -37678,7 +37708,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         await notifyMainManagers({
           type: "approval_action",
           title: "إجراء موافقة مفوض",
-          body: `قام ${auth.fullName || auth.username} بـ${delegatedRule.action} للطلب ${delegatedRow.requestNo}${scope.amount ? ` بمبلغ ${scope.amount.toLocaleString("ar-IQ")} د.ع` : ""}.`,
+          body: `قام ${auth.fullName || auth.username} بـ${delegatedRule.action} للطلب ${delegatedRow.requestNo}${scope.amount ? ` بمبلغ ${scope.amount.toLocaleString("ar-IQ-u-nu-latn")} د.ع` : ""}.`,
           requestId: id,
           metadata: {
             action: delegatedRule.action,
@@ -40157,7 +40187,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           suggestions.push({
             severity: "medium",
             title: "انتهى الضمان",
-            detail: `انتهى في ${d.toLocaleDateString("ar-IQ")}.`,
+            detail: `انتهى في ${d.toLocaleDateString("ar-IQ-u-nu-latn")}.`,
           });
         else if (days <= 30)
           suggestions.push({
@@ -40628,9 +40658,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         ? `AJN-A${String(Number(assetCodeMatch[1])).padStart(6, "0")}`
         : "",
     ]
-      .map((value) => value.toLocaleLowerCase("ar-IQ"))
+      .map((value) => value.toLocaleLowerCase("ar-IQ-u-nu-latn"))
       .filter((value, index, values) => value && values.indexOf(value) === index);
-    const normalizeAssetValue = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("ar-IQ");
+    const normalizeAssetValue = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("ar-IQ-u-nu-latn");
     const valueIncludes = (value: unknown, needle: string) =>
       !needle || normalizeAssetValue(value).includes(normalizeAssetValue(needle));
     const uniqueText = (values: Array<string | null | undefined>) =>
@@ -40820,7 +40850,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           row.name, row.assetCode, row.qrToken, row.barcode, row.serialNumber,
           row.category, row.brand, row.model, row.responsibleName,
           row.warehouseName, row.storageLocation, row.bookingNumber, row.serviceText,
-        ].join(" ").toLocaleLowerCase("ar-IQ");
+        ].join(" ").toLocaleLowerCase("ar-IQ-u-nu-latn");
         return (
           (!assetSearchTerms.length ||
             assetSearchTerms.some((term) => searchText.includes(term))) &&
@@ -46953,11 +46983,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           return error("طريقة دفع غير صالحة", 400);
         (customFields as any).paymentMethod = servicePaymentMethod;
       }
+      const requestedTotalAmount = money(rawBody?.totalAmount);
+      const requestedDepositAmount = money(rawBody?.depositAmount);
+      if (requestedDepositAmount > requestedTotalAmount)
+        return error("لا يمكن أن يتجاوز العربون المبلغ الكلي للحجز", 400, {
+          code: "BOOKING_INVALID",
+          fieldErrors: {
+            depositAmount: "العربون أكبر من المبلغ الكلي",
+          },
+        });
       const payment = paymentSummary(
-        rawBody?.totalAmount,
-        rawBody?.depositAmount,
-        rawBody?.paymentStatus,
-        servicePaymentMethod,
+        requestedTotalAmount,
+        requestedDepositAmount,
       );
       const eventLocation =
         rawBody?.eventLocation ??
@@ -47008,7 +47045,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
               typeof rawBody?.internalNotes === "string"
                 ? rawBody.internalNotes
                 : null,
-            totalAmount: String(money(rawBody?.totalAmount)),
+            totalAmount: String(requestedTotalAmount),
             depositAmount: String(payment.deposit),
             remainingAmount: String(payment.remaining),
             paymentStatus: payment.status,
@@ -47016,6 +47053,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             customFields,
           },
           "إضافة من الإدارة",
+          { settleByAmount: true },
         );
       } catch (err) {
         console.error("admin service booking core save failed", {
@@ -47040,6 +47078,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       });
       void logAdminActivity(req, "booking_created", "service_order", order.id, {
         tracking: order.trackingCode,
+        totalAmount: order.totalAmount,
+        depositAmount: order.depositAmount,
+        remainingAmount: order.remainingAmount,
+        paymentStatus: order.paymentStatus,
+        bookingPhotoCount: bookingPhotosFromFields(
+          order.customFields as Record<string, unknown> | null,
+        ).length,
       });
       void fireOrderEvent("booking_placed", {
         name: order.customerName,
@@ -47082,6 +47127,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           trackingCode: order.trackingCode,
           serviceId: order.serviceId,
           serviceType: service.type,
+          totalAmount: order.totalAmount,
+          depositAmount: order.depositAmount,
+          remainingAmount: order.remainingAmount,
+          paymentStatus: order.paymentStatus,
+          bookingPhotoCount: bookingPhotosFromFields(
+            order.customFields as Record<string, unknown> | null,
+          ).length,
         },
       }).catch((err) =>
         console.error("admin service timeline failed", {
@@ -47391,15 +47443,19 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         )
           return error("حالة الدفع غير صالحة", 400);
         const totalAmount = b?.totalAmount ?? prev.totalAmount;
-        const paymentMethod =
-          b?.paymentMethod ??
-          (update.customFields as any)?.paymentMethod ??
-          (prev.customFields as any)?.paymentMethod;
+        const requestedDepositAmount = money(
+          b?.depositAmount ?? prev.depositAmount,
+        );
+        if (requestedDepositAmount > money(totalAmount))
+          return error("لا يمكن أن يتجاوز العربون المبلغ الكلي للحجز", 400, {
+            code: "BOOKING_INVALID",
+            fieldErrors: {
+              depositAmount: "العربون أكبر من المبلغ الكلي",
+            },
+          });
         const payment = paymentSummary(
           totalAmount,
-          b?.depositAmount ?? prev.depositAmount,
-          b?.paymentStatus ?? prev.paymentStatus,
-          paymentMethod,
+          requestedDepositAmount,
         );
         update.totalAmount = String(money(totalAmount));
         update.depositAmount = String(payment.deposit);
@@ -47483,8 +47539,30 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           body: `${prev.status} → ${row.status}`,
           actor: erpActorFromAdmin(auth),
           metadata: { from: prev.status, to: row.status },
-        }).catch(() => null);
+        }).catch((timelineError) => console.error("service order status timeline failed", {
+          requestId: makeRequestId(req.headers.get("x-request-id")),
+          orderId: row.id,
+          message: timelineError instanceof Error ? timelineError.message : "unknown",
+        }));
       }
+      const previousBookingPhotos = bookingPhotosFromFields(
+        prev.customFields as Record<string, unknown> | null,
+      );
+      const currentBookingPhotos = bookingPhotosFromFields(
+        row.customFields as Record<string, unknown> | null,
+      );
+      const previousPhotoKeys = new Set(
+        previousBookingPhotos.map((photo) => photo.checksum || photo.url),
+      );
+      const currentPhotoKeys = new Set(
+        currentBookingPhotos.map((photo) => photo.checksum || photo.url),
+      );
+      const addedPhotoCount = [...currentPhotoKeys].filter(
+        (key) => !previousPhotoKeys.has(key),
+      ).length;
+      const removedPhotoCount = [...previousPhotoKeys].filter(
+        (key) => !currentPhotoKeys.has(key),
+      ).length;
       const importantChanges = [
         ["customerName", prev.customerName, row.customerName],
         ["phone", prev.phone, row.phone],
@@ -47496,7 +47574,31 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         ["depositAmount", prev.depositAmount, row.depositAmount],
         ["remainingAmount", prev.remainingAmount, row.remainingAmount],
         ["paymentStatus", prev.paymentStatus, row.paymentStatus],
+        [
+          "bookingPhotos",
+          [...previousPhotoKeys],
+          [...currentPhotoKeys],
+        ],
       ].filter(([, before, after]) => String(before ?? "") !== String(after ?? ""));
+      if (addedPhotoCount || removedPhotoCount) {
+        void addEntityTimeline({
+          entityType: "service_order",
+          entityId: row.id,
+          type: "booking_photos_updated",
+          title: "تم تحديث صور الحجز",
+          body: `مضافة: ${addedPhotoCount} · محذوفة: ${removedPhotoCount}`,
+          actor: erpActorFromAdmin(auth),
+          metadata: {
+            addedPhotoCount,
+            removedPhotoCount,
+            totalPhotoCount: currentBookingPhotos.length,
+          },
+        }).catch((timelineError) => console.error("service order photo timeline failed", {
+          requestId: makeRequestId(req.headers.get("x-request-id")),
+          orderId: row.id,
+          message: timelineError instanceof Error ? timelineError.message : "unknown",
+        }));
+      }
       if (importantChanges.length) {
         void addEntityTimeline({
           entityType: "service_order",
@@ -51671,6 +51773,13 @@ async function handleSalesInvoices(
     };
     let saved: any;
     try {
+      if (deliveryPrep) {
+        // Verify delivery storage before opening the financial transaction.
+        // Delivery persistence then uses only the transaction executor and
+        // cannot stall on a second serverless database connection.
+        traceInvoiceSave("delivery_persist");
+        await ensureDeliveryDetailsTables();
+      }
       saved = await db.transaction(async (tx) => {
         if (useCashCustomer) {
           traceInvoiceSave("cash_customer_resolve");
@@ -52168,6 +52277,7 @@ async function handleSalesInvoices(
         : existing.supplierName;
 
     await ensureAccountingVoucherTables();
+    if (deliveryPrep) await ensureDeliveryDetailsTables();
     await db.transaction(async (tx) => {
       await tx.update(salesInvoicesTable).set({
         date: b.date ?? existing.date,
@@ -52835,11 +52945,17 @@ async function handlePurchaseInvoices(
       0,
     );
     const paymentMethod = b.paymentMethod ?? "cash";
+    const hasExplicitPaidAmount =
+      b.paidAmount !== undefined &&
+      b.paidAmount !== null &&
+      String(b.paidAmount).trim() !== "";
     const payment = paymentSummary(
       total,
       b.paidAmount ?? 0,
       b.paymentStatus,
-      paymentMethod,
+      // A purchase may be partially paid in cash. Preserve the historical
+      // cash-as-fully-paid fallback only when the caller omitted paidAmount.
+      hasExplicitPaidAmount ? undefined : paymentMethod,
     );
     const paidAmount = payment.deposit;
     const remainingAmount = payment.remaining;
@@ -62777,9 +62893,13 @@ async function handleStaffPortal(
     }> = Array.isArray(data?.media) ? data.media : [];
 
     // Keep the warehouse checkpoint enforced even though the staff-facing
-    // workflow presents "ready → on the way" as one action.
+    // workflow presents the detailed departure/install path as one milestone.
     let checklistEntries: Array<{ item: string; condition: string }> = [];
-    if (toStage === "out_of_warehouse" || toStage === "on_the_way") {
+    if (
+      toStage === "out_of_warehouse" ||
+      toStage === "on_the_way" ||
+      toStage === "executed"
+    ) {
       await ensureKoshaOperationsTables();
       const source = koshaSourceHint(req) === "service" ? "service" : "kosha";
       const rows: any[] =

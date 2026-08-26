@@ -871,7 +871,7 @@ function StatementTab() {
           : <DataTable
               columns={["التاريخ", "النوع", "المرجع", "الوصف", "مدين", "دائن", "المبلغ المتبقي"]}
               rows={filteredEntries.map(e => [
-                new Date(e.date).toLocaleDateString("ar-IQ"),
+                new Date(e.date).toLocaleDateString("ar-IQ-u-nu-latn"),
                 e.kind === "order" ? "طلب" : e.kind === "booking" ? "حجز" : e.kind === "invoice" ? "فاتورة" : e.kind === "invoice_payment" ? "دفعة" : "قبض",
                 <span className="inline-flex items-center gap-1.5 text-primary">
                   <code className="text-xs">{e.ref}</code>
@@ -1007,9 +1007,9 @@ function ReceivablesTab() {
             <div><div className="report-company text-lg font-bold">{settings?.site_name ?? "مجموعة علي جان نهاد"}</div><div className="report-title mt-1 text-xl font-bold text-primary">{RECEIVABLE_REPORTS.find((item) => item.value === type)?.label}</div></div>
             <img className="report-logo h-12 w-auto object-contain" src={logoSrc(settings)} alt="AJN" />
           </div>
-          <div className="report-meta my-3 text-xs text-muted-foreground">الفترة: {from} إلى {to} · تاريخ الإنشاء: {new Date().toLocaleString("ar-IQ")}</div>
+          <div className="report-meta my-3 text-xs text-muted-foreground">الفترة: {from} إلى {to} · تاريخ الإنشاء: {new Date().toLocaleString("ar-IQ-u-nu-latn")}</div>
           <div className="report-summary mb-4 grid grid-cols-2 gap-2 md:grid-cols-4">
-            <StatCard label="عدد السجلات" value={rows.length.toLocaleString("ar-IQ")} />
+            <StatCard label="عدد السجلات" value={rows.length.toLocaleString("ar-IQ-u-nu-latn")} />
             <StatCard label={customerReport ? "إجمالي المتبقي" : "إجمالي التقرير"} value={formatCurrency(total)} accent={total > 0 ? "text-status-warning" : "text-status-success"} />
             <StatCard label="إجمالي المدفوع" value={formatCurrency(paid)} accent="text-status-success" />
             <StatCard label="الفترة" value={`${from} — ${to}`} />

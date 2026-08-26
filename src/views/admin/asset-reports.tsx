@@ -52,7 +52,7 @@ function assetCode(id: number) {
 function fmtDate(v?: string | null) {
   if (!v) return "—";
   const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("ar");
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("ar-u-nu-latn");
 }
 function bookingFromNotes(notes?: string | null) {
   const m = (notes ?? "").match(/#\s*([\w-]+)/);

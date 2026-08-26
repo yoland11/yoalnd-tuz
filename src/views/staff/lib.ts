@@ -4,9 +4,8 @@ import { mutateOrQueue, type QueuedResult } from "./offline";
 import { formatMoney } from "@/lib/money";
 
 /**
- * Execution stages. The six original keys are unchanged — stored bookings carry them —
- * and the five new ones are interleaved. Legacy adjacencies stay valid transitions, so a
- * crew used to the shorter flow is never blocked by the added detail.
+ * Execution stages stored by the existing booking workflow. These keys must remain
+ * available because old bookings and timeline rows already contain them.
  */
 export type StageKey =
   | "booked" | "preparing" | "ready" | "out_of_warehouse" | "on_the_way"
@@ -27,28 +26,46 @@ export const STAGES: { key: StageKey; label: string }[] = [
   { key: "delivered", label: "مكتمل" },
 ];
 
-// "جاري التحميل" is retained for legacy records and inventory scans, while the
-// staff-facing execution flow follows the concise operational sequence.
-export const WORKFLOW_STAGES = STAGES.filter(
-  (stage) => stage.key !== "out_of_warehouse",
+/**
+ * The staff portal deliberately presents four operational milestones. Detailed legacy
+ * stages stay persisted internally and are folded into the nearest visible milestone.
+ */
+export const WORKFLOW_STAGES: { key: StageKey; label: string }[] = [
+  { key: "preparing", label: "تم الاستلام" },
+  { key: "ready", label: "تم تجهيز" },
+  { key: "executed", label: "تم التنصيب" },
+  { key: "delivered", label: "تم الاسترجاع" },
+];
+
+const PORTAL_STAGE_RANK: Record<StageKey, number> = {
+  booked: 0,
+  preparing: 0,
+  ready: 1,
+  out_of_warehouse: 1,
+  on_the_way: 1,
+  executing: 1,
+  executed: 2,
+  event_running: 2,
+  before_return: 2,
+  dismantling: 2,
+  returned: 3,
+  delivered: 3,
+};
+
+export const STAGE_LABEL: Record<string, string> = Object.fromEntries(
+  STAGES.map((stage) => [stage.key, WORKFLOW_STAGES[PORTAL_STAGE_RANK[stage.key]].label]),
 );
-export const STAGE_LABEL: Record<string, string> = Object.fromEntries(STAGES.map((s) => [s.key, s.label]));
 export function stageRank(key: string): number {
   const i = STAGES.findIndex((s) => s.key === key);
   return i < 0 ? 0 : i;
 }
 
 export function workflowStageRank(key: string): number {
-  if (key === "out_of_warehouse") {
-    return Math.max(0, WORKFLOW_STAGES.findIndex((stage) => stage.key === "ready"));
-  }
-  const i = WORKFLOW_STAGES.findIndex((stage) => stage.key === key);
-  return i < 0 ? 0 : i;
+  return PORTAL_STAGE_RANK[key as StageKey] ?? 0;
 }
 
 export function nextWorkflowStage(key: string): StageKey | undefined {
-  const index = workflowStageRank(key);
-  return WORKFLOW_STAGES[index + 1]?.key;
+  return WORKFLOW_STAGES[workflowStageRank(key) + 1]?.key;
 }
 
 export function isKoshaPendingPricing(booking: { paymentStatus?: string; totalAmount?: number }) {

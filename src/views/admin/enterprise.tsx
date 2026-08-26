@@ -335,7 +335,7 @@ function formatDateTime(value?: string | null) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("ar-IQ", {
+  return date.toLocaleString("ar-IQ-u-nu-latn", {
     dateStyle: "medium",
     timeStyle: "short",
   });
@@ -805,7 +805,7 @@ function LabelPrintingWidget() {
               <span className="text-foreground">{h.template}</span>
               <span className="text-muted-foreground">{h.count} ملصق</span>
               <span className="text-muted-foreground">
-                {new Date(h.at).toLocaleString("ar")}
+                {new Date(h.at).toLocaleString("ar-u-nu-latn")}
               </span>
             </div>
           ))}
@@ -1444,7 +1444,7 @@ function EventCostPanel({ command }: { command?: CommandCenter }) {
           <div className="mt-2 flex justify-between gap-2">
             <span className="text-xs text-muted-foreground">هامش الربح</span>
             <strong>
-              {Number(result.profitMargin).toLocaleString("ar-IQ")}%
+              {Number(result.profitMargin).toLocaleString("ar-IQ-u-nu-latn")}%
             </strong>
           </div>
           {result.warning ? (
@@ -2420,9 +2420,9 @@ function AssetPassportModal({
                               {h.notes ? ` · ${h.notes}` : ""}
                             </span>
                             <span className="shrink-0 text-muted-foreground">
-                              {h.issuedAt ? new Date(h.issuedAt).toLocaleDateString("ar") : "—"}
+                              {h.issuedAt ? new Date(h.issuedAt).toLocaleDateString("ar-u-nu-latn") : "—"}
                               {" → "}
-                              {h.returnedAt ? new Date(h.returnedAt).toLocaleDateString("ar") : (h.status === "issued" ? "بالعهدة" : "—")}
+                              {h.returnedAt ? new Date(h.returnedAt).toLocaleDateString("ar-u-nu-latn") : (h.status === "issued" ? "بالعهدة" : "—")}
                             </span>
                           </li>
                         ))}
@@ -2463,28 +2463,28 @@ function AssetPassportModal({
                 />
                 <PassportStat
                   label="نسبة العائد ROI"
-                  value={`${row.roi.toLocaleString("ar-IQ")}%`}
+                  value={`${row.roi.toLocaleString("ar-IQ-u-nu-latn")}%`}
                   tone={row.roi >= 0 ? "text-primary" : "text-destructive"}
                 />
                 <PassportStat
                   label="مرات الاستخدام"
-                  value={row.usageCount.toLocaleString("ar-IQ")}
+                  value={row.usageCount.toLocaleString("ar-IQ-u-nu-latn")}
                 />
                 <PassportStat
                   label="ساعات التشغيل"
-                  value={(row.workingHours ?? 0).toLocaleString("ar-IQ")}
+                  value={(row.workingHours ?? 0).toLocaleString("ar-IQ-u-nu-latn")}
                 />
                 <PassportStat
                   label="مرات الإيجار"
-                  value={(row.rentalCount ?? 0).toLocaleString("ar-IQ")}
+                  value={(row.rentalCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")}
                 />
                 <PassportStat
                   label="الإصلاحات"
-                  value={(row.repairCount ?? 0).toLocaleString("ar-IQ")}
+                  value={(row.repairCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")}
                 />
                 <PassportStat
                   label="الأضرار"
-                  value={(row.damageCount ?? 0).toLocaleString("ar-IQ")}
+                  value={(row.damageCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")}
                   tone={
                     (row.damageCount ?? 0) > 0
                       ? "text-status-danger"
@@ -2529,7 +2529,7 @@ function AssetPassportModal({
                         {purchaseSource.data.data[0].date
                           ? new Date(
                               purchaseSource.data.data[0].date,
-                            ).toLocaleDateString("ar-IQ")
+                            ).toLocaleDateString("ar-IQ-u-nu-latn")
                           : "—"}
                       </span>
                     </div>
@@ -2630,7 +2630,7 @@ type AssetDocRow = {
 function fmtAssetDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("ar-IQ", {
+  return d.toLocaleString("ar-IQ-u-nu-latn", {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -3305,7 +3305,7 @@ function AssetAdvisorPanel({ productId }: { productId: number }) {
             <p className="mt-1 text-xs text-muted-foreground">
               بعهدة: {data.availability.holderName}
               {data.availability.since
-                ? ` · منذ ${new Date(data.availability.since).toLocaleDateString("ar-IQ")}`
+                ? ` · منذ ${new Date(data.availability.since).toLocaleDateString("ar-IQ-u-nu-latn")}`
                 : ""}
             </p>
           ) : null}
@@ -3313,7 +3313,7 @@ function AssetAdvisorPanel({ productId }: { productId: number }) {
             <p className="mt-1 text-xs text-muted-foreground">
               الصيانة القادمة:{" "}
               {new Date(data.availability.nextMaintenance).toLocaleDateString(
-                "ar-IQ",
+                "ar-IQ-u-nu-latn",
               )}
             </p>
           ) : null}
@@ -3321,7 +3321,7 @@ function AssetAdvisorPanel({ productId }: { productId: number }) {
             <p className="mt-1 text-xs text-muted-foreground">
               الضمان حتى:{" "}
               {new Date(data.availability.warrantyUntil).toLocaleDateString(
-                "ar-IQ",
+                "ar-IQ-u-nu-latn",
               )}
             </p>
           ) : null}
@@ -3497,7 +3497,7 @@ function AssetDnaPanel({
           label="الضمان حتى"
           value={
             dna.warrantyUntil
-              ? new Date(dna.warrantyUntil).toLocaleDateString("ar-IQ")
+              ? new Date(dna.warrantyUntil).toLocaleDateString("ar-IQ-u-nu-latn")
               : "—"
           }
         />
@@ -3626,7 +3626,7 @@ function AssetCalendarPanel({ productId }: { productId: number }) {
           السابق
         </Button>
         <span className="text-sm font-semibold text-foreground">
-          {month.toLocaleDateString("ar-IQ", {
+          {month.toLocaleDateString("ar-IQ-u-nu-latn", {
             year: "numeric",
             month: "long",
           })}
@@ -3720,7 +3720,7 @@ function printAssetReport(rows: AssetRow[], title = "تقرير جوازات ا�
   popup.document
     .write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${escapeAssetPrint(title)}</title><style>
     @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}h1{font-size:22px;margin:0 0 6px}.meta{font-size:12px;margin-bottom:16px}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}.box{border:1px solid #000;padding:8px}.box b{display:block;margin-top:5px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #000;padding:6px;text-align:right}th{font-weight:700;background:#eee}@media print{button{display:none}}
-  </style></head><body><button onclick="window.print()">طباعة / حفظ PDF</button><h1>${escapeAssetPrint(title)}</h1><div class="meta">مجموعة علي جان نهاد · تاريخ الإنشاء: ${escapeAssetPrint(new Date().toLocaleString("ar-IQ"))}</div><div class="summary"><div class="box">عدد الأصول<b>${rows.length.toLocaleString("ar-IQ")}</b></div><div class="box">القيمة الحالية<b>${escapeAssetPrint(formatCurrency(totalValue))}</b></div><div class="box">الإيرادات<b>${escapeAssetPrint(formatCurrency(revenue))}</b></div><div class="box">الصيانة<b>${escapeAssetPrint(formatCurrency(maintenance))}</b></div></div><table><thead><tr><th>الكود</th><th>الأصل</th><th>التسلسلي</th><th>الحالة</th><th>الصحة</th><th>الاستخدام</th><th>القيمة الحالية</th><th>الإيراد</th><th>الصيانة</th><th>ROI</th></tr></thead><tbody>${rows
+  </style></head><body><button onclick="window.print()">طباعة / حفظ PDF</button><h1>${escapeAssetPrint(title)}</h1><div class="meta">مجموعة علي جان نهاد · تاريخ الإنشاء: ${escapeAssetPrint(new Date().toLocaleString("ar-IQ-u-nu-latn"))}</div><div class="summary"><div class="box">عدد الأصول<b>${rows.length.toLocaleString("ar-IQ-u-nu-latn")}</b></div><div class="box">القيمة الحالية<b>${escapeAssetPrint(formatCurrency(totalValue))}</b></div><div class="box">الإيرادات<b>${escapeAssetPrint(formatCurrency(revenue))}</b></div><div class="box">الصيانة<b>${escapeAssetPrint(formatCurrency(maintenance))}</b></div></div><table><thead><tr><th>الكود</th><th>الأصل</th><th>التسلسلي</th><th>الحالة</th><th>الصحة</th><th>الاستخدام</th><th>القيمة الحالية</th><th>الإيراد</th><th>الصيانة</th><th>ROI</th></tr></thead><tbody>${rows
     .map(
       (row) =>
         `<tr><td>${escapeAssetPrint(row.assetCode)}</td><td>${escapeAssetPrint(row.productName)}</td><td>${escapeAssetPrint(row.serialNumber || "—")}</td><td>${escapeAssetPrint(assetStatusLabel(row))}</td><td>${escapeAssetPrint(`${row.healthScore ?? assetHealth(row).score}%`)}</td><td>${escapeAssetPrint(row.usageCount)}</td><td>${escapeAssetPrint(formatCurrency(Number(row.currentValue ?? 0)))}</td><td>${escapeAssetPrint(formatCurrency(row.revenueTotal))}</td><td>${escapeAssetPrint(formatCurrency(row.maintenanceCost))}</td><td>${escapeAssetPrint(`${row.roi}%`)}</td></tr>`,
@@ -3902,7 +3902,7 @@ function AssetsTab({
         .join("");
       popup.document.open();
       popup.document.write(
-        `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>جدار QR للأصول</title><style>@page{size:A4;margin:8mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}main{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}article{border:1px solid #000;padding:7px;text-align:center;break-inside:avoid}img{width:110px;height:110px;display:block;margin:auto}b,span,small{display:block;margin-top:3px}b{font-size:12px}span,small{font-size:9px}@media print{button{display:none}}</style></head><body><header><div><h2>جدار QR للأصول</h2><small>مجموعة علي جان نهاد · ${escapeAssetPrint(new Date().toLocaleString("ar-IQ"))}</small></div><button onclick="window.print()">طباعة</button></header><main>${cards}</main></body></html>`,
+        `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>جدار QR للأصول</title><style>@page{size:A4;margin:8mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}main{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}article{border:1px solid #000;padding:7px;text-align:center;break-inside:avoid}img{width:110px;height:110px;display:block;margin:auto}b,span,small{display:block;margin-top:3px}b{font-size:12px}span,small{font-size:9px}@media print{button{display:none}}</style></head><body><header><div><h2>جدار QR للأصول</h2><small>مجموعة علي جان نهاد · ${escapeAssetPrint(new Date().toLocaleString("ar-IQ-u-nu-latn"))}</small></div><button onclick="window.print()">طباعة</button></header><main>${cards}</main></body></html>`,
       );
       popup.document.close();
       popup.focus();
@@ -4150,7 +4150,7 @@ function AssetsTab({
                             row.roi >= 0 ? "text-primary" : "text-destructive"
                           }
                         >
-                          {row.roi.toLocaleString("ar-IQ")}%
+                          {row.roi.toLocaleString("ar-IQ-u-nu-latn")}%
                         </span>
                       </td>
                     </tr>
@@ -4183,7 +4183,7 @@ function AssetsTab({
                   {row.productName}
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  {row.usageCount.toLocaleString("ar-IQ")} استخدام
+                  {row.usageCount.toLocaleString("ar-IQ-u-nu-latn")} استخدام
                 </span>
               </button>
             ))}
@@ -4325,7 +4325,7 @@ function IntelligenceTab({ active }: { active: boolean }) {
         <Metric
           icon={Timer}
           label="الوقت الضائع"
-          value={`${data.kpis.lostMinutes.toLocaleString("ar-IQ")} د`}
+          value={`${data.kpis.lostMinutes.toLocaleString("ar-IQ-u-nu-latn")} د`}
           warning={data.kpis.lostMinutes > 0}
         />
         <Metric

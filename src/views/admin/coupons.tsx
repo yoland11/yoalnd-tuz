@@ -219,7 +219,7 @@ export default function CouponsPage() {
                       {coupon.type === "percentage" ? `${coupon.value}%` : coupon.type === "free_shipping" ? "الشحن" : formatCurrency(coupon.value)}
                     </td>
                     <td className="p-3 text-muted-foreground">
-                      {coupon.usedCount.toLocaleString("ar-IQ")} / {coupon.usageLimit ? coupon.usageLimit.toLocaleString("ar-IQ") : "غير محدود"}
+                      {coupon.usedCount.toLocaleString("ar-IQ-u-nu-latn")} / {coupon.usageLimit ? coupon.usageLimit.toLocaleString("ar-IQ-u-nu-latn") : "غير محدود"}
                     </td>
                     <td className="p-3">
                       <span className={`text-xs px-2 py-1 rounded-full ${coupon.isActive ? "bg-status-success/10 text-status-success" : "bg-status-danger/10 text-status-danger"}`}>

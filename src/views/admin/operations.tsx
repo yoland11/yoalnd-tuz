@@ -237,7 +237,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 function formatDate(value: string | null | undefined) {
   if (!value) return "—";
-  return new Date(value).toLocaleString("ar-IQ", {
+  return new Date(value).toLocaleString("ar-IQ-u-nu-latn", {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -389,10 +389,10 @@ export default function ApprovalCenterPage() {
     <div className="space-y-4" dir="rtl">
       <PageHeader icon={ShieldCheck} title="مركز الموافقات المالية" description="لا يظهر أي أثر محاسبي أو نقدي قبل الاعتماد. الاعتماد والترحيل يتمان داخل معاملة ذرّية واحدة." action={<div className="flex gap-2 print:hidden"><Button variant="outline" onClick={exportCsv} className="gap-1"><Download className="h-4 w-4" /> تصدير CSV</Button><Button variant="outline" onClick={() => window.print()} className="gap-1"><Printer className="h-4 w-4" /> طباعة / PDF</Button></div>} />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="بانتظار الموافقة" value={pending.length.toLocaleString("ar-IQ")} icon={History} />
+        <StatCard label="بانتظار الموافقة" value={pending.length.toLocaleString("ar-IQ-u-nu-latn")} icon={History} />
         <StatCard label="مبلغ قيد الانتظار" value={formatCurrency(sum(pending))} icon={Wallet} />
-        <StatCard label="المعتمد اليوم" value={`${approvedToday.length.toLocaleString("ar-IQ")} · ${formatCurrency(sum(approvedToday))}`} icon={CheckCircle2} />
-        <StatCard label="المرفوض اليوم" value={`${rejectedToday.length.toLocaleString("ar-IQ")} · ${formatCurrency(sum(rejectedToday))}`} icon={XCircle} />
+        <StatCard label="المعتمد اليوم" value={`${approvedToday.length.toLocaleString("ar-IQ-u-nu-latn")} · ${formatCurrency(sum(approvedToday))}`} icon={CheckCircle2} />
+        <StatCard label="المرفوض اليوم" value={`${rejectedToday.length.toLocaleString("ar-IQ-u-nu-latn")} · ${formatCurrency(sum(rejectedToday))}`} icon={XCircle} />
       </div>
       <Card className="border-primary/20 bg-primary/[0.025]">
         <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4"><p><b>بانتظار قيد محاسبي:</b> 0</p><p><b>بانتظار ترحيل الصندوق:</b> 0</p><p className="text-muted-foreground sm:col-span-2">الترحيل المحاسبي والصندوقي ذري؛ لا يمكن نجاح أحدهما دون الآخر.</p></div>
@@ -624,7 +624,7 @@ function BouquetAnalyticsCards({ data }: { data: any }) {
     ["مبيعات اليوم", data?.dailySales?.[0]?.label, data?.dailySales?.[0]?.total],
     ["استهلاك المخزون", data?.inventoryConsumption?.[0]?.label, data?.inventoryConsumption?.[0]?.count],
   ];
-  return <div className="col-span-full grid gap-3 sm:grid-cols-2 xl:grid-cols-5">{cards.map(([label, value, amount]) => <Card key={String(label)} className="p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 truncate text-sm font-semibold">{value || "—"}</p><p className="mt-1 text-xs text-primary">{typeof amount === "number" ? amount.toLocaleString("ar-IQ") : "لا توجد بيانات"}</p></Card>)}</div>;
+  return <div className="col-span-full grid gap-3 sm:grid-cols-2 xl:grid-cols-5">{cards.map(([label, value, amount]) => <Card key={String(label)} className="p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 truncate text-sm font-semibold">{value || "—"}</p><p className="mt-1 text-xs text-primary">{typeof amount === "number" ? amount.toLocaleString("ar-IQ-u-nu-latn") : "لا توجد بيانات"}</p></Card>)}</div>;
 }
 
 function AnalyticsList({ title, rows, amount = false }: { title: string; rows: any[]; amount?: boolean }) {
@@ -636,7 +636,7 @@ function AnalyticsList({ title, rows, amount = false }: { title: string; rows: a
           {rows.map((row, index) => (
             <div key={`${title}-${row.label}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-border/30 bg-background/40 p-3">
               <span className="truncate text-sm text-foreground">{row.label || "غير محدد"}</span>
-              <span className="shrink-0 text-xs text-muted-foreground">{Number(row.count ?? 0).toLocaleString("ar-IQ")}{amount ? ` · ${formatCurrency(row.total ?? 0)}` : ""}</span>
+              <span className="shrink-0 text-xs text-muted-foreground">{Number(row.count ?? 0).toLocaleString("ar-IQ-u-nu-latn")}{amount ? ` · ${formatCurrency(row.total ?? 0)}` : ""}</span>
             </div>
           ))}
         </div>
@@ -899,10 +899,10 @@ export function AssetsPage() {
         )}
       />
       <div className="grid gap-3 md:grid-cols-4">
-        <StatCard icon={Package} label="كل الأصول" value={(summary?.total ?? 0).toLocaleString("ar-IQ")} onClick={() => setQuick("all")} active={quickFilter === "all"} />
-        <StatCard icon={CheckCircle2} label="متاح" value={(summary?.available ?? 0).toLocaleString("ar-IQ")} onClick={() => setQuick("available")} active={quickFilter === "available"} />
-        <StatCard icon={UserRound} label="قيد الاستخدام" value={(summary?.inUse ?? 0).toLocaleString("ar-IQ")} onClick={() => setQuick("in_use")} active={quickFilter === "in_use"} />
-        <StatCard icon={Wrench} label="تحتاج صيانة" value={(summary?.maintenance ?? 0).toLocaleString("ar-IQ")} onClick={() => setQuick("maintenance")} active={quickFilter === "maintenance"} />
+        <StatCard icon={Package} label="كل الأصول" value={(summary?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn")} onClick={() => setQuick("all")} active={quickFilter === "all"} />
+        <StatCard icon={CheckCircle2} label="متاح" value={(summary?.available ?? 0).toLocaleString("ar-IQ-u-nu-latn")} onClick={() => setQuick("available")} active={quickFilter === "available"} />
+        <StatCard icon={UserRound} label="قيد الاستخدام" value={(summary?.inUse ?? 0).toLocaleString("ar-IQ-u-nu-latn")} onClick={() => setQuick("in_use")} active={quickFilter === "in_use"} />
+        <StatCard icon={Wrench} label="تحتاج صيانة" value={(summary?.maintenance ?? 0).toLocaleString("ar-IQ-u-nu-latn")} onClick={() => setQuick("maintenance")} active={quickFilter === "maintenance"} />
       </div>
       <Card className="space-y-3">
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -1100,7 +1100,7 @@ export function AssetsPage() {
             </table>
           </div>
           <div className="flex flex-col gap-2 border-t border-border/30 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-            <span className="text-muted-foreground">{isFetching ? "جارٍ تحديث النتائج…" : `عرض ${rows.length.toLocaleString("ar-IQ")} من ${(pagination?.total ?? 0).toLocaleString("ar-IQ")} أصل`}</span>
+            <span className="text-muted-foreground">{isFetching ? "جارٍ تحديث النتائج…" : `عرض ${rows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${(pagination?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn")} أصل`}</span>
             <div className="flex items-center gap-2">
               <select value={`${sort}:${order}`} onChange={(event) => { const [nextSort, nextOrder] = event.target.value.split(":"); setSort(nextSort); setOrder(nextOrder as "asc" | "desc"); setPage(1); }} className="rounded-lg border border-border/40 bg-background px-2 py-1.5 text-xs">
                 <option value="updated:desc">الأحدث أولاً</option><option value="name:asc">الاسم أ-ي</option><option value="code:asc">كود الأصل</option><option value="status:asc">الحالة</option><option value="value:desc">القيمة الأعلى</option><option value="uses:desc">الأكثر استخداماً</option>
@@ -1128,7 +1128,7 @@ export function AssetsPage() {
 function RemoveDepreciationDialog({ asset, busy, onClose, onConfirm }: { asset: AssetRow | null; busy: boolean; onClose: () => void; onConfirm: (reason: string) => void }) {
   const [reason, setReason] = useState("");
   const depreciation = Math.max(0, (asset?.purchasePrice ?? 0) - (asset?.currentValue ?? 0));
-  return <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 ${asset ? "" : "hidden"}`} dir="rtl" role="dialog" aria-modal="true"><div className="w-full max-w-md rounded-2xl border border-border/40 bg-card p-5 shadow-xl"><div className="mb-4"><h2 className="text-lg font-bold text-foreground">هل تريد إزالة سجل الإهلاك؟</h2><p className="mt-1 text-sm text-muted-foreground">سيُزال سجل الإهلاك فقط. لن يُحذف الأصل أو المنتج أو أي كمية مخزون.</p></div><dl className="grid grid-cols-2 gap-2 rounded-xl bg-muted/50 p-3 text-sm"><dt>الأصل</dt><dd className="font-medium">{asset?.name}</dd><dt>رمز الأصل</dt><dd>AJN-A{String(asset?.productId ?? "").padStart(5, "0")}</dd><dt>القيمة الحالية</dt><dd>{formatCurrency(asset?.currentValue ?? 0)}</dd><dt>مبلغ الإهلاك</dt><dd>{formatCurrency(depreciation)}</dd><dt>القيمة بعد الإزالة</dt><dd>{formatCurrency(asset?.purchasePrice ?? 0)}</dd><dt>تاريخ السجل</dt><dd>{asset?.depreciationRecordDate ? new Date(asset.depreciationRecordDate).toLocaleDateString("ar-IQ") : "—"}</dd></dl><label className="mt-3 block text-sm"><span className="mb-1 block">سبب الإزالة <b className="text-destructive">*</b></span><textarea value={reason} onChange={(event) => setReason(event.target.value)} className="min-h-20 w-full rounded-lg border border-border/40 bg-background p-2" placeholder="اكتب سبب إزالة سجل الإهلاك" /></label><div className="mt-4 flex justify-end gap-2"><Button variant="outline" disabled={busy} onClick={onClose}>إلغاء</Button><Button variant="destructive" disabled={busy || reason.trim().length < 3} onClick={() => onConfirm(reason.trim())}><Trash2 className="ms-1 h-4 w-4" /> إزالة الإهلاك</Button></div></div></div>;
+  return <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 ${asset ? "" : "hidden"}`} dir="rtl" role="dialog" aria-modal="true"><div className="w-full max-w-md rounded-2xl border border-border/40 bg-card p-5 shadow-xl"><div className="mb-4"><h2 className="text-lg font-bold text-foreground">هل تريد إزالة سجل الإهلاك؟</h2><p className="mt-1 text-sm text-muted-foreground">سيُزال سجل الإهلاك فقط. لن يُحذف الأصل أو المنتج أو أي كمية مخزون.</p></div><dl className="grid grid-cols-2 gap-2 rounded-xl bg-muted/50 p-3 text-sm"><dt>الأصل</dt><dd className="font-medium">{asset?.name}</dd><dt>رمز الأصل</dt><dd>AJN-A{String(asset?.productId ?? "").padStart(5, "0")}</dd><dt>القيمة الحالية</dt><dd>{formatCurrency(asset?.currentValue ?? 0)}</dd><dt>مبلغ الإهلاك</dt><dd>{formatCurrency(depreciation)}</dd><dt>القيمة بعد الإزالة</dt><dd>{formatCurrency(asset?.purchasePrice ?? 0)}</dd><dt>تاريخ السجل</dt><dd>{asset?.depreciationRecordDate ? new Date(asset.depreciationRecordDate).toLocaleDateString("ar-IQ-u-nu-latn") : "—"}</dd></dl><label className="mt-3 block text-sm"><span className="mb-1 block">سبب الإزالة <b className="text-destructive">*</b></span><textarea value={reason} onChange={(event) => setReason(event.target.value)} className="min-h-20 w-full rounded-lg border border-border/40 bg-background p-2" placeholder="اكتب سبب إزالة سجل الإهلاك" /></label><div className="mt-4 flex justify-end gap-2"><Button variant="outline" disabled={busy} onClick={onClose}>إلغاء</Button><Button variant="destructive" disabled={busy || reason.trim().length < 3} onClick={() => onConfirm(reason.trim())}><Trash2 className="ms-1 h-4 w-4" /> إزالة الإهلاك</Button></div></div></div>;
 }
 
 function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null; assets: AssetRow[]; onClose: () => void }) {
@@ -1422,7 +1422,7 @@ function exportMovementCsv(rows: AssetMovementRow[]) {
 function printMovementReport(rows: AssetMovementRow[]) {
   const popup = window.open("", "_blank", "width=1000,height=800");
   if (!popup) throw new Error("تعذّر فتح نافذة الطباعة");
-  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>تقرير حركة الأصول</title><style>@page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}h1{font-size:22px;margin:0}.meta{font-size:12px;margin:6px 0 16px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #000;padding:6px;text-align:right}th{background:#eee}button{margin-bottom:12px}@media print{button{display:none}}</style></head><body><button onclick="window.print()">طباعة / حفظ PDF</button><h1>تقرير حركة الأصول والمخزن</h1><div class="meta">مجموعة علي جان نهاد · ${escapeMovementPrint(new Date().toLocaleString("ar-IQ"))}</div><table><thead><tr><th>التاريخ</th><th>الأصل</th><th>الحركة</th><th>التفاصيل</th><th>الكمية</th><th>المستخدم</th></tr></thead><tbody>${rows
+  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>تقرير حركة الأصول</title><style>@page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}h1{font-size:22px;margin:0}.meta{font-size:12px;margin:6px 0 16px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #000;padding:6px;text-align:right}th{background:#eee}button{margin-bottom:12px}@media print{button{display:none}}</style></head><body><button onclick="window.print()">طباعة / حفظ PDF</button><h1>تقرير حركة الأصول والمخزن</h1><div class="meta">مجموعة علي جان نهاد · ${escapeMovementPrint(new Date().toLocaleString("ar-IQ-u-nu-latn"))}</div><table><thead><tr><th>التاريخ</th><th>الأصل</th><th>الحركة</th><th>التفاصيل</th><th>الكمية</th><th>المستخدم</th></tr></thead><tbody>${rows
     .map(
       (row) => `<tr><td>${escapeMovementPrint(formatDate(row.createdAt))}</td><td>${escapeMovementPrint(row.productName)}</td><td>${escapeMovementPrint(MOVEMENT_LABELS[row.type] ?? row.title)}</td><td>${escapeMovementPrint(row.body || "—")}</td><td>${escapeMovementPrint(row.quantityChange ?? "—")}</td><td>${escapeMovementPrint(row.actorName || "النظام")}</td></tr>`,
     )
@@ -1544,9 +1544,9 @@ export function AssetMovementsPage() {
       if (found[0]) setSelectedId(found[0]);
       setMultiCodes("");
       toast({
-        title: `تمت إضافة ${found.length.toLocaleString("ar-IQ")} أصل`,
+        title: `تمت إضافة ${found.length.toLocaleString("ar-IQ-u-nu-latn")} أصل`,
         description: failed.length
-          ? `تعذر التعرّف على ${failed.length.toLocaleString("ar-IQ")} رمز`
+          ? `تعذر التعرّف على ${failed.length.toLocaleString("ar-IQ-u-nu-latn")} رمز`
           : undefined,
       });
     },

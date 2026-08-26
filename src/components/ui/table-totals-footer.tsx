@@ -67,7 +67,7 @@ export function TableTotalsFooter<T>({ rows, allRows, cells, labelColSpan = 1, l
       <tr>
         <td colSpan={labelColSpan} className="whitespace-nowrap px-3 py-3 text-primary">
           {label}
-          <span className="mr-2 text-xs font-medium text-muted-foreground">({displayedRows.length.toLocaleString("ar-IQ")})</span>
+          <span className="mr-2 text-xs font-medium text-muted-foreground">({displayedRows.length.toLocaleString("ar-IQ-u-nu-latn")})</span>
           {allRows && (
             <span className="mr-3 inline-flex rounded-md border border-primary/20 bg-background/70 p-0.5 text-[11px] font-medium text-muted-foreground print:hidden">
               <button type="button" onClick={() => setScope("page")} className={cn("rounded px-1.5 py-0.5", scope === "page" && "bg-primary/10 text-primary")} aria-pressed={scope === "page"}>هذه الصفحة</button>
@@ -79,7 +79,7 @@ export function TableTotalsFooter<T>({ rows, allRows, cells, labelColSpan = 1, l
           const total = totals[cell.key] ?? 0;
           return (
             <td key={cell.key} className={cn("whitespace-nowrap px-3 py-3", cell.className)}>
-              {cell.value ? <span title={cell.label}>{cell.format ? cell.format(total, rows) : total.toLocaleString("ar-IQ")}</span> : null}
+              {cell.value ? <span title={cell.label}>{cell.format ? cell.format(total, rows) : total.toLocaleString("ar-IQ-u-nu-latn")}</span> : null}
             </td>
           );
         })}

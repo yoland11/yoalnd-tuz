@@ -290,7 +290,7 @@ export default function Account() {
                         {order.trackingCode}
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {new Date(order.createdAt).toLocaleDateString("ar-IQ", {
+                        {new Date(order.createdAt).toLocaleDateString("ar-IQ-u-nu-latn", {
                           year: "numeric",
                           month: "long",
                           day: "numeric",

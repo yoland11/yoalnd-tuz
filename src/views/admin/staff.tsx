@@ -331,7 +331,7 @@ export default function StaffPage() {
                     <p className="text-[11px] text-muted-foreground mt-1">
                       آخر نشاط:{" "}
                       {s.lastActivityAt
-                        ? new Date(s.lastActivityAt).toLocaleString("ar-IQ")
+                        ? new Date(s.lastActivityAt).toLocaleString("ar-IQ-u-nu-latn")
                         : "لا يوجد"}
                     </p>
                   </div>
@@ -381,14 +381,14 @@ export default function StaffPage() {
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-1 text-muted-foreground">
-                  <span>إجمالي: {Number(s.advanceSummary?.totalAdvances ?? 0).toLocaleString("ar-IQ")}</span>
-                  <span>مسدد: {Number(s.advanceSummary?.paidAmount ?? 0).toLocaleString("ar-IQ")}</span>
-                  <span>متبقي: {Number(s.advanceSummary?.outstandingBalance ?? 0).toLocaleString("ar-IQ")}</span>
+                  <span>إجمالي: {Number(s.advanceSummary?.totalAdvances ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span>
+                  <span>مسدد: {Number(s.advanceSummary?.paidAmount ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span>
+                  <span>متبقي: {Number(s.advanceSummary?.outstandingBalance ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span>
                 </div>
               </div>
               <div className="mb-3 rounded-lg border border-border/40 bg-muted/40 p-2 text-xs">
                 <div className="mb-1 flex items-center justify-between font-medium"><span>ملخص الراتب</span><span className={s.salaryStatus === "active" ? "text-status-success" : "text-status-warning"}>{s.salaryStatus === "active" ? "نشط" : "غير نشط"}</span></div>
-                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-muted-foreground"><span>الأساسي: {Number(s.baseSalary ?? 0).toLocaleString("ar-IQ")}</span><span>الدفع: {s.paymentMethod ?? "—"}</span><span>البدلات: {(Number(s.transportationAllowance ?? 0) + Number(s.foodAllowance ?? 0) + Number(s.housingAllowance ?? 0) + Number(s.phoneAllowance ?? 0) + Number(s.otherFixedAllowances ?? 0)).toLocaleString("ar-IQ")}</span><span>الخصم الثابت: {Number(s.fixedDeduction ?? 0).toLocaleString("ar-IQ")}</span><span className="col-span-2 font-medium text-foreground">الصافي التقديري: {Math.max(0, Number(s.baseSalary ?? 0) + Number(s.transportationAllowance ?? 0) + Number(s.foodAllowance ?? 0) + Number(s.housingAllowance ?? 0) + Number(s.phoneAllowance ?? 0) + Number(s.otherFixedAllowances ?? 0) - Number(s.fixedDeduction ?? 0)).toLocaleString("ar-IQ")} د.ع</span></div>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-muted-foreground"><span>الأساسي: {Number(s.baseSalary ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span><span>الدفع: {s.paymentMethod ?? "—"}</span><span>البدلات: {(Number(s.transportationAllowance ?? 0) + Number(s.foodAllowance ?? 0) + Number(s.housingAllowance ?? 0) + Number(s.phoneAllowance ?? 0) + Number(s.otherFixedAllowances ?? 0)).toLocaleString("ar-IQ-u-nu-latn")}</span><span>الخصم الثابت: {Number(s.fixedDeduction ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span><span className="col-span-2 font-medium text-foreground">الصافي التقديري: {Math.max(0, Number(s.baseSalary ?? 0) + Number(s.transportationAllowance ?? 0) + Number(s.foodAllowance ?? 0) + Number(s.housingAllowance ?? 0) + Number(s.phoneAllowance ?? 0) + Number(s.otherFixedAllowances ?? 0) - Number(s.fixedDeduction ?? 0)).toLocaleString("ar-IQ-u-nu-latn")} د.ع</span></div>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -601,7 +601,7 @@ function ApprovalPermissionsPanel({ staff }: { staff: Editing }) {
       {draft.isTemporary && <div className="grid gap-3 sm:grid-cols-2"><Field label="صالح من" type="date" value={draft.validFrom} onChange={(value) => setDraft((current: any) => ({ ...current, validFrom: value }))} /><Field label="صالح لغاية" type="date" value={draft.validUntil} onChange={(value) => setDraft((current: any) => ({ ...current, validUntil: value }))} /></div>}
       <Field label="سبب التفويض" value={draft.delegationReason ?? ""} onChange={(value) => setDraft((current: any) => ({ ...current, delegationReason: value }))} />
       <div className="flex flex-wrap gap-2"><Button type="button" size="sm" onClick={() => saveApproval.mutate(draft)} disabled={saveApproval.isPending}>{saveApproval.isPending ? "جاري الحفظ..." : "حفظ صلاحيات الموافقات"}</Button><Button type="button" size="sm" variant="outline" onClick={() => saveApproval.mutate({ ...draft, isActive: false, permissionCodes: [] })} disabled={saveApproval.isPending}>إيقاف جميع الصلاحيات</Button></div>
-      {data?.actions?.length ? <p className="text-xs text-muted-foreground">آخر إجراء: {data.actions[0].action} · {new Date(data.actions[0].createdAt).toLocaleString("ar-IQ")}</p> : null}
+      {data?.actions?.length ? <p className="text-xs text-muted-foreground">آخر إجراء: {data.actions[0].action} · {new Date(data.actions[0].createdAt).toLocaleString("ar-IQ-u-nu-latn")}</p> : null}
     </>}
   </section>;
 }

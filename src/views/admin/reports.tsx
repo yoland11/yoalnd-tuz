@@ -670,7 +670,7 @@ export default function ReportsPage() {
           </div>
           <div className="text-xs text-muted-foreground text-left">
             <p>{appliedFilters.from} إلى {appliedFilters.to}</p>
-            <p>{new Date().toLocaleString("ar-IQ")}</p>
+            <p>{new Date().toLocaleString("ar-IQ-u-nu-latn")}</p>
           </div>
         </div>
         <div className="bg-card rounded-xl border border-border/40 p-4">
@@ -903,7 +903,7 @@ function buildPrintHtml(input: {
   thermal?: boolean;
 }) {
   const { title, columns, rows, totals, from, to, logo, thermal } = input;
-  const generatedAt = new Date().toLocaleString("ar-IQ");
+  const generatedAt = new Date().toLocaleString("ar-IQ-u-nu-latn");
   return `<!doctype html>
     <html dir="rtl" lang="ar">
       <head>

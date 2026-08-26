@@ -19,11 +19,11 @@ const text = (...values: unknown[]) => values.map((value) => String(value ?? "")
 const dateText = (value: unknown) => {
   const raw = String(value ?? "").trim(); if (!raw) return "—";
   const parsed = new Date(raw.length === 10 ? `${raw}T00:00:00` : raw);
-  return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleDateString("ar-IQ", { year: "numeric", month: "2-digit", day: "2-digit" });
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit" });
 };
 const timeText = (value: unknown) => {
   const raw = String(value ?? "").trim(); if (!raw) return "—";
-  const parsed = new Date(raw); return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" });
+  const parsed = new Date(raw); return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleTimeString("ar-IQ-u-nu-latn", { hour: "2-digit", minute: "2-digit" });
 };
 
 export default function Invoice() {

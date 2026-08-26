@@ -154,12 +154,12 @@ export default function DashboardPage() {
     );
   }
 
-  const fmtNum = (n: number) => Number(n || 0).toLocaleString("ar-IQ");
+  const fmtNum = (n: number) => Number(n || 0).toLocaleString("ar-IQ-u-nu-latn");
   const net = data.financialSummary?.todayNetTotal ?? 0;
   const todaySales = data.financialSummary?.todaySales ?? data.dailyCash?.totalSales ?? 0;
   const todayExpenses = data.financialSummary?.todayExpenses ?? data.dailyCash?.totalExpenses ?? 0;
   const cashBalance = data.financialSummary?.cashBalance ?? data.dailyCash?.expectedCashBalance ?? 0;
-  const dateLabel = new Date().toLocaleDateString("ar-IQ", { weekday: "long", day: "numeric", month: "long" });
+  const dateLabel = new Date().toLocaleDateString("ar-IQ-u-nu-latn", { weekday: "long", day: "numeric", month: "long" });
   const heroStats = [
     { label: "مبيعات اليوم", value: formatCurrency(todaySales), icon: DollarSign, tone: "text-status-success" },
     { label: "مصاريف اليوم", value: formatCurrency(todayExpenses), icon: CreditCard, tone: "text-status-danger" },
@@ -282,7 +282,7 @@ export default function DashboardPage() {
                 <item.icon className="h-4 w-4" />
                 <span className="text-xs text-muted-foreground">{item.label}</span>
               </div>
-              <p className="text-xl font-bold text-foreground">{Number(item.value).toLocaleString("ar-IQ")}</p>
+              <p className="text-xl font-bold text-foreground">{Number(item.value).toLocaleString("ar-IQ-u-nu-latn")}</p>
             </div>
           ))}
         </div>
@@ -408,7 +408,7 @@ export default function DashboardPage() {
               <div key={item.id} className="rounded-lg bg-background/60 border border-border/25 px-3 py-2 text-sm">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-foreground">{item.entityLabel || item.action}</span>
-                  <span className="text-[11px] text-muted-foreground">{new Date(item.createdAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}</span>
+                  <span className="text-[11px] text-muted-foreground">{new Date(item.createdAt).toLocaleTimeString("ar-IQ-u-nu-latn", { hour: "2-digit", minute: "2-digit" })}</span>
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">{item.phone || "زائر"}</p>
               </div>

@@ -332,7 +332,7 @@ export default function ProductionPage() {
 
           {items.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border/40 bg-background/40 p-6 text-center text-xs text-muted-foreground">
-              أضف منتجات نهائية لإنتاجها (مثال: ٢٠ بوكيه ورد، ١٠ علب هدايا).
+              أضف منتجات نهائية لإنتاجها (مثال: 20 بوكيه ورد، 10 علب هدايا).
             </div>
           ) : (
             <div className="space-y-2">

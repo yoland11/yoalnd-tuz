@@ -546,7 +546,7 @@ function DeliveryOrderDetails({
               <li key={i} className="text-xs flex flex-wrap items-center gap-2">
                 <StatusPill status={h.status} label={h.statusLabel} />
                 <span className="text-muted-foreground">
-                  {new Date(h.createdAt).toLocaleString("ar-IQ")} — {h.createdByName || "النظام"}
+                  {new Date(h.createdAt).toLocaleString("ar-IQ-u-nu-latn")} — {h.createdByName || "النظام"}
                 </span>
                 {h.reason && <span className="text-status-danger">({h.reason})</span>}
               </li>
@@ -562,7 +562,7 @@ function DeliveryOrderDetails({
           <ul className="space-y-1">
             {data.auditLog.slice(0, 8).map((a) => (
               <li key={a.id} className="text-[11px] text-muted-foreground">
-                {a.action} — {a.userName} — {new Date(a.createdAt).toLocaleString("ar-IQ")}
+                {a.action} — {a.userName} — {new Date(a.createdAt).toLocaleString("ar-IQ-u-nu-latn")}
               </li>
             ))}
           </ul>
@@ -607,7 +607,7 @@ function CodSettlementForm({
 
   function submit() {
     if (value <= 0 || tooMuch) return;
-    if (!window.confirm(`سيتم ترحيل ${value.toLocaleString()} إلى الصندوق الرئيسي وتحديث الفاتورة. متابعة؟`)) return;
+    if (!window.confirm(`سيتم ترحيل ${value.toLocaleString("en-US")} إلى الصندوق الرئيسي وتحديث الفاتورة. متابعة؟`)) return;
     onSubmit({
       receivedAmount: value,
       settlementDate: date,
@@ -685,7 +685,7 @@ function ReasonForm({
         rows={2}
         value={reason}
         onChange={(e) => setReason(e.target.value)}
-        placeholder="اكتب السبب (٣ أحرف على الأقل)"
+        placeholder="اكتب السبب (3 أحرف على الأقل)"
         className={FIELD}
       />
       {withStock && (

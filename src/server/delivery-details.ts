@@ -454,7 +454,11 @@ export type PersistDeliveryOptions = {
 export async function persistInvoiceDelivery(
   opts: PersistDeliveryOptions,
 ): Promise<{ deliveryDetail: DeliveryDetail; deliveryOrder: DeliveryOrder | null; created: boolean }> {
-  await ensureDeliveryDetailsTables();
+  // When an invoice transaction supplies an executor, readiness must already
+  // have been checked by the caller. Opening a second pool connection here can
+  // deadlock/timeout serverless pools while the invoice transaction is holding
+  // the only available connection.
+  if (!opts.executor) await ensureDeliveryDetailsTables();
   const { prep, actor } = opts;
   const executor = opts.executor ?? db;
   const input = prep.input;
@@ -574,7 +578,7 @@ export async function persistInvoiceDelivery(
 export async function updateInvoiceDelivery(
   opts: PersistDeliveryOptions,
 ): Promise<{ deliveryDetail: DeliveryDetail; deliveryOrder: DeliveryOrder | null; created: boolean }> {
-  await ensureDeliveryDetailsTables();
+  if (!opts.executor) await ensureDeliveryDetailsTables();
   const executor = opts.executor ?? db;
   const { prep, actor } = opts;
   const input = prep.input;

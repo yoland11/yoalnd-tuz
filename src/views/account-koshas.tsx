@@ -139,7 +139,7 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
         <div className="rounded-2xl border border-border/30 bg-card p-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-bold text-foreground">حالة التنفيذ</h2>
-            {lastUpdate && <span className="flex items-center gap-1 text-xs text-muted-foreground"><Clock className="h-3.5 w-3.5" /> {new Date(lastUpdate.at).toLocaleString("ar-IQ")}</span>}
+            {lastUpdate && <span className="flex items-center gap-1 text-xs text-muted-foreground"><Clock className="h-3.5 w-3.5" /> {new Date(lastUpdate.at).toLocaleString("ar-IQ-u-nu-latn")}</span>}
           </div>
           <ol className="space-y-2">
             {STAGES.map((s, i) => {

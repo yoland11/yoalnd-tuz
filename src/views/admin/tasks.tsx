@@ -85,7 +85,7 @@ const initialForm = {
 
 function formatDate(value: string | null) {
   if (!value) return "بدون موعد";
-  return new Date(value).toLocaleString("ar-IQ", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(value).toLocaleString("ar-IQ-u-nu-latn", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function employeeInitials(employee: Staff) {
@@ -222,7 +222,7 @@ export default function TasksPage() {
         </div>
         <div className="inline-flex items-center gap-2 rounded-lg border border-border/40 bg-card px-3 py-2 text-xs text-muted-foreground">
           <CheckCircle2 className="w-4 h-4 text-primary" />
-          {(data?.data.length ?? 0).toLocaleString("ar-IQ")} مهمة
+          {(data?.data.length ?? 0).toLocaleString("ar-IQ-u-nu-latn")} مهمة
         </div>
       </div>
 
@@ -233,7 +233,7 @@ export default function TasksPage() {
           ["بانتظار اعتماد المدير", data.summary.waitingManagerApproval ?? data.summary.pendingApproval ?? 0],
           ["مكتملة", data.summary.completed ?? 0],
           ["متأخرة", data.summary.overdue ?? 0],
-        ].map(([label, value]) => <div key={String(label)} className="rounded-xl border border-border/30 bg-card p-3"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 text-xl font-bold text-foreground">{Number(value).toLocaleString("ar-IQ")}</dd></div>)}
+        ].map(([label, value]) => <div key={String(label)} className="rounded-xl border border-border/30 bg-card p-3"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 text-xl font-bold text-foreground">{Number(value).toLocaleString("ar-IQ-u-nu-latn")}</dd></div>)}
       </dl> : null}
 
       <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
@@ -473,7 +473,7 @@ function EmployeeTasksPage({ tasks, saving, onProgress, onSubmit }: { tasks: Tas
   const today = new Date().toISOString().slice(0, 10);
   const open = tasks.filter((task) => !["completed", "cancelled"].includes(task.status));
   const cards = [["مهام اليوم", tasks.filter((task) => task.dueAt?.slice(0, 10) === today).length], ["مكتملة اليوم", tasks.filter((task) => task.status === "completed" && task.completedAt?.slice(0, 10) === today).length], ["بانتظار الاعتماد", tasks.filter((task) => task.status === "review").length], ["متأخرة", tasks.filter((task) => task.dueAt && task.dueAt < new Date().toISOString() && ["new", "accepted", "in_progress"].includes(task.status)).length], ["نسبة الإنجاز", open.length ? Math.round(open.reduce((sum, task) => sum + (task.completionPercent ?? task.progress?.percent ?? 0), 0) / open.length) : 0]];
-  return <div dir="rtl" className="space-y-4"><div><h1 className="text-2xl font-bold">مهامي</h1><p className="mt-1 text-sm text-muted-foreground">حدّث الكميات وارفع إثبات التنفيذ ثم أرسل المهمة للمراجعة.</p></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{cards.map(([label, value]) => <div key={String(label)} className="rounded-xl border border-border/30 bg-card p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-xl font-bold text-primary">{Number(value).toLocaleString("ar-IQ")}{label === "نسبة الإنجاز" ? "%" : ""}</p></div>)}</div><div className="space-y-3">{tasks.map((task) => <EmployeeTaskCard key={task.id} task={task} saving={saving} onProgress={onProgress} onSubmit={onSubmit} />)}{!tasks.length && <EmptyState message="لا توجد مهام مسندة إليك" />}</div></div>;
+  return <div dir="rtl" className="space-y-4"><div><h1 className="text-2xl font-bold">مهامي</h1><p className="mt-1 text-sm text-muted-foreground">حدّث الكميات وارفع إثبات التنفيذ ثم أرسل المهمة للمراجعة.</p></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{cards.map(([label, value]) => <div key={String(label)} className="rounded-xl border border-border/30 bg-card p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-xl font-bold text-primary">{Number(value).toLocaleString("ar-IQ-u-nu-latn")}{label === "نسبة الإنجاز" ? "%" : ""}</p></div>)}</div><div className="space-y-3">{tasks.map((task) => <EmployeeTaskCard key={task.id} task={task} saving={saving} onProgress={onProgress} onSubmit={onSubmit} />)}{!tasks.length && <EmptyState message="لا توجد مهام مسندة إليك" />}</div></div>;
 }
 
 function EmployeeTaskCard({ task, saving, onProgress, onSubmit }: { task: Task; saving: boolean; onProgress: (id: number, items: Array<{ id: number; completedQuantity: number }>, statusAction?: "accept" | "start") => void; onSubmit: (id: number) => void }) {
@@ -490,7 +490,7 @@ function EmployeeTaskCard({ task, saving, onProgress, onSubmit }: { task: Task; 
         uploadedCount += 1;
       } catch { failedCount += 1; }
     }
-    if (uploadedCount) toast({ title: `تم رفع ${uploadedCount.toLocaleString("ar-IQ")} مرفق` });
+    if (uploadedCount) toast({ title: `تم رفع ${uploadedCount.toLocaleString("ar-IQ-u-nu-latn")} مرفق` });
     if (failedCount) toast({ title: "تعذر رفع بعض الملفات", description: "بقيت الملفات التي رُفعت بنجاح محفوظة.", variant: "destructive" });
     qc.invalidateQueries({ queryKey: ["admin", "tasks"] });
   }

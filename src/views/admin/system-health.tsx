@@ -79,7 +79,7 @@ function HealthTab() {
             <Badge tone="warn" label={`تنبيه ${data.summary.warn}`} />
             <Badge tone="fail" label={`خلل ${data.summary.fail}`} />
             <span className="text-muted-foreground self-center">
-              آخر فحص: {new Date(data.generatedAt).toLocaleString("ar-IQ")}
+              آخر فحص: {new Date(data.generatedAt).toLocaleString("ar-IQ-u-nu-latn")}
             </span>
           </div>
         )}
@@ -106,7 +106,7 @@ function HealthTab() {
               </div>
               <p className={`text-lg font-bold tabular-nums ${TONE_TEXT[c.status]}`}>{c.value}</p>
               {c.detail && <p className="text-xs text-muted-foreground">{c.detail}</p>}
-              <p className="text-[11px] text-muted-foreground">آخر فحص: {new Date(c.checkedAt ?? data.generatedAt).toLocaleString("ar-IQ")}</p>
+              <p className="text-[11px] text-muted-foreground">آخر فحص: {new Date(c.checkedAt ?? data.generatedAt).toLocaleString("ar-IQ-u-nu-latn")}</p>
             </div>
           ))}
         </div>
@@ -189,7 +189,7 @@ function ReconciliationTab({ me }: { me: AdminMe | null }) {
   function applyRepair() {
     if (!preview) return;
     if (reason.trim().length < 3) {
-      toast({ title: "أدخل سبب التسوية", description: "٣ أحرف على الأقل", variant: "destructive" });
+      toast({ title: "أدخل سبب التسوية", description: "3 أحرف على الأقل", variant: "destructive" });
       return;
     }
     // Second, explicit confirmation before touching live financial data.

@@ -19,22 +19,35 @@ const databaseName = parsedUrl.pathname.replace(/^\//, "");
 if (!/(^|[_-])test($|[_-])/i.test(databaseName))
   throw new Error(`Refusing non-test database: ${databaseName}`);
 
-const schema = `ajn_phase2_${Date.now().toString(36)}_${randomUUID().slice(0, 6).replace(/-/g, "")}`;
-const adminPool = new pg.Pool({ connectionString: testUrl, max: 1 });
+const suffix = `${Date.now().toString(36)}_${randomUUID().slice(0, 6).replace(/-/g, "")}`;
+const disposableDatabase = `ajn_phase2_test_${suffix}`;
+const basePool = new pg.Pool({ connectionString: testUrl, max: 1 });
+let adminPool: pg.Pool | undefined;
+let appDatabasePool: pg.Pool | undefined;
 const pass = (name: string) => console.log(`PASS  ${name}`);
 
+function databaseUrl(name: string) {
+  const url = new URL(testUrl!);
+  url.pathname = `/${name}`;
+  url.searchParams.delete("options");
+  return url.toString();
+}
+
 try {
-  await adminPool.query(`CREATE SCHEMA "${schema}"`);
-  await adminPool.query(`SET search_path TO "${schema}", public`);
+  await basePool.query(`CREATE DATABASE "${disposableDatabase}" TEMPLATE template0`);
+  adminPool = new pg.Pool({ connectionString: databaseUrl(disposableDatabase), max: 1 });
+  const testPool = adminPool;
   const migrationFiles = (
     await readdir(new URL("../lib/db/migrations/", import.meta.url))
   )
     .filter((name) => /^\d+.*\.sql$/.test(name))
     .sort((a, b) => a.localeCompare(b, "en"));
   const phase2Name = "0096_phase2_production_hardening.sql";
-  for (const name of migrationFiles.filter((name) => name !== phase2Name)) {
+  for (const name of migrationFiles.filter(
+    (name) => name.localeCompare(phase2Name, "en") < 0,
+  )) {
     try {
-      await adminPool.query(
+      await testPool.query(
         await readFile(
           new URL(`../lib/db/migrations/${name}`, import.meta.url),
           "utf8",
@@ -49,14 +62,29 @@ try {
     new URL(`../lib/db/migrations/${phase2Name}`, import.meta.url),
     "utf8",
   );
-  await adminPool.query(phase2Sql);
+  await testPool.query(phase2Sql);
   pass("clean Phase 2 migration succeeds");
-  await adminPool.query(phase2Sql);
+  await testPool.query(phase2Sql);
   pass("Phase 2 migration is safe to rerun");
+  for (const name of migrationFiles.filter(
+    (name) => name.localeCompare(phase2Name, "en") > 0,
+  )) {
+    try {
+      await testPool.query(
+        await readFile(
+          new URL(`../lib/db/migrations/${name}`, import.meta.url),
+          "utf8",
+        ),
+      );
+    } catch (error) {
+      throw new Error(`Post-Phase-2 migration ${name} failed`, { cause: error });
+    }
+  }
+  pass("current post-Phase-2 migrations succeed before runtime checks");
   const schemaFingerprint = async () =>
     JSON.stringify(
       (
-        await adminPool.query(
+        await testPool.query(
           `
     SELECT 'column' kind, table_name object_name, column_name detail
       FROM information_schema.columns WHERE table_schema=$1
@@ -64,16 +92,18 @@ try {
     SELECT 'index', tablename, indexname FROM pg_indexes WHERE schemaname=$1
     ORDER BY 1,2,3
   `,
-          [schema],
+          ["public"],
         )
       ).rows,
     );
   const schemaBeforeRequests = await schemaFingerprint();
 
-  parsedUrl.searchParams.set("options", `-c search_path=${schema},public`);
-  process.env.DATABASE_URL = parsedUrl.toString();
+  process.env.DATABASE_URL = databaseUrl(disposableDatabase);
   process.env.RATE_LIMIT_BACKEND = "postgres";
   process.env.ADMIN_BOOTSTRAP_ENABLED = "false";
+  process.env.DB_POOL_MAX = "1";
+  const { pool: appPool } = await import("@workspace/db");
+  appDatabasePool = appPool;
 
   const { consumeRateLimit } = await import("../src/server/rate-limit");
   const first = await consumeRateLimit({
@@ -99,7 +129,7 @@ try {
   assert.equal(blocked.allowed, false);
   assert.ok(blocked.retryAfterSeconds > 0);
   pass("distributed rate limiter allows requests then enforces the threshold");
-  const persisted = await adminPool.query(
+  const persisted = await testPool.query(
     "select hit_count from rate_limit_buckets where action='phase2-test'",
   );
   assert.equal(Number(persisted.rows[0]?.hit_count), 3);
@@ -129,14 +159,14 @@ try {
   pass("rate-limited API response is structured HTTP 429 with Retry-After");
 
   const one = async (query: string, values: unknown[] = []) =>
-    (await adminPool.query(query, values)).rows[0];
+    (await testPool.query(query, values)).rows[0];
   const suffix = randomUUID().slice(0, 8);
   const customerPhone = `077${Date.now().toString().slice(-8)}`;
   const customer = await one(
     "insert into customers(phone,name,full_name) values($1,'عميل اختبار','عميل اختبار') returning id",
     [customerPhone],
   );
-  await adminPool.query(
+  await testPool.query(
     "insert into customer_accounts(customer_id,customer_code,username,phone_normalized,password_hash,recovery_code_hash,recovery_acknowledged_at) values($1,$2,$3,$4,$5,$6,now())",
     [
       customer.id,
@@ -146,6 +176,16 @@ try {
       bcrypt.hashSync("Customer-pass-42", 4),
       bcrypt.hashSync("RECOVERY", 4),
     ],
+  );
+  const appVisibleAccount = await appPool.query(
+    "select customer_id,password_hash from customer_accounts where username=$1",
+    [`customer_${suffix}`],
+  );
+  assert.equal(appVisibleAccount.rowCount, 1, "test account is not visible to the app database pool");
+  assert.equal(
+    bcrypt.compareSync("Customer-pass-42", appVisibleAccount.rows[0].password_hash),
+    true,
+    "test account password hash is invalid",
   );
   const customerLogin = await api.handleApi(
     new NextRequest("http://localhost/api/auth/customer/login", {
@@ -158,7 +198,11 @@ try {
     }),
     ["auth", "customer", "login"],
   );
-  assert.equal(customerLogin.status, 200);
+  assert.equal(
+    customerLogin.status,
+    200,
+    `customer login response: ${await customerLogin.clone().text()}`,
+  );
   pass("customer login remains functional with the distributed limiter");
   const staff = await one(
     "insert into staff(username,password_hash,full_name,role,permissions) values($1,'x','Representative','admin','[]'::jsonb) returning id",
@@ -238,8 +282,14 @@ try {
   assert.equal(await schemaFingerprint(), schemaBeforeRequests);
   pass("application requests perform no schema DDL");
 } finally {
-  await adminPool
-    .query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
-    .catch(() => undefined);
-  await adminPool.end();
+  await appDatabasePool?.end().catch(() => undefined);
+  await adminPool?.end().catch(() => undefined);
+  if (!/^ajn_phase2_test_[a-z0-9_]+$/.test(disposableDatabase))
+    throw new Error(`Refusing to drop unexpected database: ${disposableDatabase}`);
+  await basePool.query(
+    "select pg_terminate_backend(pid) from pg_stat_activity where datname=$1 and pid<>pg_backend_pid()",
+    [disposableDatabase],
+  ).catch(() => undefined);
+  await basePool.query(`DROP DATABASE IF EXISTS "${disposableDatabase}" WITH (FORCE)`);
+  await basePool.end();
 }

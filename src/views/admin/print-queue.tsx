@@ -37,7 +37,7 @@ const statusLabel: Record<Job["status"], string> = {
 const agentLabel: Record<Agent["liveStatus"], string> = { online: "متصل", offline: "غير متصل", disabled: "معطل" };
 
 function time(value: string | null | undefined) {
-  return value ? new Date(value).toLocaleString("ar-IQ") : "—";
+  return value ? new Date(value).toLocaleString("ar-IQ-u-nu-latn") : "—";
 }
 
 export default function PrintQueuePage() {

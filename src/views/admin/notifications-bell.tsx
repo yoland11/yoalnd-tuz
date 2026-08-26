@@ -67,7 +67,7 @@ export function AdminNotificationsBell() {
         <Bell className="w-5 h-5" />
         {unreadCount > 0 && (
           <span className="absolute -top-1 -left-1 min-w-5 rounded-full bg-status-danger px-1.5 py-0.5 text-[11px] font-bold text-white">
-            {unreadCount > 99 ? "99+" : unreadCount.toLocaleString("ar-IQ")}
+            {unreadCount > 99 ? "99+" : unreadCount.toLocaleString("ar-IQ-u-nu-latn")}
           </span>
         )}
       </button>
@@ -76,7 +76,7 @@ export function AdminNotificationsBell() {
           <div className="mb-3 flex items-center justify-between gap-2">
             <div>
               <p className="text-sm font-semibold text-foreground">الإشعارات</p>
-              <p className="text-xs text-muted-foreground">{unreadCount.toLocaleString("ar-IQ")} غير مقروء</p>
+              <p className="text-xs text-muted-foreground">{unreadCount.toLocaleString("ar-IQ-u-nu-latn")} غير مقروء</p>
             </div>
             <button type="button" onClick={() => markAll.mutate()} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-primary">
               <CheckCheck className="w-4 h-4" />

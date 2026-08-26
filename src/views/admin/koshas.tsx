@@ -24,6 +24,7 @@ type KoshaFormState = Omit<Kosha, "id" | "galleryImages"> & {
 
 export type KoshaBooking = {
   id: number;
+  source?: "kosha" | "service";
   koshaId: number | null;
   koshaName: string | null;
   packageId?: number | null;
@@ -85,7 +86,23 @@ function replaceCachedKoshaBooking(
   rows: KoshaBooking[] | undefined,
   booking: KoshaBooking,
 ) {
-  return rows?.map((row) => (row.id === booking.id ? { ...row, ...booking } : row));
+  return rows?.map((row) =>
+    sameKoshaBookingIdentity(row, booking) ? { ...row, ...booking } : row,
+  );
+}
+
+function koshaSourceQuery(booking: Pick<KoshaBooking, "source">) {
+  return `?source=${booking.source === "service" ? "service" : "kosha"}`;
+}
+
+function sameKoshaBookingIdentity(
+  left: Pick<KoshaBooking, "id" | "source">,
+  right: Pick<KoshaBooking, "id" | "source">,
+) {
+  return (
+    left.id === right.id &&
+    (left.source ?? "kosha") === (right.source ?? "kosha")
+  );
 }
 
 type KoshaBookingFinanceMovement = {
@@ -1049,13 +1066,18 @@ export function AdminKoshaBookingsPage() {
     return list;
   }, [data, search, sortRemaining]);
   const update = useMutation({
-    mutationFn: ({ id, values }: { id: number; values: Partial<KoshaBooking> }) => adminFetch<KoshaBooking>(`/admin/kosha-bookings/${id}`, { method: "PATCH", body: JSON.stringify(values) }),
-    onMutate: async ({ id, values }) => {
+    mutationFn: ({ id, source, values }: { id: number; source?: KoshaBooking["source"]; values: Partial<KoshaBooking> }) => adminFetch<KoshaBooking>(`/admin/kosha-bookings/${id}?source=${source === "service" ? "service" : "kosha"}`, { method: "PATCH", body: JSON.stringify(values) }),
+    onMutate: async ({ id, source, values }) => {
       await queryClient.cancelQueries({ queryKey: ["admin", "kosha-bookings"] });
       const previous = queryClient.getQueriesData<KoshaBooking[]>({ queryKey: ["admin", "kosha-bookings"] });
       queryClient.setQueriesData<KoshaBooking[]>(
         { queryKey: ["admin", "kosha-bookings"] },
-        (rows) => rows?.map((row) => (row.id === id ? { ...row, ...values } : row)),
+        (rows) =>
+          rows?.map((row) =>
+            sameKoshaBookingIdentity(row, { id, source })
+              ? { ...row, ...values }
+              : row,
+          ),
       );
       return { previous };
     },
@@ -1095,7 +1117,8 @@ export function AdminKoshaBookingsPage() {
       return;
     }
     if (format === "a4") {
-      const preview = window.open(`/admin/invoice/${item.id}?type=kosha&print=1`, "_blank", "width=1080,height=1160");
+      const invoiceType = item.source === "service" ? "booking" : "kosha";
+      const preview = window.open(`/admin/invoice/${item.id}?type=${invoiceType}&print=1`, "_blank", "width=1080,height=1160");
       if (!preview) toast({ title: "تعذر فتح معاينة الطباعة", description: "يرجى السماح بالنوافذ المنبثقة لطباعة فاتورة الكوشة.", variant: "destructive" });
       return;
     }
@@ -1106,7 +1129,7 @@ export function AdminKoshaBookingsPage() {
     let full: KoshaBooking & { qr?: { dataUrl?: string } } = item;
     let qrDataUrl = "";
     try {
-      const res = await adminFetch<KoshaBooking & { qr?: { dataUrl?: string } }>(`/admin/kosha-bookings/${item.id}`);
+      const res = await adminFetch<KoshaBooking & { qr?: { dataUrl?: string } }>(`/admin/kosha-bookings/${item.id}${koshaSourceQuery(item)}`);
       full = res;
       qrDataUrl = res.qr?.dataUrl ?? "";
     } catch { /* fall back to row data without QR */ }
@@ -1236,7 +1259,7 @@ export function AdminKoshaBookingsPage() {
                     <td className="px-4 py-3"><span className={item.paymentStatus === "paid" ? "text-status-success" : item.paymentStatus === "partial" ? "text-status-warning" : "text-muted-foreground"}>{item.paymentStatus ?? "unpaid"}</span></td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{item.latestPaymentDate ?? "—"}</td>
                     <td className="px-4 py-3">
-                      <select value={item.status} onChange={(event) => update.mutate({ id: item.id, values: { status: event.target.value } })} className="rounded-lg border border-border/40 bg-background px-2 py-1 text-xs">
+                      <select value={item.status} onChange={(event) => update.mutate({ id: item.id, source: item.source, values: { status: event.target.value } })} className="rounded-lg border border-border/40 bg-background px-2 py-1 text-xs">
                         {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                       </select>
                     </td>
@@ -1251,7 +1274,7 @@ export function AdminKoshaBookingsPage() {
                           variant="outline"
                           onClick={() => {
                             const note = window.prompt("ملاحظات داخلية", item.internalNotes ?? "");
-                            if (note !== null) update.mutate({ id: item.id, values: { internalNotes: note } });
+                            if (note !== null) update.mutate({ id: item.id, source: item.source, values: { internalNotes: note } });
                           }}
                         >
                           ملاحظات
@@ -1370,12 +1393,12 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
     setTrackingStatus(booking.trackingStatus ?? "booked");
   }, [booking.id, booking.trackingStatus]);
   const financeQuery = useQuery({
-    queryKey: ["admin", "kosha-booking-finance", booking.id],
-    queryFn: () => adminFetch<KoshaBookingFinanceResponse>(`/admin/kosha-bookings/${booking.id}/finance`),
+    queryKey: ["admin", "kosha-booking-finance", booking.source ?? "kosha", booking.id],
+    queryFn: () => adminFetch<KoshaBookingFinanceResponse>(`/admin/kosha-bookings/${booking.id}/finance${koshaSourceQuery(booking)}`),
     retry: false,
   });
   const updateTracking = useMutation({
-    mutationFn: (next: string) => adminFetch<KoshaBooking>(`/admin/kosha-bookings/${booking.id}`, { method: "PATCH", body: JSON.stringify({ trackingStatus: next }) }),
+    mutationFn: (next: string) => adminFetch<KoshaBooking>(`/admin/kosha-bookings/${booking.id}${koshaSourceQuery(booking)}`, { method: "PATCH", body: JSON.stringify({ trackingStatus: next }) }),
     onMutate: async (next) => {
       await queryClient.cancelQueries({ queryKey: ["admin", "kosha-bookings"] });
       const previousStatus = trackingStatus;
@@ -1383,7 +1406,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
       setTrackingStatus(next);
       queryClient.setQueriesData<KoshaBooking[]>(
         { queryKey: ["admin", "kosha-bookings"] },
-        (rows) => rows?.map((row) => row.id === booking.id ? { ...row, trackingStatus: next } : row),
+        (rows) => rows?.map((row) => sameKoshaBookingIdentity(row, booking) ? { ...row, trackingStatus: next } : row),
       );
       return { previousStatus, previous };
     },
@@ -1411,7 +1434,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
   const [primaryId, setPrimaryId] = useState(String(booking.primaryEmployeeId ?? ""));
   const [assistantId, setAssistantId] = useState(String(booking.assistantEmployeeId ?? ""));
   const saveCrew = useMutation({
-    mutationFn: () => adminFetch(`/admin/kosha-bookings/${booking.id}/employees`, { method: "POST", body: JSON.stringify({ primaryEmployeeId: primaryId ? Number(primaryId) : null, assistantEmployeeId: assistantId ? Number(assistantId) : null }) }),
+    mutationFn: () => adminFetch(`/admin/kosha-bookings/${booking.id}/employees${koshaSourceQuery(booking)}`, { method: "POST", body: JSON.stringify({ primaryEmployeeId: primaryId ? Number(primaryId) : null, assistantEmployeeId: assistantId ? Number(assistantId) : null }) }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] }); toast({ title: "تم حفظ الطاقم" }); },
     onError: (err: any) => toast({ title: "تعذر حفظ الطاقم", description: err?.message, variant: "destructive" }),
   });
@@ -2097,7 +2120,7 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
   const remainingAmount = Math.max(0, pricedTotal - paidAmount);
   const computedPaymentStatus = pricedTotal <= 0 ? "pending_pricing" : remainingAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
   const save = useMutation({
-    mutationFn: () => adminFetch(`/admin/kosha-bookings/${booking.id}`, {
+    mutationFn: () => adminFetch(`/admin/kosha-bookings/${booking.id}${koshaSourceQuery(booking)}`, {
       method: "PATCH",
       body: JSON.stringify({
         ...form,

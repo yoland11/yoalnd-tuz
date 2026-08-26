@@ -33,7 +33,7 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString("ar-IQ", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(value).toLocaleString("ar-IQ-u-nu-latn", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 export default function NotificationsPage() {
@@ -84,7 +84,7 @@ export default function NotificationsPage() {
         <div className="flex items-center gap-2">
           <div className="inline-flex items-center gap-2 rounded-lg border border-border/40 bg-card px-3 py-2 text-xs text-muted-foreground">
             <Bell className="w-4 h-4 text-primary" />
-            {(data?.unreadCount ?? 0).toLocaleString("ar-IQ")} غير مقروء
+            {(data?.unreadCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} غير مقروء
           </div>
           <Button type="button" variant="outline" onClick={() => markAll.mutate()} className="gap-2">
             <CheckCheck className="w-4 h-4" /> تحديد الكل كمقروء

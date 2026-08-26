@@ -184,7 +184,7 @@ function InvoicePreview({ cfg, settings }: { cfg: InvoiceConfig; settings: any }
           <div style={{ textAlign: "left" }}>
             <div style={{ fontSize: 18, fontWeight: 800, color: cfg.primaryColor }}>فاتورة</div>
             {cfg.showInvoiceNo && <div style={{ fontSize: 10, opacity: 0.8 }}>#INV-2024-001</div>}
-            {cfg.showDate && <div style={{ fontSize: 10, opacity: 0.8 }}>١ يناير ٢٠٢٤</div>}
+            {cfg.showDate && <div style={{ fontSize: 10, opacity: 0.8 }}>1 يناير 2024</div>}
           </div>
         </div>
         {cfg.customHeader && (

@@ -196,7 +196,7 @@ export default function CustomersPage() {
                   <td className="p-3 text-muted-foreground" dir="ltr">{formatIraqiPhone(c.phone)}</td>
                   <td className="p-3"><span className="text-primary font-semibold">{c.orderCount}</span></td>
                   <td className="p-3 text-primary">{formatCurrency(c.totalSpent)}</td>
-                  <td className="p-3 text-xs text-muted-foreground">{(c.rewardPoints ?? 0).toLocaleString("ar-IQ")} نقطة</td>
+                  <td className="p-3 text-xs text-muted-foreground">{(c.rewardPoints ?? 0).toLocaleString("ar-IQ-u-nu-latn")} نقطة</td>
                   <td className="p-3" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-center gap-1">
                       <button onClick={() => setEditing({ id: c.id, name: c.name, phone: c.phone, fullName: "", email: "", address: "", city: "" })} className="p-1.5 rounded text-muted-foreground hover:text-primary hover:bg-background/50" title="تعديل"><Pencil className="w-4 h-4" /></button>
@@ -230,9 +230,9 @@ export default function CustomersPage() {
                   <Info label="الهاتف" value={formatIraqiPhone(detail.phone)} ltr />
                   <Info label="البريد" value={detail.email || "—"} />
                   <Info label="المدينة" value={detail.city || detail.address || "—"} />
-                  <Info label="منذ" value={new Date(detail.createdAt).toLocaleDateString("ar-IQ")} />
+                  <Info label="منذ" value={new Date(detail.createdAt).toLocaleDateString("ar-IQ-u-nu-latn")} />
                   <Info label="النوع" value={detail.role} />
-                  <Info label="المستوى" value={`${detail.rewardLevelLabel ?? "برونزي"} · ${(detail.rewardPoints ?? 0).toLocaleString("ar-IQ")} نقطة`} />
+                  <Info label="المستوى" value={`${detail.rewardLevelLabel ?? "برونزي"} · ${(detail.rewardPoints ?? 0).toLocaleString("ar-IQ-u-nu-latn")} نقطة`} />
                 </div>
 
                 <div className="flex flex-wrap gap-2">
@@ -260,12 +260,12 @@ export default function CustomersPage() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-                  <Metric icon={ShoppingBag} label="الطلبات" value={(detail.summary?.productOrders ?? detail.orders.length).toLocaleString("ar-IQ")} />
-                  <Metric icon={Sparkles} label="الحجوزات" value={(detail.summary?.serviceOrders ?? detail.serviceOrders.length).toLocaleString("ar-IQ")} />
+                  <Metric icon={ShoppingBag} label="الطلبات" value={(detail.summary?.productOrders ?? detail.orders.length).toLocaleString("ar-IQ-u-nu-latn")} />
+                  <Metric icon={Sparkles} label="الحجوزات" value={(detail.summary?.serviceOrders ?? detail.serviceOrders.length).toLocaleString("ar-IQ-u-nu-latn")} />
                   <Metric icon={Wallet} label="الرصيد الحالي" value={formatCurrency(detail.summary?.currentBalance ?? detail.summary?.remainingTotal ?? 0)} tone={(detail.summary?.currentBalance ?? detail.summary?.remainingTotal ?? 0) > 0 ? "text-status-danger" : "text-status-success"} />
                   <Metric icon={Wallet} label="إجمالي المدفوع" value={formatCurrency(detail.summary?.totalPaid ?? 0)} tone="text-status-success" />
-                  <Metric icon={Receipt} label="فواتير مفتوحة" value={(detail.summary?.openInvoices ?? detail.summary?.unpaidCount ?? 0).toLocaleString("ar-IQ")} tone={(detail.summary?.openInvoices ?? 0) > 0 ? "text-status-warning" : "text-status-success"} />
-                  <Metric icon={Receipt} label="الفواتير" value={(detail.summary?.invoices ?? detail.invoices?.length ?? 0).toLocaleString("ar-IQ")} />
+                  <Metric icon={Receipt} label="فواتير مفتوحة" value={(detail.summary?.openInvoices ?? detail.summary?.unpaidCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} tone={(detail.summary?.openInvoices ?? 0) > 0 ? "text-status-warning" : "text-status-success"} />
+                  <Metric icon={Receipt} label="الفواتير" value={(detail.summary?.invoices ?? detail.invoices?.length ?? 0).toLocaleString("ar-IQ-u-nu-latn")} />
                 </div>
 
                 <div className="rounded-xl border border-border/25 bg-background/40 p-4">
@@ -344,7 +344,7 @@ export default function CustomersPage() {
                         <div key={note.id} className="flex items-start justify-between gap-3 rounded-lg bg-card/70 border border-border/25 p-3">
                           <div>
                             <p className="text-sm text-foreground whitespace-pre-wrap">{note.body}</p>
-                            <p className="mt-1 text-[11px] text-muted-foreground">{note.priority === "urgent" ? "عاجلة" : note.priority === "important" ? "مهمة" : "اعتيادية"} · {new Date(note.createdAt).toLocaleString("ar-IQ", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
+                            <p className="mt-1 text-[11px] text-muted-foreground">{note.priority === "urgent" ? "عاجلة" : note.priority === "important" ? "مهمة" : "اعتيادية"} · {new Date(note.createdAt).toLocaleString("ar-IQ-u-nu-latn", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
                           </div>
                           <button type="button" onClick={() => deleteNote.mutate(note.id)} className="text-muted-foreground hover:text-destructive">
                             <Trash2 className="h-4 w-4" />
@@ -402,7 +402,7 @@ export default function CustomersPage() {
                         <div key={invoice.id} className="flex items-center justify-between bg-background/40 rounded-lg p-3">
                           <div>
                             <p className="font-mono text-xs text-foreground">{invoice.invoiceNo}</p>
-                            <p className="text-xs text-muted-foreground">{new Date(invoice.createdAt).toLocaleDateString("ar-IQ")}</p>
+                            <p className="text-xs text-muted-foreground">{new Date(invoice.createdAt).toLocaleDateString("ar-IQ-u-nu-latn")}</p>
                           </div>
                           <div className="text-left">
                             <p className="text-primary font-semibold text-sm">{formatCurrency(invoice.total)}</p>
@@ -422,7 +422,7 @@ export default function CustomersPage() {
                         <div key={o.id} className="flex items-center justify-between bg-background/40 rounded-lg p-3">
                           <div>
                             <p className="font-mono text-xs text-foreground">{o.trackingCode}</p>
-                            <p className="text-xs text-muted-foreground">{new Date(o.createdAt).toLocaleDateString("ar-IQ")}</p>
+                            <p className="text-xs text-muted-foreground">{new Date(o.createdAt).toLocaleDateString("ar-IQ-u-nu-latn")}</p>
                           </div>
                           <div className="text-left">
                             <p className="text-primary font-semibold text-sm">{formatCurrency(o.total)}</p>
@@ -442,7 +442,7 @@ export default function CustomersPage() {
                         <div key={o.id} className="flex items-center justify-between bg-background/40 rounded-lg p-3">
                           <div>
                             <p className="font-mono text-xs text-foreground">{o.trackingCode ?? "—"}</p>
-                            <p className="text-xs text-muted-foreground">{o.eventDate || new Date(o.createdAt).toLocaleDateString("ar-IQ")}</p>
+                            <p className="text-xs text-muted-foreground">{o.eventDate || new Date(o.createdAt).toLocaleDateString("ar-IQ-u-nu-latn")}</p>
                           </div>
                           <div className="text-left">
                             <p className="text-xs text-muted-foreground">{o.status}</p>
@@ -464,7 +464,7 @@ export default function CustomersPage() {
                             <p className="text-sm text-foreground">{item.entityLabel || item.entityType || ACTIVITY_LABELS[item.action] || item.action}</p>
                             <p className="text-xs text-muted-foreground">{ACTIVITY_LABELS[item.action] || item.action}</p>
                           </div>
-                          <p className="text-xs text-muted-foreground">{new Date(item.createdAt).toLocaleString("ar-IQ", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
+                          <p className="text-xs text-muted-foreground">{new Date(item.createdAt).toLocaleString("ar-IQ-u-nu-latn", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
                         </div>
                       ))}
                     </div>

@@ -89,7 +89,7 @@ function InvitationList() {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           {([["دعوات نشطة", data.widgets.active], ["دعوات اليوم", data.widgets.today], ["إجمالي المشاهدات", data.widgets.viewsTotal], ["ردود جديدة اليوم", data.widgets.newRsvpsToday], ["ضيوف مؤكدون", data.widgets.confirmedGuests], ["بانتظار الرد", data.widgets.pendingGuests]] as const).map(([l, v]) => (
             <div key={l} className="rounded-xl border border-border/30 bg-card p-3 text-center">
-              <div className="text-xl font-extrabold text-primary">{Number(v).toLocaleString("ar-IQ")}</div>
+              <div className="text-xl font-extrabold text-primary">{Number(v).toLocaleString("ar-IQ-u-nu-latn")}</div>
               <div className="mt-0.5 text-[11px] text-muted-foreground">{l}</div>
             </div>
           ))}
@@ -472,7 +472,7 @@ function InvitationScanner({ cardId }: { cardId: number }) {
     </div>
     {result ? <div className={`rounded-xl p-5 text-center ${result.valid ? "bg-emerald-600 text-white" : "bg-rose-600 text-white"}`} aria-live="assertive"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-white/15">{result.valid ? <CheckCircle2 className="h-7 w-7" /> : <AlertTriangle className="h-7 w-7" />}</div><h3 className="mt-2 text-xl font-extrabold">{result.valid ? "أهلاً وسهلاً بكم" : result.message || "تم استخدام هذه الدعوة مسبقاً"}</h3>
       {guest ? <div className="mt-3 grid gap-2 text-sm sm:grid-cols-3"><div><b>{guest.guestName}</b><br />{guest.family || "ضيف"}</div><div>المسموح: {guest.allowedGuests}<br />المتبقي: {guest.remainingEntries}</div><div>{guest.hall || ""} {guest.tableNumber ? `· طاولة ${guest.tableNumber}` : ""}<br />{guest.seatNumber ? `كرسي ${guest.seatNumber}` : ""}</div></div> : null}
-      {!result.valid && guest?.firstEntryAt ? <p className="mt-2 text-xs">أول دخول: {new Date(guest.firstEntryAt).toLocaleString("ar-IQ")}</p> : null}</div> : null}
+      {!result.valid && guest?.firstEntryAt ? <p className="mt-2 text-xs">أول دخول: {new Date(guest.firstEntryAt).toLocaleString("ar-IQ-u-nu-latn")}</p> : null}</div> : null}
   </div>;
 }
 
@@ -492,7 +492,7 @@ function InvitationDashboard({ detail }: { detail: CardDetail }) {
 
   function exportCsv() {
     const header = ["الاسم", "الهاتف", "الحالة", "المرافقون", "الرسالة", "تاريخ الرد"];
-    const body = rows.map((r) => [r.guestName, r.guestPhone ?? "", ATT[r.attendanceStatus]?.t ?? r.attendanceStatus, r.companionsCount, r.guestMessage ?? "", r.respondedAt ? new Date(r.respondedAt).toLocaleString("ar-IQ") : ""]);
+    const body = rows.map((r) => [r.guestName, r.guestPhone ?? "", ATT[r.attendanceStatus]?.t ?? r.attendanceStatus, r.companionsCount, r.guestMessage ?? "", r.respondedAt ? new Date(r.respondedAt).toLocaleString("ar-IQ-u-nu-latn") : ""]);
     const csv = [header, ...body].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" })); a.download = `rsvps-${detail.slug}.csv`; a.click();
   }
@@ -506,7 +506,7 @@ function InvitationDashboard({ detail }: { detail: CardDetail }) {
             <div key={l} className="rounded-xl border border-border/30 bg-card p-3 text-center"><div className="text-xl font-extrabold text-foreground">{v}</div><div className="text-[11px] text-muted-foreground">{l}</div></div>
           ))}
         </div>
-        {detail.checkinTimeline?.length ? <div className="rounded-xl border border-border/30 bg-card p-3"><div className="mb-2 text-xs font-bold text-foreground">سجل الدخول الأخير</div><div className="space-y-2">{detail.checkinTimeline.slice(0, 6).map((item, index) => <div key={`${item.guestName}-${index}`} className="flex items-center justify-between gap-2 text-xs"><span className="font-medium text-foreground">{item.guestName} · دخول {item.entryNumber}</span><span className="text-muted-foreground">{new Date(item.checkedInAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}{item.staffName ? ` · ${item.staffName}` : ""}</span></div>)}</div></div> : null}
+        {detail.checkinTimeline?.length ? <div className="rounded-xl border border-border/30 bg-card p-3"><div className="mb-2 text-xs font-bold text-foreground">سجل الدخول الأخير</div><div className="space-y-2">{detail.checkinTimeline.slice(0, 6).map((item, index) => <div key={`${item.guestName}-${index}`} className="flex items-center justify-between gap-2 text-xs"><span className="font-medium text-foreground">{item.guestName} · دخول {item.entryNumber}</span><span className="text-muted-foreground">{new Date(item.checkedInAt).toLocaleTimeString("ar-IQ-u-nu-latn", { hour: "2-digit", minute: "2-digit" })}{item.staffName ? ` · ${item.staffName}` : ""}</span></div>)}</div></div> : null}
       </> : null}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
         {([["المشاهدات", s.views], ["تأكيدات", s.confirmed], ["اعتذارات", s.declined], ["ربما", s.maybe], ["لم يردّوا", s.noResponse], ["المرافقون", s.companions], ["إجمالي الردود", s.total]] as const).map(([l, v]) => (
@@ -535,7 +535,7 @@ function InvitationDashboard({ detail }: { detail: CardDetail }) {
                   <td className={`px-3 py-2 font-bold ${ATT[r.attendanceStatus]?.c ?? ""}`}>{ATT[r.attendanceStatus]?.t ?? r.attendanceStatus}</td>
                   <td className="px-3 py-2 text-center">{r.companionsCount}</td>
                   <td className="max-w-64 px-3 py-2 text-muted-foreground"><span className="line-clamp-2">{r.guestMessage ?? "—"}</span></td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">{r.respondedAt ? new Date(r.respondedAt).toLocaleDateString("ar-IQ") : "—"}</td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground">{r.respondedAt ? new Date(r.respondedAt).toLocaleDateString("ar-IQ-u-nu-latn") : "—"}</td>
                 </tr>
               ))}
             </tbody>

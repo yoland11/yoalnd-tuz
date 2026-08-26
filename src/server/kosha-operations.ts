@@ -246,7 +246,14 @@ export function evaluateKoshaStage(input: {
   // workflow step. A ready job can therefore depart directly to "on the way"
   // once the exact same checklist gate has passed.
   const readyToDeparture = from === "ready" && to === "on_the_way";
-  if (!adjacentNew && !adjacentLegacy && !readyToDeparture) {
+  // The staff portal exposes four concise milestones without rewriting the detailed
+  // values already stored by old bookings. These are the only direct milestone jumps;
+  // every other caller still follows the detailed/legacy adjacency rules above.
+  const portalMilestoneJump =
+    (to === "ready" && from === "booked") ||
+    (to === "executed" && ["ready", "out_of_warehouse", "on_the_way"].includes(from)) ||
+    (to === "delivered" && ["event_running", "before_return", "dismantling"].includes(from));
+  if (!adjacentNew && !adjacentLegacy && !readyToDeparture && !portalMilestoneJump) {
     return {
       ok: false,
       reason: `لا يمكن الانتقال من «${KOSHA_STAGE_LABELS[from as KoshaStage] ?? from}» إلى «${KOSHA_STAGE_LABELS[to]}» مباشرة`,
@@ -254,7 +261,11 @@ export function evaluateKoshaStage(input: {
     };
   }
 
-  if (to === "out_of_warehouse" || to === "on_the_way") {
+  if (
+    to === "out_of_warehouse" ||
+    to === "on_the_way" ||
+    (to === "executed" && ["ready", "out_of_warehouse", "on_the_way"].includes(from))
+  ) {
     const entries = input.checklist ?? [];
     if (!checklistCovered(entries)) {
       return { ok: false, reason: "أكمل قائمة المعدات قبل تحميل الحجز", status: 422 };

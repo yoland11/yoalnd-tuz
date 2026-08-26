@@ -90,7 +90,7 @@ export function TaskPhotoPicker({
     setUploading(false);
     setProgress(null);
     setReplaceIndex(null);
-    if (succeeded) toast({ title: succeeded === 1 ? "تم رفع الصورة" : `تم رفع ${succeeded.toLocaleString("ar-IQ")} صور` });
+    if (succeeded) toast({ title: succeeded === 1 ? "تم رفع الصورة" : `تم رفع ${succeeded.toLocaleString("ar-IQ-u-nu-latn")} صور` });
     if (failures.length) toast({ title: "تعذر رفع بعض الصور", description: failures.slice(0, 2).join("\n"), variant: "destructive" });
   }
 
@@ -199,7 +199,7 @@ export function TaskFilePicker({
     }
     setUploading(false);
     setProgress(null);
-    if (succeeded) toast({ title: `تم رفع ${succeeded.toLocaleString("ar-IQ")} ملف` });
+    if (succeeded) toast({ title: `تم رفع ${succeeded.toLocaleString("ar-IQ-u-nu-latn")} ملف` });
     if (failures.length) toast({ title: "تعذر رفع بعض الملفات", description: failures.slice(0, 2).join("\n"), variant: "destructive" });
   }
 

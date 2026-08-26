@@ -40,7 +40,7 @@ function formatWhen(value: string | null): string {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString("ar-IQ", {
+  return date.toLocaleString("ar-IQ-u-nu-latn", {
     dateStyle: "medium",
     timeStyle: "short",
   });

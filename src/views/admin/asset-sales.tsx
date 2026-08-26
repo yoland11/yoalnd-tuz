@@ -113,9 +113,9 @@ export default function AssetSalesPage() {
     </tr>`).join("");
     return `<div class="report-sheet asset-sales-sheet" dir="rtl">
       <header class="report-head"><div><div class="report-company">${escapeHtml(settings?.site_name || "مجموعة علي جان نهاد")}</div><div class="report-title">تقرير مبيعات الأصول</div></div>${settings ? `<img class="report-logo" src="${escapeHtml(logoSrc(settings))}" alt="AJN">` : ""}</header>
-      <div class="report-meta">تاريخ الإصدار: ${escapeHtml(new Date().toLocaleString("ar-IQ"))}</div>
+      <div class="report-meta">تاريخ الإصدار: ${escapeHtml(new Date().toLocaleString("ar-IQ-u-nu-latn"))}</div>
       <div class="filter-note">${escapeHtml(filterDescription)}</div>
-      <section class="report-summary"><div class="report-stat">عدد المبيعات<strong>${summary.count.toLocaleString("ar-IQ")}</strong></div><div class="report-stat">إجمالي البيع<strong>${escapeHtml(formatCurrency(summary.salePrice))}</strong></div><div class="report-stat">الأرباح<strong>${escapeHtml(formatCurrency(summary.profit))}</strong></div><div class="report-stat">الخسائر<strong>${escapeHtml(formatCurrency(summary.loss))}</strong></div><div class="report-stat">الذمم المدينة<strong>${escapeHtml(formatCurrency(summary.receivable))}</strong></div></section>
+      <section class="report-summary"><div class="report-stat">عدد المبيعات<strong>${summary.count.toLocaleString("ar-IQ-u-nu-latn")}</strong></div><div class="report-stat">إجمالي البيع<strong>${escapeHtml(formatCurrency(summary.salePrice))}</strong></div><div class="report-stat">الأرباح<strong>${escapeHtml(formatCurrency(summary.profit))}</strong></div><div class="report-stat">الخسائر<strong>${escapeHtml(formatCurrency(summary.loss))}</strong></div><div class="report-stat">الذمم المدينة<strong>${escapeHtml(formatCurrency(summary.receivable))}</strong></div></section>
       <table class="report-table"><thead><tr><th>المرجع</th><th>الأصل</th><th>الفئة</th><th>المشتري</th><th>التاريخ</th><th>كلفة الشراء</th><th>القيمة الدفترية</th><th>سعر البيع</th><th>الربح</th><th>الخسارة</th><th>السداد</th><th>الحساب</th><th>الفاتورة</th></tr></thead><tbody>${body || `<tr><td colspan="13">لا توجد نتائج</td></tr>`}</tbody></table>
       <footer class="report-footer">تقرير صادر من نظام AJN ERP · سجلات البيع والأصول محفوظة ولا تُحذف</footer>
     </div>`;
@@ -172,7 +172,7 @@ export default function AssetSalesPage() {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {[
-          [BadgeDollarSign, "عدد المبيعات", summary.count.toLocaleString("ar-IQ")], [WalletCards, "إجمالي البيع", formatCurrency(summary.salePrice)],
+          [BadgeDollarSign, "عدد المبيعات", summary.count.toLocaleString("ar-IQ-u-nu-latn")], [WalletCards, "إجمالي البيع", formatCurrency(summary.salePrice)],
           [TrendingUp, "الأرباح", formatCurrency(summary.profit)], [TrendingDown, "الخسائر", formatCurrency(summary.loss)], [CalendarRange, "الذمم المدينة", formatCurrency(summary.receivable)],
         ].map(([Icon, label, value]) => { const MetricIcon = Icon as typeof BadgeDollarSign; return <div key={String(label)} className="rounded-xl border border-border/35 bg-card p-4 shadow-sm"><MetricIcon className="h-4 w-4 text-primary" /><p className="mt-3 text-xs text-muted-foreground">{String(label)}</p><p className="mt-1 text-lg font-bold">{String(value)}</p></div>; })}
       </div>

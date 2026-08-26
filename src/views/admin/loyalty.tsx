@@ -154,7 +154,7 @@ export default function LoyaltyPage() {
                         <td className="p-3 font-medium text-foreground">{customer.name}</td>
                         <td className="p-3 text-muted-foreground" dir="ltr">{formatIraqiPhone(customer.phone)}</td>
                         <td className="p-3 text-primary">{customer.rewardLevelLabel}</td>
-                        <td className="p-3 font-semibold">{customer.rewardPoints.toLocaleString("ar-IQ")}</td>
+                        <td className="p-3 font-semibold">{customer.rewardPoints.toLocaleString("ar-IQ-u-nu-latn")}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -170,7 +170,7 @@ export default function LoyaltyPage() {
                 <div key={entry.id} className="flex items-center justify-between rounded-lg bg-background/50 border border-border/20 px-3 py-2 text-sm">
                   <span className="text-muted-foreground">{entry.note || entry.reason}</span>
                   <span className={entry.points >= 0 ? "text-primary font-semibold" : "text-status-danger font-semibold"}>
-                    {entry.points > 0 ? "+" : ""}{entry.points.toLocaleString("ar-IQ")}
+                    {entry.points > 0 ? "+" : ""}{entry.points.toLocaleString("ar-IQ-u-nu-latn")}
                   </span>
                 </div>
               )) : <p className="text-sm text-muted-foreground">لا توجد حركات نقاط بعد.</p>}

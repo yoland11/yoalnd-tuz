@@ -984,7 +984,7 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
                     order.tailorAssignment.assignmentDate
                       ? new Date(
                           order.tailorAssignment.assignmentDate,
-                        ).toLocaleString("ar-IQ")
+                        ).toLocaleString("ar-IQ-u-nu-latn")
                       : "—"
                   }
                 />
@@ -994,7 +994,7 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
                     order.tailorAssignment.completionDate
                       ? new Date(
                           order.tailorAssignment.completionDate,
-                        ).toLocaleString("ar-IQ")
+                        ).toLocaleString("ar-IQ-u-nu-latn")
                       : "لم يكتمل"
                   }
                 />
@@ -1261,7 +1261,7 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
                 <strong className="text-sm">{item.title}</strong>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {item.actorName} ·{" "}
-                  {new Date(item.createdAt).toLocaleString("ar-IQ")}
+                  {new Date(item.createdAt).toLocaleString("ar-IQ-u-nu-latn")}
                 </p>
               </div>
             ))}
@@ -2587,7 +2587,7 @@ function Resources({ type }: { type: ResourceType }) {
                     value={
                       item.maintenanceDueAt
                         ? new Date(item.maintenanceDueAt).toLocaleDateString(
-                            "ar-IQ",
+                            "ar-IQ-u-nu-latn",
                           )
                         : "غير محدد"
                     }

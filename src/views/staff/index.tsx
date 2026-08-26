@@ -304,7 +304,7 @@ function Notifications() {
             <div key={n.id} className={`rounded-xl border p-3 ${n.isRead ? "border-border bg-card" : "border-primary/40 bg-primary/5"}`}>
               <div className="font-bold">{n.title}</div>
               {n.body && <div className="text-sm text-muted-foreground">{n.body}</div>}
-              <div className="mt-1 text-xs text-muted-foreground">{new Date(n.createdAt).toLocaleString("ar-IQ")}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{new Date(n.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</div>
             </div>
           ))}</div>}
     </div>
@@ -391,7 +391,7 @@ function Approvals() {
             <div key={p.id} className="rounded-xl border border-border bg-card p-3">
               <div className="flex items-center justify-between">
                 <div className="font-bold">{money(p.amount)} د.ع</div>
-                <div className="text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString("ar-IQ")}</div>
+                <div className="text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</div>
               </div>
               <div className="text-sm text-muted-foreground">{p.staffName} · {p.booking?.customerName ?? "—"}</div>
               {p.note && <div className="mt-0.5 text-sm">{p.note}</div>}

@@ -395,8 +395,8 @@ export default function Checkout() {
               {rewards && rewards.points > 0 && (
                 <div className="rounded-lg border border-border/30 bg-background/50 p-2 space-y-2">
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{t("نقاطك:")} {rewards.points.toLocaleString("ar-IQ")}</span>
-                    <span>{t("أقصى صرف:")} {maxRedeemPoints.toLocaleString("ar-IQ")}</span>
+                    <span>{t("نقاطك:")} {rewards.points.toLocaleString("ar-IQ-u-nu-latn")}</span>
+                    <span>{t("أقصى صرف:")} {maxRedeemPoints.toLocaleString("ar-IQ-u-nu-latn")}</span>
                   </div>
                   <input
                     type="number"
@@ -443,7 +443,7 @@ export default function Checkout() {
               </div>
               {total > 0 && (
                 <div className="rounded-lg border border-primary/25 bg-primary/5 p-3 text-xs text-muted-foreground">
-                  {t("بعد اكتمال الطلب تُضاف تقريباً")} <span className="font-semibold text-primary">{Math.max(1, Math.floor(total / 10000)).toLocaleString("ar-IQ")}</span> {t("نقطة إلى حسابك.")}
+                  {t("بعد اكتمال الطلب تُضاف تقريباً")} <span className="font-semibold text-primary">{Math.max(1, Math.floor(total / 10000)).toLocaleString("ar-IQ-u-nu-latn")}</span> {t("نقطة إلى حسابك.")}
                 </div>
               )}
             </div>

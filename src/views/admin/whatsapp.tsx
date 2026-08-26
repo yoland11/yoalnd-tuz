@@ -327,7 +327,7 @@ export default function WhatsappPage() {
                       <span className="text-xs text-muted-foreground">· {EVENT_LABELS[r.event] ?? r.event}</span>
                       {r.provider && <span className="text-[11px] text-muted-foreground">[{r.provider}]</span>}
                     </div>
-                    <span className="text-[11px] text-muted-foreground">{new Date(r.sentAt).toLocaleString("ar-IQ")}</span>
+                    <span className="text-[11px] text-muted-foreground">{new Date(r.sentAt).toLocaleString("ar-IQ-u-nu-latn")}</span>
                   </div>
                   <p className="text-xs text-muted-foreground line-clamp-2 whitespace-pre-wrap">{r.message}</p>
                   {r.error && <p className="text-xs text-status-danger mt-1">{r.error}</p>}

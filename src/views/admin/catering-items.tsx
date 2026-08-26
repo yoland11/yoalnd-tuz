@@ -8,7 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 type Category = { id: number; name: string };
 type Dish = { id:number; code:string; name:string; category_id:number; category_name?:string; unit:string; selling_price:number; cost:number; stock_quantity:number; min_stock:number; image_url?:string|null; track_inventory:boolean; is_active:boolean; available_for_sale:boolean };
 const input = "w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary/60";
-const money = (value:number) => Number(value || 0).toLocaleString("ar-IQ") + " د.ع";
+const money = (value:number) => Number(value || 0).toLocaleString("ar-IQ-u-nu-latn") + " د.ع";
 
 function readDishImage(file: File): Promise<string> {
   if (!/^image\/(png|webp|jpeg|jpg)$/i.test(file.type)) throw new Error("صيغة الصورة يجب أن تكون PNG أو WebP أو JPG");

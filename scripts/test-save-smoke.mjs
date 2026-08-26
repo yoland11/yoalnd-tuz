@@ -1,8 +1,6 @@
-// AJN save reliability smoke suite.
-//
-// This suite is intentionally safe by default: it never writes to a database.
-// A future integration adapter may only run when all three safeguards below
-// are present. Production DATABASE_URL is deliberately never accepted here.
+// AJN fast save/API/legacy contract suite.
+// This layer is intentionally read-only. The test:save-smoke wrapper runs it
+// before the isolated TEST-database integration suites.
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -82,6 +80,8 @@ const sales = readFileSync("src/views/admin/sales.tsx", "utf8");
 const deliverySection = readFileSync("src/views/admin/delivery-section.tsx", "utf8");
 const deliveryServer = readFileSync("src/server/delivery-details.ts", "utf8");
 const purchases = readFileSync("src/views/admin/purchases.tsx", "utf8");
+const apiRoute = readFileSync("app/api/[...path]/route.ts", "utf8");
+const desktopIdempotency = readFileSync("src/server/desktop-idempotency.ts", "utf8");
 const client = readFileSync("src/views/admin/_lib.ts", "utf8");
 const bundleSchema = readFileSync("lib/db/src/schema/product-bundles.ts", "utf8");
 const bundlePage = readFileSync("src/views/admin/product-bundles.tsx", "utf8");
@@ -91,6 +91,9 @@ const schemaIndexRecovery = readFileSync("lib/db/migrations/0101_schema_index_re
 const koshaStaff = readFileSync("src/views/staff/booking-detail.tsx", "utf8");
 const koshaCollections = readFileSync("src/views/admin/kosha-collections.tsx", "utf8");
 const bookingCenter = readFileSync("src/views/admin/booking-center.tsx", "utf8");
+const bookingEditor = readFileSync("src/views/admin/orders.tsx", "utf8");
+const bookingPhotos = readFileSync("src/lib/booking-photos.ts", "utf8");
+const imageUploadEditor = readFileSync("src/components/image-upload-editor.tsx", "utf8");
 const taskSchema = readFileSync("lib/db/src/schema/admin-extensions.ts", "utf8");
 const taskMigration = readFileSync("lib/db/migrations/0102_task_photo_workflow.sql", "utf8");
 const taskAdmin = readFileSync("src/views/admin/tasks.tsx", "utf8");
@@ -112,12 +115,20 @@ check("sales invoice persists payments within the invoice transaction", api.incl
 check("sales invoice does not require optional tracking columns on insert", api.includes(".returning(salesInvoiceRecordColumns)") && !api.includes("createdByRole: auth.role"));
 check("sales invoice client sends an idempotency key", sales.includes('"x-idempotency-key": submitKeyRef.current'));
 check("purchase invoice client sends an idempotency key", purchases.includes('"x-idempotency-key": submitKeyRef.current'));
+check("purchase cash invoices respect an explicitly supplied partial payment", api.includes("hasExplicitPaidAmount ? undefined : paymentMethod"));
+check("all mutation routes retain the shared idempotency boundary", apiRoute.includes("withDesktopIdempotency(req, path") && desktopIdempotency.includes('request.headers.get("x-idempotency-key")') && desktopIdempotency.includes('status === "completed"'));
+check("purchase register API retains data, total and summary fields", api.includes("data: rows.map(invoiceRegisterView)") && api.includes("total: countRow?.c ?? 0") && api.includes("summary,"));
+check("legacy sales and purchase invoices without branch assignment remain visible in MAIN", api.includes("Sales invoices created before branch assignment") && api.includes("Purchase invoices created before branch assignment"));
+check("nullable historical task and staff relations are queried explicitly", relatedTaskProgress.includes("columns: {") && staffWorkspaceHandler.includes("columns: {"));
 check("shared client preserves error code and request id", client.includes("class AjNApiError") && client.includes("x-request-id"));
 check("shared client coalesces duplicate in-flight writes", client.includes("inFlightWrites") && client.includes("if (pending) return pending"));
 check("service booking creates or links the customer inside its booking transaction", api.includes("ensureCustomerForPhone(\n      values.phone") && api.includes("tx,\n    );") && api.includes("skipCustomerSync: true"));
 check("service booking writes its status history in the same transaction", api.includes("await tx.insert(serviceOrderStatusHistoryTable).values"));
 check("service booking errors classify schema, date, and database failures", api.includes('code === "42P01"') && api.includes('fieldErrors: { eventDate') && api.includes('code: "DATABASE_ERROR"'));
 check("booking center keeps form values and focuses returned invalid fields", bookingCenter.includes("const [fieldErrors, setFieldErrors]") && bookingCenter.includes("focusField(Object.keys(returnedErrors)[0])") && bookingCenter.includes("aria-invalid={Boolean(fieldErrors.eventDate)}"));
+check("booking form supports multiple stored photos and mobile camera without database binaries", bookingCenter.includes("multiple={replacePhotoIndex == null}") && bookingEditor.includes("showCameraAction") && imageUploadEditor.includes('capture="environment"') && bookingPhotos.includes("isStoredBookingPhoto"));
+check("booking create and edit derive deposit, remaining and payment status from amounts", bookingCenter.includes("depositTooHigh") && bookingEditor.includes("const paidAmount = Math.min(totalAmount, enteredPaidAmount)") && api.includes("settleByAmount: true") && api.includes("لا يمكن أن يتجاوز العربون المبلغ الكلي للحجز"));
+check("booking photo and financial edits stay on the same booking and enter the existing timeline", bookingEditor.includes('`/admin/service-orders/${order.id}`') && api.includes('type: "booking_photos_updated"') && api.includes('["remainingAmount", prev.remainingAmount, row.remainingAmount]'));
 check("bundle sale resolves components server-side", api.includes("resolveSalesInvoiceBundleLines") && api.includes("salesInvoiceBundleSnapshotsTable"));
 check("bundle stock uses the same conditional invoice transaction", api.includes("sales_invoice_bundle_stock_deducted") && api.includes("stock::numeric >="));
 check("bundle snapshot schema preserves original components", bundleSchema.includes("salesInvoiceBundleSnapshotsTable") && bundleSchema.includes("components"));
@@ -163,18 +174,5 @@ check("staff workspace distinguishes missing mapping and missing portal permissi
 check("staff workspace failures include request IDs and safe server diagnostics", staffWorkspaceHandler.includes("[STAFF_PORTAL_WORKSPACE_LOAD_FAILED]") && staffWorkspaceHandler.includes('code: "DATABASE_ERROR"') && taskPortal.includes("Request ID:") && taskPortal.includes("إعادة المحاولة"));
 check("staff task empty state appears only after a successful workspace response", taskPortal.includes('tab === "tasks" && dashboard.isSuccess') && taskPortal.includes("لا توجد مهام معينة لك الآن"));
 
-const safeTestDb = process.env.AJN_ENV === "test"
-  && process.env.ALLOW_TEST_WRITES === "true"
-  && Boolean(process.env.TEST_DATABASE_URL)
-  && process.env.TEST_DATABASE_URL !== process.env.DATABASE_URL
-  && /(?:test|testing|staging|dev)/i.test(process.env.TEST_DATABASE_URL);
-
-if (!safeTestDb) {
-  console.log("Safe test database is not configured. Live write scenarios were not run.");
-  console.log("To enable a future test-only integration adapter, set AJN_ENV=test, ALLOW_TEST_WRITES=true, and a separate TEST_DATABASE_URL containing test/dev/staging.");
-} else {
-  console.log("Safe test database marker verified. No write adapter is configured in this repository, so no database records were created.");
-}
-
 if (failures) process.exitCode = 1;
-else console.log("AJN save smoke contract passed.");
+else console.log("AJN read-only save/API/legacy contracts passed.");

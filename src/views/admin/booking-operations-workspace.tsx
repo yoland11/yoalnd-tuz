@@ -225,7 +225,7 @@ function money(value: number) {
 function readableDate(value?: string | null) {
   if (!value) return "غير محدد";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value).slice(0, 10) : date.toLocaleDateString("ar-IQ", { year: "numeric", month: "short", day: "numeric" });
+  return Number.isNaN(date.getTime()) ? String(value).slice(0, 10) : date.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "short", day: "numeric" });
 }
 
 function toneFor(value: string) {
@@ -578,5 +578,5 @@ function ActivityTab({ base, queryKey }: { base: string; queryKey: unknown[] }) 
 
 function Timeline({ rows }: { rows: TimelineRow[] }) {
   if (!rows.length) return <div className="ajn-op-empty compact"><History /><h3>لا يوجد نشاط بعد</h3><p>ستظهر هنا عمليات المنتجات والأصول والمستودع والمالية.</p></div>;
-  return <div className="ajn-op-timeline">{rows.map((row) => <article key={row.id}><i /><time>{new Date(row.createdAt).toLocaleString("ar-IQ", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time><div><strong>{row.title}</strong><p>{row.body || row.type}</p><small>{row.actorName || "النظام"}</small></div></article>)}</div>;
+  return <div className="ajn-op-timeline">{rows.map((row) => <article key={row.id}><i /><time>{new Date(row.createdAt).toLocaleString("ar-IQ-u-nu-latn", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time><div><strong>{row.title}</strong><p>{row.body || row.type}</p><small>{row.actorName || "النظام"}</small></div></article>)}</div>;
 }

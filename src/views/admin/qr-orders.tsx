@@ -160,7 +160,7 @@ function QrDetailsModal({ row, onClose }: { row: QrRow; onClose: () => void }) {
             <DetailRow label="المبلغ" value={row.amount ? formatCurrency(row.amount) : "—"} />
             <DetailRow label="الحالة" value={row.status || "—"} />
             <DetailRow label="الدفع" value={PAYMENT_LABELS[row.paymentStatus ?? ""] ?? row.paymentStatus ?? "—"} />
-            <DetailRow label="التاريخ" value={new Date(row.date).toLocaleString("ar-IQ")} />
+            <DetailRow label="التاريخ" value={new Date(row.date).toLocaleString("ar-IQ-u-nu-latn")} />
             <DetailRow label="التوكن" value={`${row.qr.token.slice(0, 10)}…${row.qr.token.slice(-8)}`} mono />
 
             <div className="pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">

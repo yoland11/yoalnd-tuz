@@ -46,7 +46,7 @@ export default function InventoryAlertsPage() {
         </div>
         <div className="inline-flex items-center gap-2 rounded-lg border border-status-warning/30 bg-status-warning/10 px-3 py-2 text-xs text-status-warning">
           <AlertTriangle className="w-4 h-4" />
-          {(data?.count ?? 0).toLocaleString("ar-IQ")} منتج
+          {(data?.count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} منتج
         </div>
       </div>
 
@@ -97,8 +97,8 @@ export default function InventoryAlertsPage() {
                       </div>
                     </td>
                     <td className="p-3 text-muted-foreground font-mono" dir="ltr">{item.barcode || "—"}</td>
-                    <td className={`p-3 font-semibold ${item.stock <= 0 ? "text-status-danger" : "text-status-warning"}`}>{item.stock.toLocaleString("ar-IQ")}</td>
-                    <td className="p-3 text-muted-foreground">{item.minStock.toLocaleString("ar-IQ")}</td>
+                    <td className={`p-3 font-semibold ${item.stock <= 0 ? "text-status-danger" : "text-status-warning"}`}>{item.stock.toLocaleString("ar-IQ-u-nu-latn")}</td>
+                    <td className="p-3 text-muted-foreground">{item.minStock.toLocaleString("ar-IQ-u-nu-latn")}</td>
                     <td className="p-3">
                       <Button asChild variant="outline" size="sm">
                         <a href="/admin/products">تعديل المنتج</a>

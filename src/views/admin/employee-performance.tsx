@@ -382,7 +382,7 @@ function ProfilePanel({ staffId, isManager, levelLabels }: { staffId: number; is
                     {a.title && <span className="text-foreground"> — {a.title}</span>}
                     {a.note && <p className="text-muted-foreground">{a.note}</p>}
                   </div>
-                  <span className="shrink-0 text-muted-foreground">{a.by} · {new Date(a.at).toLocaleDateString("ar-IQ")}</span>
+                  <span className="shrink-0 text-muted-foreground">{a.by} · {new Date(a.at).toLocaleDateString("ar-IQ-u-nu-latn")}</span>
                 </div>
               ))}
             </div>

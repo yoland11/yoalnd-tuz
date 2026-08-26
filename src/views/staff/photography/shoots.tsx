@@ -449,7 +449,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
             ) : null}
 
             {approval?.last_edited_by_name ? (
-              <p className="mt-2 text-[11px] text-muted-foreground">آخر تعديل: {approval.last_edited_by_name}{approval.last_edited_at ? ` · ${new Date(approval.last_edited_at).toLocaleString("ar")}` : ""}</p>
+              <p className="mt-2 text-[11px] text-muted-foreground">آخر تعديل: {approval.last_edited_by_name}{approval.last_edited_at ? ` · ${new Date(approval.last_edited_at).toLocaleString("ar-u-nu-latn")}` : ""}</p>
             ) : null}
 
             {!locked ? (
@@ -478,7 +478,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
                     <li key={v.id} className="rounded-lg border border-border/30 bg-background p-2 text-[11px]">
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-medium">نسخة {v.version} · {CHANGE_LABEL[v.change_type] ?? v.change_type}</span>
-                        <span className="shrink-0 text-muted-foreground tabular-nums" dir="ltr">{new Date(v.created_at).toLocaleString("ar")}</span>
+                        <span className="shrink-0 text-muted-foreground tabular-nums" dir="ltr">{new Date(v.created_at).toLocaleString("ar-u-nu-latn")}</span>
                       </div>
                       <div className="text-muted-foreground">{v.edited_by_name}{v.note ? ` — ${v.note}` : ""}</div>
                     </li>
@@ -649,7 +649,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
                   {entry.toStage ? SHOOT_STAGE_LABEL[entry.toStage] ?? entry.toStage : entry.type}
                 </div>
                 <div className="mt-0.5 text-muted-foreground">
-                  {entry.staffName} · {new Date(entry.createdAt).toLocaleString("ar-IQ")}
+                  {entry.staffName} · {new Date(entry.createdAt).toLocaleString("ar-IQ-u-nu-latn")}
                 </div>
                 {entry.note ? <div className="mt-0.5 text-muted-foreground">{entry.note}</div> : null}
               </li>

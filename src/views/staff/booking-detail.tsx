@@ -289,8 +289,8 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
     (p) => p.status === "pending" || p.status === "pending_manager_approval",
   );
   const pendingPricing = isKoshaPendingPricing(b);
-  const preparationPercent = current === "booked" ? 0 : workflowStageRank(current) >= workflowStageRank("ready") ? 100 : 50;
-  const installationPercent = workflowStageRank(current) < workflowStageRank("executing") ? 0 : workflowStageRank(current) < workflowStageRank("executed") ? 50 : 100;
+  const preparationPercent = workflowStageRank(current) >= workflowStageRank("ready") ? 100 : 0;
+  const installationPercent = workflowStageRank(current) >= workflowStageRank("executed") ? 100 : 0;
   const overallPercent = Math.round((workflowStageRank(current) / Math.max(1, WORKFLOW_STAGES.length - 1)) * 100);
 
   async function run(fn: () => Promise<any>) {
@@ -436,7 +436,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
             })}
           </ol>
           {next && <p className="mt-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">الإجراء التالي متاح دائماً في الشريط السفلي: {STAGE_LABEL[next]}</p>}
-          {current === "delivered" && <Banner kind="ok">تم تسليم الكوشة بنجاح.</Banner>}
+          {workflowStageRank(current) === WORKFLOW_STAGES.length - 1 && <Banner kind="ok">تم استرجاع الكوشة بنجاح.</Banner>}
         </div>
 
         <div className="scroll-mt-20">
@@ -510,7 +510,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
                     {TYPE_LABEL[t.type] ?? t.type}
                     {t.toStage && <> · {STAGE_LABEL[t.toStage] ?? t.toStage}</>}
                   </div>
-                  <div className="text-xs text-muted-foreground">{t.staffName || "—"} · {new Date(t.createdAt).toLocaleString("ar-IQ")}</div>
+                  <div className="text-xs text-muted-foreground">{t.staffName || "—"} · {new Date(t.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</div>
                   {t.note && <div className="mt-0.5 text-xs">{t.note}</div>}
                 </li>
               ))}

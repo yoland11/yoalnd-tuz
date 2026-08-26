@@ -136,7 +136,7 @@ export default function DocumentLibraryPage() {
   function confirmDelete() {
     if (!deleteTarget) return;
     if (reason.trim().length < 3) {
-      toast({ title: "أدخل سبب الحذف", description: "٣ أحرف على الأقل", variant: "destructive" });
+      toast({ title: "أدخل سبب الحذف", description: "3 أحرف على الأقل", variant: "destructive" });
       return;
     }
     if (!window.confirm("سيتم حذف المستمسك. هذا الإجراء يُسجَّل في سجل التدقيق. متابعة؟")) return;
@@ -263,7 +263,7 @@ export default function DocumentLibraryPage() {
                         : "غير مرتبط"}
                     </p>
                     <p className="text-[11px] text-muted-foreground">
-                      {doc.createdByName} · {new Date(doc.createdAt).toLocaleString("ar-IQ")}
+                      {doc.createdByName} · {new Date(doc.createdAt).toLocaleString("ar-IQ-u-nu-latn")}
                       {doc.pageCount ? ` · ${doc.pageCount} صفحة` : ""}
                     </p>
                     {(doc.tags?.length ?? 0) > 0 && (

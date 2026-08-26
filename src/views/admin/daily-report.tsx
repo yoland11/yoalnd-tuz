@@ -125,7 +125,7 @@ export default function DailyFinancialReportPage() {
               <h2 className="font-bold text-foreground">التقرير اليومي - {filters.date}</h2>
             </div>
           </div>
-          <p className="text-xs text-muted-foreground">{new Date().toLocaleString("ar-IQ")}</p>
+          <p className="text-xs text-muted-foreground">{new Date().toLocaleString("ar-IQ-u-nu-latn")}</p>
         </div>
 
         {isLoading ? (
@@ -221,7 +221,7 @@ function buildDailyPrintHtml(data: DailyReportPayload, logo: string, thermal: bo
     @page{size:${thermal ? "80mm auto" : "A4"};margin:${thermal ? "4mm" : "12mm"}}
     *{color:#000!important;box-shadow:none!important;text-shadow:none!important}body{font-family:Arial,sans-serif;width:${thermal ? "72mm" : "auto"};background:#fff}
     .head{display:flex;justify-content:space-between;gap:10px;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:12px}img{width:${thermal ? "42px" : "68px"};height:52px;object-fit:contain}h1{font-size:${thermal ? "15px" : "20px"};margin:0}.meta{font-size:11px}.totals{display:grid;grid-template-columns:repeat(${thermal ? 2 : 4},1fr);gap:7px;margin:12px 0}.total{border:1px solid #000;padding:7px}.total span{display:block;font-size:10px}.total strong{font-size:12px}table{width:100%;border-collapse:collapse;font-size:${thermal ? "10px" : "12px"}}td,th{border:1px solid #000;padding:5px;font-weight:700}
-  </style></head><body><div class="head"><div><img src="${escapeHtml(logo)}"><h1>التقرير اليومي</h1></div><div class="meta"><div>${data.date}</div><div>${new Date().toLocaleString("ar-IQ")}</div></div></div><div class="totals">${cards}</div><table><tbody>${rows}</tbody></table></body></html>`;
+  </style></head><body><div class="head"><div><img src="${escapeHtml(logo)}"><h1>التقرير اليومي</h1></div><div class="meta"><div>${data.date}</div><div>${new Date().toLocaleString("ar-IQ-u-nu-latn")}</div></div></div><div class="totals">${cards}</div><table><tbody>${rows}</tbody></table></body></html>`;
 }
 
 function labelForSummary(key: string) {

@@ -148,8 +148,8 @@ export default function InventoryValueReportPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
-        <SummaryCard label="عدد المنتجات الكلي" value={totals.productCount.toLocaleString("ar-IQ")} icon={Package} />
-        <SummaryCard label="إجمالي الكميات" value={totals.totalQuantity.toLocaleString("ar-IQ")} icon={Package} />
+        <SummaryCard label="عدد المنتجات الكلي" value={totals.productCount.toLocaleString("ar-IQ-u-nu-latn")} icon={Package} />
+        <SummaryCard label="إجمالي الكميات" value={totals.totalQuantity.toLocaleString("ar-IQ-u-nu-latn")} icon={Package} />
         <SummaryCard label="إجمالي سعر الجملة" value={formatCurrency(totals.totalWholesaleValue)} icon={WalletCards} />
         <SummaryCard label="إجمالي سعر البيع" value={formatCurrency(totals.totalSaleValue)} icon={WalletCards} />
         <SummaryCard label="الربح المتوقع" value={formatCurrency(totals.expectedProfit)} icon={WalletCards} positive={totals.expectedProfit >= 0} />
@@ -201,7 +201,7 @@ export default function InventoryValueReportPage() {
           </div>
           <div className="text-sm text-left">
             <p>التصنيف: {categories.find((item) => item.value === appliedCategory)?.label ?? "كل التصنيفات"}</p>
-            <p>تاريخ الإنشاء: {new Date().toLocaleString("ar-IQ")}</p>
+            <p>تاريخ الإنشاء: {new Date().toLocaleString("ar-IQ-u-nu-latn")}</p>
           </div>
         </div>
 
@@ -235,12 +235,12 @@ export default function InventoryValueReportPage() {
                       <div className="font-medium text-foreground">{row.productName}</div>
                       {row.linkedCount > 1 && (
                         <div className="mt-1 text-xs text-muted-foreground">
-                          مخزون مشترك مع {row.linkedCount.toLocaleString("ar-IQ")} منتجات: {compactLinkedNames(row.linkedProductNames)}
+                          مخزون مشترك مع {row.linkedCount.toLocaleString("ar-IQ-u-nu-latn")} منتجات: {compactLinkedNames(row.linkedProductNames)}
                         </div>
                       )}
                     </td>
                     <td className="p-3 text-muted-foreground">{row.categoryName}</td>
-                    <td className="p-3 text-center font-semibold">{row.stock.toLocaleString("ar-IQ")}</td>
+                    <td className="p-3 text-center font-semibold">{row.stock.toLocaleString("ar-IQ-u-nu-latn")}</td>
                     <td className="p-3 text-center">{formatCurrency(row.wholesalePrice)}</td>
                     <td className="p-3 text-center">{formatCurrency(row.salePrice)}</td>
                     <td className="p-3 text-center font-medium">{formatCurrency(row.wholesaleValue)}</td>
@@ -295,12 +295,12 @@ export default function InventoryValueReportPage() {
           <div style={{ fontSize: 13, lineHeight: 1.8, textAlign: "left" }}>
             <div>التصنيف: {categories.find((item) => item.value === appliedCategory)?.label ?? "كل التصنيفات"}</div>
             <div>البحث: {appliedSearch || "كل المنتجات"}</div>
-            <div>تاريخ الإنشاء: {new Date().toLocaleString("ar-IQ")}</div>
+            <div>تاريخ الإنشاء: {new Date().toLocaleString("ar-IQ-u-nu-latn")}</div>
           </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 18 }}>
-          <PdfTotal label="عدد المنتجات" value={totals.productCount.toLocaleString("ar-IQ")} />
-          <PdfTotal label="إجمالي الكميات" value={totals.totalQuantity.toLocaleString("ar-IQ")} />
+          <PdfTotal label="عدد المنتجات" value={totals.productCount.toLocaleString("ar-IQ-u-nu-latn")} />
+          <PdfTotal label="إجمالي الكميات" value={totals.totalQuantity.toLocaleString("ar-IQ-u-nu-latn")} />
           <PdfTotal label="إجمالي الجملة" value={formatCurrency(totals.totalWholesaleValue)} />
           <PdfTotal label="إجمالي البيع" value={formatCurrency(totals.totalSaleValue)} />
           <PdfTotal label="الربح المتوقع" value={formatCurrency(totals.expectedProfit)} />
@@ -318,7 +318,7 @@ export default function InventoryValueReportPage() {
               <tr key={`pdf-${row.id}`}>
                 <td style={pdfCellStyle()}>{row.productName}</td>
                 <td style={pdfCellStyle()}>{row.categoryName}</td>
-                <td style={pdfCellStyle()}>{row.stock.toLocaleString("ar-IQ")}</td>
+                <td style={pdfCellStyle()}>{row.stock.toLocaleString("ar-IQ-u-nu-latn")}</td>
                 <td style={pdfCellStyle()}>{formatCurrency(row.wholesalePrice)}</td>
                 <td style={pdfCellStyle()}>{formatCurrency(row.salePrice)}</td>
                 <td style={pdfCellStyle()}>{formatCurrency(row.wholesaleValue)}</td>
@@ -330,7 +330,7 @@ export default function InventoryValueReportPage() {
           <tfoot>
             <tr>
               <td colSpan={2} style={pdfCellStyle(true)}>الإجمالي</td>
-              <td style={pdfCellStyle(true)}>{totals.totalQuantity.toLocaleString("ar-IQ")}</td>
+              <td style={pdfCellStyle(true)}>{totals.totalQuantity.toLocaleString("ar-IQ-u-nu-latn")}</td>
               <td style={pdfCellStyle(true)}>—</td>
               <td style={pdfCellStyle(true)}>—</td>
               <td style={pdfCellStyle(true)}>{formatCurrency(totals.totalWholesaleValue)}</td>
@@ -502,7 +502,7 @@ function buildPrintHtml(input: {
   categoryLabel: string;
   search: string;
 }) {
-  const generatedAt = new Date().toLocaleString("ar-IQ");
+  const generatedAt = new Date().toLocaleString("ar-IQ-u-nu-latn");
   return `<!doctype html>
     <html dir="rtl" lang="ar">
       <head>
@@ -542,8 +542,8 @@ function buildPrintHtml(input: {
           </div>
         </div>
         <div class="totals">
-          <div class="total"><span>عدد المنتجات</span><strong>${escapeHtml(input.totals.productCount.toLocaleString("ar-IQ"))}</strong></div>
-          <div class="total"><span>إجمالي الكميات</span><strong>${escapeHtml(input.totals.totalQuantity.toLocaleString("ar-IQ"))}</strong></div>
+          <div class="total"><span>عدد المنتجات</span><strong>${escapeHtml(input.totals.productCount.toLocaleString("ar-IQ-u-nu-latn"))}</strong></div>
+          <div class="total"><span>إجمالي الكميات</span><strong>${escapeHtml(input.totals.totalQuantity.toLocaleString("ar-IQ-u-nu-latn"))}</strong></div>
           <div class="total"><span>إجمالي الجملة</span><strong>${escapeHtml(formatCurrency(input.totals.totalWholesaleValue))}</strong></div>
           <div class="total"><span>إجمالي البيع</span><strong>${escapeHtml(formatCurrency(input.totals.totalSaleValue))}</strong></div>
           <div class="total"><span>الربح المتوقع</span><strong>${escapeHtml(formatCurrency(input.totals.expectedProfit))}</strong></div>
@@ -566,7 +566,7 @@ function buildPrintHtml(input: {
               <tr>
                 <td>${escapeHtml(row.productName)}</td>
                 <td>${escapeHtml(row.categoryName)}</td>
-                <td>${escapeHtml(row.stock.toLocaleString("ar-IQ"))}</td>
+                <td>${escapeHtml(row.stock.toLocaleString("ar-IQ-u-nu-latn"))}</td>
                 <td>${escapeHtml(formatCurrency(row.wholesalePrice))}</td>
                 <td>${escapeHtml(formatCurrency(row.salePrice))}</td>
                 <td>${escapeHtml(formatCurrency(row.wholesaleValue))}</td>
@@ -578,7 +578,7 @@ function buildPrintHtml(input: {
           <tfoot>
             <tr>
               <td colspan="2">الإجمالي</td>
-              <td>${escapeHtml(input.totals.totalQuantity.toLocaleString("ar-IQ"))}</td>
+              <td>${escapeHtml(input.totals.totalQuantity.toLocaleString("ar-IQ-u-nu-latn"))}</td>
               <td>—</td>
               <td>—</td>
               <td>${escapeHtml(formatCurrency(input.totals.totalWholesaleValue))}</td>

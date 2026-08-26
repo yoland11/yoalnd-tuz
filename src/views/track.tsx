@@ -810,7 +810,7 @@ function AssetQrCard({ tracking }: { tracking: any }) {
         {tracking.nextMaintenance && (
           <div className="rounded-xl bg-background/60 border border-border/30 p-4">
             <p className="text-xs text-muted-foreground mb-1">{t("الصيانة القادمة")}</p>
-            <p className="text-foreground font-semibold">{new Date(tracking.nextMaintenance).toLocaleDateString("ar-IQ")}</p>
+            <p className="text-foreground font-semibold">{new Date(tracking.nextMaintenance).toLocaleDateString("ar-IQ-u-nu-latn")}</p>
           </div>
         )}
         <div className="rounded-xl bg-background/60 border border-border/30 p-4">
@@ -825,7 +825,7 @@ function AssetQrCard({ tracking }: { tracking: any }) {
 function formatTrackDate(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString("ar-IQ", {
+  return d.toLocaleString("ar-IQ-u-nu-latn", {
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });

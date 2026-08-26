@@ -906,7 +906,7 @@ export default function POSPage() {
                       <div className="flex-1 min-w-0">
                         <p className="font-semibold text-sm truncate">{h.customerName || "عميل نقدي"}</p>
                         <p className="text-xs text-muted-foreground">
-                          {h.items.length} صنف · {formatCurrency(h.grandTotal)} · {new Date(h.createdAt).toLocaleTimeString("ar-IQ")}
+                          {h.items.length} صنف · {formatCurrency(h.grandTotal)} · {new Date(h.createdAt).toLocaleTimeString("ar-IQ-u-nu-latn")}
                         </p>
                       </div>
                       <div className="flex gap-2 shrink-0">

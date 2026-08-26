@@ -51,6 +51,14 @@ import { CustomerQuickAddDialog } from "./customer-quick-add";
 import { BookingOperationsWorkspace } from "./booking-operations-workspace";
 import { EditServiceOrderModal } from "./orders";
 import { EditKoshaBookingModal } from "./koshas";
+import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import {
+  bookingPhotoKey,
+  bookingPhotoPreview,
+  bookingPhotosFromFields,
+  fieldsWithBookingPhotos,
+  type BookingPhoto,
+} from "@/lib/booking-photos";
 import "./booking-center.css";
 
 type ServiceKey =
@@ -597,6 +605,10 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   const [mapUrl, setMapUrl] = useState("");
   const [contractNumber, setContractNumber] = useState("");
   const [totalAmount, setTotalAmount] = useState("");
+  const [depositAmount, setDepositAmount] = useState("");
+  const [bookingPhotos, setBookingPhotos] = useState<BookingPhoto[]>([]);
+  const [replacePhotoIndex, setReplacePhotoIndex] = useState<number | null>(null);
+  const [imageUploading, setImageUploading] = useState(false);
   const [notes, setNotes] = useState("");
   const [selected, setSelected] = useState<ServiceKey[]>(["kosha"]);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -606,6 +618,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       phone: "booking-customer-search",
       eventDate: "booking-date",
       totalAmount: "booking-total",
+      depositAmount: "booking-deposit",
       serviceId: "booking-service-picker",
     };
     window.requestAnimationFrame(() =>
@@ -639,8 +652,13 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
           eventDate,
           eventLocation: hallName,
           totalAmount: num(totalAmount),
-          depositAmount: 0,
-          paymentStatus: "unpaid",
+          depositAmount: Math.min(num(depositAmount), num(totalAmount)),
+          paymentStatus:
+            num(depositAmount) <= 0
+              ? "unpaid"
+              : num(depositAmount) >= num(totalAmount) && num(totalAmount) > 0
+                ? "paid"
+                : "partial",
           notes,
           customFields: {
             bookingCenterVersion: 1,
@@ -649,6 +667,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             hallName,
             mapUrl,
             contractNumber,
+            ...fieldsWithBookingPhotos({}, bookingPhotos),
             departments: selected,
             bookingCenterServices: selected.map((type) => ({ type, status: "waiting", amount: 0 })),
           },
@@ -665,6 +684,19 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       toast({ title: "تعذر حفظ الحجز", description: apiErrorMessage(error, "تحقق من البيانات وحاول مرة أخرى."), variant: "destructive" });
     },
   });
+  const totalValue = num(totalAmount);
+  const depositValue = num(depositAmount);
+  const depositTooHigh = depositValue > totalValue;
+  const remainingValue = Math.max(
+    0,
+    totalValue - Math.min(depositValue, totalValue),
+  );
+  const paymentStatusLabel =
+    depositValue <= 0
+      ? "غير مدفوع"
+      : remainingValue <= 0 && totalValue > 0
+        ? "مدفوع بالكامل"
+        : "مدفوع جزئياً";
   const toggle = (type: ServiceKey) => setSelected((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type]);
   return (
     <section className="ajn-unified-form">
@@ -678,7 +710,31 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             <div className="space-y-2"><Label htmlFor="booking-time">وقت المناسبة</Label><Input id="booking-time" type="time" value={eventTime} onChange={(event) => setEventTime(event.target.value)} /></div>
             <div className="space-y-2"><Label htmlFor="booking-hall">القاعة / الموقع</Label><Input id="booking-hall" value={hallName} onChange={(event) => setHallName(event.target.value)} placeholder="اسم القاعة والعنوان" /></div>
             <div className="space-y-2"><Label htmlFor="booking-map">رابط Google Maps</Label><Input id="booking-map" dir="ltr" value={mapUrl} onChange={(event) => setMapUrl(event.target.value)} placeholder="https://maps.google.com/..." /></div>
-            <div className="space-y-2"><Label htmlFor="booking-total">إجمالي الحجز</Label><Input id="booking-total" inputMode="numeric" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}</div>
+            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الكلي</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}</div>
+            <div className="space-y-2"><Label htmlFor="booking-deposit">العربون</Label><Input id="booking-deposit" inputMode="decimal" aria-invalid={depositTooHigh} className={depositTooHigh ? "border-destructive" : ""} value={depositAmount} onChange={(event) => setDepositAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" />{depositTooHigh ? <p className="text-xs text-destructive">لا يمكن أن يتجاوز العربون المبلغ الكلي.</p> : null}</div>
+            <div className="space-y-2"><Label htmlFor="booking-remaining">المتبقي</Label><Input id="booking-remaining" value={formatCurrency(remainingValue)} readOnly className="bg-muted/35 tabular-nums" dir="ltr" /><p className="text-xs font-medium text-primary">{paymentStatusLabel}</p></div>
+          </div>
+          <div className="space-y-2 rounded-xl border border-border/30 bg-background/35 p-3">
+            <div><Label>إرفاق صور الحجز (اختياري)</Label><p className="mt-1 text-xs text-muted-foreground">اختر عدة صور من المعرض أو التقط صورة بالكاميرا. تُحفظ روابط الصور ضمن سجل الحجز نفسه.</p></div>
+            {bookingPhotos.length ? <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">{bookingPhotos.map((photo, index) => <div key={bookingPhotoKey(photo)} className="overflow-hidden rounded-lg border border-border/30 bg-background"><img src={bookingPhotoPreview(photo)} alt={`صورة الحجز ${index + 1}`} className="aspect-square w-full object-cover" /><div className="grid grid-cols-2 gap-1 p-1"><Button type="button" variant="ghost" size="sm" onClick={() => setReplacePhotoIndex(index)}>استبدال</Button><Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={() => setBookingPhotos((current) => current.filter((_, photoIndex) => photoIndex !== index))}>حذف</Button></div></div>)}</div> : <div className="rounded-lg border border-dashed border-border/30 p-5 text-center text-xs text-muted-foreground">لم تُرفق صور بعد</div>}
+            <ImageUploadEditor
+              kind="attachment"
+              multiple={replacePhotoIndex == null}
+              showCameraAction
+              label={replacePhotoIndex == null ? "اختيار صور من المعرض" : "اختيار بديل للصورة المحددة"}
+              onUploadStateChange={setImageUploading}
+              onComplete={(results: ImageEditResult[]) => {
+                const uploaded = results.flatMap((result) => {
+                  const metadata = result.metadata as ImageEditResult["metadata"] & Record<string, string | undefined>;
+                  const url = metadata.originalUrl || metadata.largeUrl || metadata.mediumUrl;
+                  return url ? [{ url, thumbnailUrl: metadata.thumbnailUrl || null, mediumUrl: metadata.mediumUrl || null, largeUrl: metadata.largeUrl || null, checksum: metadata.checksum || null, addedAt: new Date().toISOString() }] : [];
+                });
+                if (!uploaded.length) return;
+                setBookingPhotos((current) => replacePhotoIndex == null ? [...current, ...uploaded] : current.map((photo, index) => index === replacePhotoIndex ? uploaded[0] : photo));
+                setReplacePhotoIndex(null);
+              }}
+            />
+            {replacePhotoIndex != null ? <Button type="button" variant="ghost" size="sm" onClick={() => setReplacePhotoIndex(null)}>إلغاء الاستبدال</Button> : null}
           </div>
           <div className="space-y-2"><Label htmlFor="booking-notes">ملاحظات</Label><Textarea id="booking-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="تفاصيل خاصة بالمناسبة أو العميل" /></div>
         </div>
@@ -686,7 +742,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
           <div><span>الخدمات المطلوبة</span><strong>{selected.length} خدمات محددة</strong></div>
           <div className="grid grid-cols-2 gap-2">{SERVICE_META.map((meta) => { const Icon = meta.icon; const checked = selected.includes(meta.key); return <button type="button" key={meta.key} className={checked ? "is-selected" : ""} onClick={() => toggle(meta.key)} aria-pressed={checked}><Icon /><span>{meta.short}</span>{checked && <CheckCircle2 />}</button>; })}</div>
           {fieldErrors.serviceId ? <p className="text-xs text-destructive">{fieldErrors.serviceId}</p> : null}
-          <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending} className="ajn-rose-button flex-1">{mutation.isPending ? "جارٍ الحفظ..." : "حفظ الحجز"}</Button></div>
+          <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending || imageUploading || depositTooHigh} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : "حفظ الحجز"}</Button></div>
         </div>
       </div>
     </section>
@@ -797,13 +853,13 @@ function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; i
             <TabsContent value="payments"><FinancialPanel data={data} finance={finance} invoiceUrl={invoiceUrl} /></TabsContent>
             <TabsContent value="invoices"><EmptyTab icon={ReceiptText} title="فواتير الحجز" text="تُنشأ الفاتورة من سجل الحجز الواحد وتعرض العميل والخدمات والإجمالي والمدفوع والمتبقي." action="فتح فاتورة الحجز" href={invoiceUrl} /></TabsContent>
             <TabsContent value="tasks"><EmptyTab icon={ListChecks} title="مهام الحجز" text="تظهر مهام الفرق المرتبطة بالحجز في مركز المهام الحالي." action="فتح مركز المهام" href="/admin/tasks" /></TabsContent>
-            <TabsContent value="attachments"><EmptyTab icon={PackageCheck} title="مرفقات الحجز" text="تُحفظ العقود والصور والموافقات في مركز المستندات الحالي مع الإبقاء على رقم الحجز مرجعاً موحداً." action="فتح مركز المستندات" href="/admin/documents" /></TabsContent>
+            <TabsContent value="attachments"><BookingAttachmentsPanel data={data} /></TabsContent>
             <TabsContent value="timeline"><section className="ajn-panel"><div className="ajn-panel-title"><div><Clock3 /><span><small>السجل التشغيلي</small><h2>التايم لاين المباشر</h2></span></div></div><TimelineRows history={history} data={data} /></section></TabsContent>
             <TabsContent value="notes"><section className="ajn-panel"><div className="ajn-panel-title"><div><ReceiptText /><span><small>معلومات إضافية</small><h2>ملاحظات الحجز</h2></span></div></div><p className="min-h-40 whitespace-pre-wrap p-5 text-sm leading-8 text-muted-foreground">{data.notes || "لا توجد ملاحظات مسجلة لهذا الحجز."}</p></section></TabsContent>
           </Tabs>
         </main>
         <aside className="ajn-workspace-aside">
-          <section className="ajn-finance-card"><div><span>الملخص المالي</span><Badge variant="outline">{data.paymentStatus === "paid" ? "مدفوع" : data.paymentStatus === "partial" ? "مدفوع جزئياً" : "غير مدفوع"}</Badge></div><dl><dt>الإجمالي <dd><Money value={data.total} /></dd></dt><dt>المدفوع <dd><Money value={data.paid} /></dd></dt><dt className="is-remaining">المتبقي <dd><Money value={data.remaining} /></dd></dt></dl><Button className="ajn-rose-button w-full" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : `/admin/orders?serviceOrder=${id}`}><Banknote className="h-4 w-4" /> استلام دفعة</Link></Button></section>
+          <section className="ajn-finance-card"><div><span>الملخص المالي</span><Badge variant="outline">{data.paymentStatus === "paid" ? "مدفوع بالكامل" : data.paymentStatus === "partial" ? "مدفوع جزئياً" : "غير مدفوع"}</Badge></div><dl><dt>المبلغ الكلي <dd><Money value={data.total} /></dd></dt><dt>العربون <dd><Money value={data.paid} /></dd></dt><dt className="is-remaining">المتبقي <dd><Money value={data.remaining} /></dd></dt></dl><Button className="ajn-rose-button w-full" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : `/admin/orders?serviceOrder=${id}`}><Banknote className="h-4 w-4" /> استلام دفعة</Link></Button></section>
           <section className="ajn-side-panel"><h3>إجراءات سريعة</h3><div className="ajn-quick-actions"><Button variant="ghost" asChild><Link href={invoiceUrl}><Printer /> طباعة الفاتورة</Link></Button><Button variant="ghost" asChild><Link href="/admin/documents"><ReceiptText /> طباعة العقد</Link></Button><Button variant="ghost" asChild><Link href="/admin/qr-orders"><QrCode /> إنشاء QR</Link></Button><Button variant="ghost" asChild><Link href="/admin/tasks"><Users /> إسناد موظفين</Link></Button><Button variant="ghost" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : "/admin/reserved-stock"}><Warehouse /> حجز مستودع</Link></Button><Button variant="ghost" asChild><Link href="/admin/invitations"><Send /> دعوة إلكترونية</Link></Button><Button variant="ghost" asChild><Link href={data.customerId ? `/admin/customers?customer=${data.customerId}` : `/admin/customers?search=${encodeURIComponent(data.phone)}`}><ExternalLink /> فتح العميل</Link></Button></div></section>
           <section className="ajn-ai-panel"><div><Sparkles /><span><small>مساعد العمليات</small><h3>توصيات ذكية</h3></span></div>{recommendations.length ? <ul>{recommendations.map((item) => <li key={item}><AlertTriangle />{item}</li>)}</ul> : <p><CheckCircle2 /> لا توجد مخاطر مباشرة مسجلة لهذا الحجز.</p>}</section>
         </aside>
@@ -831,7 +887,7 @@ function TimelineRows({ history, data, compact = false }: { history: any[]; data
 }
 
 function FinancialPanel({ data, finance, invoiceUrl }: { data: UnifiedBooking; finance: any; invoiceUrl: string }) {
-  return <section className="ajn-panel"><div className="ajn-panel-title"><div><CircleDollarSign /><span><small>التحصيل والفواتير</small><h2>اللوحة المالية</h2></span></div><Button variant="outline" asChild><Link href={invoiceUrl}><Printer className="h-4 w-4" /> فتح الفاتورة</Link></Button></div><div className="ajn-financial-grid">{[{ label: "إجمالي الحجز", value: data.total }, { label: "المدفوع", value: data.paid }, { label: "المتبقي", value: data.remaining }].map((item) => <div key={item.label}><small>{item.label}</small><Money value={item.value} /></div>)}</div>{finance?.payments?.length ? <TimelineRows history={finance.payments} data={data} /> : <div className="ajn-inline-note"><ReceiptText /> تُدار سندات القبض وجدول الدفعات من النظام المالي الحالي وترتبط برقم الحجز نفسه.</div>}</section>;
+  return <section className="ajn-panel"><div className="ajn-panel-title"><div><CircleDollarSign /><span><small>التحصيل والفواتير</small><h2>اللوحة المالية</h2></span></div><Button variant="outline" asChild><Link href={invoiceUrl}><Printer className="h-4 w-4" /> فتح الفاتورة</Link></Button></div><div className="ajn-financial-grid">{[{ label: "المبلغ الكلي", value: data.total }, { label: "العربون", value: data.paid }, { label: "المتبقي", value: data.remaining }].map((item) => <div key={item.label}><small>{item.label}</small><Money value={item.value} /></div>)}</div><p className="mt-3 text-xs font-semibold text-primary">حالة الدفع: {data.paymentStatus === "paid" ? "مدفوع بالكامل" : data.paymentStatus === "partial" ? "مدفوع جزئياً" : "غير مدفوع"}</p>{finance?.payments?.length ? <TimelineRows history={finance.payments} data={data} /> : <div className="ajn-inline-note"><ReceiptText /> تُدار سندات القبض وجدول الدفعات من النظام المالي الحالي وترتبط برقم الحجز نفسه.</div>}</section>;
 }
 
 function WarehousePanel({ source, id, reservations }: { source: "service" | "kosha"; id: number; reservations: any[] }) {
@@ -842,6 +898,29 @@ function EmployeesPanel({ data }: { data: UnifiedBooking }) {
   const raw: any = data.raw;
   const names = [raw.primaryEmployeeName, raw.assistantEmployeeName, raw.customFields?.crewName].filter(Boolean);
   return <section className="ajn-panel"><div className="ajn-panel-title"><div><Users /><span><small>الفرق والمهام</small><h2>الموظفون المكلّفون</h2></span></div><Button variant="outline" asChild><Link href="/admin/tasks">فتح مهام الموظفين</Link></Button></div>{names.length ? <div className="ajn-team-list">{names.map((name: string, index: number) => <div key={`${name}-${index}`}><span>{String(name).slice(0, 1)}</span><div><strong>{name}</strong><small>{index === 0 ? "المسؤول الرئيسي" : "عضو فريق"}</small></div><StatusBadge status="ready" /></div>)}</div> : <div className="ajn-empty compact"><Users /><h3>لم يتم إسناد فريق بعد</h3><p>أسند فرق الكوشة والتصوير والورد والصوت والنقل من نظام الموظفين والمهام.</p></div>}</section>;
+}
+
+function BookingAttachmentsPanel({ data }: { data: UnifiedBooking }) {
+  const raw = data.raw as ServiceOrder;
+  const photos = bookingPhotosFromFields(raw.customFields);
+
+  return (
+    <section className="ajn-panel">
+      <div className="ajn-panel-title"><div><PackageCheck /><span><small>الصور والمستندات</small><h2>مرفقات الحجز</h2></span></div></div>
+      {photos.length ? (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {photos.map((photo, index) => (
+            <a key={bookingPhotoKey(photo)} href={photo.largeUrl || photo.url} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl border border-border/30 bg-background/50 p-1.5">
+              <img src={bookingPhotoPreview(photo)} alt={`صورة الحجز ${data.number} - ${index + 1}`} className="aspect-square w-full rounded-lg object-cover" />
+            </a>
+          ))}
+        </div>
+      ) : (
+        <div className="ajn-empty compact"><PackageCheck /><h3>لا توجد صور مرفقة</h3><p>يمكن إرفاق الصور عند إنشاء الحجز أو تعديله.</p></div>
+      )}
+      <div className="mt-3"><Button variant="outline" asChild><Link href="/admin/documents">فتح مركز المستندات</Link></Button></div>
+    </section>
+  );
 }
 
 function EmptyTab({ icon: Icon, title, text, action, href }: { icon: typeof ListChecks; title: string; text: string; action: string; href: string }) {

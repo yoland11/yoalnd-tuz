@@ -25,6 +25,14 @@ import { useToast } from "@/hooks/use-toast";
 import { AccountSummaryCard, type LastPayment } from "./payment-collection";
 import { LinkedAssetsPanel } from "./linked-assets-panel";
 import { useEditFormGuard } from "@/hooks/use-edit-form-guard";
+import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import {
+  bookingPhotoKey,
+  bookingPhotoPreview,
+  bookingPhotosFromFields,
+  fieldsWithBookingPhotos,
+  type BookingPhoto,
+} from "@/lib/booking-photos";
 
 export type ServiceOrder = {
   id: number; trackingCode: string | null; serviceId: number; serviceName: string;
@@ -965,7 +973,7 @@ function PaymentPanel({
 function formatHistoryDate(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString("ar-IQ", {
+  return d.toLocaleString("ar-IQ-u-nu-latn", {
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
@@ -1306,6 +1314,10 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
 export function EditServiceOrderModal({ order, onClose, onSaved }: { order: ServiceOrder; onClose: () => void; onSaved?: () => void }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const initialBookingPhotos = useRef(bookingPhotosFromFields(order.customFields));
+  const [bookingPhotos, setBookingPhotos] = useState<BookingPhoto[]>(initialBookingPhotos.current);
+  const [replacePhotoIndex, setReplacePhotoIndex] = useState<number | null>(null);
+  const [imageUploading, setImageUploading] = useState(false);
   const [form, setForm] = useState({
     serviceId: order.serviceId,
     customerName: order.customerName,
@@ -1324,7 +1336,9 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
     } as Record<string, any>,
   });
   const initialForm = useRef(JSON.stringify(form));
-  const dirty = JSON.stringify(form) !== initialForm.current;
+  const dirty =
+    JSON.stringify(form) !== initialForm.current ||
+    JSON.stringify(bookingPhotos) !== JSON.stringify(initialBookingPhotos.current);
   const { requestClose, guardDialog } = useEditFormGuard(dirty, onClose);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [previewReady, setPreviewReady] = useState(false);
@@ -1345,7 +1359,8 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
   const selectedServiceType = selectedService?.type ?? order.serviceType;
   const totalAmount = Math.max(0, Number(form.totalAmount || 0) || 0);
   const enteredPaidAmount = Math.max(0, Number(form.depositAmount || 0) || 0);
-  const paidAmount = Math.min(totalAmount, form.paymentMethod === "cash" ? totalAmount : enteredPaidAmount);
+  const depositTooHigh = enteredPaidAmount > totalAmount;
+  const paidAmount = Math.min(totalAmount, enteredPaidAmount);
   const remainingAmount = Math.max(0, totalAmount - paidAmount);
   const computedPaymentStatus = remainingAmount <= 0 && totalAmount > 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
 
@@ -1374,6 +1389,14 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
     const nextErrors = validateServiceDetails(selectedServiceType, details);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
+    if (depositTooHigh) {
+      toast({
+        title: "العربون غير صالح",
+        description: "لا يمكن أن يتجاوز العربون المبلغ الكلي للحجز.",
+        variant: "destructive",
+      });
+      return;
+    }
     if (!previewReady) {
       setPreviewReady(true);
       return;
@@ -1391,7 +1414,7 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
       depositAmount: paidAmount,
       paymentStatus: computedPaymentStatus,
       paymentMethod: form.paymentMethod || undefined,
-      customFields: details,
+      customFields: fieldsWithBookingPhotos(details, bookingPhotos),
     });
   }
 
@@ -1428,16 +1451,16 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
                 {!STATUS_FILTERS.some(item => item.value === form.status) ? <option value={form.status}>{form.status}</option> : null}
               </select>
             </div>
-            <Input label="السعر الكلي" type="number" value={form.totalAmount} onChange={v => setForm(f => ({ ...f, totalAmount: v }))} />
-            <Input label="العربون" type="number" value={form.depositAmount} onChange={v => setForm(f => ({ ...f, depositAmount: v }))} />
+            <Input label="المبلغ الكلي" type="number" value={form.totalAmount} onChange={v => setForm(f => ({ ...f, totalAmount: v }))} />
+            <div><Input label="العربون" type="number" value={form.depositAmount} onChange={v => setForm(f => ({ ...f, depositAmount: v }))} />{depositTooHigh ? <p className="mt-1 text-xs text-destructive">لا يمكن أن يتجاوز العربون المبلغ الكلي.</p> : null}</div>
             <div>
               <label className="block text-xs text-muted-foreground mb-1">طريقة الدفع</label>
-              <select value={form.paymentMethod} onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value, depositAmount: e.target.value === "cash" ? f.totalAmount : f.depositAmount }))}
+              <select value={form.paymentMethod} onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value }))}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                 <option value="">غير محدد</option><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="pos">بطاقة</option>
               </select>
             </div>
-            <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2"><span className="block text-xs text-muted-foreground">المتبقي وحالة الدفع</span><strong className="mt-1 block text-sm">{formatCurrency(remainingAmount)} · {PAYMENT_STATUS_LABELS[computedPaymentStatus]}</strong></div>
+            <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2"><span className="block text-xs text-muted-foreground">المتبقي وحالة الدفع</span><strong className="mt-1 block text-sm">{formatCurrency(remainingAmount)} · {computedPaymentStatus === "paid" ? "مدفوع بالكامل" : computedPaymentStatus === "partial" ? "مدفوع جزئياً" : "غير مدفوع"}</strong></div>
           </div>
           <ServiceDetailFields
             serviceType={selectedServiceType}
@@ -1454,6 +1477,28 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
             value={form.customFields}
             onChange={(customFields) => setForm((current) => ({ ...current, customFields }))}
           />
+          <div className="space-y-3 rounded-xl border border-border/30 bg-background/35 p-3 sm:p-4">
+            <div><p className="text-sm font-semibold text-foreground">إرفاق صور الحجز (اختياري)</p><p className="mt-1 text-xs text-muted-foreground">يمكن إضافة صور جديدة أو حذف واستبدال الصور السابقة مع إبقاء نفس رقم الحجز.</p></div>
+            {bookingPhotos.length ? <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">{bookingPhotos.map((photo, index) => <div key={bookingPhotoKey(photo)} className="overflow-hidden rounded-lg border border-border/30 bg-card"><img src={bookingPhotoPreview(photo)} alt={`صورة الحجز ${index + 1}`} className="aspect-square w-full object-cover" /><div className="grid grid-cols-2 gap-1 p-1"><Button type="button" variant="ghost" size="sm" onClick={() => setReplacePhotoIndex(index)}>استبدال</Button><Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={() => setBookingPhotos((current) => current.filter((_, photoIndex) => photoIndex !== index))}>حذف</Button></div></div>)}</div> : <div className="rounded-lg border border-dashed border-border/30 p-5 text-center text-xs text-muted-foreground">لا توجد صور مرفقة</div>}
+            <ImageUploadEditor
+              kind="attachment"
+              multiple={replacePhotoIndex == null}
+              showCameraAction
+              label={replacePhotoIndex == null ? "اختيار صور من المعرض" : "اختيار بديل للصورة المحددة"}
+              onUploadStateChange={setImageUploading}
+              onComplete={(results: ImageEditResult[]) => {
+                const uploaded = results.flatMap((result) => {
+                  const metadata = result.metadata as ImageEditResult["metadata"] & Record<string, string | undefined>;
+                  const url = metadata.originalUrl || metadata.largeUrl || metadata.mediumUrl;
+                  return url ? [{ url, thumbnailUrl: metadata.thumbnailUrl || null, mediumUrl: metadata.mediumUrl || null, largeUrl: metadata.largeUrl || null, checksum: metadata.checksum || null, addedAt: new Date().toISOString() }] : [];
+                });
+                if (!uploaded.length) return;
+                setBookingPhotos((current) => replacePhotoIndex == null ? [...current, ...uploaded] : current.map((photo, index) => index === replacePhotoIndex ? uploaded[0] : photo));
+                setReplacePhotoIndex(null);
+              }}
+            />
+            {replacePhotoIndex != null ? <Button type="button" variant="ghost" size="sm" onClick={() => setReplacePhotoIndex(null)}>إلغاء الاستبدال</Button> : null}
+          </div>
           <Input label="ملاحظات" value={form.notes} onChange={v => setForm(f => ({ ...f, notes: v }))} />
           <Input label="ملاحظات داخلية" value={form.internalNotes} onChange={v => setForm(f => ({ ...f, internalNotes: v }))} />
           {previewReady && (
@@ -1472,8 +1517,8 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
           )}
           <div className="flex flex-col-reverse gap-2 border-t border-border/30 pt-4 sm:flex-row sm:justify-end">
             <Button type="button" variant="outline" onClick={requestClose}>إلغاء</Button>
-            <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? "جاري الحفظ..." : previewReady ? "حفظ التعديلات" : "معاينة التغييرات"}
+            <Button type="submit" disabled={save.isPending || imageUploading || depositTooHigh}>
+              {imageUploading ? "جارٍ رفع الصور..." : save.isPending ? "جاري الحفظ..." : previewReady ? "حفظ التعديلات" : "معاينة التغييرات"}
             </Button>
           </div>
         </form>

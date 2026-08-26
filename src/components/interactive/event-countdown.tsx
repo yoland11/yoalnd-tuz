@@ -74,7 +74,7 @@ export function EventCountdown({
         {units.map((unit) => (
           <div key={unit.label} className="rounded-lg border border-border/25 bg-background/60 px-2 py-2 text-center">
             <p className={cn("font-bold text-foreground tabular-nums", compact ? "text-base" : "text-xl")}>
-              {unit.value.toLocaleString("ar-IQ")}
+              {unit.value.toLocaleString("ar-IQ-u-nu-latn")}
             </p>
             <p className="mt-0.5 text-[11px] text-muted-foreground">{unit.label}</p>
           </div>

@@ -63,7 +63,7 @@ export default function RecycleBinPage() {
   function confirmPurge() {
     if (!purgeTarget || !active) return;
     if (reason.trim().length < 3) {
-      toast({ title: "أدخل سبب الحذف", description: "٣ أحرف على الأقل", variant: "destructive" });
+      toast({ title: "أدخل سبب الحذف", description: "3 أحرف على الأقل", variant: "destructive" });
       return;
     }
     if (!window.confirm("الحذف النهائي لا يمكن التراجع عنه. هل أنت متأكد؟")) return;
@@ -135,7 +135,7 @@ export default function RecycleBinPage() {
                     <p className="text-sm font-semibold text-foreground">{it.title || `#${it.id}`}</p>
                     <p className="text-xs text-muted-foreground">
                       {it.subtitle}
-                      {it.deletedAt ? ` · حُذف في ${new Date(it.deletedAt).toLocaleString("ar-IQ")}` : ""}
+                      {it.deletedAt ? ` · حُذف في ${new Date(it.deletedAt).toLocaleString("ar-IQ-u-nu-latn")}` : ""}
                     </p>
                   </div>
                   <div className="flex gap-2">

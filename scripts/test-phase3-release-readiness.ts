@@ -395,6 +395,9 @@ try {
   pass("invoice PDF generation uses the bundled Arabic fonts from the filtered test workspace");
 
   const api = await import("../src/server/api");
+  const { withDesktopIdempotency } = await import("../src/server/desktop-idempotency");
+  const dispatch = (request: NextRequest, path: string[]) =>
+    withDesktopIdempotency(request, path, () => api.handleApi(request, path));
   const adminPassword = "Phase3-admin-pass-42";
   await cleanPool.query("update staff set password_hash=$2 where id=$1", [researchStaff.id, bcrypt.hashSync(adminPassword, 4)]);
   const adminSession = await api.createSession(Number(researchStaff.id));
@@ -445,6 +448,90 @@ try {
   assert.equal(Number((await one("select stock from products where id=$1", [saleProduct.id])).stock), 10);
   assert.equal((await one("select status from sales_invoices where id=$1", [createdSaleBody.id])).status, "cancelled");
   pass("sale creation, retry, stock deduction, printable invoice view, and cancellation restoration work end to end");
+
+  const purchaseSupplier = await one(
+    "insert into suppliers(name,balance,status,is_active) values($1,'0','active',1) returning id",
+    [`TEST-${suffix}-supplier`],
+  );
+  const purchaseIdempotencyKey = `TEST-purchase-${randomUUID()}`;
+  const purchasePayload = JSON.stringify({
+    supplierId: purchaseSupplier.id,
+    supplierName: `TEST-${suffix}-supplier`,
+    paymentMethod: "cash",
+    paidAmount: 40,
+    items: [{
+      productId: saleProduct.id,
+      productName: `TEST-${suffix}-product`,
+      quantity: 3,
+      costPrice: 40,
+      salePrice: 100,
+      discount: 0,
+    }],
+  });
+  const purchaseRequest = () => new NextRequest("http://localhost/api/admin/purchase-invoices", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${adminSession.token}`,
+      "content-type": "application/json",
+      "x-idempotency-key": purchaseIdempotencyKey,
+    },
+    body: purchasePayload,
+  });
+  const cashBeforePurchase = await one("select coalesce(sum(current_balance::numeric),0)::float balance from master_cash_box");
+  const createdPurchase = await dispatch(purchaseRequest(), ["admin", "purchase-invoices"]);
+  assert.equal(createdPurchase.status, 201);
+  const createdPurchaseBody = await createdPurchase.json();
+  const retriedPurchase = await dispatch(purchaseRequest(), ["admin", "purchase-invoices"]);
+  assert.equal(retriedPurchase.status, 201);
+  assert.equal(retriedPurchase.headers.get("x-idempotent-replay"), "1");
+  assert.equal((await retriedPurchase.json()).id, createdPurchaseBody.id);
+  assert.equal((await one("select count(*)::int count from purchase_invoices where idempotency_key=$1", [purchaseIdempotencyKey])).count, 1);
+  assert.equal((await one("select count(*)::int count from purchase_invoice_items where invoice_id=$1", [createdPurchaseBody.id])).count, 1);
+  assert.equal((await one("select count(*)::int count from stock_movements where related_type='purchase_invoice' and related_id=$1", [createdPurchaseBody.id])).count, 1);
+  assert.equal(Number((await one("select stock from products where id=$1", [saleProduct.id])).stock), 13);
+  assert.equal(Number((await one("select balance from suppliers where id=$1", [purchaseSupplier.id])).balance), 80);
+  assert.equal((await one("select count(*)::int count from financial_transactions where source_type='purchase_invoice' and source_id=$1", [String(createdPurchaseBody.id)])).count, 1);
+  assert.equal(Number((await one("select coalesce(sum(current_balance::numeric),0)::float balance from master_cash_box")).balance), Number(cashBeforePurchase.balance));
+  const purchaseRegister = await api.handleApi(
+    new NextRequest("http://localhost/api/admin/purchase-invoices?limit=20", { headers: { authorization: `Bearer ${adminSession.token}` } }),
+    ["admin", "purchase-invoices"],
+  );
+  assert.equal(purchaseRegister.status, 200);
+  const purchaseRegisterBody = await purchaseRegister.json();
+  assert.ok(Array.isArray(purchaseRegisterBody.data));
+  assert.equal(typeof purchaseRegisterBody.total, "number");
+  assert.equal(typeof purchaseRegisterBody.summary, "object");
+  pass("purchase save, item/stock/supplier/financial contracts, API shape, and double-submit idempotency work end to end");
+
+  const bookingKosha = await one(
+    "insert into koshas(name,slug,price,is_active) values($1,$2,100,true) returning id",
+    [`TEST-${suffix}-kosha`, `test-${suffix}-kosha`],
+  );
+  const bookingIdempotencyKey = `TEST-booking-${randomUUID()}`;
+  const bookingPayload = JSON.stringify({
+    customerName: `TEST-${suffix}-customer`,
+    phone: `0770${Date.now().toString().slice(-7)}`,
+    eventDate: "2026-09-15",
+    eventType: "wedding",
+    province: "كركوك",
+    area: "تازة",
+  });
+  const bookingRequest = () => new NextRequest(`http://localhost/api/koshas/${bookingKosha.id}/bookings`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-idempotency-key": bookingIdempotencyKey },
+    body: bookingPayload,
+  });
+  const createdBooking = await dispatch(bookingRequest(), ["koshas", String(bookingKosha.id), "bookings"]);
+  assert.equal(createdBooking.status, 201);
+  const createdBookingBody = await createdBooking.json();
+  const retriedBooking = await dispatch(bookingRequest(), ["koshas", String(bookingKosha.id), "bookings"]);
+  assert.equal(retriedBooking.status, 201);
+  assert.equal(retriedBooking.headers.get("x-idempotent-replay"), "1");
+  assert.equal((await retriedBooking.json()).id, createdBookingBody.id);
+  assert.equal((await one("select count(*)::int count from kosha_bookings where id=$1", [createdBookingBody.id])).count, 1);
+  assert.equal(Number((await one("select kosha_id from kosha_bookings where id=$1", [createdBookingBody.id])).kosha_id), Number(bookingKosha.id));
+  assert.ok(createdBookingBody.trackingCode);
+  pass("booking save, customer/service relation, response contract, and route-level idempotency work end to end");
 
   const publicResearch = await api.handleApi(
     new NextRequest(`http://localhost/api/research/track/${createdResearchBody.order.qrToken}`),
@@ -581,6 +668,41 @@ try {
   pass("administrator login, authorized session use, logout, and post-logout rejection work end to end");
 
   const { db, getPool } = await import("@workspace/db");
+  const { sql: drizzleSql } = await import("drizzle-orm");
+  const rollbackKey = `TEST-rollback-${randomUUID()}`;
+  const rollbackInvoiceNo = `TEST-RB-${suffix}`.slice(0, 40);
+  const rollbackTransactionNo = `TEST-RB-TXN-${suffix}`.slice(0, 50);
+  const rollbackStockBefore = Number((await one("select stock from products where id=$1", [saleProduct.id])).stock);
+  const rollbackCashBefore = Number((await one("select coalesce(sum(current_balance::numeric),0)::float balance from master_cash_box")).balance);
+  await assert.rejects(() => db.transaction(async (tx) => {
+    const inserted: any = await tx.execute(drizzleSql`
+      insert into sales_invoices(invoice_no,idempotency_key,date,customer_name,total,paid_amount,remaining_amount,payment_status,status,created_by_name)
+      values(${rollbackInvoiceNo},${rollbackKey},current_date,'TEST rollback customer',10,10,0,'paid','active','TEST runner') returning id
+    `);
+    const invoiceId = Number((inserted.rows ?? inserted)[0].id);
+    await tx.execute(drizzleSql`
+      insert into sales_invoice_items(invoice_id,product_id,product_name,quantity,unit_price,total)
+      values(${invoiceId},${saleProduct.id},'TEST rollback item',1,10,10)
+    `);
+    await tx.execute(drizzleSql`update products set stock=stock::numeric-1 where id=${saleProduct.id}`);
+    await tx.execute(drizzleSql`
+      insert into stock_movements(product_id,quantity_change,reason,related_type,related_id,idempotency_key,created_by_name)
+      values(${saleProduct.id},-1,'TEST forced rollback','sales_invoice',${invoiceId},${`${rollbackKey}:stock`},'TEST runner')
+    `);
+    await tx.execute(drizzleSql`
+      insert into financial_transactions(transaction_no,transaction_date,direction,amount,transaction_type,idempotency_key,approval_status,requested_by_name)
+      values(${rollbackTransactionNo},current_date,'revenue',10,'sales_invoice',${`${rollbackKey}:cash`},'executed','TEST runner')
+    `);
+    await tx.execute(drizzleSql`update master_cash_box set current_balance=current_balance::numeric+10`);
+    throw new Error("TEST forced multi-record rollback");
+  }), /TEST forced multi-record rollback/);
+  assert.equal((await one("select count(*)::int count from sales_invoices where idempotency_key=$1", [rollbackKey])).count, 0);
+  assert.equal((await one("select count(*)::int count from stock_movements where idempotency_key=$1", [`${rollbackKey}:stock`])).count, 0);
+  assert.equal((await one("select count(*)::int count from financial_transactions where idempotency_key=$1", [`${rollbackKey}:cash`])).count, 0);
+  assert.equal(Number((await one("select stock from products where id=$1", [saleProduct.id])).stock), rollbackStockBefore);
+  assert.equal(Number((await one("select coalesce(sum(current_balance::numeric),0)::float balance from master_cash_box")).balance), rollbackCashBefore);
+  pass("forced invoice failure rolls back invoice, item, stock, movement, financial transaction, and Cash Box state");
+
   const beforeRollback = Number((await one("select count(*)::int count from settings where key like 'phase3-rollback-%'")).count);
   await assert.rejects(() => db.transaction(async (tx) => {
     await tx.execute((await import("drizzle-orm")).sql`insert into settings(key,value) values(${`phase3-rollback-${suffix}`},'{}'::jsonb)`);

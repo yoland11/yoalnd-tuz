@@ -391,7 +391,7 @@ function OrderDetailPage({ id, me }: { id: number; me: AdminMe }) {
   function printReceipt() {
     if (!order) return; void photographyApi.markPrinted(order.id).catch(() => {});
     const win = window.open("", "_blank", "width=420,height=720"); if (!win) return;
-    const date = new Date(order.createdAt).toLocaleDateString("ar-IQ");
+    const date = new Date(order.createdAt).toLocaleDateString("ar-IQ-u-nu-latn");
     const rows = [
       ["المناسبة", order.event?.eventName || order.event?.groomName || "-"],
       ["الزبون", order.customerName],
@@ -594,7 +594,7 @@ function ReportsPage({ me }: { me: AdminMe }) {
   );
 }
 
-function NotificationsPage() { const [rows, setRows] = useState<Awaited<ReturnType<typeof photographyApi.notifications>> | null>(null); const load = useCallback(() => photographyApi.notifications().then(setRows).catch(() => setRows([])), []); useEffect(() => { load(); }, [load]); async function readAll() { await photographyApi.markAllRead().catch(() => {}); load(); } return <div className="space-y-3 p-4"><div className="flex items-center justify-between"><h1 className="text-lg font-bold">الإشعارات</h1><button type="button" onClick={readAll} className="text-sm text-primary">تعليم الكل كمقروء</button></div>{rows === null ? <Loading /> : rows.length ? <div className="space-y-2">{rows.map((item) => <div key={item.id} className={`rounded-xl border p-3 ${item.readAt ? "border-border/30 bg-card" : "border-primary/40 bg-primary/5"}`}><div className="font-bold text-foreground">{item.title}</div>{item.body ? <div className="mt-1 text-sm text-muted-foreground">{item.body}</div> : null}<div className="mt-2 text-xs text-muted-foreground">{new Date(item.createdAt).toLocaleString("ar-IQ")}</div></div>)}</div> : <Empty text="لا توجد إشعارات" />}</div>; }
+function NotificationsPage() { const [rows, setRows] = useState<Awaited<ReturnType<typeof photographyApi.notifications>> | null>(null); const load = useCallback(() => photographyApi.notifications().then(setRows).catch(() => setRows([])), []); useEffect(() => { load(); }, [load]); async function readAll() { await photographyApi.markAllRead().catch(() => {}); load(); } return <div className="space-y-3 p-4"><div className="flex items-center justify-between"><h1 className="text-lg font-bold">الإشعارات</h1><button type="button" onClick={readAll} className="text-sm text-primary">تعليم الكل كمقروء</button></div>{rows === null ? <Loading /> : rows.length ? <div className="space-y-2">{rows.map((item) => <div key={item.id} className={`rounded-xl border p-3 ${item.readAt ? "border-border/30 bg-card" : "border-primary/40 bg-primary/5"}`}><div className="font-bold text-foreground">{item.title}</div>{item.body ? <div className="mt-1 text-sm text-muted-foreground">{item.body}</div> : null}<div className="mt-2 text-xs text-muted-foreground">{new Date(item.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</div></div>)}</div> : <Empty text="لا توجد إشعارات" />}</div>; }
 
 function SearchField({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) { return <div className="flex items-center gap-2 rounded-lg border border-border/30 bg-card px-3"><Search className="h-4 w-4 flex-shrink-0 text-muted-foreground" /><input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="min-h-11 w-full bg-transparent text-sm outline-none" /></div>; }
 function Loading() { return <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>; }

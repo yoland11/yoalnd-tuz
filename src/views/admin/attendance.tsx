@@ -38,7 +38,7 @@ function todayIso() {
 
 function formatDate(value: string | null) {
   if (!value) return "—";
-  return new Date(value).toLocaleString("ar-IQ", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(value).toLocaleString("ar-IQ-u-nu-latn", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 export default function AttendancePage() {
@@ -126,15 +126,15 @@ export default function AttendancePage() {
       <div className="grid gap-3 md:grid-cols-3">
         <div className="bg-card rounded-xl border border-border/30 p-4">
           <p className="text-xs text-muted-foreground flex items-center gap-2"><UserCheck className="w-4 h-4 text-primary" /> الحاضرون الآن</p>
-          <p className="text-2xl font-bold text-foreground mt-2">{presentNow.toLocaleString("ar-IQ")}</p>
+          <p className="text-2xl font-bold text-foreground mt-2">{presentNow.toLocaleString("ar-IQ-u-nu-latn")}</p>
         </div>
         <div className="bg-card rounded-xl border border-border/30 p-4">
           <p className="text-xs text-muted-foreground flex items-center gap-2"><Clock3 className="w-4 h-4 text-primary" /> مجموع الساعات</p>
-          <p className="text-2xl font-bold text-foreground mt-2">{totalHours.toLocaleString("ar-IQ", { maximumFractionDigits: 1 })}</p>
+          <p className="text-2xl font-bold text-foreground mt-2">{totalHours.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 1 })}</p>
         </div>
         <div className="bg-card rounded-xl border border-border/30 p-4">
           <p className="text-xs text-muted-foreground">عدد السجلات</p>
-          <p className="text-2xl font-bold text-foreground mt-2">{(data?.data.length ?? 0).toLocaleString("ar-IQ")}</p>
+          <p className="text-2xl font-bold text-foreground mt-2">{(data?.data.length ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</p>
         </div>
       </div>
 
@@ -174,20 +174,20 @@ export default function AttendancePage() {
                     <td className="p-3 text-muted-foreground whitespace-nowrap">{formatDate(row.checkInAt)}</td>
                     <td className="p-3 text-muted-foreground whitespace-nowrap">{formatDate(row.checkOutAt)}</td>
                     <td className="p-3"><span className="rounded-full bg-primary/10 text-primary px-2.5 py-1 text-xs">{STATUS_LABELS[row.status] ?? row.status}</span></td>
-                    <td className="p-3 text-foreground">{row.hours.toLocaleString("ar-IQ", { maximumFractionDigits: 1 })}</td>
+                    <td className="p-3 text-foreground">{row.hours.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 1 })}</td>
                   </tr>
                 ))}
               </tbody>
               <TableTotalsFooter rows={data.data} allRows={data.data} labelColSpan={3} cells={[
-                { key: "status", label: "الحضور", value: () => 0, format: (_, rows) => <span className="text-xs">حاضر {rows.filter((row) => row.status === "present").length.toLocaleString("ar-IQ")} / غائب {rows.filter((row) => row.status === "absent").length.toLocaleString("ar-IQ")}</span> },
-                { key: "hours", label: "إجمالي الساعات", value: (row) => Number(row.hours ?? 0), format: (value) => value.toLocaleString("ar-IQ", { maximumFractionDigits: 1 }) },
+                { key: "status", label: "الحضور", value: () => 0, format: (_, rows) => <span className="text-xs">حاضر {rows.filter((row) => row.status === "present").length.toLocaleString("ar-IQ-u-nu-latn")} / غائب {rows.filter((row) => row.status === "absent").length.toLocaleString("ar-IQ-u-nu-latn")}</span> },
+                { key: "hours", label: "إجمالي الساعات", value: (row) => Number(row.hours ?? 0), format: (value) => value.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 1 }) },
               ]} />
             </table>
           </div>
         </div>
       )}
 
-      <section className="rounded-xl border border-border/40 bg-card p-4" aria-labelledby="my-payroll-title"><div className="flex items-center gap-2"><Banknote className="h-5 w-5 text-primary" /><div><h2 id="my-payroll-title" className="font-semibold">ملخص رواتبي</h2><p className="text-xs text-muted-foreground">عرض للموظف الحالي فقط؛ الدفع والاعتماد غير متاحين من هنا.</p></div></div>{payrollQuery.isLoading ? <Skeleton className="mt-4 h-20 rounded-xl" /> : payrollQuery.data?.length ? <div className="mt-4 space-y-2">{payrollQuery.data.map((payroll) => <div key={payroll.id} className="flex flex-col gap-3 rounded-lg border border-border/40 p-3 sm:flex-row sm:items-center sm:justify-between"><div><b>{new Date(`${payroll.period}-01T00:00:00Z`).toLocaleDateString("ar-IQ", { month: "long", year: "numeric", timeZone: "UTC" })}</b><p className="mt-1 text-xs text-muted-foreground">{payroll.runNo} · {payroll.status}</p></div><div className="flex items-center justify-between gap-3 sm:justify-end"><b className="tabular-nums">{Number(payroll.line.netSalary || 0).toLocaleString("en-US")} د.ع</b><Button size="sm" variant="outline" onClick={() => setSelectedPayroll(payroll)}><Eye className="ms-2 h-4 w-4" />تفاصيل احتساب الراتب</Button></div></div>)}</div> : <p className="mt-4 text-sm text-muted-foreground">لا توجد رواتب مسجلة لك حتى الآن.</p>}</section>
+      <section className="rounded-xl border border-border/40 bg-card p-4" aria-labelledby="my-payroll-title"><div className="flex items-center gap-2"><Banknote className="h-5 w-5 text-primary" /><div><h2 id="my-payroll-title" className="font-semibold">ملخص رواتبي</h2><p className="text-xs text-muted-foreground">عرض للموظف الحالي فقط؛ الدفع والاعتماد غير متاحين من هنا.</p></div></div>{payrollQuery.isLoading ? <Skeleton className="mt-4 h-20 rounded-xl" /> : payrollQuery.data?.length ? <div className="mt-4 space-y-2">{payrollQuery.data.map((payroll) => <div key={payroll.id} className="flex flex-col gap-3 rounded-lg border border-border/40 p-3 sm:flex-row sm:items-center sm:justify-between"><div><b>{new Date(`${payroll.period}-01T00:00:00Z`).toLocaleDateString("ar-IQ-u-nu-latn", { month: "long", year: "numeric", timeZone: "UTC" })}</b><p className="mt-1 text-xs text-muted-foreground">{payroll.runNo} · {payroll.status}</p></div><div className="flex items-center justify-between gap-3 sm:justify-end"><b className="tabular-nums">{Number(payroll.line.netSalary || 0).toLocaleString("en-US")} د.ع</b><Button size="sm" variant="outline" onClick={() => setSelectedPayroll(payroll)}><Eye className="ms-2 h-4 w-4" />تفاصيل احتساب الراتب</Button></div></div>)}</div> : <p className="mt-4 text-sm text-muted-foreground">لا توجد رواتب مسجلة لك حتى الآن.</p>}</section>
 
       <PayrollDetails payroll={selectedPayroll} onClose={() => setSelectedPayroll(null)} />
     </div>

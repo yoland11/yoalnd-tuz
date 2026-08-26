@@ -1195,7 +1195,7 @@ export default function PrintLabelsPage() {
                   <tbody>
                     {history.slice(0, 100).map((h) => (
                       <tr key={h.id} className="border-b border-border/20">
-                        <td className="py-2 text-muted-foreground">{new Date(h.at).toLocaleString("ar")}</td>
+                        <td className="py-2 text-muted-foreground">{new Date(h.at).toLocaleString("ar-u-nu-latn")}</td>
                         <td className="py-2 text-foreground">{h.template}</td>
                         <td className="py-2 text-foreground">{h.count}</td>
                         <td className="py-2 text-muted-foreground">{h.printer}</td>

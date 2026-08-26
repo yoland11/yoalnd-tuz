@@ -2,12 +2,18 @@
 // Run: node scripts/verify-kosha-operations.mjs
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const { build } = require("../node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js");
+const esbuildPackage = readdirSync(join(process.cwd(), "node_modules", ".pnpm"))
+  .find((name) => /^esbuild@/.test(name));
+if (!esbuildPackage) throw new Error("esbuild package is not installed");
+const { build } = require(join(
+  process.cwd(), "node_modules", ".pnpm", esbuildPackage,
+  "node_modules", "esbuild", "lib", "main.js",
+));
 
 const bundle = await build({
   entryPoints: ["src/server/kosha-operations.ts"],
@@ -102,6 +108,23 @@ check("event_running → before_return", go("event_running", "before_return").ok
 check("before_return → dismantling", go("before_return", "dismantling").ok, true);
 check("dismantling → returned", go("dismantling", "returned").ok, true);
 check("returned → delivered", go("returned", "delivered").ok, true);
+
+// ── Four-stage staff portal milestones ──
+check("staff portal exposes exactly four execution milestones",
+  staffClient.includes('{ key: "preparing", label: "تم الاستلام" }') &&
+    staffClient.includes('{ key: "ready", label: "تم تجهيز" }') &&
+    staffClient.includes('{ key: "executed", label: "تم التنصيب" }') &&
+    staffClient.includes('{ key: "delivered", label: "تم الاسترجاع" }'), true);
+check("booked can advance directly to the received/prepared milestone", go("booked", "ready").ok, true);
+check("ready can advance directly to installed with a complete checklist", go("ready", "executed").ok, true);
+check("ready cannot advance to installed with an incomplete checklist",
+  go("ready", "executed", { checklist: partial }).status, 422);
+check("installed milestone loads the existing field checklist server-side",
+  staffApi.includes('toStage === "executed"') && staffApi.includes("select item, condition from kosha_checklist_entries"), true);
+check("event-running can close through the returned milestone",
+  go("event_running", "delivered").ok, true);
+check("field preparation center remains in the booking detail",
+  staffBookingDetail.includes("<KoshaOperationsPanel") && staffOperations.includes("مركز التجهيز الميداني"), true);
 
 // ── Illegal moves ──
 check("cannot skip several stages", go("booked", "on_the_way").ok, false);

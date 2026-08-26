@@ -227,7 +227,7 @@ function CustomerReports() {
         </div>
       ))}
       <div className="rounded-xl border border-border/30 bg-card p-4 text-center">
-        <div className="text-3xl font-extrabold text-foreground">{data.totalCustomers.toLocaleString("ar-IQ")}</div>
+        <div className="text-3xl font-extrabold text-foreground">{data.totalCustomers.toLocaleString("ar-IQ-u-nu-latn")}</div>
         <div className="mt-1 text-xs text-muted-foreground">إجمالي العملاء</div>
       </div>
     </div>

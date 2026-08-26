@@ -33,9 +33,9 @@ type Booking = { id: number; source: string; service: string; customer: string; 
 type Notice = { id: number; type: string; title: string; body: string; href: string | null; readAt: string | null; createdAt: string };
 type Payroll = { id: number; runNo: string | null; period: string | null; status: string | null; paidAt: string | null; baseSalary: number; overtimeAmount: number; bonusAmount: number; penaltyAmount: number; advanceDeduction: number; insuranceAmount: number; grossSalary: number; netSalary: number; receivedAt: string | null; receivedBy: string | null; canAcknowledge: boolean };
 
-const money = new Intl.NumberFormat("ar-IQ", { style: "currency", currency: "IQD", maximumFractionDigits: 0 });
-const dateTime = new Intl.DateTimeFormat("ar-IQ", { dateStyle: "medium", timeStyle: "short" });
-const dateOnly = new Intl.DateTimeFormat("ar-IQ", { dateStyle: "medium" });
+const money = new Intl.NumberFormat("ar-IQ-u-nu-latn", { style: "currency", currency: "IQD", maximumFractionDigits: 0 });
+const dateTime = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { dateStyle: "medium", timeStyle: "short" });
+const dateOnly = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { dateStyle: "medium" });
 
 function textDate(value: string | null | undefined, withTime = false) {
   if (!value) return "غير محدد";

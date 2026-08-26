@@ -61,7 +61,7 @@ const ENTITY_LABELS: Record<string, string> = {
 };
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString("ar-IQ", {
+  return new Date(value).toLocaleString("ar-IQ-u-nu-latn", {
     year: "numeric",
     month: "short",
     day: "numeric",

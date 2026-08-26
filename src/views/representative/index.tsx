@@ -985,7 +985,7 @@ function Payments() {
                         />
                       </TableCell>
                       <TableCell>
-                        {new Date(item.created_at).toLocaleDateString("ar-IQ")}
+                        {new Date(item.created_at).toLocaleDateString("ar-IQ-u-nu-latn")}
                       </TableCell>
                       <TableCell className="text-left">
                         {canPrint &&

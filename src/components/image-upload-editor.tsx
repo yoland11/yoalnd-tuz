@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type * as React from "react";
-import { Crop, Image as ImageIcon, Lock, Minus, Plus, RotateCcw, SlidersHorizontal, Unlock, Upload, X } from "lucide-react";
+import { Camera, Crop, Image as ImageIcon, Lock, Minus, Plus, RotateCcw, SlidersHorizontal, Unlock, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   dataUrlSize,
@@ -86,6 +86,7 @@ type Props = {
   multiple?: boolean;
   accept?: string;
   allowVideo?: boolean;
+  showCameraAction?: boolean;
   currentImage?: string | null;
   currentMetadata?: ImageMetadata | null;
   settings?: Partial<ImageSettings>;
@@ -101,6 +102,7 @@ export function ImageUploadEditor({
   multiple = false,
   accept = SUPPORTED_IMAGE_INPUT_ACCEPT,
   allowVideo = false,
+  showCameraAction = false,
   currentImage,
   currentMetadata,
   settings,
@@ -110,6 +112,7 @@ export function ImageUploadEditor({
   onUploadStateChange,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const [queue, setQueue] = useState<File[]>([]);
@@ -442,6 +445,26 @@ export function ImageUploadEditor({
           className="hidden"
         />
       </label>
+
+      {showCameraAction ? (
+        <>
+          <button
+            type="button"
+            onClick={() => cameraInputRef.current?.click()}
+            className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-border/40 bg-background/55 px-4 py-3 text-sm text-foreground hover:border-primary/50"
+          >
+            <Camera className="h-4 w-4 text-primary" /> التقاط صورة بالكاميرا
+          </button>
+          <input
+            ref={cameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={(event) => void receiveFiles(event.target.files)}
+            className="hidden"
+          />
+        </>
+      ) : null}
 
       {error && <p className="rounded-lg border border-status-danger/20 bg-status-danger/10 px-3 py-2 text-xs text-status-danger">{error}</p>}
 

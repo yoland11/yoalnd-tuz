@@ -607,7 +607,7 @@ export default function Profile() {
                 <p className="text-xs text-muted-foreground mb-1">{t("المستوى الحالي")}</p>
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-lg font-bold text-primary">{rewards?.levelLabel ?? t("برونزي")}</p>
-                  <p className="text-2xl font-bold text-foreground">{Number(rewards?.points ?? customer.rewardPoints ?? 0).toLocaleString("ar-IQ")}</p>
+                  <p className="text-2xl font-bold text-foreground">{Number(rewards?.points ?? customer.rewardPoints ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</p>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">{t("النقاط تظهر بعد اكتمال الطلب أو الحجز.")}</p>
               </div>
@@ -616,7 +616,7 @@ export default function Profile() {
                   <div key={entry.id} className="flex items-center justify-between rounded-xl border border-border/25 bg-background/60 p-3 text-xs">
                     <span className="text-muted-foreground">{entry.note || t("تحديث نقاط")}</span>
                     <span className={entry.points >= 0 ? "text-primary font-semibold" : "text-status-danger font-semibold"}>
-                      {entry.points > 0 ? "+" : ""}{entry.points.toLocaleString("ar-IQ")}
+                      {entry.points > 0 ? "+" : ""}{entry.points.toLocaleString("ar-IQ-u-nu-latn")}
                     </span>
                   </div>
                 )) : (
@@ -838,7 +838,7 @@ function OrderList({
               <div>
                 <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
               <p className="text-xs text-muted-foreground mt-1">
-                {new Date(order.createdAt).toLocaleDateString("ar-IQ", { year: "numeric", month: "long", day: "numeric" })}
+                {new Date(order.createdAt).toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "long", day: "numeric" })}
               </p>
               {order.kind === "rental" && (
                 <p className="text-xs text-muted-foreground mt-1">

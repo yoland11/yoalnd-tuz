@@ -22,7 +22,7 @@ const EMPTY_STATE: DesktopSyncState = {
 };
 
 function dateTime(value: string | null) {
-  return value ? new Intl.DateTimeFormat("ar-IQ", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "لم تتم بعد";
+  return value ? new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "لم تتم بعد";
 }
 
 function sizeLabel(bytes: number) {

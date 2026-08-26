@@ -120,8 +120,8 @@ export function FinanceDashboardPage({ me }: { me: AdminMe }) {
     { label: "رصيد الإغلاق", value: formatCurrency(c.closingBalance), icon: Coins, tone: "text-primary" },
     { label: "فرق الصندوق", value: c.cashDifference == null ? "—" : formatCurrency(c.cashDifference), icon: Scale, tone: c.cashDifference && Math.abs(c.cashDifference) >= 0.005 ? "text-status-warning" : "text-status-success" },
     { label: "صافي الربح", value: formatCurrency(c.netProfit), icon: PiggyBank, tone: "text-status-success" },
-    { label: "عدد الطلبات", value: c.totalOrders.toLocaleString("ar-IQ"), icon: ShoppingBag, tone: "text-foreground" },
-    { label: "عدد الفواتير", value: c.totalInvoices.toLocaleString("ar-IQ"), icon: Receipt, tone: "text-foreground" },
+    { label: "عدد الطلبات", value: c.totalOrders.toLocaleString("ar-IQ-u-nu-latn"), icon: ShoppingBag, tone: "text-foreground" },
+    { label: "عدد الفواتير", value: c.totalInvoices.toLocaleString("ar-IQ-u-nu-latn"), icon: Receipt, tone: "text-foreground" },
   ];
 
   return (

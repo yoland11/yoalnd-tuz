@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "preinstall": "node ./scripts/ensure-pnpm.mjs",
+    "prepare": "node ./scripts/install-git-hooks.mjs",
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "typecheck": "tsc --noEmit",
@@ -42,8 +43,11 @@
     "test:staff-portal-auth": "node ./scripts/verify-staff-portal-auth.mjs",
     "test:installments": "node ./scripts/verify-installments.mjs",
     "test:production-safety": "node ./scripts/run-production-safety-tests.mjs",
-    "test:phase2-safety": "pnpm --filter @workspace/db exec tsx --tsconfig ../../tsconfig.json ../../scripts/test-phase2-production-safety.ts",
-    "test:phase3-readiness": "pnpm --filter @workspace/db exec tsx --tsconfig ../../tsconfig.json ../../scripts/test-phase3-release-readiness.ts",
+    "test:phase2-safety": "node ./scripts/run-safe-db-test.mjs phase2",
+    "test:phase3-readiness": "node ./scripts/run-safe-db-test.mjs phase3",
+    "test:production-lock": "node ./scripts/test-database-write-guard.mjs",
+    "test:db-contracts": "node ./lib/db/node_modules/tsx/dist/cli.mjs --tsconfig ./tsconfig.json ./scripts/test-db-contracts.ts",
+    "test:critical-file-changes": "node ./scripts/check-critical-file-changes.mjs",
     "test:no-runtime-ddl": "node ./scripts/verify-no-runtime-ddl.mjs",
     "test:export-pdf": "node ./scripts/test-export-pdf-dependencies.mjs",
     "test:graduation-media": "node ./scripts/verify-graduation-media-gallery.mjs",
@@ -55,11 +59,14 @@
     "test:remote-printing": "node ./scripts/verify-remote-printing.mjs",
     "test:sales-invoice-print-template": "node ./scripts/verify-sales-invoice-print-template.mjs",
     "test:wedding-invoice-layout": "node ./scripts/verify-wedding-invoice-layout.mjs",
-    "test:save-smoke": "node ./scripts/test-save-smoke.mjs",
+    "test:save-contracts": "node ./scripts/test-save-smoke.mjs",
+    "test:save-smoke": "node ./scripts/run-critical-save-smoke.mjs",
     "schema:preflight": "pnpm --filter @workspace/db exec tsx ../../scripts/schema-preflight.ts",
     "schema:backup": "pnpm --filter @workspace/db exec tsx ../../scripts/backup-production-readonly.ts",
     "schema:apply": "pnpm --filter @workspace/db exec tsx ../../scripts/apply-reviewed-schema-migration.ts",
-    "verify:critical": "pnpm run typecheck && pnpm run test:save-smoke && git diff --check"
+    "setup:hooks": "node ./scripts/install-git-hooks.mjs",
+    "verify:critical": "node ./scripts/run-critical-verification.mjs",
+    "verify:deploy": "node ./scripts/run-critical-verification.mjs --deploy"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

@@ -2448,7 +2448,7 @@ export function GraduationTracking() {
               >
                 <strong className="text-sm">{item.title}</strong>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {new Date(item.createdAt).toLocaleString("ar-IQ")}
+                  {new Date(item.createdAt).toLocaleString("ar-IQ-u-nu-latn")}
                 </p>
               </div>
             ))}

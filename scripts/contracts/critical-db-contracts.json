@@ -1,0 +1,257 @@
+{
+  "version": 1,
+  "tables": {
+    "sales_invoices": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "hasDefault": true, "primaryKey": true },
+        "invoice_no": { "type": "varchar(40)", "notNull": true },
+        "idempotency_key": { "type": "varchar(120)", "notNull": false },
+        "date": { "type": "date", "notNull": true },
+        "customer_id": { "type": "integer", "notNull": false },
+        "total": { "type": "numeric(14, 2)", "notNull": true, "hasDefault": true, "defaultValue": "0" },
+        "paid_amount": { "type": "numeric(14, 2)", "notNull": true, "hasDefault": true, "defaultValue": "0" },
+        "remaining_amount": { "type": "numeric(14, 2)", "notNull": true, "hasDefault": true, "defaultValue": "0" },
+        "payment_method": { "type": "varchar(20)", "notNull": true, "defaultValue": "cash" },
+        "payment_status": { "type": "varchar(20)", "notNull": true, "defaultValue": "paid" },
+        "status": { "type": "varchar(20)", "notNull": true, "defaultValue": "active" },
+        "stock_applied": { "type": "integer", "notNull": true, "defaultValue": 1 }
+      },
+      "unique": [["invoice_no"], ["idempotency_key"]],
+      "foreignKeys": [{ "columns": ["customer_id"], "table": "customers", "target": ["id"] }]
+    },
+    "sales_invoice_items": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "invoice_id": { "type": "integer", "notNull": true },
+        "product_id": { "type": "integer", "notNull": false },
+        "product_name": { "type": "text", "notNull": true },
+        "quantity": { "type": "numeric(12, 3)", "notNull": true, "defaultValue": "1" },
+        "unit_price": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" },
+        "total": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" }
+      },
+      "foreignKeys": [{ "columns": ["invoice_id"], "table": "sales_invoices", "target": ["id"] }]
+    },
+    "purchase_invoices": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "invoice_no": { "type": "varchar(40)", "notNull": true },
+        "idempotency_key": { "type": "varchar(120)", "notNull": false },
+        "supplier_id": { "type": "integer", "notNull": false },
+        "total": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" },
+        "paid_amount": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" },
+        "remaining_amount": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" },
+        "payment_status": { "type": "varchar(20)", "notNull": true, "defaultValue": "paid" },
+        "status": { "type": "varchar(20)", "notNull": true, "defaultValue": "active" }
+      },
+      "unique": [["invoice_no"], ["idempotency_key"]],
+      "foreignKeys": [{ "columns": ["supplier_id"], "table": "suppliers", "target": ["id"] }]
+    },
+    "purchase_invoice_items": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "invoice_id": { "type": "integer", "notNull": true },
+        "product_id": { "type": "integer", "notNull": false },
+        "quantity": { "type": "numeric(12, 3)", "notNull": true, "defaultValue": "1" },
+        "cost_price": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" },
+        "total": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" }
+      },
+      "foreignKeys": [{ "columns": ["invoice_id"], "table": "purchase_invoices", "target": ["id"] }]
+    },
+    "customers": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "phone": { "type": "varchar(20)", "notNull": true },
+        "name": { "type": "text", "notNull": true, "defaultValue": "" },
+        "status": { "type": "varchar(20)", "notNull": true, "defaultValue": "active" }
+      },
+      "unique": [["phone"]]
+    },
+    "suppliers": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "name": { "type": "text", "notNull": true },
+        "balance": { "type": "text", "notNull": true, "defaultValue": "0" },
+        "status": { "type": "varchar(20)", "notNull": true, "defaultValue": "active" }
+      }
+    },
+    "service_orders": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "service_id": { "type": "integer", "notNull": true },
+        "customer_name": { "type": "text", "notNull": true },
+        "phone": { "type": "varchar(20)", "notNull": true },
+        "status": { "type": "varchar(30)", "notNull": true, "defaultValue": "pending" },
+        "total_amount": { "type": "numeric(10, 2)", "notNull": true, "defaultValue": "0" },
+        "remaining_amount": { "type": "numeric(10, 2)", "notNull": true, "defaultValue": "0" }
+      },
+      "foreignKeys": [{ "columns": ["service_id"], "table": "services", "target": ["id"] }]
+    },
+    "kosha_bookings": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "customer_id": { "type": "integer", "notNull": false },
+        "customer_name": { "type": "text", "notNull": true },
+        "phone": { "type": "varchar(20)", "notNull": true },
+        "status": { "type": "varchar(30)", "notNull": true, "defaultValue": "new" },
+        "total_amount": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" },
+        "paid_amount": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" },
+        "remaining_amount": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" },
+        "payment_status": { "type": "varchar(20)", "notNull": true, "defaultValue": "unpaid" }
+      }
+    },
+    "kosha_booking_items": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "kosha_booking_id": { "type": "integer", "notNull": true },
+        "product_id": { "type": "integer", "notNull": false },
+        "quantity": { "type": "numeric(12, 2)", "notNull": true, "defaultValue": "1" },
+        "line_total": { "type": "numeric(14, 2)", "notNull": true, "defaultValue": "0" }
+      },
+      "foreignKeys": [{ "columns": ["kosha_booking_id"], "table": "kosha_bookings", "target": ["id"] }]
+    },
+    "receipt_vouchers": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "voucher_no": { "type": "varchar(30)", "notNull": true },
+        "amount": { "type": "numeric(12, 2)", "notNull": true },
+        "method": { "type": "varchar(20)", "notNull": true, "defaultValue": "cash" },
+        "approval_status": { "type": "varchar(20)", "notNull": true, "defaultValue": "executed" },
+        "financial_transaction_id": { "type": "integer", "notNull": false }
+      },
+      "unique": [["voucher_no"]]
+    },
+    "receipt_voucher_allocations": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "receipt_voucher_id": { "type": "integer", "notNull": true },
+        "customer_id": { "type": "integer", "notNull": true },
+        "source_type": { "type": "varchar(40)", "notNull": true },
+        "amount": { "type": "numeric(14, 2)", "notNull": true }
+      },
+      "foreignKeys": [
+        { "columns": ["receipt_voucher_id"], "table": "receipt_vouchers", "target": ["id"] },
+        { "columns": ["customer_id"], "table": "customers", "target": ["id"] }
+      ]
+    },
+    "payment_vouchers": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "voucher_no": { "type": "varchar(30)", "notNull": true },
+        "amount": { "type": "numeric(12, 2)", "notNull": true },
+        "method": { "type": "varchar(20)", "notNull": true, "defaultValue": "cash" },
+        "approval_status": { "type": "varchar(20)", "notNull": true, "defaultValue": "executed" },
+        "financial_transaction_id": { "type": "integer", "notNull": false }
+      },
+      "unique": [["voucher_no"]]
+    },
+    "customer_receivable_ledger": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "idempotency_key": { "type": "varchar(180)", "notNull": true },
+        "customer_id": { "type": "integer", "notNull": true },
+        "invoice_id": { "type": "integer", "notNull": true },
+        "invoice_total": { "type": "numeric(16, 2)", "notNull": true },
+        "remaining_amount": { "type": "numeric(16, 2)", "notNull": true, "defaultValue": "0" },
+        "status": { "type": "varchar(20)", "notNull": true, "defaultValue": "open" }
+      },
+      "unique": [["idempotency_key"], ["invoice_id", "customer_id", "source_type"]],
+      "foreignKeys": [
+        { "columns": ["customer_id"], "table": "customers", "target": ["id"] },
+        { "columns": ["invoice_id"], "table": "sales_invoices", "target": ["id"] }
+      ]
+    },
+    "master_cash_box": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "code": { "type": "varchar(30)", "notNull": true, "defaultValue": "MASTER" },
+        "current_balance": { "type": "numeric(16, 2)", "notNull": true, "defaultValue": "0" },
+        "total_revenue": { "type": "numeric(16, 2)", "notNull": true, "defaultValue": "0" },
+        "total_expenses": { "type": "numeric(16, 2)", "notNull": true, "defaultValue": "0" },
+        "version": { "type": "integer", "notNull": true, "defaultValue": 0 }
+      },
+      "unique": [["code"]]
+    },
+    "financial_transactions": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "transaction_no": { "type": "varchar(50)", "notNull": true },
+        "direction": { "type": "varchar(20)", "notNull": true },
+        "amount": { "type": "numeric(16, 2)", "notNull": true },
+        "source_type": { "type": "varchar(60)", "notNull": false },
+        "source_id": { "type": "varchar(80)", "notNull": false },
+        "source_event": { "type": "varchar(60)", "notNull": true, "defaultValue": "primary" },
+        "idempotency_key": { "type": "varchar(180)", "notNull": true },
+        "approval_status": { "type": "varchar(20)", "notNull": true, "defaultValue": "draft" }
+      },
+      "unique": [["transaction_no"], ["idempotency_key"]]
+    },
+    "financial_ledger_entries": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "transaction_id": { "type": "integer", "notNull": true },
+        "account_id": { "type": "integer", "notNull": true },
+        "entry_side": { "type": "varchar(10)", "notNull": true },
+        "amount": { "type": "numeric(16, 2)", "notNull": true }
+      },
+      "unique": [["transaction_id", "account_id", "entry_side"]],
+      "foreignKeys": [{ "columns": ["transaction_id"], "table": "financial_transactions", "target": ["id"] }]
+    },
+    "products": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "name": { "type": "text", "notNull": true },
+        "price": { "type": "numeric(10, 2)", "notNull": true, "hasDefault": false },
+        "stock": { "type": "numeric(14,3)", "notNull": true, "defaultValue": 0 },
+        "is_active": { "type": "boolean", "notNull": true, "defaultValue": true }
+      }
+    },
+    "stock_movements": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "product_id": { "type": "integer", "notNull": false },
+        "quantity_change": { "type": "numeric(12, 3)", "notNull": true },
+        "reason": { "type": "varchar(80)", "notNull": true },
+        "idempotency_key": { "type": "varchar(180)", "notNull": false }
+      }
+    },
+    "orders": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "tracking_code": { "type": "varchar(40)", "notNull": true },
+        "customer_name": { "type": "text", "notNull": true },
+        "customer_phone": { "type": "varchar(20)", "notNull": true },
+        "status": { "type": "varchar(30)", "notNull": true, "defaultValue": "pending" },
+        "total": { "type": "numeric(10, 2)", "notNull": true },
+        "payment_status": { "type": "varchar(20)", "notNull": true, "defaultValue": "unpaid" }
+      }
+    },
+    "order_items": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "order_id": { "type": "integer", "notNull": true },
+        "product_id": { "type": "integer", "notNull": true },
+        "quantity": { "type": "integer", "notNull": true },
+        "price": { "type": "numeric(10, 2)", "notNull": true }
+      },
+      "foreignKeys": [{ "columns": ["order_id"], "table": "orders", "target": ["id"] }]
+    },
+    "tasks": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "title": { "type": "text", "notNull": true },
+        "status": { "type": "varchar(30)", "notNull": true, "defaultValue": "new" },
+        "assigned_staff_ids": { "type": "jsonb", "notNull": true },
+        "created_by": { "type": "integer", "notNull": false }
+      }
+    },
+    "branch_entity_assignments": {
+      "columns": {
+        "id": { "type": "serial", "notNull": true, "primaryKey": true },
+        "branch_id": { "type": "integer", "notNull": true },
+        "entity_type": { "type": "varchar(40)", "notNull": true },
+        "entity_id": { "type": "integer", "notNull": true }
+      },
+      "unique": [["entity_type", "entity_id"]]
+    }
+  }
+}

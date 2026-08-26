@@ -29,7 +29,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 function formatDate(value: string | null) {
   if (!value) return "";
-  return new Date(value).toLocaleString("ar-IQ", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(value).toLocaleString("ar-IQ-u-nu-latn", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 export default function MessagesPage() {
@@ -94,7 +94,7 @@ export default function MessagesPage() {
         </div>
         <div className="inline-flex items-center gap-2 rounded-lg border border-border/40 bg-card px-3 py-2 text-xs text-muted-foreground">
           <MessageCircle className="w-4 h-4 text-primary" />
-          {(threads?.filter((thread) => thread.status === "new").length ?? 0).toLocaleString("ar-IQ")} جديدة
+          {(threads?.filter((thread) => thread.status === "new").length ?? 0).toLocaleString("ar-IQ-u-nu-latn")} جديدة
         </div>
       </div>
 
