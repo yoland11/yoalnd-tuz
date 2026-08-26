@@ -20,10 +20,27 @@ if [ -z "$diff_base" ]; then
   diff_base="$(git rev-parse --verify HEAD^ 2>/dev/null || true)"
 fi
 
+run_critical_verification() {
+  if command -v pnpm >/dev/null 2>&1; then
+    pnpm run verify:critical
+  elif command -v pnpm.cmd >/dev/null 2>&1; then
+    pnpm.cmd run verify:critical
+  elif command -v corepack >/dev/null 2>&1; then
+    corepack pnpm run verify:critical
+  elif command -v corepack.cmd >/dev/null 2>&1; then
+    corepack.cmd pnpm run verify:critical
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -Command "pnpm run verify:critical"
+  else
+    echo "AJN PUSH BLOCKED — pnpm could not be found in the Git hook environment."
+    return 127
+  fi
+}
+
 if [ -n "$diff_base" ]; then
-  AJN_DIFF_BASE="$diff_base" pnpm run verify:critical
+  AJN_DIFF_BASE="$diff_base" run_critical_verification
 else
-  pnpm run verify:critical
+  run_critical_verification
 fi
 status=$?
 
