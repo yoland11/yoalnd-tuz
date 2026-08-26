@@ -182,6 +182,21 @@ const KOSHA_TRACKING_STAGES: Array<{ key: string; label: string }> = [
   { key: "completed", label: "مكتمل" },
 ];
 
+const KOSHA_EXECUTION_STAGE_OPTIONS = [
+  ["booked", "محجوزة"],
+  ["preparing", "قيد التجهيز"],
+  ["ready", "جاهزة"],
+  ["out_of_warehouse", "جاري التحميل"],
+  ["on_the_way", "في الطريق"],
+  ["executing", "جاري التنصيب"],
+  ["executed", "تم التنصيب"],
+  ["event_running", "المناسبة جارية"],
+  ["before_return", "قبل الإرجاع"],
+  ["dismantling", "جاري الفك"],
+  ["returned", "تم الإرجاع"],
+  ["delivered", "مكتمل"],
+] as const;
+
 const STATUS_LABELS: Record<string, string> = {
   new: "جديد",
   contacted: "تم التواصل",
@@ -2124,6 +2139,10 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
       method: "PATCH",
       body: JSON.stringify({
         ...form,
+        koshaId: Number(form.koshaId) > 0 ? Number(form.koshaId) : undefined,
+        status: Object.hasOwn(STATUS_LABELS, form.status) ? form.status : undefined,
+        trackingStatus: KOSHA_TRACKING_STAGES.some((stage) => stage.key === form.trackingStatus) ? form.trackingStatus : undefined,
+        executionStage: KOSHA_EXECUTION_STAGE_OPTIONS.some(([value]) => value === form.executionStage) ? form.executionStage : undefined,
         dueDate: form.dueDate || null,
         totalAmount: pricedTotal,
         paidAmount,
@@ -2166,7 +2185,7 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
           </div>
           <div className={editorTab === "details" ? "space-y-5" : "hidden"}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <div><label className="mb-1 block text-xs text-muted-foreground">الكوشة</label><select value={form.koshaId} onChange={(event) => setForm({ ...form, koshaId: Number(event.target.value) })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{koshas.map((item) => <option key={item.id} value={item.id}>{item.name} · {formatCurrency(item.price)}</option>)}</select></div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">الكوشة</label><select value={form.koshaId} onChange={(event) => setForm({ ...form, koshaId: Number(event.target.value) })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{Number(form.koshaId) <= 0 ? <option value={0}>غير مرتبط بكوشة</option> : null}{koshas.map((item) => <option key={item.id} value={item.id}>{item.name} · {formatCurrency(item.price)}</option>)}</select></div>
             <div><label className="mb-1 block text-xs text-muted-foreground">الباقة</label><select value={form.packageId ?? ""} onChange={(event) => setForm({ ...form, packageId: event.target.value ? Number(event.target.value) : null })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">بدون باقة</option>{packages.filter((item) => item.isActive || item.id === booking.packageId).map((item) => <option key={item.id} value={item.id}>{item.name} · {formatCurrency(item.configuredPrice ?? item.price)}</option>)}</select></div>
             <Field label="اسم الزبون" value={form.customerName} onChange={(value) => setForm({ ...form, customerName: value })} />
             <Field label="رقم الهاتف" value={form.phone} onChange={(value) => setForm({ ...form, phone: value })} />
@@ -2187,9 +2206,9 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
             <Field label="المحلة" value={form.mahalla} onChange={(value) => setForm({ ...form, mahalla: value })} />
             <Field label="أقرب نقطة" value={form.nearestPoint} onChange={(value) => setForm({ ...form, nearestPoint: value })} />
             <Field label="ملاحظة العنوان" value={form.addressNotes} onChange={(value) => setForm({ ...form, addressNotes: value })} />
-            <div><label className="mb-1 block text-xs text-muted-foreground">حالة الحجز</label><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
-            <div><label className="mb-1 block text-xs text-muted-foreground">مرحلة التنفيذ</label><select value={form.executionStage} onChange={(event) => setForm({ ...form, executionStage: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{[["booked", "محجوزة"], ["preparing", "قيد التجهيز"], ["ready", "جاهزة"], ["out_of_warehouse", "جاري التحميل"], ["on_the_way", "في الطريق"], ["executing", "جاري التنصيب"], ["executed", "تم التنصيب"], ["event_running", "المناسبة جارية"], ["before_return", "قبل الإرجاع"], ["dismantling", "جاري الفك"], ["returned", "تم الإرجاع"], ["delivered", "مكتمل"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
-            <div><label className="mb-1 block text-xs text-muted-foreground">حالة التتبع</label><select value={form.trackingStatus} onChange={(event) => setForm({ ...form, trackingStatus: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{[["booked", "تم الحجز"], ["preparing", "قيد التجهيز"], ["accessories", "تجهيز الإكسسوارات"], ["welcome_board", "تجهيز البورد الترحيبي"], ["ready", "جاهزة للتنفيذ"], ["executed", "تم التنفيذ"], ["completed", "مكتمل"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">حالة الحجز</label><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{!Object.hasOwn(STATUS_LABELS, form.status) ? <option value={form.status}>حالة قديمة — محفوظة كما هي</option> : null}{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">مرحلة التنفيذ</label><select value={form.executionStage} onChange={(event) => setForm({ ...form, executionStage: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{!KOSHA_EXECUTION_STAGE_OPTIONS.some(([value]) => value === form.executionStage) ? <option value={form.executionStage}>مرحلة قديمة — محفوظة كما هي</option> : null}{KOSHA_EXECUTION_STAGE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">حالة التتبع</label><select value={form.trackingStatus} onChange={(event) => setForm({ ...form, trackingStatus: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{!KOSHA_TRACKING_STAGES.some((stage) => stage.key === form.trackingStatus) ? <option value={form.trackingStatus}>حالة قديمة — محفوظة كما هي</option> : null}{KOSHA_TRACKING_STAGES.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></div>
             <Field label="تاريخ استحقاق المتبقي" type="date" value={form.dueDate} onChange={(value) => setForm({ ...form, dueDate: value })} />
           </div>
 

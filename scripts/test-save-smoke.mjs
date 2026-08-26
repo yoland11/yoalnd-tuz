@@ -90,6 +90,7 @@ const koshaMigration = readFileSync("lib/db/migrations/0100_kosha_field_collecti
 const schemaIndexRecovery = readFileSync("lib/db/migrations/0101_schema_index_recovery.sql", "utf8");
 const koshaStaff = readFileSync("src/views/staff/booking-detail.tsx", "utf8");
 const koshaCollections = readFileSync("src/views/admin/kosha-collections.tsx", "utf8");
+const koshaAdmin = readFileSync("src/views/admin/koshas.tsx", "utf8");
 const bookingCenter = readFileSync("src/views/admin/booking-center.tsx", "utf8");
 const bookingEditor = readFileSync("src/views/admin/orders.tsx", "utf8");
 const bookingPhotos = readFileSync("src/lib/booking-photos.ts", "utf8");
@@ -161,6 +162,7 @@ check("manager task editing exposes separated manager and employee galleries", t
 check("staff task completion keeps photos optional and uses the completion route", taskPortal.includes("صور إنجاز المهمة (اختياري)") && taskPortal.includes("تأكيد الإنجاز") && taskPortal.includes("/complete"));
 check("task photo uploader uses optimized storage and retains each successful upload", taskPhotos.includes('folder: "uploads/tasks"') && taskPhotos.includes("onChange(next)") && taskPhotos.includes("failures.push"));
 check("task employee selector loads active staff with search, multi-select and exact empty state", taskHandler.includes("eq(staffTable.isActive, true)") && taskAdmin.includes("تحديد الكل") && taskAdmin.includes("ابحث باسم الموظف") && taskAdmin.includes("لا يوجد موظفون نشطون."));
+check("task employee selector tolerates legacy optional task and staff columns", taskHandler.includes('storageShape.taskColumns.has("task_no")') && taskHandler.includes('storageShape.staffColumns.has("job_title")') && taskHandler.includes('storageShape.tables.has("task_checklist_items")'));
 check("task list load errors are structured and never silently become an empty staff list", taskHandler.includes("[INTERNAL_TASKS_LOAD_FAILED]") && taskHandler.includes('code: "DATABASE_ERROR"') && taskHandler.includes("تعذر تحميل المهام أو الموظفين النشطين.") && taskAdmin.includes("إعادة المحاولة"));
 check("related task progress reads only legacy-safe status fields", relatedTaskProgress.includes("columns: {") && relatedTaskProgress.includes("status: true") && relatedTaskProgress.includes("archivedAt: true"));
 check("task checklist and related-progress failures return a scoped request ID", taskHandler.includes("[INTERNAL_TASKS_AGGREGATION_FAILED]") && taskHandler.includes("تعذر تحميل تفاصيل المهام الداخلية."));
@@ -173,6 +175,7 @@ check("staff workspace reads stable task columns instead of optional task wildca
 check("staff workspace distinguishes missing mapping and missing portal permission", staffWorkspaceHandler.includes("حساب المستخدم غير مرتبط بموظف") && staffWorkspaceHandler.includes("لا توجد صلاحية للوصول إلى بوابة الموظفين"));
 check("staff workspace failures include request IDs and safe server diagnostics", staffWorkspaceHandler.includes("[STAFF_PORTAL_WORKSPACE_LOAD_FAILED]") && staffWorkspaceHandler.includes('code: "DATABASE_ERROR"') && taskPortal.includes("Request ID:") && taskPortal.includes("إعادة المحاولة"));
 check("staff task empty state appears only after a successful workspace response", taskPortal.includes('tab === "tasks" && dashboard.isSuccess') && taskPortal.includes("لا توجد مهام معينة لك الآن"));
+check("kosha pricing edit preserves unchanged legacy booking fields", api.includes("preserveUnchangedLegacyValue") && api.includes("delete patch.koshaId") && koshaAdmin.includes("حالة قديمة — محفوظة كما هي") && koshaAdmin.includes("koshaId: Number(form.koshaId) > 0"));
 
 if (failures) process.exitCode = 1;
 else console.log("AJN read-only save/API/legacy contracts passed.");

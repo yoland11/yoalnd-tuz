@@ -2263,6 +2263,8 @@ type TaskPhotoInput = {
 type TaskStorageShape = {
   taskColumns: Set<string>;
   attachmentColumns: Set<string>;
+  staffColumns: Set<string>;
+  tables: Set<string>;
 };
 
 let taskStorageShapePromise: Promise<TaskStorageShape> | null = null;
@@ -2274,12 +2276,14 @@ async function taskStorageShape(): Promise<TaskStorageShape> {
         select table_name, column_name
         from information_schema.columns
         where table_schema = current_schema()
-          and table_name in ('tasks', 'task_attachments')
+          and table_name in ('tasks', 'task_attachments', 'task_checklist_items', 'task_item_attachments', 'staff')
       `);
       const rows = ((result as any).rows ?? []) as Array<{ table_name: string; column_name: string }>;
       return {
         taskColumns: new Set(rows.filter((row) => row.table_name === "tasks").map((row) => row.column_name)),
         attachmentColumns: new Set(rows.filter((row) => row.table_name === "task_attachments").map((row) => row.column_name)),
+        staffColumns: new Set(rows.filter((row) => row.table_name === "staff").map((row) => row.column_name)),
+        tables: new Set(rows.map((row) => row.table_name)),
       };
     })().catch((shapeError) => {
       taskStorageShapePromise = null;
@@ -8281,7 +8285,7 @@ function formatStaff(s: any) {
     salaryNotes: s.salaryNotes ?? null,
     isActive: s.isActive,
     lastActivityAt: s.lastActivityAt?.toISOString?.() ?? null,
-    createdAt: s.createdAt.toISOString(),
+    createdAt: s.createdAt?.toISOString?.() ?? s.created_at?.toISOString?.() ?? null,
   };
 }
 
@@ -20794,7 +20798,29 @@ async function handleAdminKoshas(
       }
 
       if (method === "PATCH") {
-        const parsed = KoshaBookingUpdateSchema.safeParse(await body(req));
+        const rawPatch = await body(req);
+        const compatiblePatch = rawPatch && typeof rawPatch === "object"
+          ? { ...(rawPatch as Record<string, unknown>) }
+          : rawPatch;
+        if (compatiblePatch && typeof compatiblePatch === "object") {
+          const patch = compatiblePatch as Record<string, unknown>;
+          const requestedKoshaId = Number(patch.koshaId);
+          if ((!Number.isFinite(requestedKoshaId) || requestedKoshaId <= 0) && !existing.koshaId)
+            delete patch.koshaId;
+          const preserveUnchangedLegacyValue = (
+            key: "status" | "trackingStatus" | "executionStage",
+            current: unknown,
+            allowed: readonly string[],
+          ) => {
+            const requested = patch[key];
+            if (requested !== undefined && requested === current && !allowed.includes(String(requested)))
+              delete patch[key];
+          };
+          preserveUnchangedLegacyValue("status", existing.status, KOSHA_BOOKING_STATUS_VALUES);
+          preserveUnchangedLegacyValue("trackingStatus", existing.trackingStatus, KOSHA_TRACKING_KEYS);
+          preserveUnchangedLegacyValue("executionStage", existing.executionStage, KOSHA_EXECUTION_STAGES);
+        }
+        const parsed = KoshaBookingUpdateSchema.safeParse(compatiblePatch);
         if (!parsed.success)
           return validationError("admin.kosha-bookings.update", parsed);
         const update: any = { updatedAt: new Date() };
@@ -41131,6 +41157,23 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const date = params.get("date");
       const q = params.get("q")?.trim();
       const department = params.get("department")?.trim();
+      let storageShape: TaskStorageShape;
+      try {
+        storageShape = await taskStorageShape();
+      } catch (loadError) {
+        const requestId = makeRequestId(req.headers.get("x-request-id"));
+        console.error("[INTERNAL_TASKS_SCHEMA_LOAD_FAILED]", {
+          requestId,
+          staffId: auth.id,
+          code: (loadError as any)?.code ?? null,
+          message: loadError instanceof Error ? loadError.message : "unknown",
+        });
+        return error("تعذر التحقق من بيانات المهام والموظفين.", 500, {
+          code: "DATABASE_ERROR",
+          requestId,
+          retryable: true,
+        });
+      }
       if (status) filters.push(eq(tasksTable.status, taskStatus(status)));
       if (priority)
         filters.push(eq(tasksTable.priority, taskPriority(priority)));
@@ -41146,15 +41189,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             and(gte(tasksTable.dueAt, from), lte(tasksTable.dueAt, to)),
           );
       }
-      if (q)
-        filters.push(
-          or(
-            ilike(tasksTable.taskNo, `%${q}%`),
-            ilike(tasksTable.title, `%${q}%`),
-            ilike(tasksTable.description, `%${q}%`),
-            ilike(tasksTable.notes, `%${q}%`),
-          ),
-        );
+      if (q) {
+        const searchFilters = [
+          ilike(tasksTable.title, `%${q}%`),
+          ilike(tasksTable.description, `%${q}%`),
+          ilike(tasksTable.notes, `%${q}%`),
+        ];
+        if (storageShape.taskColumns.has("task_no"))
+          searchFilters.unshift(ilike(tasksTable.taskNo, `%${q}%`));
+        filters.push(or(...searchFilters)!);
+      }
+      if (department && storageShape.taskColumns.has("department"))
+        filters.push(eq(tasksTable.department, department));
       if (!canManageAll)
         filters.push(
           sql`${tasksTable.assignedStaffIds} @> ${JSON.stringify([auth.id])}::jsonb`,
@@ -41162,53 +41208,59 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       let rows: any[];
       let staffRows: any[];
       try {
+        const taskColumns: any = {
+          id: true,
+          title: true,
+          description: true,
+          status: true,
+          priority: true,
+          dueAt: true,
+          assignedStaffIds: true,
+          relatedType: true,
+          relatedId: true,
+          notes: true,
+          attachments: true,
+          createdBy: true,
+          archivedAt: true,
+          createdAt: true,
+          updatedAt: true,
+        };
+        const optionalTaskColumns: Array<[string, string]> = [
+          ["taskNo", "task_no"],
+          ["department", "department"],
+          ["taskType", "task_type"],
+          ["startAt", "start_at"],
+          ["estimatedMinutes", "estimated_minutes"],
+          ["submittedAt", "submitted_at"],
+          ["completedAt", "completed_at"],
+          ["approvedBy", "approved_by"],
+          ["approvedAt", "approved_at"],
+          ["rejectionReason", "rejection_reason"],
+          ["templateKey", "template_key"],
+          ["sequence", "sequence"],
+          ["autoGenerated", "auto_generated"],
+        ];
+        for (const [property, column] of optionalTaskColumns)
+          if (storageShape.taskColumns.has(column)) taskColumns[property] = true;
+        const staffColumns: any = {
+          id: true,
+          username: true,
+          fullName: true,
+          role: true,
+          permissions: true,
+          isActive: true,
+        };
+        if (storageShape.staffColumns.has("department")) staffColumns.department = true;
+        if (storageShape.staffColumns.has("job_title")) staffColumns.jobTitle = true;
         [rows, staffRows] = await Promise.all([
           db.query.tasksTable.findMany({
-            columns: {
-              id: true,
-              taskNo: true,
-              title: true,
-              description: true,
-              status: true,
-              priority: true,
-              department: true,
-              taskType: true,
-              startAt: true,
-              dueAt: true,
-              estimatedMinutes: true,
-              submittedAt: true,
-              completedAt: true,
-              approvedBy: true,
-              approvedAt: true,
-              rejectionReason: true,
-              assignedStaffIds: true,
-              relatedType: true,
-              relatedId: true,
-              templateKey: true,
-              sequence: true,
-              autoGenerated: true,
-              notes: true,
-              attachments: true,
-              createdBy: true,
-              archivedAt: true,
-              createdAt: true,
-              updatedAt: true,
-            },
+            columns: taskColumns,
             where: filters.length ? and(...filters) : undefined,
             orderBy: [desc(tasksTable.updatedAt), desc(tasksTable.createdAt)],
             limit: 200,
           }),
           db.query.staffTable.findMany({
-            columns: {
-              id: true,
-              username: true,
-              fullName: true,
-              role: true,
-              permissions: true,
-              department: true,
-              jobTitle: true,
-              isActive: true,
-            },
+            columns: staffColumns,
             where: canManageAll
               ? eq(staffTable.isActive, true)
               : and(eq(staffTable.id, auth.id), eq(staffTable.isActive, true)),
@@ -41235,7 +41287,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       let progressByRelated: Map<string, ReturnType<typeof taskProgressFromRows>>;
       try {
         [checklistRows, progressByRelated] = await Promise.all([
-          taskIds.length
+          taskIds.length && storageShape.tables.has("task_checklist_items")
             ? db.query.taskChecklistItemsTable.findMany({
                 where: inArray(taskChecklistItemsTable.taskId, taskIds),
                 orderBy: [

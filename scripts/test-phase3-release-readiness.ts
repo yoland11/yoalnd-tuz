@@ -533,6 +533,61 @@ try {
   assert.ok(createdBookingBody.trackingCode);
   pass("booking save, customer/service relation, response contract, and route-level idempotency work end to end");
 
+  const internalTasks = await api.handleApi(
+    new NextRequest("http://localhost/api/admin/tasks", {
+      headers: { authorization: `Bearer ${adminSession.token}` },
+    }),
+    ["admin", "tasks"],
+  );
+  assert.equal(internalTasks.status, 200);
+  const internalTasksBody = await internalTasks.json();
+  assert.ok(Array.isArray(internalTasksBody.staff));
+  assert.ok(internalTasksBody.staff.some((staff: any) => Number(staff.id) === Number(researchStaff.id)));
+  pass("internal tasks loads active employees through the legacy-compatible projection");
+
+  await cleanPool.query(
+    "update kosha_bookings set kosha_id=null,status='pending',payment_status='pending_pricing',total_amount=0,paid_amount=0,remaining_amount=0 where id=$1",
+    [createdBookingBody.id],
+  );
+  const legacyPricingUpdate = await api.handleApi(
+    new NextRequest(`http://localhost/api/admin/kosha-bookings/${createdBookingBody.id}`, {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${adminSession.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        koshaId: 0,
+        status: "pending",
+        totalAmount: 100_000,
+        paidAmount: 25_000,
+        paymentStatus: "partial",
+        paymentMethod: "transfer",
+        pricing: {
+          koshaPrice: 100_000,
+          totalAmount: 100_000,
+          paidAmount: 25_000,
+          remainingAmount: 75_000,
+          paymentMethod: "transfer",
+        },
+      }),
+    }),
+    ["admin", "kosha-bookings", String(createdBookingBody.id)],
+  );
+  assert.equal(legacyPricingUpdate.status, 200);
+  const legacyPricingRow = await one(
+    "select id,kosha_id,status,total_amount,paid_amount,remaining_amount,payment_status from kosha_bookings where id=$1",
+    [createdBookingBody.id],
+  );
+  assert.equal(Number(legacyPricingRow.id), Number(createdBookingBody.id));
+  assert.equal(legacyPricingRow.kosha_id, null);
+  assert.equal(legacyPricingRow.status, "pending");
+  assert.equal(Number(legacyPricingRow.total_amount), 100_000);
+  assert.equal(Number(legacyPricingRow.paid_amount), 25_000);
+  assert.equal(Number(legacyPricingRow.remaining_amount), 75_000);
+  assert.equal(legacyPricingRow.payment_status, "partial");
+  pass("legacy kosha booking pricing updates the same booking without rejecting unchanged legacy fields");
+
   const publicResearch = await api.handleApi(
     new NextRequest(`http://localhost/api/research/track/${createdResearchBody.order.qrToken}`),
     ["research", "track", createdResearchBody.order.qrToken],
