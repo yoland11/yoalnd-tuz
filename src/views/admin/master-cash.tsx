@@ -355,7 +355,9 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState({ from: addDays(todayBaghdad(), -30), to: todayBaghdad(), status: "", direction: "", department: "", voucherType: "", search: "" });
   const isManager = me.role === "admin" || me.role === "manager";
-  const canApprove = me.role === "admin" || me.permissions.includes("financial_approval:approve") || me.permissions.includes("voucher_approve");
+  // Final Main Cash Box approval is reserved for the principal administrator.
+  // UI visibility mirrors the server-side rule; the API enforces it too.
+  const canApprove = me.role === "admin";
   const canEditVoucher = isManager || me.permissions.includes("accounting") || me.permissions.includes("voucher_edit");
   const canDeleteVoucher = isManager || me.permissions.includes("accounting") || me.permissions.includes("voucher_delete");
 

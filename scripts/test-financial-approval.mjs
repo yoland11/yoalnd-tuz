@@ -31,8 +31,10 @@ check("cash-box execution accepts pending requests only", executor.includes('tra
 check("cash-box execution locks the master cash box", executor.includes("FOR UPDATE"));
 check("cash-box execution posts journal and cash atomically", executor.includes("financialLedgerEntriesTable") && executor.includes("masterCashBoxTable"));
 check("duplicate financial requests use idempotency keys", sourceGate.includes("idempotencyKey") && sourceGate.includes("تعارض مفتاح التكرار"));
-check("self approval is blocked server-side", cashbox.includes("لا يمكن اعتماد الطلب المالي الذي أنشأته بنفسك"));
-check("financial approval is restricted to main admin or explicit permission", cashbox.includes('financial_approval:approve') && !cashbox.includes('actor.role === "manager" ||'));
+check("financial approval is restricted to the principal admin role", cashbox.includes('String(actor.role ?? "").toLowerCase() === "admin"'));
+check("financial approval cannot be delegated by permission", !cashbox.slice(cashbox.indexOf("export function canApproveFinancialTransactions"), cashbox.indexOf("/** Rebuild invoice")).includes("financial_approval:approve"));
+check("principal admin may approve their own financial request", cashbox.includes("They may also\n  // approve their own request"));
+check("Kosha field collections are also restricted to the principal admin", api.includes("function canApproveKoshaFieldCollection(user: AdminUser)") && api.includes("return user.role === \"admin\";"));
 check("sales initial payment stays unofficial until approval", api.includes('paymentStatus: paidAmount > 0 ? "pending_approval" : paymentStatus'));
 check("sales official payment is applied only in the cash-box executor", executor.includes('transaction.sourceType === "sales_invoice"'));
 check("research payments stay pending until approval", executor.includes('transaction.sourceType === "research_order"'));

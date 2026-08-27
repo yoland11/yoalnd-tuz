@@ -237,6 +237,8 @@ import {
   knowledgeCasesTable,
   managementDecisionsTable,
   customerAttributionsTable,
+  companyLoansTable,
+  companyLoanRepaymentsTable,
 } from "@workspace/db";
 import {
   dailyCashListQuerySchema,
@@ -35696,6 +35698,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   const masterCash = await handleMasterCash(req, parts, section);
   if (masterCash) return masterCash;
 
+  const companyLoans = await handleCompanyLoans(req, parts, section);
+  if (companyLoans) return companyLoans;
+
   const hr = await handleHrAdmin(req, parts, section);
   if (hr) return hr;
 
@@ -60664,11 +60669,9 @@ function isKoshaPendingCollectionStatus(status: unknown) {
 }
 
 function canApproveKoshaFieldCollection(user: AdminUser) {
-  return (
-    ["admin", "main_admin", "super_admin"].includes(user.role) ||
-    user.permissions.includes("sales_payment:approve_field_collection") ||
-    user.permissions.includes("voucher_approve")
-  );
+  // A field collection changes official booking payment and Cash Box records;
+  // it therefore follows the same non-delegable principal-admin rule.
+  return user.role === "admin";
 }
 
 async function saveKoshaMedia(input: {
@@ -63903,6 +63906,118 @@ async function handleTelegram(
   return error("مسار Telegram غير مدعوم", 404);
 }
 
+const companyLoanCreateSchema = z.object({
+  lenderName: z.string().trim().min(2).max(200),
+  lenderPhone: z.string().trim().max(30).optional().nullable(),
+  amount: z.coerce.number().positive().max(999_999_999_999),
+  receivedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  paymentMethod: z.enum(["cash", "transfer", "card", "pos", "other"]).default("cash"),
+  referenceNo: z.string().trim().max(120).optional().nullable(),
+  notes: z.string().trim().max(2000).optional().nullable(),
+});
+const companyLoanRepaymentSchema = companyLoanCreateSchema.pick({
+  amount: true,
+  paymentMethod: true,
+  referenceNo: true,
+  notes: true,
+}).extend({ paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+
+function companyLoanNumber(prefix: string) {
+  return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
+async function handleCompanyLoans(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "loans") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  const resource = parts[2];
+  const id = resource ? int(resource) : null;
+
+  if (req.method === "GET" && !resource) {
+    const [loans, repayments] = await Promise.all([
+      db.select().from(companyLoansTable).orderBy(desc(companyLoansTable.createdAt)).limit(300),
+      db.select().from(companyLoanRepaymentsTable).orderBy(desc(companyLoanRepaymentsTable.createdAt)).limit(1000),
+    ]);
+    const repaymentsByLoan = new Map<number, any[]>();
+    for (const repayment of repayments) {
+      const list = repaymentsByLoan.get(repayment.loanId) ?? [];
+      list.push({ ...repayment, amount: Number(repayment.amount) });
+      repaymentsByLoan.set(repayment.loanId, list);
+    }
+    return json({
+      loans: loans.map((loan) => ({
+        ...loan,
+        originalAmount: Number(loan.originalAmount),
+        totalRepaid: Number(loan.totalRepaid),
+        remainingAmount: Number(loan.remainingAmount),
+        repayments: repaymentsByLoan.get(loan.id) ?? [],
+      })),
+    });
+  }
+
+  if (req.method === "POST" && !resource) {
+    const parsed = companyLoanCreateSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("company-loans.create", parsed);
+    const data = parsed.data;
+    const actor = financialActor(auth);
+    const loan = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(companyLoansTable).values({
+        loanNo: companyLoanNumber("LOAN"), lenderName: data.lenderName,
+        lenderPhone: data.lenderPhone || null, originalAmount: String(data.amount),
+        totalRepaid: "0", remainingAmount: String(data.amount), receivedDate: data.receivedDate,
+        paymentMethod: data.paymentMethod, referenceNo: data.referenceNo || null,
+        notes: data.notes || null, status: "pending", createdBy: actor.id, createdByName: actor.name,
+      }).returning();
+      const request = await createFinancialTransaction({
+        transactionDate: data.receivedDate, direction: "revenue", amount: data.amount,
+        department: "general", transactionType: "company_loan_received",
+        referenceNo: created.loanNo, description: `استلام قرض من ${data.lenderName}`,
+        paymentMethod: data.paymentMethod, sourceType: "company_loan", sourceId: created.id,
+        sourceEvent: "loan_received", idempotencyKey: `company_loan:${created.id}:received`,
+        customerName: data.lenderName, customerPhone: data.lenderPhone || null,
+        notes: data.notes || null,
+      }, actor);
+      const [saved] = await tx.update(companyLoansTable).set({ receiptTransactionId: request.id, updatedAt: new Date() }).where(eq(companyLoansTable.id, created.id)).returning();
+      return saved;
+    });
+    void logAdminActivity(req, "company_loan_created", "company_loan", loan.id, { loanNo: loan.loanNo, amount: data.amount });
+    return json(loan, 201);
+  }
+
+  if (req.method === "POST" && id && parts[3] === "repayments") {
+    const parsed = companyLoanRepaymentSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("company-loans.repayment", parsed);
+    const data = parsed.data;
+    const actor = financialActor(auth);
+    const repayment = await db.transaction(async (tx) => {
+      const [loan] = await tx.select().from(companyLoansTable).where(eq(companyLoansTable.id, id)).limit(1);
+      if (!loan) throw new Error("القرض غير موجود");
+      if (Number(loan.remainingAmount) <= 0) throw new Error("تم سداد القرض بالكامل");
+      if (data.amount > Number(loan.remainingAmount)) throw new Error("مبلغ السداد أكبر من المتبقي");
+      const [created] = await tx.insert(companyLoanRepaymentsTable).values({
+        loanId: id, repaymentNo: companyLoanNumber("REPAY"), paymentDate: data.paymentDate,
+        amount: String(data.amount), paymentMethod: data.paymentMethod,
+        referenceNo: data.referenceNo || null, notes: data.notes || null,
+        status: "pending", createdBy: actor.id, createdByName: actor.name,
+      }).returning();
+      const request = await createFinancialTransaction({
+        transactionDate: data.paymentDate, direction: "expense", amount: data.amount,
+        department: "general", transactionType: "company_loan_repayment",
+        referenceNo: created.repaymentNo, description: `سداد قرض إلى ${loan.lenderName}`,
+        paymentMethod: data.paymentMethod, sourceType: "company_loan_repayment", sourceId: created.id,
+        sourceEvent: "loan_repayment", idempotencyKey: `company_loan_repayment:${created.id}`,
+        customerName: loan.lenderName, customerPhone: loan.lenderPhone || null, notes: data.notes || null,
+      }, actor);
+      const [saved] = await tx.update(companyLoanRepaymentsTable).set({ financialTransactionId: request.id, updatedAt: new Date() }).where(eq(companyLoanRepaymentsTable.id, created.id)).returning();
+      return saved;
+    });
+    void logAdminActivity(req, "company_loan_repayment_created", "company_loan_repayment", repayment.id, { loanId: id, amount: data.amount });
+    return json(repayment, 201);
+  }
+
+  return error("مسار القروض غير مدعوم", 404);
+}
+
 async function handleMasterCash(
   req: NextRequest,
   parts: string[],
@@ -64014,7 +64129,7 @@ async function handleMasterCash(
 
       if (method === "POST" && action === "approve") {
         if (!canApproveFinancialTransactions(financeUser))
-          return error("اعتماد المعاملات المالية متاح للمدير الرئيسي أو للمفوض فقط", 403);
+          return error("اعتماد المعاملات المالية متاح للمدير الرئيسي فقط", 403);
         const payload = await body(req);
         const row = await approveAndExecuteFinancialTransaction(
           id,
@@ -64055,7 +64170,7 @@ async function handleMasterCash(
 
       if (method === "POST" && action === "reject") {
         if (!canApproveFinancialTransactions(financeUser))
-          return error("رفض المعاملات المالية متاح للمدير الرئيسي أو للمفوض فقط", 403);
+          return error("رفض المعاملات المالية متاح للمدير الرئيسي فقط", 403);
         const payload = await body(req);
         const row = await rejectFinancialTransaction(
           id,

@@ -10,6 +10,8 @@ import {
   masterCashBoxTable,
   purchaseInvoicesTable,
   salesInvoicesTable,
+  companyLoansTable,
+  companyLoanRepaymentsTable,
 } from "@workspace/db";
 
 export type FinancialActor = {
@@ -508,16 +510,14 @@ export async function cancelFinancialTransactionRequest(
 
 /** Roles that may perform the final, official Main Cash Box posting. */
 export function isMainFinancialAdministrator(actor: FinancialActor) {
-  return ["admin", "main_admin", "super_admin"].includes(String(actor.role ?? "").toLowerCase());
+  // In AJN, `admin` is the canonical "مدير رئيسي" role. Financial approvals
+  // are deliberately not delegable: this is the only server-side authority
+  // allowed to post, reject, or reverse a Main Cash Box movement.
+  return String(actor.role ?? "").toLowerCase() === "admin";
 }
 
 export function canApproveFinancialTransactions(actor: FinancialActor) {
-  return (
-    isMainFinancialAdministrator(actor) ||
-    Boolean(actor.permissions?.includes("financial_approval:approve")) ||
-    Boolean(actor.permissions?.includes("voucher_approve")) ||
-    Boolean(actor.permissions?.includes("financial_approval:self_approve"))
-  );
+  return isMainFinancialAdministrator(actor);
 }
 
 /** Rebuild invoice payment state from valid, posted receipt allocations only. */
@@ -946,6 +946,29 @@ async function executePendingFinancialTransaction(
         await tx.execute(
           sql`UPDATE payment_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
         );
+      } else if (transaction.sourceType === "company_loan") {
+        await tx
+          .update(companyLoansTable)
+          .set({ status: "active", updatedAt: now })
+          .where(eq(companyLoansTable.id, sourceId));
+      } else if (transaction.sourceType === "company_loan_repayment") {
+        const [repayment] = await tx
+          .update(companyLoanRepaymentsTable)
+          .set({ status: "executed", updatedAt: now })
+          .where(eq(companyLoanRepaymentsTable.id, sourceId))
+          .returning();
+        if (!repayment) throw new Error("دفعة سداد القرض المرتبطة غير موجودة");
+        await tx.execute(sql`
+          UPDATE company_loans
+          SET total_repaid = least(original_amount::numeric, total_repaid::numeric + ${amount}),
+              remaining_amount = greatest(original_amount::numeric - least(original_amount::numeric, total_repaid::numeric + ${amount}), 0),
+              status = CASE
+                WHEN greatest(original_amount::numeric - least(original_amount::numeric, total_repaid::numeric + ${amount}), 0) = 0 THEN 'fully_repaid'
+                ELSE 'partially_repaid'
+              END,
+              updated_at = now()
+          WHERE id = ${repayment.loanId}
+        `);
       }
     }
 
@@ -988,26 +1011,13 @@ export async function approveAndExecuteFinancialTransaction(
 ) {
   await ensureMasterCashBoxTables();
   if (!canApproveFinancialTransactions(actor))
-    throw new Error("اعتماد المعاملات المالية متاح للمدير الرئيسي أو للمفوض فقط");
+    throw new Error("اعتماد المعاملات المالية متاح للمدير الرئيسي فقط");
   const pending = await db.query.financialTransactionsTable.findFirst({
     where: eq(financialTransactionsTable.id, id),
   });
   if (!pending) throw new Error("المعاملة غير موجودة");
-  // Payroll reaches this point only after its own manager-approval lifecycle
-  // has moved the run to ready_to_pay. A main financial administrator is
-  // allowed to execute that final cash posting even when they created the
-  // durable request. All other self-approval remains forbidden.
-  const isMainAdminPayrollExecution =
-    pending.sourceType === "payroll_run" &&
-    pending.sourceEvent === "payroll_approved_payment" &&
-    isMainFinancialAdministrator(actor);
-  if (
-    pending.requestedBy &&
-    pending.requestedBy === actor.id &&
-    !actor.permissions?.includes("financial_approval:self_approve") &&
-    !isMainAdminPayrollExecution
-  )
-    throw new Error("لا يمكن اعتماد الطلب المالي الذي أنشأته بنفسك");
+  // The sole authorised role is the principal administrator. They may also
+  // approve their own request, because no delegated role can post cash.
   return db.transaction((tx) =>
     executePendingFinancialTransaction(tx, id, actor, note),
   );

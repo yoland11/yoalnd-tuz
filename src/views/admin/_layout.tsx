@@ -66,6 +66,7 @@ import {
   Speaker,
   ChefHat,
   Plus,
+  Landmark,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -429,6 +430,12 @@ export const NAV: NavItem[] = [
     href: "/admin/finance/master-cash",
     label: "الصندوق الرئيسي",
     icon: CircleDollarSign,
+    perm: "accounting",
+  },
+  {
+    href: "/admin/finance/loans",
+    label: "القروض والتمويل",
+    icon: Landmark,
     perm: "accounting",
   },
   {
