@@ -564,11 +564,6 @@ function ApprovalsPanel({
   const columns = ["رقم الحركة", "نوع المصدر", "العميل / المورد", "رقم الحجز/الفاتورة", "المبلغ", "مُقدّم الطلب", "تاريخ الطلب", "الحالة", "المصدر"];
   return (
     <div className="space-y-3">
-      <div className="grid gap-2 sm:grid-cols-3">
-        <div className="rounded-xl border border-status-warning/25 bg-status-warning/5 px-3 py-2.5"><p className="text-xs text-muted-foreground">إجمالي المبالغ المعلّقة</p><p className="mt-1 text-base font-bold text-status-warning">{formatCurrency(totals.total)}</p></div>
-        <div className="rounded-xl border border-status-success/25 bg-status-success/5 px-3 py-2.5"><p className="text-xs text-muted-foreground">إجمالي المقبوضات المعلّقة</p><p className="mt-1 text-base font-bold text-status-success">{formatCurrency(totals.incoming)}</p></div>
-        <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-3 py-2.5"><p className="text-xs text-muted-foreground">إجمالي المصروفات المعلّقة</p><p className="mt-1 text-base font-bold text-destructive">{formatCurrency(totals.outgoing)}</p></div>
-      </div>
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden">
         {APPROVAL_FILTERS.map((item) => (
           <button
@@ -630,6 +625,11 @@ function ApprovalsPanel({
             </tbody>
           </table>
         )}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-xl border border-status-warning/25 bg-status-warning/5 px-3 py-2.5"><p className="text-xs text-muted-foreground">إجمالي المبالغ المعلّقة</p><p className="mt-1 text-base font-bold text-status-warning">{formatCurrency(totals.total)}</p></div>
+        <div className="rounded-xl border border-status-success/25 bg-status-success/5 px-3 py-2.5"><p className="text-xs text-muted-foreground">إجمالي المقبوضات المعلّقة</p><p className="mt-1 text-base font-bold text-status-success">{formatCurrency(totals.incoming)}</p></div>
+        <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-3 py-2.5"><p className="text-xs text-muted-foreground">إجمالي المصروفات المعلّقة</p><p className="mt-1 text-base font-bold text-destructive">{formatCurrency(totals.outgoing)}</p></div>
       </div>
     </div>
   );
