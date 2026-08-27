@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency, formatMoney, type AdminMe } from "./_lib";
 import { EmptyState } from "./_layout";
+import { CompanyLoansPanel } from "./loans";
 
 const inputCls = "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50";
 
@@ -187,6 +188,10 @@ export function FinanceDashboardPage({ me }: { me: AdminMe }) {
           </Link>
         ))}
       </div>
+
+      <section className="rounded-xl border border-border/30 bg-card p-4">
+        <CompanyLoansPanel embedded />
+      </section>
     </div>
   );
 }

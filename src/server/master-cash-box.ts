@@ -899,6 +899,37 @@ async function executePendingFinancialTransaction(
         `);
         if (!(posted.rows ?? []).length)
           throw new Error("فاتورة المبيعات المرتبطة بالطلب المالي غير موجودة");
+      } else if (transaction.sourceType === "purchase_invoice") {
+        // Purchases can be recorded operationally before cash is approved.
+        // The approved request is the single place that settles supplier debt.
+        const posted = await tx.execute(sql`
+          UPDATE purchase_invoices
+          SET paid_amount = least(total::numeric, coalesce(paid_amount::numeric, 0) + ${amount}),
+              remaining_amount = greatest(total::numeric - least(total::numeric, coalesce(paid_amount::numeric, 0) + ${amount}), 0),
+              payment_status = CASE
+                WHEN least(total::numeric, coalesce(paid_amount::numeric, 0) + ${amount}) <= 0 THEN 'unpaid'
+                WHEN least(total::numeric, coalesce(paid_amount::numeric, 0) + ${amount}) >= total::numeric THEN 'paid'
+                ELSE 'partial'
+              END,
+              updated_at = now()
+          WHERE id = ${sourceId} AND status = 'active'
+          RETURNING supplier_id
+        `);
+        const supplierId = Number((posted.rows?.[0] as any)?.supplier_id);
+        if (!(posted.rows ?? []).length)
+          throw new Error("فاتورة الشراء المرتبطة بالطلب المالي غير موجودة أو غير نشطة");
+        if (Number.isInteger(supplierId) && supplierId > 0) {
+          await tx.execute(sql`
+            UPDATE suppliers
+            SET balance = (
+              SELECT coalesce(sum(remaining_amount::numeric), 0)
+              FROM purchase_invoices
+              WHERE supplier_id = ${supplierId} AND status = 'active'
+            )::text,
+            updated_at = now()
+            WHERE id = ${supplierId}
+          `);
+        }
       } else if (transaction.sourceType === "research_order") {
         const posted = await tx.execute(sql`
           WITH updated_order AS (

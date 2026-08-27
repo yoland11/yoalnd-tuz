@@ -50726,7 +50726,7 @@ async function handleSalesInvoices(
       where: eq(suppliersTable.id, id),
     });
     if (!supplier) return error("المورد غير موجود", 404);
-    const [invoices, products, transactions] = await Promise.all([
+    const [invoices, products, transactions, accountSummary] = await Promise.all([
       db.execute(
         sql`select * from purchase_invoices where supplier_id=${id} order by date desc limit 30`,
       ),
@@ -50734,7 +50734,21 @@ async function handleSalesInvoices(
         sql`select sp.*,p.name_ar,p.name from supplier_products sp left join products p on p.id=sp.product_id where sp.supplier_id=${id} order by sp.is_preferred desc,sp.updated_at desc`,
       ),
       db.execute(
-        sql`select id,transaction_no,transaction_date,amount,payment_method,approval_status,description from financial_transactions where source_type='purchase_invoice' and source_id in (select id::text from purchase_invoices where supplier_id=${id}) order by transaction_date desc limit 30`,
+        sql`select id,transaction_no,transaction_date,amount,payment_method,approval_status,description,reference_no,requested_by_name,notes,executed_at
+            from financial_transactions
+           where source_type='purchase_invoice'
+             and source_id in (select id::text from purchase_invoices where supplier_id=${id})
+           order by transaction_date desc, id desc limit 100`,
+      ),
+      db.execute(
+        sql`select
+              count(*)::int as invoice_count,
+              coalesce(sum(total::numeric), 0)::float as total_purchases,
+              coalesce(sum(paid_amount::numeric), 0)::float as total_paid,
+              coalesce(sum(remaining_amount::numeric), 0)::float as total_remaining,
+              max((select ft.executed_at from financial_transactions ft where ft.source_type='purchase_invoice' and ft.source_id=pi.id::text and ft.approval_status='executed' order by ft.executed_at desc nulls last limit 1)) as last_payment_date
+            from purchase_invoices pi
+           where pi.supplier_id=${id} and pi.status='active'`,
       ),
     ]);
     return json({
@@ -50743,6 +50757,13 @@ async function handleSalesInvoices(
       products: resultRows(products),
       payments: resultRows(transactions),
       outstandingBalance: Number(supplier.balance ?? 0),
+      accountSummary: resultRows(accountSummary)[0] ?? {
+        invoice_count: 0,
+        total_purchases: 0,
+        total_paid: 0,
+        total_remaining: 0,
+        last_payment_date: null,
+      },
     });
   }
 
@@ -52977,6 +52998,76 @@ async function handlePurchaseInvoices(
     });
   }
 
+  // Supplier settlements intentionally use the same Financial Approval engine
+  // as the original purchase payment.  The invoice is never marked paid here:
+  // its balance changes only when the principal administrator executes the
+  // pending cash-box transaction.
+  if (method === "POST" && id && parts[3] === "payments") {
+    const invoice = await db.query.purchaseInvoicesTable.findFirst({
+      where: and(
+        eq(purchaseInvoicesTable.id, id),
+        eq(purchaseInvoicesTable.status, "active"),
+      ),
+    });
+    if (!invoice) return error("فاتورة الشراء غير موجودة أو غير نشطة", 404);
+    const b = await body(req);
+    const amount = Math.round((Number(b?.amount) || 0) * 100) / 100;
+    const remaining = Math.max(0, Number(invoice.remainingAmount ?? 0));
+    const pendingResult = await db.execute(sql`
+      SELECT coalesce(sum(amount::numeric), 0)::float AS amount
+      FROM financial_transactions
+      WHERE source_type = 'purchase_invoice'
+        AND source_id = ${String(id)}
+        AND direction = 'expense'
+        AND approval_status IN ('draft', 'pending', 'approved')
+    `);
+    const pendingAmount = Math.max(
+      0,
+      Number((pendingResult.rows?.[0] as any)?.amount ?? 0),
+    );
+    const availableToRequest = Math.max(0, remaining - pendingAmount);
+    if (amount <= 0) return error("مبلغ السداد يجب أن يكون أكبر من صفر", 422);
+    if (amount > availableToRequest)
+      return error("مبلغ السداد أكبر من الرصيد المتاح بعد طلبات الموافقة المعلقة", 422);
+    const rawKey = req.headers.get("x-idempotency-key")?.trim();
+    const idempotencyKey = rawKey
+      ? `supplier-payment:${id}:${rawKey}`.slice(0, 180)
+      : `supplier-payment:${id}:${randomBytes(12).toString("hex")}`;
+    const financialTransaction = await createSourceFinancialRequest(
+      {
+        transactionDate:
+          String(b?.date ?? invoice.date ?? new Date().toISOString().slice(0, 10)),
+        direction: "expense",
+        amount,
+        department: "store",
+        transactionType: "supplier_payment",
+        referenceNo: nullableText(b?.referenceNo) ?? invoice.invoiceNo,
+        description: `سداد للمورد ${invoice.supplierName || "—"} — ${invoice.invoiceNo}`,
+        paymentMethod: financialPaymentMethod(b?.paymentMethod ?? invoice.paymentMethod),
+        sourceType: "purchase_invoice",
+        sourceId: String(invoice.id),
+        sourceEvent: `supplier_payment:${idempotencyKey.slice(-24)}`,
+        idempotencyKey,
+        customerName: invoice.supplierName || null,
+        notes: nullableText(b?.notes),
+      },
+      financialActor(auth),
+    );
+    void logAdminActivity(req, "supplier_payment_requested", "purchase_invoice", id, {
+      invoiceNo: invoice.invoiceNo,
+      supplierId: invoice.supplierId,
+      amount,
+      financialTransactionId: financialTransaction.id,
+    });
+    return json(
+      {
+        message: "تم إرسال سداد المورد للموافقات المالية",
+        financialTransaction,
+      },
+      201,
+    );
+  }
+
   if (method === "POST") {
     const b = await body(req);
     const a = actor(auth);
@@ -53022,9 +53113,10 @@ async function handlePurchaseInvoices(
       // cash-as-fully-paid fallback only when the caller omitted paidAmount.
       hasExplicitPaidAmount ? undefined : paymentMethod,
     );
-    const paidAmount = payment.deposit;
-    const remainingAmount = payment.remaining;
-    const paymentStatus = payment.status;
+    // `requestedPaidAmount` is an intent, not an official supplier payment.
+    // Keep the invoice debt untouched until the related financial approval is
+    // executed. This keeps supplier balances and the cash box in agreement.
+    const requestedPaidAmount = payment.deposit;
 
     const savedPurchase = await db.transaction(async (tx) => {
       const inserted = await tx
@@ -53040,10 +53132,10 @@ async function handlePurchaseInvoices(
           taxAmount: String(taxAmount),
           shippingCost: String(shippingCost),
           total: String(total),
-          paidAmount: String(paidAmount),
-          remainingAmount: String(remainingAmount),
+          paidAmount: "0",
+          remainingAmount: String(total),
           paymentMethod,
-          paymentStatus,
+          paymentStatus: "unpaid",
           status: "active",
           notes: b.notes ?? null,
           createdBy: a.id,
@@ -53195,7 +53287,7 @@ async function handlePurchaseInvoices(
               sourceType: "purchase_invoice",
               sourceId: final.id,
               sourceEvent: "payment",
-              targetAmount: Number(final.paidAmount),
+              targetAmount: requestedPaidAmount,
               normalDirection: "expense",
               transactionDate: final.date,
               department: "store",
@@ -53274,9 +53366,13 @@ async function handlePurchaseInvoices(
       b.paymentStatus ?? existing.paymentStatus,
       paymentMethod,
     );
-    const paidAmount = payment.deposit;
-    const remainingAmount = payment.remaining;
-    const paymentStatus = payment.status;
+    const requestedPaidAmount = payment.deposit;
+    const officiallyPaid = Math.max(0, Number(existing.paidAmount ?? 0));
+    if (requestedPaidAmount + 0.005 < officiallyPaid)
+      return error("لا يمكن تخفيض مبلغ مسدد ومعتمد من تعديل الفاتورة", 422);
+    if (officiallyPaid > total + 0.005)
+      return error("لا يمكن تخفيض إجمالي الفاتورة تحت المبلغ المسدد والمعتمد", 422);
+    const officialPayment = paymentSummary(total, officiallyPaid);
 
     await db
       .update(purchaseInvoicesTable)
@@ -53289,10 +53385,10 @@ async function handlePurchaseInvoices(
         taxAmount: String(taxAmount),
         shippingCost: String(shippingCost),
         total: String(total),
-        paidAmount: String(paidAmount),
-        remainingAmount: String(remainingAmount),
+        paidAmount: String(officialPayment.deposit),
+        remainingAmount: String(officialPayment.remaining),
         paymentMethod,
-        paymentStatus,
+        paymentStatus: officialPayment.status,
         notes: b.notes ?? existing.notes,
       } as any)
       .where(eq(purchaseInvoicesTable.id, id));
@@ -53384,7 +53480,7 @@ async function handlePurchaseInvoices(
           sourceType: "purchase_invoice",
           sourceId: final.id,
           sourceEvent: "payment",
-          targetAmount: Number(final.paidAmount),
+          targetAmount: requestedPaidAmount,
           normalDirection: "expense",
           transactionDate: final.date,
           department: "store",

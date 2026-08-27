@@ -36,7 +36,6 @@ import {
   formatCurrency,
 } from "./_lib";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
-import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { openSalesInvoicePrintWindow } from "./print-helpers";
@@ -291,9 +290,9 @@ export default function PurchasesPage() {
   const grandTotal = +(subtotal - extraDiscount + taxAmount + shipping).toFixed(
     2,
   );
-  const paidAmt = isCashPaymentMethod(form.paymentMethod)
-    ? grandTotal
-    : parseFloat(form.paidAmount || "0");
+  // Cash is a method, not proof that the supplier was paid in full. The
+  // entered amount becomes a pending financial approval and may be partial.
+  const paidAmt = Math.max(0, parseFloat(form.paidAmount || "0") || 0);
   const remaining = +(grandTotal - paidAmt).toFixed(2);
   const autoStatus =
     paidAmt >= grandTotal ? "paid" : paidAmt > 0 ? "partial" : "unpaid";
@@ -1078,9 +1077,6 @@ export default function PurchasesPage() {
                     setForm((f) => ({
                       ...f,
                       paymentMethod: m.value,
-                      paidAmount: isCashPaymentMethod(m.value)
-                        ? grandTotal.toString()
-                        : f.paidAmount,
                     }))
                   }
                   className={`rounded-lg py-2 text-sm font-medium border transition-colors ${
@@ -1100,16 +1096,12 @@ export default function PurchasesPage() {
               <input
                 type="number"
                 min="0"
-                value={
-                  isCashPaymentMethod(form.paymentMethod)
-                    ? grandTotal
-                    : form.paidAmount
-                }
+                value={form.paidAmount}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, paidAmount: e.target.value }))
                 }
-                readOnly={isCashPaymentMethod(form.paymentMethod)}
-                placeholder={grandTotal.toString()}
+                max={grandTotal}
+                placeholder="0"
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
@@ -1522,6 +1514,8 @@ function PurchaseListView({
                 <th className="px-4 py-3 text-right">التاريخ</th>
                 <th className="px-4 py-3 text-right">المورد</th>
                 <th className="px-4 py-3 text-center">الإجمالي</th>
+                <th className="px-4 py-3 text-center">المدفوع</th>
+                <th className="px-4 py-3 text-center">المتبقي</th>
                 <th className="px-4 py-3 text-center">الدفع</th>
                 <th className="px-4 py-3 text-center">الحالة</th>
                 <th className="px-4 py-3 text-center">إجراءات</th>
@@ -1531,7 +1525,7 @@ function PurchaseListView({
               {loading ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={9}
                     className="py-10 text-center text-muted-foreground"
                   >
                     جارٍ تحميل فواتير المشتريات...
@@ -1540,7 +1534,7 @@ function PurchaseListView({
               ) : error ? null : invoices.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={9}
                     className="text-center py-10 text-muted-foreground"
                   >
                     لا توجد فواتير مطابقة.
@@ -1558,6 +1552,12 @@ function PurchaseListView({
                     <td className="px-4 py-3">{inv.supplierName || "—"}</td>
                     <td className="px-4 py-3 text-center font-medium">
                       {formatCurrency(inv.total)}
+                    </td>
+                    <td className="px-4 py-3 text-center text-status-success">
+                      {formatCurrency(inv.paidAmount)}
+                    </td>
+                    <td className="px-4 py-3 text-center text-status-warning">
+                      {formatCurrency(inv.remainingAmount)}
                     </td>
                     <td className="px-4 py-3 text-center">
                       <PayBadge status={inv.paymentStatus} />
@@ -1623,35 +1623,18 @@ function PurchaseListView({
                     format: formatCurrency,
                   },
                   {
-                    key: "payment",
-                    label: "المدفوع والمتبقي",
-                    value: () => 0,
-                    format: (_, rows) => (
-                      <span className="text-xs">
-                        <span className="text-status-success">
-                          مدفوع{" "}
-                          {formatCurrency(
-                            rows.reduce(
-                              (sum, invoice) =>
-                                sum + Number(invoice.paidAmount ?? 0),
-                              0,
-                            ),
-                          )}
-                        </span>
-                        <span className="mx-1 text-muted-foreground">/</span>
-                        <span className="text-status-warning">
-                          متبقي{" "}
-                          {formatCurrency(
-                            rows.reduce(
-                              (sum, invoice) =>
-                                sum + Number(invoice.remainingAmount ?? 0),
-                              0,
-                            ),
-                          )}
-                        </span>
-                      </span>
-                    ),
+                    key: "paid",
+                    label: "إجمالي المدفوع",
+                    value: (invoice) => Number(invoice.paidAmount ?? 0),
+                    format: formatCurrency,
                   },
+                  {
+                    key: "remaining",
+                    label: "إجمالي المتبقي",
+                    value: (invoice) => Number(invoice.remainingAmount ?? 0),
+                    format: formatCurrency,
+                  },
+                  { key: "payment", label: "" },
                   { key: "status", label: "" },
                   { key: "actions", label: "" },
                 ]}

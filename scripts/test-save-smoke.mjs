@@ -116,12 +116,19 @@ check("sales invoice supports decimal inventory quantities to three places", api
 check("sales invoice persists payments within the invoice transaction", api.includes("createAndExecuteSourceFinancialTransaction(") && api.includes('traceInvoiceSave("payment_and_cashbox")'));
 const sourceFinancialGate = masterCashBox.slice(masterCashBox.indexOf("export async function createAndExecuteSourceFinancialTransaction"), masterCashBox.indexOf("export async function rejectFinancialTransaction"));
 check("source financial collections enter approval pending without direct cash-box execution", sourceFinancialGate.includes('approvalStatus: "pending"') && !sourceFinancialGate.includes("return executePendingFinancialTransaction("));
-check("financial approval blocks self-approval before cash-box execution", masterCashBox.includes("لا يمكن اعتماد الطلب المالي الذي أنشأته بنفسك"));
+check(
+  "financial approval restricts cash-box execution to the principal administrator",
+  masterCashBox.includes('return String(actor.role ?? "").toLowerCase() === "admin"') &&
+    masterCashBox.includes("اعتماد المعاملات المالية متاح للمدير الرئيسي فقط"),
+);
 check("sales invoices keep pending collections out of official paid amount", api.includes('paidAmount: "0",') && api.includes('paymentStatus: paidAmount > 0 ? "pending_approval" : paymentStatus'));
 check("sales invoice does not require optional tracking columns on insert", api.includes(".returning(salesInvoiceRecordColumns)") && !api.includes("createdByRole: auth.role"));
 check("sales invoice client sends an idempotency key", sales.includes('"x-idempotency-key": submitKeyRef.current'));
 check("purchase invoice client sends an idempotency key", purchases.includes('"x-idempotency-key": submitKeyRef.current'));
 check("purchase cash invoices respect an explicitly supplied partial payment", api.includes("hasExplicitPaidAmount ? undefined : paymentMethod"));
+check("purchase payments stay unofficial until financial approval", api.includes('paidAmount: "0",\n          remainingAmount: String(total)') && api.includes('sourceType: "purchase_invoice"'));
+check("approved supplier payments settle the linked invoice exactly once", masterCashBox.includes('transaction.sourceType === "purchase_invoice"') && masterCashBox.includes("UPDATE purchase_invoices") && masterCashBox.includes("payment_status = CASE"));
+check("supplier payment requests protect the remaining balance from duplicate pending requests", api.includes("availableToRequest") && api.includes("supplier_payment_requested"));
 check("all mutation routes retain the shared idempotency boundary", apiRoute.includes("withDesktopIdempotency(req, path") && desktopIdempotency.includes('request.headers.get("x-idempotency-key")') && desktopIdempotency.includes('status === "completed"'));
 check("purchase register API retains data, total and summary fields", api.includes("data: rows.map(invoiceRegisterView)") && api.includes("total: countRow?.c ?? 0") && api.includes("summary,"));
 check("legacy sales and purchase invoices without branch assignment remain visible in MAIN", api.includes("Sales invoices created before branch assignment") && api.includes("Purchase invoices created before branch assignment"));
