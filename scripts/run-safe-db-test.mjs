@@ -28,7 +28,7 @@ console.log(`AJN safe write target verified: ${safe.database}`);
 const result = spawnSync(
   process.execPath,
   [
-    resolve("lib/db/node_modules/tsx/dist/cli.mjs"),
+    resolve("scripts/run-tsx.mjs"),
     "--tsconfig",
     "tsconfig.json",
     suites[suite],

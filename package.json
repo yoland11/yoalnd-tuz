@@ -2,7 +2,7 @@
   "name": "ajn-platform-next",
   "version": "0.0.0",
   "license": "MIT",
-  "packageManager": "pnpm@10.28.0",
+  "packageManager": "pnpm@11.1.2+sha512.415a1cc25974731e75455c1468371be74c5aa5fb7621b50d4056d222451609f11412f23fd602e6169f1e060466641f798597e1be961a10688836a67b16569499",
   "private": true,
   "scripts": {
     "preinstall": "node ./scripts/ensure-pnpm.mjs",
@@ -46,7 +46,7 @@
     "test:phase2-safety": "node ./scripts/run-safe-db-test.mjs phase2",
     "test:phase3-readiness": "node ./scripts/run-safe-db-test.mjs phase3",
     "test:production-lock": "node ./scripts/test-database-write-guard.mjs",
-    "test:db-contracts": "node ./lib/db/node_modules/tsx/dist/cli.mjs --tsconfig ./tsconfig.json ./scripts/test-db-contracts.ts",
+    "test:db-contracts": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-db-contracts.ts",
     "test:critical-file-changes": "node ./scripts/check-critical-file-changes.mjs",
     "test:no-runtime-ddl": "node ./scripts/verify-no-runtime-ddl.mjs",
     "test:export-pdf": "node ./scripts/test-export-pdf-dependencies.mjs",
@@ -61,12 +61,15 @@
     "test:wedding-invoice-layout": "node ./scripts/verify-wedding-invoice-layout.mjs",
     "test:save-contracts": "node ./scripts/test-save-smoke.mjs",
     "test:save-smoke": "node ./scripts/run-critical-save-smoke.mjs",
+    "test:financial-approval": "node ./scripts/test-financial-approval.mjs",
     "schema:preflight": "pnpm --filter @workspace/db exec tsx ../../scripts/schema-preflight.ts",
     "schema:backup": "pnpm --filter @workspace/db exec tsx ../../scripts/backup-production-readonly.ts",
     "schema:apply": "pnpm --filter @workspace/db exec tsx ../../scripts/apply-reviewed-schema-migration.ts",
     "setup:hooks": "node ./scripts/install-git-hooks.mjs",
     "verify:critical": "node ./scripts/run-critical-verification.mjs",
-    "verify:deploy": "node ./scripts/run-critical-verification.mjs --deploy"
+    "verify:deploy": "node ./scripts/run-critical-verification.mjs --deploy",
+    "verify:strict": "node ./scripts/run-critical-verification.mjs --strict",
+    "verify:strict-deploy": "node ./scripts/run-critical-verification.mjs --deploy --strict"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
