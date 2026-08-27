@@ -8,24 +8,14 @@ import {
 /** Shared lifecycle rules used by the staff portal and the admin operations view. */
 export const SHOOT_STAGE_LABELS: Record<PhotographyShootStage, string> = {
   new_booking: "حجز جديد",
-  awaiting_assignment: "بانتظار توزيع المصور",
-  crew_assigned: "تم توزيع الكادر",
-  accepted: "تم قبول المهمة",
-  waiting_event: "بانتظار موعد التصوير",
-  on_the_way: "الفريق في الطريق",
-  arrived: "وصل إلى الموقع",
-  shooting: "بدأ التصوير",
-  shoot_ended: "انتهى التصوير",
-  files_received: "تم استلام الملفات",
-  transferring: "جاري نقل الملفات",
-  sorting: "جاري الفرز",
-  editing: "جاري المونتاج",
-  customer_review: "بانتظار مراجعة العميل",
-  revising: "جاري التعديل",
-  ready_print: "جاهز للطباعة",
-  printing: "جاري الطباعة",
+  crew_assigned: "توزيع الكادر",
+  waiting_event: "بانتظار الموعد",
+  on_the_way: "في الطريق",
+  shooting: "جاري التصوير",
+  processing_files: "معالجة الملفات",
+  review_and_edit: "مراجعة وتعديل",
+  printing: "الطباعة",
   ready_delivery: "جاهز للتسليم",
-  delivered: "تم التسليم",
   completed: "مكتمل",
   cancelled: "ملغي",
 };
@@ -43,39 +33,42 @@ export const CHECKLIST_LABELS: Record<PhotographyChecklistKey, string> = {
 };
 
 const FORWARD: Record<PhotographyShootStage, PhotographyShootStage[]> = {
-  new_booking: ["awaiting_assignment"],
-  awaiting_assignment: ["crew_assigned"],
-  crew_assigned: ["accepted"],
-  accepted: ["waiting_event"],
+  new_booking: ["crew_assigned"],
+  crew_assigned: ["waiting_event"],
   waiting_event: ["on_the_way"],
-  on_the_way: ["arrived"],
-  arrived: ["shooting"],
-  shooting: ["shoot_ended"],
-  shoot_ended: ["files_received"],
-  files_received: ["transferring"],
-  transferring: ["sorting"],
-  sorting: ["editing"],
-  editing: ["customer_review"],
-  customer_review: ["revising", "ready_print"],
-  revising: ["customer_review", "ready_print"],
-  ready_print: ["printing"],
+  on_the_way: ["shooting"],
+  shooting: ["processing_files"],
+  processing_files: ["review_and_edit"],
+  review_and_edit: ["printing"],
   printing: ["ready_delivery"],
-  ready_delivery: ["delivered"],
-  delivered: ["completed"],
+  ready_delivery: ["completed"],
   completed: [],
   cancelled: [],
 };
 
 /** Keeps every historical stage readable without rewriting its audit trail. */
 const LEGACY_STAGE_MAP: Record<string, PhotographyShootStage> = {
+  awaiting_assignment: "new_booking",
   assigned: "crew_assigned",
+  accepted: "crew_assigned",
   preparing: "waiting_event",
-  uploading: "transferring",
-  ready_for_review: "customer_review",
+  arrived: "shooting",
+  shoot_ended: "processing_files",
+  files_received: "processing_files",
+  uploading: "processing_files",
+  transferring: "processing_files",
+  sorting: "processing_files",
+  editing: "processing_files",
+  customer_review: "review_and_edit",
+  revising: "review_and_edit",
+  ready_for_review: "review_and_edit",
+  ready_print: "review_and_edit",
+  delivered: "completed",
 };
 
 export function normalizeShootStage(value: unknown): PhotographyShootStage {
   const raw = String(value ?? "").trim();
+  if (raw === "cancelled") return raw;
   if ((PHOTOGRAPHY_SHOOT_STAGES as readonly string[]).includes(raw)) {
     return raw as PhotographyShootStage;
   }
@@ -92,7 +85,8 @@ export function stageIndex(stage: string): number {
 export function isShootStage(value: unknown): value is PhotographyShootStage {
   return (
     typeof value === "string" &&
-    (PHOTOGRAPHY_SHOOT_STAGES as readonly string[]).includes(value)
+    ((PHOTOGRAPHY_SHOOT_STAGES as readonly string[]).includes(value) ||
+      value === "cancelled")
   );
 }
 
@@ -182,13 +176,11 @@ export function stageTimestamps(
   switch (to) {
     case "on_the_way":
       return { departedAt: now };
-    case "arrived":
-      return { arrivedAt: now };
     case "shooting":
       return { shootingStartedAt: now };
-    case "shoot_ended":
+    case "processing_files":
       return { shootingEndedAt: now };
-    case "delivered":
+    case "ready_delivery":
       return { deliveredAt: now };
     case "completed":
       return { completedAt: now };

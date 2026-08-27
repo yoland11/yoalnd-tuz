@@ -11,7 +11,7 @@ import {
   Plus, Trash2, Search, FileText, Save, RefreshCw,
   ShoppingCart, X, ChevronLeft, ChevronRight, Barcode, PauseCircle, PlayCircle,
   QrCode, Download,
-  Printer, Ban, ScanLine, MessageCircle,
+  Printer, Ban, ScanLine, MessageCircle, Package,
 } from "lucide-react";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { Button } from "@/components/ui/button";
@@ -64,6 +64,15 @@ type Product = {
   stock: string; barcode?: string; images?: string[]; bundleId?: number; availableQuantity?: number;
   offerDeliveryFee?: number;
 };
+
+function ProductSearchThumbnail({ product }: { product: Pick<Product, "name" | "nameAr" | "images"> }) {
+  const [failed, setFailed] = useState(false);
+  const source = product.images?.find((image) => typeof image === "string" && image.trim());
+  if (!source || failed) {
+    return <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-md border border-border/40 bg-muted text-muted-foreground"><Package className="h-4 w-4" /></span>;
+  }
+  return <img src={source} alt={product.nameAr || product.name || ""} className="h-10 w-10 shrink-0 rounded-md border border-border/40 bg-muted object-cover" loading="lazy" onError={() => setFailed(true)} />;
+}
 type CartItem = {
   productId: number; bundleId?: number | null; productName: string; barcode: string;
   quantity: number; unitPrice: number; discount: number; discountPct: number;
@@ -903,9 +912,12 @@ export default function SalesPage() {
                     onClick={() => addToCart(p)}
                     className="w-full flex items-center justify-between px-3 py-2 hover:bg-primary/10 text-sm transition-colors text-right"
                   >
-                    <div>
-                      <p className="font-medium text-foreground">{p.nameAr || p.name}</p>
-                      {p.barcode && <p className="text-xs text-muted-foreground flex items-center gap-1"><Barcode className="w-3 h-3" />{p.barcode}</p>}
+                    <div className="flex min-w-0 items-center gap-2">
+                      <ProductSearchThumbnail product={p} />
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-foreground">{p.nameAr || p.name}</p>
+                        {p.barcode && <p className="flex items-center gap-1 text-xs text-muted-foreground"><Barcode className="w-3 h-3" />{p.barcode}</p>}
+                      </div>
                     </div>
                     <div className="text-left">
                       <p className="font-bold text-primary">{formatCurrency(p.price)}</p>

@@ -6860,6 +6860,11 @@ function isKoshaOrSoundBooking(
 ) {
   const fields = (order.customFields ?? {}) as Record<string, any>;
 
+  // Dispatch can deliberately send an audio booking to the photography portal
+  // (for a photographer responsible for a mixed shoot).  Keep the one service
+  // order as the source of truth and never expose it in both staff portals.
+  if (fields.assignedPortal === "photography") return false;
+
   // Priority 1: a department stamped on the booking at sync time. This is an identifier,
   // not prose, so it survives renames and translation and is checked before any text.
   const stamped = Array.isArray(fields.departments)
@@ -51858,10 +51863,13 @@ async function handleSalesInvoices(
             taxAmount: String(taxAmount),
             offerDeliveryFee: String(offerDeliveryFee),
             total: String(total),
-            paidAmount: String(paidAmount),
-            remainingAmount: String(remainingAmount),
+            // The invoice itself can be created now, but its collection is
+            // official only after the central financial approval is executed.
+            // Keep pending money out of customer balances and cash reporting.
+            paidAmount: "0",
+            remainingAmount: String(total),
             paymentMethod,
-            paymentStatus,
+            paymentStatus: paidAmount > 0 ? "pending_approval" : paymentStatus,
             dueDate: normalizeDateOnly(b.dueDate) ?? null,
             status: "active",
             isInternal: b.isInternal ? 1 : 0,
@@ -56418,7 +56426,7 @@ async function ensureShootRow(
     .values({
       bookingId: event.bookingId ?? null,
       eventId: event.id,
-      stage: event.assignedStaffId ? "crew_assigned" : "awaiting_assignment",
+      stage: event.assignedStaffId ? "crew_assigned" : "new_booking",
       venue: event.location ?? null,
       eventTime: event.eventStartTime ?? null,
       createdBy,
@@ -58020,14 +58028,12 @@ async function handlePhotographyStaffPortal(
         active: cards.filter(
           (card) =>
             card.stage !== "new_booking" &&
-            card.stage !== "awaiting_assignment" &&
             card.stage !== "completed" &&
-            card.stage !== "delivered" &&
             card.stage !== "cancelled",
         ),
-        pendingUploads: cards.filter((card) => card.stage === "transferring")
+        pendingUploads: cards.filter((card) => card.stage === "processing_files")
           .length,
-        pendingEditing: cards.filter((card) => card.stage === "editing").length,
+        pendingEditing: cards.filter((card) => card.stage === "review_and_edit").length,
         completed: cards.filter((card) => card.stage === "completed").length,
         total: cards.length,
       });
@@ -58400,8 +58406,8 @@ async function handlePhotographyStaffPortal(
         updatedAt: now,
         ...stageTimestamps(to as PhotographyShootStage, now),
       };
-      // Arrival check-in records where the photographer actually was.
-      if (to === "arrived" && lat !== null && lng !== null) {
+      // Starting the shoot records where the photographer checked in.
+      if (to === "shooting" && lat !== null && lng !== null) {
         patch.arrivedLat = String(lat);
         patch.arrivedLng = String(lng);
       }
@@ -58444,10 +58450,10 @@ async function handlePhotographyStaffPortal(
         },
       );
       // Managers get told when a job lands in a state that needs their attention.
-      if (to === "customer_review") {
+      if (to === "review_and_edit") {
         await createNotification({
           type: "photography_ready_review",
-          title: "مهمة تصوير جاهزة للمراجعة",
+          title: "مهمة تصوير جاهزة للمراجعة والتعديل",
           body: event.groomName,
           entityType: "photography_event",
           entityId: event.id,
@@ -58484,7 +58490,7 @@ async function handlePhotographyStaffPortal(
         return error("سبب رفض المهمة مطلوب", 422);
       const now = new Date();
       const nextStage =
-        decision === "accept" ? "accepted" : "awaiting_assignment";
+        decision === "accept" ? "crew_assigned" : "new_booking";
       await db
         .update(photographyShootCrewTable)
         .set({
@@ -58611,9 +58617,7 @@ async function handlePhotographyStaffPortal(
           .where(eq(photographyEventsTable.id, event.id));
       }
       if (
-        ["new_booking", "awaiting_assignment"].includes(
-          normalizeShootStage(shoot.stage),
-        )
+        normalizeShootStage(shoot.stage) === "new_booking"
       ) {
         await db
           .update(photographyShootsTable)
@@ -62576,31 +62580,24 @@ async function handleStaffPortal(
           },
           financialActor(auth),
         );
-        const after = await tx.execute(
-          sql`SELECT paid_amount, remaining_amount, payment_status FROM kosha_bookings WHERE id = ${Number(booking.id)}`,
-        );
         const financialRow = financial as any;
         await tx.execute(sql`
           UPDATE kosha_payment_requests SET
-            status = 'approved', financial_transaction_id = ${financialRow.id},
-            reviewed_by_staff_id = ${auth.id},
-            reviewed_by_name = ${auth.fullName || auth.username}, reviewed_at = now(),
+            status = 'pending_manager_approval', financial_transaction_id = ${financialRow.id},
+            reviewed_by_staff_id = NULL, reviewed_by_name = NULL, reviewed_at = NULL,
             rejection_reason = NULL
           WHERE id = ${id}
         `);
         await tx.insert(koshaBookingEventsTable).values({
           bookingId: Number(booking.id), staffId: auth.id,
-          staffName: auth.fullName || auth.username, type: "payment_approved",
+          staffName: auth.fullName || auth.username, type: "payment_pending_financial_approval",
           note: request.note ?? null,
           meta: { amount, collectionId: id, receiptVoucherId: savedVoucher.id, financialTransactionId: financialRow.id },
         });
-        const updated = (after.rows ?? [])[0] as any;
         return {
-          state: "approved" as const,
+          state: "pending_financial_approval" as const,
           bookingId: Number(booking.id), staffId: request.staff_id ? Number(request.staff_id) : null,
           amount, financialTransactionId: financialRow.id,
-          paidAmount: money(updated?.paid_amount), remainingAmount: money(updated?.remaining_amount),
-          paymentStatus: String(updated?.payment_status ?? "partial"),
         };
         });
       } catch (cause) {
@@ -62630,13 +62627,13 @@ async function handleStaffPortal(
         return json({ ok: true, status: "rejected" });
       }
       await addKoshaNotification({
-        staffId: result.staffId, audience: "staff", type: "payment_approved",
-        title: "اعتُمد تحصيل المبلغ",
-        body: `اعتُمد تحصيل ${formatCurrency(result.amount)} وأضيف إلى الصندوق الرئيسي.`,
+        staffId: result.staffId, audience: "staff", type: "payment_pending_financial_approval",
+        title: "أُرسل التحصيل للموافقة المالية",
+        body: `تحصيل ${formatCurrency(result.amount)} بانتظار اعتماد الإدارة المالية قبل تحديث رصيد الحجز والصندوق الرئيسي.`,
         href: `/staff/koshas/booking/${result.bookingId}`, bookingId: result.bookingId,
       });
-      await logAdminActivity(req, "kosha_field_collection_approved", "kosha_payment_request", id, { amount: result.amount, bookingId: result.bookingId, financialTransactionId: result.financialTransactionId });
-      return json({ ok: true, status: "approved", paidAmount: result.paidAmount, remainingAmount: result.remainingAmount, paymentStatus: result.paymentStatus, financialTransactionId: result.financialTransactionId });
+      await logAdminActivity(req, "kosha_field_collection_submitted_for_financial_approval", "kosha_payment_request", id, { amount: result.amount, bookingId: result.bookingId, financialTransactionId: result.financialTransactionId });
+      return json({ ok: true, status: "pending_financial_approval", financialTransactionId: result.financialTransactionId });
     }
     return error("المسار غير موجود", 404);
   }
@@ -64016,11 +64013,8 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "approve") {
-        if (
-          !hasVoucherPermission(auth, "voucher_approve") ||
-          !canApproveFinancialTransactions(financeUser)
-        )
-          return error("اعتماد المعاملات متاح للمدير فقط", 403);
+        if (!canApproveFinancialTransactions(financeUser))
+          return error("اعتماد المعاملات المالية متاح للمدير الرئيسي أو للمفوض فقط", 403);
         const payload = await body(req);
         const row = await approveAndExecuteFinancialTransaction(
           id,
@@ -64060,11 +64054,8 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "reject") {
-        if (
-          !hasVoucherPermission(auth, "voucher_approve") ||
-          !canApproveFinancialTransactions(financeUser)
-        )
-          return error("رفض المعاملات متاح للمدير فقط", 403);
+        if (!canApproveFinancialTransactions(financeUser))
+          return error("رفض المعاملات المالية متاح للمدير الرئيسي أو للمفوض فقط", 403);
         const payload = await body(req);
         const row = await rejectFinancialTransaction(
           id,
@@ -64293,6 +64284,13 @@ const receiptVoucherMutationSchema = z.object({
     .preprocess(optionalPositiveId, z.number().int().positive().nullable())
     .optional()
     .default(null),
+  // Kept separate from bookingId (which is the legacy service-order link).
+  // This lets callers submit a Kosha receipt safely without depending on a
+  // free-text reference or a client-side allocation implementation.
+  koshaBookingId: z
+    .preprocess(optionalPositiveId, z.number().int().positive().nullable())
+    .optional()
+    .default(null),
   allocations: z
     .array(
       z.object({
@@ -64302,6 +64300,9 @@ const receiptVoucherMutationSchema = z.object({
           "order",
           "service_order",
           "graduation_order",
+          "photography_order",
+          "rental_order",
+          "research_order",
         ]),
         sourceId: z.coerce.number().int().positive(),
         amount: voucherAmountSchema,
@@ -64808,6 +64809,15 @@ async function handleAccounting(
             UNION ALL
             SELECT 'graduation_order', id, order_no, created_at::date::text, total_amount::float, paid_amount::float, remaining_amount::float, due_date::text, payment_status
             FROM graduation_orders WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'photography_order', id, order_no, created_at::date::text, total_amount::float, paid_amount::float, remaining_amount::float, NULL::text, payment_status
+            FROM photography_orders WHERE ${accountPhone} <> '' AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10) AND cancelled_at IS NULL AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'rental_order', id, order_no, created_at::date::text, total_amount::float, paid_amount::float, remaining_amount::float, end_date::text, payment_status
+            FROM rental_orders WHERE (customer_id = ${customerId} OR (${accountPhone} <> '' AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10))) AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'research_order', id, research_no, created_at::date::text, total_amount::float, paid_amount::float, remaining_amount::float, deadline::text, payment_status
+            FROM research_orders WHERE customer_id = ${customerId} AND archived_at IS NULL AND remaining_amount::numeric > 0
           ) records ORDER BY date DESC, source_id DESC
         `);
         const records = (rows.rows ?? []) as any[];
@@ -65025,8 +65035,32 @@ async function handleAccounting(
           "اختيار العميل إلزامي لسند القبض لضمان ربط الذمة والحجوزات بصورة صحيحة.",
           400,
         );
+      const allocations =
+        b.allocations.length > 0
+          ? b.allocations
+          : b.koshaBookingId
+            ? [
+                {
+                  sourceType: "kosha_booking" as const,
+                  sourceId: b.koshaBookingId,
+                  amount: b.amount,
+                },
+              ]
+            : [];
+      if (
+        b.koshaBookingId &&
+        allocations.some(
+          (allocation) =>
+            allocation.sourceType !== "kosha_booking" ||
+            allocation.sourceId !== b.koshaBookingId,
+        )
+      )
+        return error(
+          "ربط حجز الكوشة لا يطابق توزيع سند القبض. راجع السند قبل الحفظ.",
+          400,
+        );
       const allocatedAmount = money(
-        b.allocations.reduce(
+        allocations.reduce(
           (sum, allocation) => sum + money(allocation.amount),
           0,
         ),
@@ -65041,12 +65075,12 @@ async function handleAccounting(
           "يوجد مبلغ غير موزع. اختر سجلاً آخر أو احفظ المتبقي كرصيد للعميل.",
           400,
         );
-      if (!b.allocations.length && !b.saveRemainderAsCredit)
+      if (!allocations.length && !b.saveRemainderAsCredit)
         return error(
           "اختر سجلاً لتطبيق سند القبض عليه أو احفظه كرصيد للعميل.",
           400,
         );
-      for (const allocation of b.allocations) {
+      for (const allocation of allocations) {
         if (allocation.sourceType === "kosha_booking") {
           const booking = await db.query.koshaBookingsTable.findFirst({
             where: eq(koshaBookingsTable.id, allocation.sourceId),
@@ -65060,11 +65094,6 @@ async function handleAccounting(
                 normalizeIraqiPhone(customer.phone))
           )
             return error("حجز الكوشة المحدد لا يتبع للعميل المختار.", 400);
-          if (booking.customerId == null)
-            await db
-              .update(koshaBookingsTable)
-              .set({ customerId: customer.id, updatedAt: new Date() })
-              .where(eq(koshaBookingsTable.id, booking.id));
           if (money(allocation.amount) > money(booking.remainingAmount))
             return error(
               `مبلغ حجز الكوشة أكبر من المتبقي (${formatCurrency(booking.remainingAmount)}).`,
@@ -65104,6 +65133,48 @@ async function handleAccounting(
               "طلب التخرج لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.",
               400,
             );
+        } else if (allocation.sourceType === "photography_order") {
+          const row = await db.query.photographyOrdersTable.findFirst({
+            where: eq(photographyOrdersTable.id, allocation.sourceId),
+          });
+          if (
+            !row ||
+            normalizeIraqiPhone(row.phone) !==
+              normalizeIraqiPhone(customer.phone) ||
+            money(allocation.amount) > money(row.remainingAmount)
+          )
+            return error(
+              "طلب التصوير لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.",
+              400,
+            );
+        } else if (allocation.sourceType === "rental_order") {
+          const row = await db.query.rentalOrdersTable.findFirst({
+            where: eq(rentalOrdersTable.id, allocation.sourceId),
+          });
+          if (
+            !row ||
+            (row.customerId != null && row.customerId !== customer.id) ||
+            (row.customerId == null &&
+              normalizeIraqiPhone(row.phone) !==
+                normalizeIraqiPhone(customer.phone)) ||
+            money(allocation.amount) > money(row.remainingAmount)
+          )
+            return error(
+              "طلب التأجير لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.",
+              400,
+            );
+        } else if (allocation.sourceType === "research_order") {
+          const row = await db.query.researchOrdersTable.findFirst({
+            where: and(
+              eq(researchOrdersTable.id, allocation.sourceId),
+              eq(researchOrdersTable.customerId, customer.id),
+            ),
+          });
+          if (!row || money(allocation.amount) > money(row.remainingAmount))
+            return error(
+              "طلب البحث لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.",
+              400,
+            );
         } else {
           const row = await db.query.serviceOrdersTable.findFirst({
             where: eq(serviceOrdersTable.id, allocation.sourceId),
@@ -65121,7 +65192,7 @@ async function handleAccounting(
         }
       }
       const allocationRows = [
-        ...b.allocations,
+        ...allocations,
         ...(allocatedAmount < money(b.amount)
           ? [
               {
@@ -65136,6 +65207,21 @@ async function handleAccounting(
       try {
         await ensureMasterCashBoxTables();
         const updated = await db.transaction(async (tx) => {
+          // Legacy Kosha records can legitimately lack customer_id. Link them
+          // only inside the voucher transaction, after ownership has been
+          // validated, so a failed receipt never changes customer history.
+          for (const allocation of allocations) {
+            if (allocation.sourceType !== "kosha_booking") continue;
+            await tx
+              .update(koshaBookingsTable)
+              .set({ customerId: customer.id, updatedAt: new Date() })
+              .where(
+                and(
+                  eq(koshaBookingsTable.id, allocation.sourceId),
+                  isNull(koshaBookingsTable.customerId),
+                ),
+              );
+          }
           const [row] = await tx
             .insert(receiptVouchersTable)
             .values({
@@ -65152,9 +65238,9 @@ async function handleAccounting(
               orderId: b.orderId ?? null,
               bookingId: b.bookingId ?? null,
               koshaBookingId:
-                b.allocations.length === 1 &&
-                b.allocations[0].sourceType === "kosha_booking"
-                  ? b.allocations[0].sourceId
+                allocations.length === 1 &&
+                allocations[0].sourceType === "kosha_booking"
+                  ? allocations[0].sourceId
                   : null,
               reference: nullableText(b.reference),
               method: b.method,

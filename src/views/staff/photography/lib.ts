@@ -140,38 +140,25 @@ export const photographyApi = {
 // ── Field-shoot operations ───────────────────────────────────────────────────
 
 export type ShootStage =
-  | "new_booking" | "awaiting_assignment" | "crew_assigned" | "accepted"
-  | "waiting_event" | "on_the_way" | "arrived" | "shooting" | "shoot_ended"
-  | "files_received" | "transferring" | "sorting" | "editing" | "customer_review"
-  | "revising" | "ready_print" | "printing" | "ready_delivery" | "delivered"
+  | "new_booking" | "crew_assigned" | "waiting_event" | "on_the_way"
+  | "shooting" | "processing_files" | "review_and_edit" | "printing" | "ready_delivery"
   | "completed" | "cancelled";
 
 export const SHOOT_STAGES: Array<{ key: ShootStage; label: string; icon: string }> = [
   { key: "new_booking", label: "حجز جديد", icon: "🆕" },
-  { key: "awaiting_assignment", label: "بانتظار توزيع المصور", icon: "👤" },
-  { key: "crew_assigned", label: "تم توزيع الكادر", icon: "👥" },
-  { key: "accepted", label: "تم قبول المهمة", icon: "✓" },
-  { key: "waiting_event", label: "بانتظار موعد التصوير", icon: "🕒" },
-  { key: "on_the_way", label: "الفريق في الطريق", icon: "🚗" },
-  { key: "arrived", label: "وصل إلى الموقع", icon: "📍" },
-  { key: "shooting", label: "بدأ التصوير", icon: "📸" },
-  { key: "shoot_ended", label: "انتهى التصوير", icon: "■" },
-  { key: "files_received", label: "تم استلام الملفات", icon: "💾" },
-  { key: "transferring", label: "جاري نقل الملفات", icon: "↥" },
-  { key: "sorting", label: "جاري الفرز", icon: "≡" },
-  { key: "editing", label: "جاري المونتاج", icon: "🎬" },
-  { key: "customer_review", label: "بانتظار مراجعة العميل", icon: "👁" },
-  { key: "revising", label: "جاري التعديل", icon: "✎" },
-  { key: "ready_print", label: "جاهز للطباعة", icon: "🖨" },
-  { key: "printing", label: "جاري الطباعة", icon: "▣" },
+  { key: "crew_assigned", label: "توزيع الكادر", icon: "👥" },
+  { key: "waiting_event", label: "بانتظار الموعد", icon: "🕒" },
+  { key: "on_the_way", label: "في الطريق", icon: "🚗" },
+  { key: "shooting", label: "جاري التصوير", icon: "📸" },
+  { key: "processing_files", label: "معالجة الملفات", icon: "💾" },
+  { key: "review_and_edit", label: "مراجعة وتعديل", icon: "✎" },
+  { key: "printing", label: "الطباعة", icon: "🖨" },
   { key: "ready_delivery", label: "جاهز للتسليم", icon: "📦" },
-  { key: "delivered", label: "تم التسليم", icon: "✓" },
   { key: "completed", label: "مكتمل", icon: "✅" },
-  { key: "cancelled", label: "ملغي", icon: "×" },
 ];
 
 export const SHOOT_STAGE_LABEL: Record<string, string> = Object.fromEntries(
-  SHOOT_STAGES.map((item) => [item.key, item.label]),
+  [...SHOOT_STAGES, { key: "cancelled" as ShootStage, label: "ملغي", icon: "×" }].map((item) => [item.key, item.label]),
 );
 
 export const CHECKLIST_ITEMS: Array<{ key: string; label: string }> = [
@@ -188,6 +175,7 @@ export const CHECKLIST_ITEMS: Array<{ key: string; label: string }> = [
 
 /** The next stage a photographer can move to, or null at the end of the pipeline. */
 export function nextStage(stage: ShootStage): ShootStage | null {
+  if (stage === "cancelled") return null;
   const index = SHOOT_STAGES.findIndex((item) => item.key === stage);
   return index < 0 || index >= SHOOT_STAGES.length - 1 ? null : SHOOT_STAGES[index + 1].key;
 }

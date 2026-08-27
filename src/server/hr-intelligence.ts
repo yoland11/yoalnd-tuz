@@ -4,7 +4,7 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import { computeEmployeeScores, type EmployeeScore } from "@/server/employee-performance";
 import { applyPayrollAdvanceDeductions, ensureEmployeeAdvanceTables, getEmployeeAdvanceSummary, reversePayrollAdvanceDeductions } from "@/server/employee-advances";
-import { approveAndExecuteFinancialTransaction, createFinancialTransaction, ensureMasterCashBoxTables, reverseFinancialTransaction, type FinancialActor } from "@/server/master-cash-box";
+import { approveAndExecuteFinancialTransaction, createFinancialTransaction, ensureMasterCashBoxTables, isMainFinancialAdministrator, reverseFinancialTransaction, type FinancialActor } from "@/server/master-cash-box";
 import { PAYROLL_PERIOD_TYPES, resolvePayrollPeriod, type PayrollPeriodType } from "@/server/payroll-periods";
 import { canEditPayroll } from "@/server/payroll-lifecycle";
 import { calculateAttendancePayroll, normalizeAttendancePolicy } from "@/server/attendance-payroll";
@@ -650,9 +650,23 @@ export async function getPayrollRun(id: number) {
     const [bonuses, advances, accounting] = await Promise.all([
       db.execute(sql`select id,title,amount,status,source_type,source_id from hr_incentive_events where payroll_line_id=${line.id} order by id`),
       db.execute(sql`select id,advance_id,amount,payroll_reference,financial_transaction_id from employee_advance_repayments where employee_id=${line.staff_id} and payroll_reference=${run.run_no} and kind='payroll' order by id`),
-      db.execute(sql`select id,transaction_no from financial_transactions where source_type='payroll_line' and source_id=${String(line.id)} order by id limit 1`),
+      db.execute(sql`
+        select id,transaction_no
+        from financial_transactions
+        where id=${Number(line.financial_transaction_id ?? 0)}
+           or (source_type='payroll_line' and source_id=${String(line.id)})
+        order by case when id=${Number(line.financial_transaction_id ?? 0)} then 0 else 1 end, id
+        limit 1
+      `),
     ]);
-    const sourceRecords = { bonuses: rows<any>(bonuses), advances: rows<any>(advances), accounting: rows<any>(accounting)[0] ?? null, cashboxTransactionId: line.financial_transaction_id ?? null };
+    const financialTransaction = rows<any>(accounting)[0] ?? null;
+    const sourceRecords = {
+      bonuses: rows<any>(bonuses),
+      advances: rows<any>(advances),
+      accounting: financialTransaction,
+      cashboxTransactionId: line.financial_transaction_id ?? financialTransaction?.id ?? null,
+      financialTransactionNo: financialTransaction?.transaction_no ?? null,
+    };
     return { ...line, employeeId: Number(line.staff_id), employeeCode: `EMP-${String(line.staff_id).padStart(6, "0")}`, employeeName: line.full_name || line.username, department: line.department, jobTitle: line.job_title, salaryType: line.salary_type, paymentMethod: line.payment_method, paymentStatus: line.payment_status, baseSalary: num(line.base_salary), overtimeAmount: num(line.overtime_amount), bonusAmount: num(line.bonus_amount), commissionAmount: num(line.commission_amount), otherEarnings: num(line.manual_earnings), penaltyAmount: num(line.penalty_amount), advanceDeduction: num(line.advance_deduction), grossSalary: num(line.gross_salary), netSalary: num(line.net_salary), totalDeductions: num(line.gross_salary) - num(line.net_salary), amountPaid: num(line.amount_paid), remainingSalary: Math.max(0, num(line.net_salary) - num(line.amount_paid)), scheduledWorkingDays: Number(line.scheduled_working_days ?? 0), attendanceDays: Number(line.attendance_days ?? 0), paidLeaveDays: Number(line.paid_leave_days ?? 0), unpaidLeaveDays: Number(line.unpaid_leave_days ?? 0), absenceDays: Number(line.absence_days ?? 0), lateArrivals: Number(line.late_arrivals ?? 0), totalLateMinutes: Number(line.total_late_minutes ?? 0), earlyLeaveCount: Number(line.early_leave_count ?? 0), earlyLeaveMinutes: Number(line.calculation_details?.attendance?.earlyLeaveMinutes ?? 0), totalWorkingHours: num(line.total_working_hours), overtimeHours: num(line.overtime_hours), missingCheckIn: Number(line.missing_check_in ?? 0), missingCheckOut: Number(line.missing_check_out ?? 0), attendanceAllowance: num(line.attendance_allowance), transportationAllowance: num(line.transportation_allowance), foodAllowance: num(line.food_allowance), phoneAllowance: num(line.phone_allowance), housingAllowance: num(line.housing_allowance), otherFixedAllowances: num(line.other_fixed_allowances), attendanceDeduction: num(line.attendance_deduction), absenceDeduction: num(line.absence_deduction), lateDeduction: num(line.late_deduction), earlyLeaveDeduction: num(line.early_leave_deduction), unpaidLeaveDeduction: num(line.unpaid_leave_deduction), manualDeduction: num(line.manual_deduction), otherDeductions: num(line.other_deductions), fixedDeduction: num(line.fixed_deduction), insuranceAmount: num(line.insurance_amount), lineNotes: line.line_notes ?? null, calculationDetails: line.calculation_details ?? {}, sourceRecords };
   }));
   const extensionTables = rows<any>(await db.execute(sql`select to_regclass('public.admin_activity_logs') as audit, to_regclass('public.entity_timeline') as timeline, to_regclass('public.employee_salary_events') as salary_events`))[0] ?? {};
@@ -673,7 +687,7 @@ export async function getPayrollRun(id: number) {
     missingSalary: lines.filter((line) => num(line.baseSalary) <= 0).map((line) => line.employeeName),
     missingBank: rawLines.filter((line) => String(line.payment_method || "") === "bank" && !line.account_number).map((line) => line.full_name || line.username),
   };
-  return { ...run, runKind: run.run_kind || "standard", parentPayrollRunId: run.parent_payroll_run_id ? Number(run.parent_payroll_run_id) : null, supplementReason: run.supplement_reason ?? null, versionNo: Number(run.version_no ?? 1), lockedAt: run.locked_at ?? null, lockedBy: run.locked_by ? Number(run.locked_by) : null, closedAt: run.closed_at ?? null, closedBy: run.closed_by ? Number(run.closed_by) : null, periodType: run.period_type || "monthly", periodKey: run.period_key || null, periodStartDate: run.period_start_date ? String(run.period_start_date) : null, periodEndDate: run.period_end_date ? String(run.period_end_date) : null, paymentDate: run.payment_date ? String(run.payment_date) : null, attendanceWarning: run.attendance_warning ?? null, totalGross: num(run.total_gross), totalDeductions: num(run.total_deductions), totalNet: num(run.total_net), lines, management, auditLog: rows<any>(auditLog), timeline: rows<any>(timeline), salaryEvents: rows<any>(salaryEvents) };
+  return { ...run, runKind: run.run_kind || "standard", parentPayrollRunId: run.parent_payroll_run_id ? Number(run.parent_payroll_run_id) : null, supplementReason: run.supplement_reason ?? null, versionNo: Number(run.version_no ?? 1), lockedAt: run.locked_at ?? null, lockedBy: run.locked_by ? Number(run.locked_by) : null, closedAt: run.closed_at ?? null, closedBy: run.closed_by ? Number(run.closed_by) : null, periodType: run.period_type || "monthly", periodKey: run.period_key || null, periodStartDate: run.period_start_date ? String(run.period_start_date) : null, periodEndDate: run.period_end_date ? String(run.period_end_date) : null, paymentDate: run.payment_date ? String(run.payment_date) : null, paymentReference: run.payment_reference ?? null, attendanceWarning: run.attendance_warning ?? null, totalGross: num(run.total_gross), totalDeductions: num(run.total_deductions), totalNet: num(run.total_net), lines, management, auditLog: rows<any>(auditLog), timeline: rows<any>(timeline), salaryEvents: rows<any>(salaryEvents) };
 }
 
 export async function listPayrollRuns(filters: { period?: string; year?: string; periodType?: PayrollPeriodType; department?: string; employee?: string; status?: string; paymentStatus?: string; amountType?: string; search?: string } = {}) {
@@ -740,10 +754,15 @@ export async function rejectPayrollRun(id: number, actor: HrActor, input: unknow
   return getPayrollRun(id);
 }
 
-async function postPayrollAccounting(transactionId: number, run: any) {
+async function getPayrollAccountMap() {
   const accountRows = rows<any>(await db.execute(sql`select id,code from financial_accounts where code in ('5070','5071','5072','2100','2200','1300')`));
   const account = new Map(accountRows.map((row) => [String(row.code), Number(row.id)]));
   if (["5070", "5071", "5072", "2100", "2200", "1300"].some((code) => !account.has(code))) throw new Error("دليل حسابات الرواتب غير مكتمل");
+  return account;
+}
+
+async function postPayrollAccounting(transactionId: number, run: any, account?: Map<string, number>) {
+  const resolvedAccount = account ?? await getPayrollAccountMap();
   const sum = (selector: (line: any) => number) => num(run.lines.reduce((total: number, line: any) => total + selector(line), 0));
   const baseAndOvertime = sum((line) => num(line.baseSalary) + num(line.overtimeAmount));
   const bonuses = sum((line) => num(line.bonusAmount) + num(line.commissionAmount) + num(line.otherEarnings));
@@ -752,14 +771,14 @@ async function postPayrollAccounting(transactionId: number, run: any) {
   // The standard cash executor has already posted Dr Salary Payable / Cr Cash for
   // the net payment. Raise that debit to gross, then complete the expense and
   // advance/deduction legs. Every insert is idempotent by transaction/account/side.
-  await db.execute(sql`update financial_ledger_entries set amount=${gross} where transaction_id=${transactionId} and account_id=${account.get('2100')!} and entry_side='debit'`);
+  await db.execute(sql`update financial_ledger_entries set amount=${gross} where transaction_id=${transactionId} and account_id=${resolvedAccount.get('2100')!} and entry_side='debit'`);
   const entries = [
-    baseAndOvertime > 0 ? [account.get('5070')!, 'debit', baseAndOvertime, 'رواتب وإضافي'] : null,
-    bonuses > 0 ? [account.get('5071')!, 'debit', bonuses, 'مكافآت رواتب معتمدة'] : null,
-    allowances > 0 ? [account.get('5072')!, 'debit', allowances, 'بدلات الرواتب'] : null,
-    [account.get('2100')!, 'credit', gross, 'إثبات التزام الرواتب'],
-    advances > 0 ? [account.get('1300')!, 'credit', advances, 'تسوية سلف الموظفين'] : null,
-    otherDeductions > 0 ? [account.get('2200')!, 'credit', otherDeductions, 'استقطاعات الرواتب'] : null,
+    baseAndOvertime > 0 ? [resolvedAccount.get('5070')!, 'debit', baseAndOvertime, 'رواتب وإضافي'] : null,
+    bonuses > 0 ? [resolvedAccount.get('5071')!, 'debit', bonuses, 'مكافآت رواتب معتمدة'] : null,
+    allowances > 0 ? [resolvedAccount.get('5072')!, 'debit', allowances, 'بدلات الرواتب'] : null,
+    [resolvedAccount.get('2100')!, 'credit', gross, 'إثبات التزام الرواتب'],
+    advances > 0 ? [resolvedAccount.get('1300')!, 'credit', advances, 'تسوية سلف الموظفين'] : null,
+    otherDeductions > 0 ? [resolvedAccount.get('2200')!, 'credit', otherDeductions, 'استقطاعات الرواتب'] : null,
   ].filter(Boolean) as [number, string, number, string][];
   for (const [accountId, side, amount, description] of entries) await db.execute(sql`insert into financial_ledger_entries(transaction_id,account_id,entry_side,amount,description) values(${transactionId},${accountId},${side},${amount},${description}) on conflict(transaction_id,account_id,entry_side) do update set amount=excluded.amount,description=excluded.description`);
 }
@@ -832,24 +851,38 @@ async function payPayrollRunLegacy(id: number, actor: HrActor) {
 }
 
 export async function payPayrollRun(id: number, actor: HrActor) {
-  if (!['admin', 'manager'].includes(actor.role)) throw new Error("دفع الرواتب بعد اعتماد المدير فقط");
+  if (!isMainFinancialAdministrator(actor)) throw new Error("صرف الرواتب من الصندوق الرئيسي متاح للمدير الرئيسي فقط");
   const run = await getPayrollRun(id);
   if (!run) throw new Error("دورة الرواتب غير موجودة");
   if (run.status === "paid") return run;
   if (!['approved', 'ready_to_pay'].includes(run.status)) throw new Error("يجب اعتماد دورة الرواتب وتجهيزها للصرف قبل الدفع");
+  // Validate the entire posting plan before creating the cash movement. This
+  // prevents a missing payroll account from producing a cash-only payment.
+  const account = await getPayrollAccountMap();
   const claimed = rows<any>(await db.execute(sql`update payroll_runs set status='processing',updated_at=now() where id=${id} and status in ('approved','ready_to_pay') returning id`))[0];
   if (!claimed) throw new Error("دورة الرواتب قيد المعالجة بالفعل");
   try {
     const transaction = await createFinancialTransaction({ transactionDate: run.paymentDate || `${run.period}-01`, direction: 'expense', amount: num(run.totalNet), department: 'hr', transactionType: 'payroll_settlement', description: `صرف دورة الرواتب ${run.run_no}`, paymentMethod: 'cash', sourceType: 'payroll_run', sourceId: String(id), sourceEvent: 'payroll_approved_payment', idempotencyKey: `payroll:${id}:settlement`, approvalStatus: 'pending', responsibleUserId: actor.id, responsibleUserName: actor.name, notes: `دورة رواتب ${run.run_no} (${run.period})`, attachments: [] }, actor);
-    const executed = await approveAndExecuteFinancialTransaction(transaction.id, actor);
-    await postPayrollAccounting(executed.id, run);
+    const executed = transaction.approvalStatus === "executed"
+      ? transaction
+      : await approveAndExecuteFinancialTransaction(transaction.id, actor);
+    await postPayrollAccounting(executed.id, run, account);
     for (const line of run.lines) {
       await db.execute(sql`update payroll_lines set financial_transaction_id=${executed.id},amount_paid=net_salary,payment_status='paid' where id=${line.id}`);
       await applyPayrollAdvanceDeductionOnce(line, run, actor);
     }
     await db.execute(sql`update hr_incentive_events set status='applied_to_payroll' where payroll_line_id in (select id from payroll_lines where payroll_run_id=${id}) and status='approved'`);
     await db.execute(sql`update payroll_runs set status='paid',paid_at=now(),paid_by=${actor.id},paid_by_name=${actor.name},payment_reference=${executed.transactionNo},updated_at=now() where id=${id}`);
-    return getPayrollRun(id);
+    const paidRun = await getPayrollRun(id);
+    return paidRun ? {
+      ...paidRun,
+      paymentTransaction: {
+        id: executed.id,
+        transactionNo: executed.transactionNo,
+        amount: num(run.totalNet),
+        cashBoxPath: `/admin/finance/master-cash?transaction=${executed.id}`,
+      },
+    } : paidRun;
   } catch (err) {
     await db.execute(sql`update payroll_runs set status='ready_to_pay',updated_at=now() where id=${id} and status='processing'`);
     throw err;

@@ -660,6 +660,13 @@ export default function Admin() {
               </Guard>
             )}
           </Route>
+          <Route path="/admin/financial-approvals">
+            {() => (
+              <Guard me={me} perm="accounting">
+                <MasterCashBoxPage me={me} />
+              </Guard>
+            )}
+          </Route>
           <Route path="/admin/employee-performance">
             {() => (
               <Guard me={me} perm="staff">

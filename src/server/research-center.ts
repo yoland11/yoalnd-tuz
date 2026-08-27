@@ -289,10 +289,6 @@ async function createResearchOrder(raw: unknown, user?: ResearchAdminUser | null
       await tx.insert(researchStatusEventsTable).values({ researchOrderId: order.id, toStatus: "new", changedBy: user?.id ?? null, changedByName: actorName(user) });
       if (data.deposit > 0 && user) {
         failureStage = "deposit_finance";
-        const remaining = Math.max(0, total - data.deposit);
-        const paymentStatus = remaining <= 0 ? "paid" : "partial";
-        await tx.update(researchOrdersTable).set({ paidAmount: String(data.deposit), remainingAmount: String(remaining), paymentStatus, updatedAt: new Date() }).where(eq(researchOrdersTable.id, order.id));
-        await tx.update(salesInvoicesTable).set({ paidAmount: String(data.deposit), remainingAmount: String(remaining), paymentMethod: "cash", paymentStatus, updatedAt: new Date() }).where(eq(salesInvoicesTable.id, invoice.id));
         await createAndExecuteSourceFinancialTransaction(tx, {
           direction: "revenue",
           amount: data.deposit,
@@ -310,7 +306,10 @@ async function createResearchOrder(raw: unknown, user?: ResearchAdminUser | null
           attachments: [],
         }, financialActor(user));
       }
-      const postedDeposit = user ? data.deposit : 0;
+      // A recorded deposit is an approval request, not an official payment.
+      // The central cash-box executor updates the order and invoice together
+      // only after the main financial approval succeeds.
+      const postedDeposit = 0;
       const remaining = Math.max(0, total - postedDeposit);
       const paymentStatus = remaining <= 0 ? "paid" : postedDeposit > 0 ? "partial" : "unpaid";
       return {
@@ -357,7 +356,7 @@ async function applyPayment(orderId: number, amount: number, paymentMethod: stri
         if (existing.sourceType !== "research_order" || existing.sourceId !== String(orderId) || numeric(existing.amount) !== amount)
           throw new Error("تعارض معرف إعادة محاولة دفعة البحث");
         const ledger = await tx.select({ id: financialLedgerEntriesTable.id }).from(financialLedgerEntriesTable).where(eq(financialLedgerEntriesTable.transactionId, existing.id));
-        if (existing.approvalStatus !== "executed" || ledger.length < 2)
+        if (existing.approvalStatus === "executed" && ledger.length < 2)
           throw new Error("دفعة البحث السابقة غير مكتملة محاسبياً وتحتاج مراجعة");
         return {
           invalid: false as const,
@@ -372,9 +371,7 @@ async function applyPayment(orderId: number, amount: number, paymentMethod: stri
     }
     const total = numeric(lockedOrder.totalAmount); const previousPaid = numeric(lockedOrder.paidAmount); const targetPaid = Math.min(total, previousPaid + amount);
     if (targetPaid <= previousPaid) return { invalid: true as const, order: lockedOrder, targetPaid: previousPaid, remaining: Math.max(0, total - previousPaid), status: lockedOrder.paymentStatus };
-    const remaining = Math.max(0, total - targetPaid); const status = remaining <= 0 ? "paid" : "partial";
-    await tx.update(researchOrdersTable).set({ paidAmount: String(targetPaid), remainingAmount: String(remaining), paymentStatus: status, updatedAt: new Date() }).where(eq(researchOrdersTable.id, orderId));
-    if (lockedOrder.invoiceId) await tx.update(salesInvoicesTable).set({ paidAmount: String(targetPaid), remainingAmount: String(remaining), paymentMethod, paymentStatus: status, updatedAt: new Date() }).where(eq(salesInvoicesTable.id, lockedOrder.invoiceId));
+    const remaining = Math.max(0, total - previousPaid); const status = lockedOrder.paymentStatus;
     const transaction = await createAndExecuteSourceFinancialTransaction(tx, {
       direction: "revenue",
       amount: targetPaid - previousPaid,
@@ -391,7 +388,7 @@ async function applyPayment(orderId: number, amount: number, paymentMethod: stri
       dueDate: lockedOrder.deadline,
       attachments: [],
     }, financialActor(user));
-    return { invalid: false as const, duplicate: false as const, order: lockedOrder, targetPaid, remaining, status, transaction };
+    return { invalid: false as const, duplicate: false as const, order: lockedOrder, targetPaid: previousPaid, remaining, status, transaction };
   });
   if (!payment) return { response: error("طلب البحث غير موجود", 404) };
   if (payment.invalid) return { response: error("تم سداد كامل مبلغ البحث", 400) };

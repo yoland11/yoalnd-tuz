@@ -12,6 +12,7 @@ import {
   defaultServiceDetails,
   getServiceDetailFields,
   primaryLocationFromDetails,
+  normalizeServiceType,
   serviceDetailsToRows,
   validateServiceDetails,
   withDerivedServiceDetails,
@@ -61,6 +62,16 @@ type AdminService = {
   isActive: boolean;
 };
 
+type PhotographerOption = {
+  id: number;
+  fullName?: string | null;
+  username?: string | null;
+  role?: string | null;
+  department?: string | null;
+  jobTitle?: string | null;
+  isActive?: boolean;
+};
+
 const PAYMENT_LABELS: Record<string, string> = {
   cod: "عند الاستلام",
   transfer: "حوالة",
@@ -76,6 +87,129 @@ const PAYMENT_COLORS: Record<string, string> = {
   transfer: "bg-accent/10 text-accent border-accent/30",
   paid: "bg-status-success/10 text-status-success border-status-success/30",
 };
+
+function PhotographyAssigneeField({
+  serviceType,
+  value,
+  onChange,
+}: {
+  serviceType?: string | null;
+  value: Record<string, any>;
+  onChange: (next: Record<string, any>) => void;
+}) {
+  const { data: staff = [] } = useQuery({
+    queryKey: ["admin", "staff", "photography-assignees"],
+    queryFn: () => adminFetch<PhotographerOption[]>("/admin/staff"),
+    staleTime: 5 * 60_000,
+  });
+  const photographers = useMemo(
+    () =>
+      staff.filter((member) => {
+        if (member.isActive === false) return false;
+        const profile = [member.role, member.department, member.jobTitle]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return profile.includes("photographer") || profile.includes("photography") || profile.includes("photo") || profile.includes("تصوير");
+      }),
+    [staff],
+  );
+  if (normalizeServiceType(serviceType) !== "photography") return null;
+  const selectedId = Number(value.assignedPhotographerId ?? value.photographerId ?? 0);
+  return (
+    <label className="block rounded-lg border border-primary/20 bg-primary/[0.03] p-3 sm:col-span-2">
+      <span className="mb-1 block text-xs font-medium text-foreground">المصور المكلّف</span>
+      <select
+        value={selectedId || ""}
+        onChange={(event) => {
+          const staffId = Number(event.target.value) || null;
+          const selected = photographers.find((member) => member.id === staffId);
+          const { assignedPhotographerId: _assigned, photographerId: _photographer, assignedPhotographerName: _name, ...rest } = value;
+          onChange(
+            staffId
+              ? {
+                  ...rest,
+                  assignedPhotographerId: staffId,
+                  photographerId: staffId,
+                  assignedPhotographerName: selected?.fullName || selected?.username || "",
+                }
+              : rest,
+          );
+        }}
+        className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <option value="">اختر المصور لإظهار الحجز في بوابته</option>
+        {photographers.map((member) => (
+          <option key={member.id} value={member.id}>
+            {member.fullName || member.username || `موظف #${member.id}`}
+          </option>
+        ))}
+      </select>
+      <span className="mt-1 block text-[11px] text-muted-foreground">يظهر الحجز في بوابة هذا المصور فقط، ويُحدَّث عند تعديل التعيين.</span>
+    </label>
+  );
+}
+
+function isSoundServiceType(serviceType?: string | null) {
+  const value = String(serviceType ?? "").toLowerCase();
+  return ["sound", "audio", "speaker", "dj", "صوت", "سما", "دي جي"].some((token) => value.includes(token));
+}
+
+function SoundAssigneeField({
+  serviceType,
+  value,
+  onChange,
+}: {
+  serviceType?: string | null;
+  value: Record<string, any>;
+  onChange: (next: Record<string, any>) => void;
+}) {
+  const { data: staff = [] } = useQuery({
+    queryKey: ["admin", "staff", "sound-assignees"],
+    queryFn: () => adminFetch<PhotographerOption[]>("/admin/staff"),
+    staleTime: 5 * 60_000,
+  });
+  if (!isSoundServiceType(serviceType)) return null;
+  const staffId = Number(value.assignedStaffId ?? value.assignedStaffIds?.[0] ?? 0);
+  const portal = value.assignedPortal === "photography" ? "photography" : "koshas";
+  return (
+    <div className="grid gap-3 rounded-lg border border-primary/20 bg-primary/[0.03] p-3 sm:col-span-2 sm:grid-cols-2">
+      <label>
+        <span className="mb-1 block text-xs font-medium text-foreground">الموظف المكلّف بالصوتيات</span>
+        <select
+          value={staffId || ""}
+          onChange={(event) => {
+            const id = Number(event.target.value) || null;
+            const selected = staff.find((member) => member.id === id);
+            const { assignedStaffId: _staffId, assignedStaffIds: _staffIds, bookingStaffAssignments: _assignments, ...rest } = value;
+            onChange(id ? {
+              ...rest,
+              assignedStaffId: id,
+              assignedStaffIds: [id],
+              bookingStaffAssignments: [{ id, name: selected?.fullName || selected?.username || "" }],
+            } : rest);
+          }}
+          className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <option value="">اختر الموظف المكلّف</option>
+          {staff.filter((member) => member.isActive !== false).map((member) => <option key={member.id} value={member.id}>{member.fullName || member.username || `موظف #${member.id}`}</option>)}
+        </select>
+      </label>
+      <label>
+        <span className="mb-1 block text-xs font-medium text-foreground">إظهار الحجز في</span>
+        <select
+          value={portal}
+          onChange={(event) => onChange({ ...value, assignedPortal: event.target.value })}
+          className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <option value="koshas">بوابة الكوشات</option>
+          <option value="photography">بوابة التصوير</option>
+        </select>
+      </label>
+      <p className="text-[11px] text-muted-foreground sm:col-span-2">يظهر حجز الصوتيات للموظف المحدد في البوابة المختارة فقط.</p>
+    </div>
+  );
+}
 
 const STATUS_FILTERS = [
   { value: "", label: "الكل" },
@@ -1297,6 +1431,16 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                 crews={crews}
                 errors={serviceErrors}
               />
+              <PhotographyAssigneeField
+                serviceType={selectedService?.type}
+                value={serviceForm.customFields}
+                onChange={(customFields) => setServiceForm((current) => ({ ...current, customFields }))}
+              />
+              <SoundAssigneeField
+                serviceType={selectedService?.type}
+                value={serviceForm.customFields}
+                onChange={(customFields) => setServiceForm((current) => ({ ...current, customFields }))}
+              />
               <Input label="ملاحظات" value={serviceForm.notes} onChange={v => setServiceForm(f => ({ ...f, notes: v }))} />
               <Input label="ملاحظات داخلية" value={serviceForm.internalNotes} onChange={v => setServiceForm(f => ({ ...f, internalNotes: v }))} />
             </>
@@ -1471,6 +1615,16 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
             }}
             crews={crews}
             errors={errors}
+          />
+          <PhotographyAssigneeField
+            serviceType={selectedServiceType}
+            value={form.customFields}
+            onChange={(customFields) => setForm((current) => ({ ...current, customFields }))}
+          />
+          <SoundAssigneeField
+            serviceType={selectedServiceType}
+            value={form.customFields}
+            onChange={(customFields) => setForm((current) => ({ ...current, customFields }))}
           />
           <AdditionalCustomBookingFields
             serviceType={selectedServiceType}

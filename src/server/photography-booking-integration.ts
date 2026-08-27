@@ -75,25 +75,15 @@ const PHOTOGRAPHY_CHECKLISTS = {
 
 const CUSTOMER_STATUS: Record<string, string> = {
   new_booking: "تم تأكيد الحجز",
-  awaiting_assignment: "تم تأكيد الحجز",
   crew_assigned: "تم تعيين فريق التصوير",
-  accepted: "تم تعيين فريق التصوير",
-  waiting_event: "تم تعيين فريق التصوير",
-  on_the_way: "تم تعيين فريق التصوير",
-  arrived: "تم تعيين فريق التصوير",
-  shooting: "تم تنفيذ التصوير",
-  shoot_ended: "تم تنفيذ التصوير",
-  files_received: "تم تنفيذ التصوير",
-  transferring: "جاري المونتاج",
-  sorting: "جاري المونتاج",
-  editing: "جاري المونتاج",
-  customer_review: "جاهز للمراجعة",
-  revising: "جاري المونتاج",
-  ready_print: "جاري الطباعة",
+  waiting_event: "بانتظار الموعد",
+  on_the_way: "الفريق في الطريق",
+  shooting: "جاري التصوير",
+  processing_files: "معالجة الملفات",
+  review_and_edit: "مراجعة وتعديل الملفات",
   printing: "جاري الطباعة",
-  ready_delivery: "جاهز للاستلام",
-  delivered: "تم التسليم",
-  completed: "تم التسليم",
+  ready_delivery: "جاهز للتسليم",
+  completed: "مكتمل",
   cancelled: "ملغي",
 };
 
@@ -316,7 +306,7 @@ function initialStage(order: ServiceOrder, fields: JsonMap): string {
   if (eventStatus(order) === "cancelled") return "cancelled";
   return fields.assignedPhotographerId || fields.photographerId
     ? "crew_assigned"
-    : "awaiting_assignment";
+    : "new_booking";
 }
 
 async function writeSyncAudit(
@@ -347,21 +337,26 @@ export async function syncCentralBookingToPhotography(
   });
   if (!order) return { linked: false, reason: "booking_not_found" } as const;
   const detection = await detectPhotographyBooking(order);
-  if (!detection.isPhotography) {
+  const fields = mapObject(order.customFields);
+  // A dispatcher may assign a sound booking to a photographer. This is an
+  // explicit routing decision, not a keyword guess, and the existing event /
+  // crew relation keeps it visible only to the assigned photographer.
+  const explicitlyRoutedToPhotography =
+    fields.assignedPortal === "photography" &&
+    positiveId(fields.assignedPhotographerId ?? fields.photographerId ?? fields.assignedStaffId) !== null;
+  if (!detection.isPhotography && !explicitlyRoutedToPhotography) {
     console.info("[photography-sync] booking skipped", detection.debug);
     return { linked: false, reason: "photography_item_not_detected", detection } as const;
   }
-
-  const fields = mapObject(order.customFields);
   const date = validDate(order.eventDate, order.createdAt);
   const startTime = boundedTime(fields.eventStartTime ?? fields.eventTime ?? fields.startTime);
   const endTime = boundedTime(fields.eventEndTime ?? fields.endTime);
   const code = bookingCode(order);
   const assignmentInputs = [
     ...arrays(fields.photographyAssignments, fields.photographers, fields.assignedPhotographers),
-    ...(positiveId(fields.assignedPhotographerId ?? fields.photographerId)
+    ...(positiveId(fields.assignedPhotographerId ?? fields.photographerId ?? fields.assignedStaffId)
       ? [{
-          employeeId: positiveId(fields.assignedPhotographerId ?? fields.photographerId),
+          employeeId: positiveId(fields.assignedPhotographerId ?? fields.photographerId ?? fields.assignedStaffId),
           role: "main_photographer",
           isLead: true,
         }]
@@ -405,7 +400,9 @@ export async function syncCentralBookingToPhotography(
       phone2: fields.phone2 ?? fields.mobile2 ?? fields.alternatePhone ?? null,
       eventStartTime: startTime,
       eventEndTime: endTime,
-      photographyItems: detection.items,
+      photographyItems: detection.items.length
+        ? detection.items
+        : [{ name: "مهمة صوتيات مكلّفة للتصوير", quantity: 1 }],
       requiredPhotographers: Math.max(1, Number(fields.requiredPhotographers ?? fields.photographersRequired ?? 1) || 1),
       customerNotes: order.notes ?? null,
       internalNotes: order.internalNotes ?? null,
@@ -492,7 +489,7 @@ export async function syncCentralBookingToPhotography(
             eq(photographyShootCrewTable.assignmentStatus, "accepted"),
           ),
         );
-      if (!["delivered", "completed", "cancelled"].includes(normalizeShootStage(shoot.stage))) {
+      if (!["completed", "cancelled"].includes(normalizeShootStage(shoot.stage))) {
         [shoot] = await tx
           .update(photographyShootsTable)
           .set({ stage: "crew_assigned", updatedAt: new Date() })
@@ -627,24 +624,14 @@ export async function syncCentralBookingToPhotography(
 
 const CENTRAL_STATUS_BY_STAGE: Record<string, string> = {
   new_booking: "pending",
-  awaiting_assignment: "pending",
   crew_assigned: "confirmed",
-  accepted: "confirmed",
   waiting_event: "confirmed",
   on_the_way: "processing",
-  arrived: "processing",
   shooting: "processing",
-  shoot_ended: "processing",
-  files_received: "processing",
-  transferring: "processing",
-  sorting: "processing",
-  editing: "processing",
-  customer_review: "processing",
-  revising: "processing",
-  ready_print: "processing",
+  processing_files: "processing",
+  review_and_edit: "processing",
   printing: "processing",
   ready_delivery: "completed",
-  delivered: "delivered",
   completed: "completed",
   cancelled: "cancelled",
 };

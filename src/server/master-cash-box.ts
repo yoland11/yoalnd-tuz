@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import {
   db,
@@ -8,6 +8,8 @@ import {
   financialLedgerEntriesTable,
   financialTransactionsTable,
   masterCashBoxTable,
+  purchaseInvoicesTable,
+  salesInvoicesTable,
 } from "@workspace/db";
 
 export type FinancialActor = {
@@ -96,6 +98,7 @@ const ACCOUNT_SEEDS = [
   ["5072", "Allowance expense", "expense", "hr"],
   ["2100", "Salary payable", "liability", "hr"],
   ["2200", "Payroll deductions payable", "liability", "hr"],
+  ["2300", "قروض وتمويل مستحق للغير", "liability", "general"],
   ["1000", "الصندوق الرئيسي", "asset", null],
   ["4000", "إيرادات عامة", "revenue", "general"],
   ["4010", "إيرادات المتجر", "revenue", "store"],
@@ -157,6 +160,47 @@ function money(value: unknown): number {
     : 0;
 }
 
+type FinancialCounterparty = {
+  counterpartyName: string | null;
+  counterpartyType: "customer" | "supplier" | "party";
+  sourceReference: string | null;
+};
+
+/**
+ * Historical financial rows did not always persist the customer/supplier name.
+ * Enrich invoice-backed rows at read time so the cash box remains useful without
+ * changing any financial record or relying on a destructive data backfill.
+ */
+async function attachFinancialCounterparties<T extends { sourceType: string | null; sourceId: string | null; customerName: string | null; referenceNo: string | null }>(transactions: T[]) {
+  const idsFor = (sourceType: string) => [...new Set(transactions
+    .filter((row) => row.sourceType === sourceType && /^\d+$/.test(String(row.sourceId ?? "")))
+    .map((row) => Number(row.sourceId)))];
+  const salesIds = idsFor("sales_invoice");
+  const purchaseIds = idsFor("purchase_invoice");
+  const [sales, purchases] = await Promise.all([
+    salesIds.length
+      ? db.select({ id: salesInvoicesTable.id, invoiceNo: salesInvoicesTable.invoiceNo, customerName: salesInvoicesTable.customerName }).from(salesInvoicesTable).where(inArray(salesInvoicesTable.id, salesIds))
+      : Promise.resolve([]),
+    purchaseIds.length
+      ? db.select({ id: purchaseInvoicesTable.id, invoiceNo: purchaseInvoicesTable.invoiceNo, supplierName: purchaseInvoicesTable.supplierName }).from(purchaseInvoicesTable).where(inArray(purchaseInvoicesTable.id, purchaseIds))
+      : Promise.resolve([]),
+  ]);
+  const salesById = new Map(sales.map((row) => [row.id, row]));
+  const purchasesById = new Map(purchases.map((row) => [row.id, row]));
+
+  return transactions.map((transaction) => {
+    const sourceId = Number(transaction.sourceId);
+    const salesInvoice = transaction.sourceType === "sales_invoice" ? salesById.get(sourceId) : null;
+    const purchaseInvoice = transaction.sourceType === "purchase_invoice" ? purchasesById.get(sourceId) : null;
+    const counterparty: FinancialCounterparty = purchaseInvoice
+      ? { counterpartyName: purchaseInvoice.supplierName || transaction.customerName || null, counterpartyType: "supplier", sourceReference: purchaseInvoice.invoiceNo }
+      : salesInvoice
+        ? { counterpartyName: salesInvoice.customerName || transaction.customerName || null, counterpartyType: "customer", sourceReference: salesInvoice.invoiceNo }
+        : { counterpartyName: transaction.customerName || null, counterpartyType: "party", sourceReference: transaction.referenceNo || null };
+    return { ...transaction, ...counterparty };
+  });
+}
+
 function snapshot(row: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(row).map(([key, value]) => [
@@ -186,6 +230,8 @@ function counterAccountCode(
   )
     return "1300";
   if (transactionType === "payroll_settlement") return "2100";
+  // Financing is a balance-sheet liability, never operating income/expense.
+  if (transactionType === "company_loan_received" || transactionType === "company_loan_repayment") return "2300";
   if (direction === "expense" && transactionType === "damage_loss")
     return "5090";
   const revenue: Record<string, string> = {
@@ -460,12 +506,17 @@ export async function cancelFinancialTransactionRequest(
   return saved;
 }
 
+/** Roles that may perform the final, official Main Cash Box posting. */
+export function isMainFinancialAdministrator(actor: FinancialActor) {
+  return ["admin", "main_admin", "super_admin"].includes(String(actor.role ?? "").toLowerCase());
+}
+
 export function canApproveFinancialTransactions(actor: FinancialActor) {
   return (
-    actor.role === "admin" ||
-    actor.role === "manager" ||
+    isMainFinancialAdministrator(actor) ||
+    Boolean(actor.permissions?.includes("financial_approval:approve")) ||
     Boolean(actor.permissions?.includes("voucher_approve")) ||
-    Boolean(actor.permissions?.includes("voucher_reverse"))
+    Boolean(actor.permissions?.includes("financial_approval:self_approve"))
   );
 }
 
@@ -609,6 +660,48 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
         WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
           AND remaining_amount::numeric >= ${value} RETURNING id
       `);
+    } else if (allocation.source_type === "photography_order") {
+      updated = await tx.execute(sql`
+        UPDATE photography_orders SET paid_amount = paid_amount::numeric + ${value},
+          remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total_amount::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
+          updated_at = now()
+        WHERE id = ${allocation.source_id} AND remaining_amount::numeric >= ${value}
+          AND EXISTS (SELECT 1 FROM customers c WHERE c.id = ${allocation.customer_id}
+            AND right(regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(coalesce(photography_orders.phone, ''), '[^0-9]', '', 'g'), 10))
+        RETURNING id
+      `);
+    } else if (allocation.source_type === "rental_order") {
+      updated = await tx.execute(sql`
+        UPDATE rental_orders SET paid_amount = paid_amount::numeric + ${value},
+          remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total_amount::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
+          updated_at = now()
+        WHERE id = ${allocation.source_id} AND remaining_amount::numeric >= ${value}
+          AND (customer_id = ${allocation.customer_id} OR EXISTS (SELECT 1 FROM customers c WHERE c.id = ${allocation.customer_id}
+            AND right(regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(coalesce(rental_orders.phone, ''), '[^0-9]', '', 'g'), 10)))
+        RETURNING id
+      `);
+    } else if (allocation.source_type === "research_order") {
+      updated = await tx.execute(sql`
+        UPDATE research_orders SET paid_amount = paid_amount::numeric + ${value},
+          remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total_amount::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
+          updated_at = now()
+        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
+          AND remaining_amount::numeric >= ${value} RETURNING id
+      `);
+      if ((updated.rows ?? []).length) {
+        await tx.execute(sql`
+          UPDATE sales_invoices invoice SET
+            paid_amount = research.paid_amount,
+            remaining_amount = research.remaining_amount,
+            payment_status = research.payment_status,
+            updated_at = now()
+          FROM research_orders research
+          WHERE research.id = ${allocation.source_id} AND invoice.id = research.invoice_id
+        `);
+      }
     } else {
       throw new Error("نوع توزيع سند القبض غير مدعوم.");
     }
@@ -788,11 +881,67 @@ async function executePendingFinancialTransaction(
         await tx.execute(
           sql`UPDATE expenses SET approval_status = 'executed', updated_at = now() WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
         );
+      } else if (transaction.sourceType === "sales_invoice") {
+        // A sales document may be created before its collection is approved.
+        // Only the approval transaction is allowed to make the payment official.
+        const posted = await tx.execute(sql`
+          UPDATE sales_invoices
+          SET paid_amount = least(total::numeric, coalesce(paid_amount::numeric, 0) + ${amount}),
+              remaining_amount = greatest(total::numeric - least(total::numeric, coalesce(paid_amount::numeric, 0) + ${amount}), 0),
+              payment_status = CASE
+                WHEN least(total::numeric, coalesce(paid_amount::numeric, 0) + ${amount}) <= 0 THEN 'unpaid'
+                WHEN least(total::numeric, coalesce(paid_amount::numeric, 0) + ${amount}) >= total::numeric THEN 'paid'
+                ELSE 'partial'
+              END,
+              updated_at = now()
+          WHERE id = ${sourceId}
+          RETURNING id
+        `);
+        if (!(posted.rows ?? []).length)
+          throw new Error("فاتورة المبيعات المرتبطة بالطلب المالي غير موجودة");
+      } else if (transaction.sourceType === "research_order") {
+        const posted = await tx.execute(sql`
+          WITH updated_order AS (
+            UPDATE research_orders
+            SET paid_amount = least(total_amount::numeric, coalesce(paid_amount::numeric, 0) + ${amount}),
+                remaining_amount = greatest(total_amount::numeric - least(total_amount::numeric, coalesce(paid_amount::numeric, 0) + ${amount}), 0),
+                payment_status = CASE
+                  WHEN least(total_amount::numeric, coalesce(paid_amount::numeric, 0) + ${amount}) >= total_amount::numeric THEN 'paid'
+                  ELSE 'partial'
+                END,
+                updated_at = now()
+            WHERE id = ${sourceId}
+            RETURNING invoice_id, paid_amount, remaining_amount, payment_status
+          )
+          UPDATE sales_invoices invoice
+          SET paid_amount = updated_order.paid_amount,
+              remaining_amount = updated_order.remaining_amount,
+              payment_status = updated_order.payment_status,
+              payment_method = ${transaction.paymentMethod},
+              updated_at = now()
+          FROM updated_order
+          WHERE invoice.id = updated_order.invoice_id
+          RETURNING invoice.id
+        `);
+        if (!(posted.rows ?? []).length)
+          throw new Error("طلب البحث أو فاتورته المرتبطة غير موجودة");
       } else if (transaction.sourceType === "receipt_voucher") {
         await tx.execute(
           sql`UPDATE receipt_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
         );
         receiptAllocations = await postReceiptVoucherAllocations(tx, sourceId, amount);
+        // Field collections create a normal receipt voucher first.  The
+        // booking request is only marked approved here, after its voucher,
+        // allocation, ledger entry, and master-cash movement all succeeded in
+        // this same transaction.
+        await tx.execute(sql`
+          UPDATE kosha_payment_requests SET
+            status = 'approved', reviewed_by_staff_id = ${actor.id},
+            reviewed_by_name = ${actor.name}, reviewed_at = now(),
+            rejection_reason = NULL
+          WHERE financial_transaction_id = ${id}
+            AND status IN ('pending', 'pending_manager_approval', 'processing')
+        `);
       } else if (transaction.sourceType === "payment_voucher") {
         await tx.execute(
           sql`UPDATE payment_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
@@ -839,16 +988,41 @@ export async function approveAndExecuteFinancialTransaction(
 ) {
   await ensureMasterCashBoxTables();
   if (!canApproveFinancialTransactions(actor))
-    throw new Error("اعتماد المعاملات متاح للمدير فقط");
+    throw new Error("اعتماد المعاملات المالية متاح للمدير الرئيسي أو للمفوض فقط");
+  const pending = await db.query.financialTransactionsTable.findFirst({
+    where: eq(financialTransactionsTable.id, id),
+  });
+  if (!pending) throw new Error("المعاملة غير موجودة");
+  // Payroll reaches this point only after its own manager-approval lifecycle
+  // has moved the run to ready_to_pay. A main financial administrator is
+  // allowed to execute that final cash posting even when they created the
+  // durable request. All other self-approval remains forbidden.
+  const isMainAdminPayrollExecution =
+    pending.sourceType === "payroll_run" &&
+    pending.sourceEvent === "payroll_approved_payment" &&
+    isMainFinancialAdministrator(actor);
+  if (
+    pending.requestedBy &&
+    pending.requestedBy === actor.id &&
+    !actor.permissions?.includes("financial_approval:self_approve") &&
+    !isMainAdminPayrollExecution
+  )
+    throw new Error("لا يمكن اعتماد الطلب المالي الذي أنشأته بنفسك");
   return db.transaction((tx) =>
     executePendingFinancialTransaction(tx, id, actor, note),
   );
 }
 
 /**
- * Creates and posts a trusted source collection inside the caller's existing
- * transaction. Source handlers must already have authenticated/authorized the
- * actor. The deterministic idempotency key is also the reconciliation anchor.
+ * Central Financial Approval Gate.
+ *
+ * Every source module creates its durable financial request here.  It never
+ * touches the master cash box, journal, or official ledgers.  Those writes are
+ * performed only by approveAndExecuteFinancialTransaction after a separately
+ * authorized reviewer approves the pending request.
+ *
+ * The historic exported name is intentionally retained for compatibility with
+ * existing source modules while its behaviour is now approval-first.
  */
 export async function createAndExecuteSourceFinancialTransaction(
   tx: FinancialTransactionExecutor,
@@ -885,13 +1059,8 @@ export async function createAndExecuteSourceFinancialTransaction(
       return existing;
     }
     if (existing.approvalStatus !== "pending")
-      throw new Error("الحركة المالية المرتبطة ليست قابلة للتنفيذ");
-    return executePendingFinancialTransaction(
-      tx,
-      existing.id,
-      actor,
-      "تنفيذ تحصيل المصدر داخل معاملة ذرية",
-    );
+      throw new Error("الحركة المالية المرتبطة ليست معلقة لاعتماد جديد");
+    return existing;
   }
 
   const now = new Date();
@@ -937,14 +1106,9 @@ export async function createAndExecuteSourceFinancialTransaction(
     actorName: actor.name,
     oldValues: {},
     newValues: snapshot(numbered as any),
-    reason: "تحصيل مصدر ذرّي",
+    reason: "طلب مالي من المصدر بانتظار اعتماد المدير الرئيسي",
   });
-  return executePendingFinancialTransaction(
-    tx,
-    numbered.id,
-    actor,
-    "تنفيذ تحصيل المصدر داخل معاملة ذرية",
-  );
+  return numbered;
 }
 
 export async function rejectFinancialTransaction(
@@ -985,6 +1149,13 @@ export async function rejectFinancialTransaction(
       await db.execute(
         sql`UPDATE receipt_vouchers SET approval_status = 'rejected' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
       );
+      await db.execute(sql`
+        UPDATE kosha_payment_requests SET
+          status = 'rejected', rejection_reason = ${cleanReason},
+          reviewed_by_staff_id = ${actor.id}, reviewed_by_name = ${actor.name}, reviewed_at = now()
+        WHERE financial_transaction_id = ${id}
+          AND status IN ('pending', 'pending_manager_approval', 'processing')
+      `);
     } else if (existing.sourceType === "payment_voucher") {
       await db.execute(
         sql`UPDATE payment_vouchers SET approval_status = 'rejected' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
@@ -1422,15 +1593,15 @@ export async function listFinancialTransactions(input: unknown) {
       .where(where),
     db
       .select({
-        revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
-        expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.transactionType} not like '%_reversal' and ${financialTransactionsTable.transactionType} <> 'company_loan_received' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.transactionType} not like '%_reversal' and ${financialTransactionsTable.transactionType} <> 'company_loan_repayment' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
         pending: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus} = 'pending' then ${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
       })
       .from(financialTransactionsTable)
       .where(where),
   ]);
   return {
-    data: rows,
+    data: await attachFinancialCounterparties(rows),
     page: filters.page,
     limit: filters.limit,
     total: countRows[0]?.count ?? 0,
@@ -1472,7 +1643,8 @@ export async function getFinancialTransaction(id: number) {
       .where(eq(financialAuditLogsTable.transactionId, id))
       .orderBy(desc(financialAuditLogsTable.createdAt)),
   ]);
-  return { ...transaction, entries, audits };
+  const [enriched] = await attachFinancialCounterparties([transaction]);
+  return { ...enriched, entries, audits };
 }
 
 export async function recalculateMasterCashBox(actor?: FinancialActor) {

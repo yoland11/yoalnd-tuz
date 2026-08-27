@@ -81,6 +81,9 @@ type FinancialTransaction = {
   customerId?: number | null;
   customerName?: string | null;
   customerPhone?: string | null;
+  counterpartyName?: string | null;
+  counterpartyType?: "customer" | "supplier" | "party";
+  sourceReference?: string | null;
   dueDate?: string | null;
   attachments?: string[];
   approvalStatus: "draft" | "pending" | "approved" | "rejected" | "executed";
@@ -150,6 +153,9 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   rental_order: "إيجار",
   sales_invoice: "فاتورة مبيعات",
   purchase_invoice: "فاتورة مشتريات",
+  receipt_voucher: "سند قبض",
+  payment_voucher: "سند صرف",
+  payroll_run: "دورة رواتب",
   expense: "مصروف",
 };
 const sourceTypeLabel = (sourceType: string | null | undefined) =>
@@ -201,6 +207,12 @@ function sourceHref(sourceType: string | null | undefined, sourceId: string | nu
       return `/admin/sales?focus=${id}`;
     case "purchase_invoice":
       return `/admin/purchases?focus=${id}`;
+    case "receipt_voucher":
+      return `/admin/accounting?tab=receipts&focus=${id}`;
+    case "payment_voucher":
+      return `/admin/accounting?tab=payments&focus=${id}`;
+    case "payroll_run":
+      return `/admin/hr?tab=payroll&focus=${id}`;
     case "expense":
       return `/admin/finance/expenses?focus=${id}`;
     default:
@@ -343,6 +355,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState({ from: addDays(todayBaghdad(), -30), to: todayBaghdad(), status: "", direction: "", department: "", voucherType: "", search: "" });
   const isManager = me.role === "admin" || me.role === "manager";
+  const canApprove = me.role === "admin" || me.permissions.includes("financial_approval:approve") || me.permissions.includes("voucher_approve");
   const canEditVoucher = isManager || me.permissions.includes("accounting") || me.permissions.includes("voucher_edit");
   const canDeleteVoucher = isManager || me.permissions.includes("accounting") || me.permissions.includes("voucher_delete");
 
@@ -441,7 +454,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   return (
     <div ref={reportRef} className="space-y-5" dir="rtl">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h1 className="text-2xl font-bold text-foreground">الصندوق الرئيسي</h1><p className="mt-1 text-sm text-muted-foreground">كل حركة تمر بالموافقة ثم تُسجل بقيد مدين ودائن.</p></div>
+        <div><h1 className="text-2xl font-bold text-foreground">الموافقات المالية والصندوق الرئيسي</h1><p className="mt-1 text-sm text-muted-foreground">كل حركة مالية تبقى معلّقة حتى يعتمدها المدير الرئيسي، ثم تُسجل بقيد مدين ودائن.</p></div>
         <div className="flex flex-wrap gap-2 print:hidden">
           <Button size="sm" onClick={() => setShowForm((value) => !value)} className="gap-1.5"><Plus className="h-4 w-4" /> طلب مالي</Button>
           <Button size="sm" variant="outline" onClick={() => window.print()} className="gap-1.5"><Printer className="h-4 w-4" /> طباعة</Button>
@@ -481,7 +494,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
 
         <TabsContent value="ledger" className="space-y-3">
           <div className="flex flex-wrap items-end gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden"><Filter className="mb-2 h-4 w-4 text-muted-foreground" /><input type="date" value={filters.from} onChange={(event) => { setFilters({ ...filters, from: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><input type="date" value={filters.to} onChange={(event) => { setFilters({ ...filters, to: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><select value={filters.status} onChange={(event) => { setFilters({ ...filters, status: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الحالات</option>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={filters.voucherType} onChange={(event) => { setFilters({ ...filters, voucherType: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل السندات</option>{VOUCHER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={filters.department} onChange={(event) => { setFilters({ ...filters, department: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الأقسام</option>{DEPARTMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><label className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input value={filters.search} onChange={(event) => { setFilters({ ...filters, search: event.target.value }); setPage(1); }} placeholder="رقم السند أو المرجع أو العميل" className={`${inputClass} pr-9`} /></label></div>
-          <TransactionTable rows={rows} loading={transactions.isLoading} isManager={isManager} onOpen={setSelectedId} onApprove={(id) => approve.mutate(id)} onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }} busy={approve.isPending || reject.isPending} />
+          <TransactionTable rows={rows} loading={transactions.isLoading} isManager={canApprove} onOpen={setSelectedId} onApprove={(id) => approve.mutate(id)} onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }} busy={approve.isPending || reject.isPending} />
           {(transactions.data?.total ?? 0) > 20 && <div className="flex items-center justify-between print:hidden"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>السابق</Button><span className="text-xs text-muted-foreground">صفحة {page.toLocaleString("ar-IQ-u-nu-latn")} من {Math.ceil((transactions.data?.total ?? 0) / 20).toLocaleString("ar-IQ-u-nu-latn")}</span><Button variant="outline" size="sm" disabled={page * 20 >= (transactions.data?.total ?? 0)} onClick={() => setPage((value) => value + 1)}>التالي</Button></div>}
         </TabsContent>
 
@@ -493,7 +506,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
             filter={approvalFilter}
             onFilter={setApprovalFilter}
             loading={pendingApprovals.isLoading}
-            isManager={isManager}
+            isManager={canApprove}
             busy={approve.isPending || reject.isPending}
             onOpen={setSelectedId}
             onApprove={(id) => approve.mutate(id)}
@@ -532,9 +545,28 @@ function ApprovalsPanel({
   onApprove: (id: number) => void;
   onReject: (id: number) => void;
 }) {
-  const columns = ["رقم الحركة", "نوع المصدر", "الزبون", "رقم الحجز/الفاتورة", "المبلغ", "مُقدّم الطلب", "تاريخ الطلب", "الحالة", "المصدر"];
+  const totals = useMemo(
+    () =>
+      rows.reduce(
+        (summary, row) => {
+          const amount = Number(row.amount || 0);
+          summary.total += amount;
+          if (row.direction === "revenue") summary.incoming += amount;
+          else summary.outgoing += amount;
+          return summary;
+        },
+        { total: 0, incoming: 0, outgoing: 0 },
+      ),
+    [rows],
+  );
+  const columns = ["رقم الحركة", "نوع المصدر", "العميل / المورد", "رقم الحجز/الفاتورة", "المبلغ", "مُقدّم الطلب", "تاريخ الطلب", "الحالة", "المصدر"];
   return (
     <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-xl border border-status-warning/25 bg-status-warning/5 px-3 py-2.5"><p className="text-xs text-muted-foreground">إجمالي المبالغ المعلّقة</p><p className="mt-1 text-base font-bold text-status-warning">{formatCurrency(totals.total)}</p></div>
+        <div className="rounded-xl border border-status-success/25 bg-status-success/5 px-3 py-2.5"><p className="text-xs text-muted-foreground">إجمالي المقبوضات المعلّقة</p><p className="mt-1 text-base font-bold text-status-success">{formatCurrency(totals.incoming)}</p></div>
+        <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-3 py-2.5"><p className="text-xs text-muted-foreground">إجمالي المصروفات المعلّقة</p><p className="mt-1 text-base font-bold text-destructive">{formatCurrency(totals.outgoing)}</p></div>
+      </div>
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden">
         {APPROVAL_FILTERS.map((item) => (
           <button
@@ -551,7 +583,7 @@ function ApprovalsPanel({
             </span>
           </button>
         ))}
-        <span className="ms-auto text-xs text-muted-foreground">إجمالي بانتظار الموافقة: {total.toLocaleString("ar-IQ-u-nu-latn")}</span>
+        <span className="ms-auto text-xs text-muted-foreground">طلبات بانتظار الموافقة: {total.toLocaleString("ar-IQ-u-nu-latn")}</span>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border/30 bg-card">
@@ -572,8 +604,8 @@ function ApprovalsPanel({
                 <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]">
                   <td className="px-3 py-3 text-center font-mono text-xs text-primary"><button onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</button></td>
                   <td className="px-3 py-3 text-center"><span className="inline-flex rounded-full bg-muted px-2 py-1 text-[11px] text-foreground">{sourceTypeLabel(row.sourceType)}</span></td>
-                  <td className="max-w-40 px-3 py-3 text-center"><p className="truncate text-foreground" title={row.customerName ?? ""}>{row.customerName || "—"}</p></td>
-                  <td className="px-3 py-3 text-center font-mono text-xs text-muted-foreground">{row.sourceId ? `#${row.sourceId}` : "—"}</td>
+                  <td className="max-w-48 px-3 py-3 text-center"><p className="truncate text-foreground" title={row.counterpartyName ?? row.customerName ?? ""}>{row.counterpartyName || row.customerName || "—"}</p>{(row.counterpartyName || row.customerName) && <p className="mt-0.5 text-[10px] text-muted-foreground">{row.counterpartyType === "supplier" ? "المورد" : row.counterpartyType === "customer" ? "العميل" : "الطرف"}</p>}</td>
+                  <td className="px-3 py-3 text-center font-mono text-xs text-muted-foreground">{row.sourceReference || (row.sourceId ? `#${row.sourceId}` : "—")}</td>
                   <td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td>
                   <td className="px-3 py-3 text-center text-xs text-muted-foreground">{row.requestedByName || "النظام"}</td>
                   <td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td>

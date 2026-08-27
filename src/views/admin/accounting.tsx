@@ -51,7 +51,7 @@ type ReceiptVoucher = {
   customerPhone?: string | null;
   createdByName: string; createdAt: string;
 };
-type ReceiptAllocation = { sourceType: "kosha_booking" | "sales_invoice" | "order" | "service_order" | "graduation_order"; sourceId: number; amount: string };
+type ReceiptAllocation = { sourceType: "kosha_booking" | "sales_invoice" | "order" | "service_order" | "graduation_order" | "photography_order" | "rental_order" | "research_order"; sourceId: number; amount: string };
 type ReceiptOpenRecord = { source_type: ReceiptAllocation["sourceType"]; source_id: number; reference: string; date: string; total: number; paid: number; remaining: number; due_date: string | null; status: string };
 type ReceiptOpenRecordsResponse = { records: ReceiptOpenRecord[]; summary: { totalOutstanding: number; totalKoshaOutstanding: number; totalStoreOutstanding: number; availableCustomerCredit: number } };
 type ReceiptReconciliationRow = { voucherId: number; voucherNo: string; customer: string; customerId: number | null; amount: number; possibleBooking: { id: number; number: string } | null; currentLink: string; suggestedLink: string | null; status: string };
@@ -589,7 +589,7 @@ function ReceiptAllocationPanel({ customerId, accountType, accountId, receivedAm
     const rest = allocations.filter((allocation) => !(allocation.sourceType === source.source_type && allocation.sourceId === source.source_id));
     onChange({ allocations: value > 0 ? [...rest, { sourceType: source.source_type, sourceId: source.source_id, amount: String(value) }] : rest, saveRemainderAsCredit });
   };
-  const label: Record<ReceiptAllocation["sourceType"], string> = { kosha_booking: "حجز كوشة", sales_invoice: "فاتورة", order: "طلب متجر", service_order: "طلب خدمة", graduation_order: "طلب تخرج" };
+  const label: Record<ReceiptAllocation["sourceType"], string> = { kosha_booking: "حجز كوشة", sales_invoice: "فاتورة", order: "طلب متجر", service_order: "طلب خدمة", graduation_order: "طلب تخرج", photography_order: "طلب تصوير", rental_order: "طلب تأجير", research_order: "طلب بحث" };
   if (!accountKey) return null;
   return <div className="col-span-2 space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
     <div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-sm font-semibold">تطبيق سند القبض</div><div className="text-xs text-muted-foreground">وزّع المبلغ على سجل واحد أو عدة سجلات. لا يتم ترحيل التوزيع قبل الاعتماد.</div></div></div>

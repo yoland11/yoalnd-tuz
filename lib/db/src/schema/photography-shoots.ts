@@ -16,28 +16,18 @@ import { photographyEventsTable } from "./photography-staff";
  */
 export const PHOTOGRAPHY_SHOOT_STAGES = [
   "new_booking",
-  "awaiting_assignment",
   "crew_assigned",
-  "accepted",
   "waiting_event",
   "on_the_way",
-  "arrived",
   "shooting",
-  "shoot_ended",
-  "files_received",
-  "transferring",
-  "sorting",
-  "editing",
-  "customer_review",
-  "revising",
-  "ready_print",
+  "processing_files",
+  "review_and_edit",
   "printing",
   "ready_delivery",
-  "delivered",
   "completed",
-  "cancelled",
 ] as const;
-export type PhotographyShootStage = (typeof PHOTOGRAPHY_SHOOT_STAGES)[number];
+/** Cancellation is deliberately outside the operational sequence. */
+export type PhotographyShootStage = (typeof PHOTOGRAPHY_SHOOT_STAGES)[number] | "cancelled";
 
 /** Pre-shoot checklist keys. Every one must be confirmed before leaving `preparing`. */
 export const PHOTOGRAPHY_CHECKLIST_KEYS = [

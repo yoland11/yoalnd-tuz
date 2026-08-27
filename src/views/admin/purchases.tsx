@@ -57,7 +57,17 @@ type Product = {
   barcode?: string;
   categoryName?: string;
   category?: string;
+  images?: string[];
 };
+
+function ProductSearchThumbnail({ product }: { product: Pick<Product, "name" | "nameAr" | "images"> }) {
+  const [failed, setFailed] = useState(false);
+  const source = product.images?.find((image) => typeof image === "string" && image.trim());
+  if (!source || failed) {
+    return <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-md border border-border/40 bg-muted text-muted-foreground"><Package className="h-4 w-4" /></span>;
+  }
+  return <img src={source} alt={product.nameAr || product.name || ""} className="h-10 w-10 shrink-0 rounded-md border border-border/40 bg-muted object-cover" loading="lazy" onError={() => setFailed(true)} />;
+}
 type Supplier = {
   id: number;
   name: string;
@@ -833,15 +843,18 @@ export default function PurchasesPage() {
                                   onClick={() => selectProduct(idx, p)}
                                   className="flex min-h-14 w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-right text-sm hover:bg-primary/10 focus-visible:bg-primary/10 focus-visible:outline-none"
                                 >
-                                  <span className="min-w-0">
-                                    <span className="block break-words font-medium text-foreground">
-                                      {p.nameAr || p.name}
-                                    </span>
-                                    <span className="block break-words text-[11px] text-muted-foreground">
-                                      {p.barcode ? `${p.barcode} · ` : ""}
-                                      {p.categoryName ||
-                                        p.category ||
-                                        "بدون قسم"}
+                                  <span className="flex min-w-0 items-center gap-2">
+                                    <ProductSearchThumbnail product={p} />
+                                    <span className="min-w-0">
+                                      <span className="block break-words font-medium text-foreground">
+                                        {p.nameAr || p.name}
+                                      </span>
+                                      <span className="block break-words text-[11px] text-muted-foreground">
+                                        {p.barcode ? `${p.barcode} · ` : ""}
+                                        {p.categoryName ||
+                                          p.category ||
+                                          "بدون قسم"}
+                                      </span>
                                     </span>
                                   </span>
                                   <span className="shrink-0 text-left text-xs text-muted-foreground">

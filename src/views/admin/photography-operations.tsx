@@ -13,15 +13,15 @@ import { Input } from "@/components/ui/input";
  */
 
 const SHOOT_STAGES: Array<{ key: string; label: string }> = [
-  { key: "assigned", label: "مُسند" },
-  { key: "preparing", label: "قيد التحضير" },
+  { key: "new_booking", label: "حجز جديد" },
+  { key: "crew_assigned", label: "توزيع الكادر" },
+  { key: "waiting_event", label: "بانتظار الموعد" },
   { key: "on_the_way", label: "في الطريق" },
-  { key: "arrived", label: "وصل الموقع" },
-  { key: "shooting", label: "قيد التصوير" },
-  { key: "uploading", label: "رفع الملفات" },
-  { key: "editing", label: "قيد المونتاج" },
-  { key: "ready_for_review", label: "جاهز للمراجعة" },
-  { key: "delivered", label: "تم التسليم" },
+  { key: "shooting", label: "جاري التصوير" },
+  { key: "processing_files", label: "معالجة الملفات" },
+  { key: "review_and_edit", label: "مراجعة وتعديل" },
+  { key: "printing", label: "الطباعة" },
+  { key: "ready_delivery", label: "جاهز للتسليم" },
   { key: "completed", label: "مكتمل" },
 ];
 

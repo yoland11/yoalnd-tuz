@@ -76,6 +76,7 @@ check("payment cannot exceed the invoice total", settlePaymentAmounts(5000, 9000
 // against production. Runtime integration tests belong in a separately
 // configured test database adapter, never in a developer's normal .env.
 const api = readFileSync("src/server/api.ts", "utf8");
+const masterCashBox = readFileSync("src/server/master-cash-box.ts", "utf8");
 const sales = readFileSync("src/views/admin/sales.tsx", "utf8");
 const deliverySection = readFileSync("src/views/admin/delivery-section.tsx", "utf8");
 const deliveryServer = readFileSync("src/server/delivery-details.ts", "utf8");
@@ -113,6 +114,10 @@ check("purchase idempotency target matches its partial unique index", api.includ
 check("sales invoice errors include a safe transaction step trace", api.includes("[SALES_INVOICE_SAVE_FAILED]") && api.includes("invoiceSaveStep"));
 check("sales invoice supports decimal inventory quantities to three places", api.includes("الكمية تدعم حتى 3 منازل عشرية") && api.includes("stock::numeric >="));
 check("sales invoice persists payments within the invoice transaction", api.includes("createAndExecuteSourceFinancialTransaction(") && api.includes('traceInvoiceSave("payment_and_cashbox")'));
+const sourceFinancialGate = masterCashBox.slice(masterCashBox.indexOf("export async function createAndExecuteSourceFinancialTransaction"), masterCashBox.indexOf("export async function rejectFinancialTransaction"));
+check("source financial collections enter approval pending without direct cash-box execution", sourceFinancialGate.includes('approvalStatus: "pending"') && !sourceFinancialGate.includes("return executePendingFinancialTransaction("));
+check("financial approval blocks self-approval before cash-box execution", masterCashBox.includes("لا يمكن اعتماد الطلب المالي الذي أنشأته بنفسك"));
+check("sales invoices keep pending collections out of official paid amount", api.includes('paidAmount: "0",') && api.includes('paymentStatus: paidAmount > 0 ? "pending_approval" : paymentStatus'));
 check("sales invoice does not require optional tracking columns on insert", api.includes(".returning(salesInvoiceRecordColumns)") && !api.includes("createdByRole: auth.role"));
 check("sales invoice client sends an idempotency key", sales.includes('"x-idempotency-key": submitKeyRef.current'));
 check("purchase invoice client sends an idempotency key", purchases.includes('"x-idempotency-key": submitKeyRef.current'));

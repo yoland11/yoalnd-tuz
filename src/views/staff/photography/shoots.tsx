@@ -44,24 +44,14 @@ const CHANGE_LABEL: Record<string, string> = {
 /** Stage → badge tone. Grouped so the pipeline reads as prep → field → post → done. */
 const STAGE_TONE: Record<ShootStage, string> = {
   new_booking: "bg-muted text-muted-foreground",
-  awaiting_assignment: "bg-status-warning/15 text-status-warning",
   crew_assigned: "bg-accent/15 text-accent",
-  accepted: "bg-accent/15 text-accent",
   waiting_event: "bg-status-warning/15 text-status-warning",
   on_the_way: "bg-status-warning/15 text-status-warning",
-  arrived: "bg-accent/15 text-accent",
   shooting: "bg-primary/15 text-primary",
-  shoot_ended: "bg-accent/15 text-accent",
-  files_received: "bg-accent/15 text-accent",
-  transferring: "bg-accent/15 text-accent",
-  sorting: "bg-accent/15 text-accent",
-  editing: "bg-accent/15 text-accent",
-  customer_review: "bg-status-warning/15 text-status-warning",
-  revising: "bg-status-warning/15 text-status-warning",
-  ready_print: "bg-status-warning/15 text-status-warning",
+  processing_files: "bg-accent/15 text-accent",
+  review_and_edit: "bg-status-warning/15 text-status-warning",
   printing: "bg-accent/15 text-accent",
   ready_delivery: "bg-status-success/15 text-status-success",
-  delivered: "bg-status-success/15 text-status-success",
   completed: "bg-status-success/15 text-status-success",
   cancelled: "bg-status-danger/15 text-status-danger",
 };
@@ -71,7 +61,7 @@ function StageBadge({ stage }: { stage: ShootStage }) {
   return (
     <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ${STAGE_TONE[stage]}`}>
       <span aria-hidden>{meta?.icon}</span>
-      {meta?.label ?? stage}
+      {meta?.label ?? SHOOT_STAGE_LABEL[stage] ?? stage}
     </span>
   );
 }
@@ -227,6 +217,13 @@ export function ShootsListPage() {
             {item.icon} {item.label}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => setStage("cancelled")}
+          className={`flex-shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${stage === "cancelled" ? "bg-destructive text-destructive-foreground" : "bg-card text-destructive"}`}
+        >
+          × ملغي
+        </button>
       </div>
       {rows === null ? <Spinner /> : rows.length ? (
         <div className="space-y-2">
@@ -288,9 +285,9 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
     if (!data) return;
     setBusy(true);
     try {
-      // Arriving records where the photographer actually is; a refused permission
+      // Starting the shoot records where the photographer actually is; a refused permission
       // is not an error — the stage still moves, just without coordinates.
-      const position = target === "arrived" ? await readPositionOnce() : null;
+      const position = target === "shooting" ? await readPositionOnce() : null;
       await shootApi.setStage(shootRef, target, position ? { lat: position.lat, lng: position.lng } : {});
       toast({ title: `تم الانتقال إلى «${SHOOT_STAGE_LABEL[target]}»` });
       load();
@@ -521,8 +518,8 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
               </p>
             ) : null}
           </>
-        ) : <p className="mt-4 text-center text-xs font-bold text-status-success">اكتملت المهمة</p>}
-        {manager && data.stage !== "new_booking" ? (
+        ) : <p className={`mt-4 text-center text-xs font-bold ${data.stage === "cancelled" ? "text-destructive" : "text-status-success"}`}>{data.stage === "cancelled" ? "المهمة ملغية" : "اكتملت المهمة"}</p>}
+        {manager && data.stage !== "new_booking" && data.stage !== "cancelled" ? (
           <button
             type="button"
             disabled={busy}
