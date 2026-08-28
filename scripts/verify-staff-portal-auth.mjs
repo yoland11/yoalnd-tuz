@@ -62,7 +62,8 @@ check(
   "canonical login reads the staff table, active flag and existing password hash",
   api.includes("db.query.staffTable.findFirst") &&
     api.includes("!user.isActive") &&
-    api.includes("!verifyPassword(password, user.passwordHash)"),
+    api.includes("!verifyPassword(password, user.passwordHash)") &&
+    api.includes("lower(${staffTable.username}) = ${userKey}"),
 );
 check(
   "Employee Management password reset updates the canonical staff hash",

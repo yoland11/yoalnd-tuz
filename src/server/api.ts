@@ -35947,7 +35947,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         );
       }
       const user = await db.query.staffTable.findFirst({
-        where: eq(staffTable.username, username),
+        // Staff creation treats usernames case-insensitively. Login must use
+        // the same normalization so valid credentials are not rejected after
+        // browser autofill, copy/paste, or letter-case differences.
+        where: sql`lower(${staffTable.username}) = ${userKey}`,
       });
       if (
         !user ||
@@ -61791,7 +61794,7 @@ async function handleStaffPortal(
         );
       }
       const user = await db.query.staffTable.findFirst({
-        where: eq(staffTable.username, username),
+        where: sql`lower(${staffTable.username}) = ${userKey}`,
       });
       if (
         !user ||
