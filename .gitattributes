@@ -1,0 +1,2 @@
+# Keep repository source files on LF across Windows and CI to avoid line-ending warnings.
+* text=auto eol=lf
