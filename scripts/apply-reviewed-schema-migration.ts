@@ -6,11 +6,12 @@ import { resolve } from "node:path";
 import pg from "pg";
 
 const migrationPath = process.env.AJN_MIGRATION_FILE;
-const connectionString = process.env.AJN_SCHEMA_DATABASE_URL;
+// A reviewed DDL operation must never reuse the read-only audit credential.
+const connectionString = process.env.AJN_MIGRATION_DATABASE_URL;
 if (process.env.AJN_APPLY_PRODUCTION_SCHEMA !== "YES")
   throw new Error("Set AJN_APPLY_PRODUCTION_SCHEMA=YES after a successful backup and preflight");
 if (!migrationPath || !connectionString)
-  throw new Error("AJN_MIGRATION_FILE and AJN_SCHEMA_DATABASE_URL are required");
+  throw new Error("AJN_MIGRATION_FILE and AJN_MIGRATION_DATABASE_URL are required");
 const backupPath = process.env.AJN_BACKUP_FILE;
 if (!backupPath || !existsSync(backupPath) || statSync(backupPath).size < 1024)
   throw new Error("AJN_BACKUP_FILE must reference a non-empty pre-migration backup");

@@ -10,8 +10,10 @@ import { fileURLToPath } from "node:url";
 import { createGzip } from "node:zlib";
 import pg from "pg";
 
-const connectionString = process.env.AJN_SCHEMA_DATABASE_URL;
-if (!connectionString) throw new Error("AJN_SCHEMA_DATABASE_URL is required");
+// Backups are an explicit administrative operation. They intentionally use a
+// separate credential from the optional read-only production audit command.
+const connectionString = process.env.AJN_BACKUP_DATABASE_URL;
+if (!connectionString) throw new Error("AJN_BACKUP_DATABASE_URL is required");
 const target = new URL(connectionString);
 const databaseName = decodeURIComponent(target.pathname.slice(1));
 if (!target.hostname || /(^|[_-])(test|dev|staging|preview)($|[_-])/i.test(databaseName))

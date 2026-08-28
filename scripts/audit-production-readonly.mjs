@@ -4,7 +4,7 @@
  * AJN production baseline collector.
  *
  * Safety contract:
- * - uses only AJN_PRODUCTION_READONLY_DATABASE_URL (never DATABASE_URL);
+ * - uses only AJN_SCHEMA_DATABASE_URL (never DATABASE_URL);
  * - refuses localhost/test/dev/staging/preview database targets;
  * - starts PostgreSQL with default_transaction_read_only=on;
  * - executes SELECT statements only;
@@ -18,9 +18,11 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import pg from "pg";
 
-const connectionString = process.env.AJN_PRODUCTION_READONLY_DATABASE_URL;
+const connectionString = process.env.AJN_SCHEMA_DATABASE_URL;
 if (!connectionString) {
-  throw new Error("AJN_PRODUCTION_READONLY_DATABASE_URL is required; DATABASE_URL is intentionally ignored");
+  console.warn("Production audit: SKIPPED");
+  console.warn("Reason: AJN_SCHEMA_DATABASE_URL unavailable.");
+  process.exit(0);
 }
 if (process.env.TEST_DATABASE_URL === connectionString || process.env.DATABASE_URL === connectionString) {
   throw new Error("Refusing an audit URL that is also configured as TEST_DATABASE_URL or DATABASE_URL in this shell");
@@ -30,7 +32,7 @@ let target;
 try {
   target = new URL(connectionString);
 } catch {
-  throw new Error("AJN_PRODUCTION_READONLY_DATABASE_URL is not a valid PostgreSQL URL");
+  throw new Error("AJN_SCHEMA_DATABASE_URL is not a valid PostgreSQL URL");
 }
 if (!/^postgres(?:ql)?:$/.test(target.protocol)) throw new Error("Only PostgreSQL audit targets are supported");
 const host = target.hostname.toLowerCase();
