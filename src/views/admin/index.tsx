@@ -81,8 +81,6 @@ const LoyaltyPage = lazy(() => import("./loyalty"));
 const CrewsPage = lazy(() => import("./crews"));
 const StaffPage = lazy(() => import("./staff"));
 const EmployeeAdvancesPage = lazy(() => import("./employee-advances"));
-const EmployeeSalariesPage = lazy(() => import("./employee-salaries"));
-const PayrollHistoryPage = lazy(() => import("./payroll-history"));
 const ActivityLogPage = lazy(() => import("./activity-log"));
 const TasksPage = lazy(() => import("./tasks"));
 const AttendancePage = lazy(() => import("./attendance"));
@@ -101,7 +99,7 @@ const FinanceReportsPage = lazy(() =>
 );
 const MasterCashBoxPage = lazy(() => import("./master-cash"));
 const EmployeePerformancePage = lazy(() => import("./employee-performance"));
-const HrPage = lazy(() => import("./hr"));
+const SimpleSalariesPage = lazy(() => import("./simple-salaries"));
 const ExecutivePage = lazy(() => import("./executive"));
 const EventBrainPage = lazy(() => import("./event-brain"));
 const WorkspacePage = lazy(() => import("./workspace"));
@@ -862,16 +860,19 @@ export default function Admin() {
             {() => (<Guard me={me} perm="accounting"><SuppliersPage /></Guard>)}
           </Route>
           <Route path="/admin/hr">
-            {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
+            {() => <Redirect to="/admin/hr/salaries" />}
+          </Route>
+          <Route path="/admin/hr/salaries">
+            {() => (<Guard me={me} anyPerm={["hr", "payroll_view", "employee_salaries_view"]}><SimpleSalariesPage /></Guard>)}
           </Route>
           <Route path="/admin/employee-salaries">
-            {() => (<Guard me={me} anyPerm={["employee_salaries_view", "payroll_view", "hr"]}><EmployeeSalariesPage /></Guard>)}
+            {() => <Redirect to="/admin/hr/salaries" />}
           </Route>
           <Route path="/admin/payroll-history">
-            {() => (<Guard me={me} perm="hr"><PayrollHistoryPage /></Guard>)}
+            {() => <Redirect to="/admin/hr/salaries" />}
           </Route>
           <Route path="/admin/payroll/:payrollId">
-            {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
+            {() => <Redirect to="/admin/hr/salaries" />}
           </Route>
           <Route path="/admin/executive">
             {() => (<Guard me={me} perm="executive"><ExecutivePage /></Guard>)}

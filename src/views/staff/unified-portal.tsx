@@ -4,7 +4,7 @@ import { useLocation } from "wouter";
 import {
   Archive, Bell, BellRing, CalendarDays, CheckCircle2, ChevronLeft,
   ClipboardCheck, Clock3, Home, Loader2, LogOut, MapPin,
-  MessageCircle, PackageSearch, QrCode, ReceiptText, ShieldCheck,
+  MessageCircle, PackageSearch, QrCode, ShieldCheck,
   UserRound, UsersRound,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { TaskFileList, TaskFilePicker, TaskPhotoGallery, TaskPhotoPicker, type TaskFile, type TaskPhoto } from "@/components/task-photo-gallery";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/query-client";
+// Legacy print helpers stay inert until the historical payroll code is retired.
+// The staff portal no longer exposes a salary tab or calls the payroll endpoint.
 import { salarySlipCss } from "@/views/admin/print-helpers";
 import {
   adminFetch, apiErrorMessage, apiErrorStatus, fetchAdminMe, hasPerm,
@@ -20,7 +22,7 @@ import {
   type AdminMe,
 } from "@/views/admin/_lib";
 
-type Tab = "home" | "tasks" | "bookings" | "notifications" | "salary" | "account";
+type Tab = "home" | "tasks" | "bookings" | "notifications" | "account";
 type Task = {
   id: number; taskNo?: string | null; title: string; description: string; status: string; priority: string; dueAt: string | null; startAt: string | null;
   relatedType: string | null; relatedId: number | null; department?: string | null; location?: string | null; notes?: string; completionNotes?: string; submittedAt?: string | null; completedAt?: string | null;
@@ -137,7 +139,7 @@ export default function UnifiedStaffPortal() {
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>(() => {
     const value = new URLSearchParams(window.location.search).get("tab");
-    return value === "tasks" || value === "bookings" || value === "notifications" || value === "salary" || value === "account" ? value : "home";
+    return value === "tasks" || value === "bookings" || value === "notifications" || value === "account" ? value : "home";
   });
   const { toast } = useToast();
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
@@ -155,7 +157,6 @@ export default function UnifiedStaffPortal() {
   const dashboard = useQuery({ queryKey: ["staff-portal", "dashboard"], queryFn: () => adminFetch<any>("/staff/portal/dashboard"), enabled: Boolean(me) });
   const bookings = useQuery({ queryKey: ["staff-portal", "bookings"], queryFn: () => adminFetch<{ today: string; data: Booking[] }>("/staff/portal/bookings"), enabled: Boolean(me) });
   const notifications = useQuery({ queryKey: ["staff-portal", "notifications"], queryFn: () => adminFetch<{ data: Notice[] }>("/staff/portal/notifications"), enabled: Boolean(me) });
-  const payroll = useQuery({ queryKey: ["staff-portal", "payroll"], queryFn: () => adminFetch<{ data: Payroll[]; adjustments?: any[]; advances?: any[] }>("/staff/portal/payroll"), enabled: Boolean(me) && (tab === "salary" || tab === "account") });
   const tasks = (dashboard.data?.tasks ?? []) as Task[];
   const bookingRows = bookings.data?.data ?? [];
   const unread = (notifications.data?.data ?? []).filter((notice) => !notice.readAt).length;
@@ -163,7 +164,7 @@ export default function UnifiedStaffPortal() {
   const todayBookings = bookingRows.filter((booking) => booking.date === today);
   const upcomingBookings = bookingRows.filter((booking) => booking.date && booking.date >= today).slice(0, 6);
   const nextTask = tasks.find((task) => ["new", "accepted", "in_progress"].includes(task.status));
-  const sessionError = dashboard.error ?? bookings.error ?? notifications.error ?? payroll.error;
+  const sessionError = dashboard.error ?? bookings.error ?? notifications.error;
 
   useEffect(() => {
     if (apiErrorStatus(sessionError) !== 401) return;
@@ -178,11 +179,6 @@ export default function UnifiedStaffPortal() {
     onSuccess: (_data, variables) => { queryClient.invalidateQueries({ queryKey: ["staff-portal", "dashboard"] }); toast({ title: variables.statusAction === "accept" ? "تم استلام المهمة" : "بدأ العمل بالمهمة" }); },
     onError: (error: any) => toast({ variant: "destructive", title: "تعذر تحديث المهمة", description: error?.message }),
   });
-  const receipt = useMutation({
-    mutationFn: (line: Payroll) => adminFetch(`/staff/portal/payroll/${line.id}/acknowledge`, { method: "POST" }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["staff-portal", "payroll"] }); queryClient.invalidateQueries({ queryKey: ["staff-portal", "notifications"] }); toast({ title: "تم تسجيل تأكيد الاستلام" }); },
-    onError: (error: any) => toast({ variant: "destructive", title: "تعذر تسجيل الاستلام", description: error?.message }),
-  });
   const signOut = async () => {
     await logoutAdmin();
     setMe(null);
@@ -191,7 +187,7 @@ export default function UnifiedStaffPortal() {
 
   const selectTab = (next: Tab) => { setTab(next); window.history.replaceState(null, "", next === "home" ? "/staff" : `/staff?tab=${next}`); };
   const navigation = useMemo(() => [
-    { id: "home" as Tab, label: "الرئيسية", icon: Home }, { id: "tasks" as Tab, label: "مهامي", icon: ClipboardCheck }, { id: "bookings" as Tab, label: "حجوزاتي", icon: CalendarDays }, { id: "salary" as Tab, label: "راتبي", icon: ReceiptText }, { id: "notifications" as Tab, label: "الإشعارات", icon: Bell }, { id: "account" as Tab, label: "حسابي", icon: UserRound },
+    { id: "home" as Tab, label: "الرئيسية", icon: Home }, { id: "tasks" as Tab, label: "مهامي", icon: ClipboardCheck }, { id: "bookings" as Tab, label: "حجوزاتي", icon: CalendarDays }, { id: "notifications" as Tab, label: "الإشعارات", icon: Bell }, { id: "account" as Tab, label: "حسابي", icon: UserRound },
   ], []);
 
   if (me === undefined) return <div className="grid min-h-dvh place-items-center bg-background"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
@@ -215,7 +211,7 @@ export default function UnifiedStaffPortal() {
     </aside>
 
     <main className="mx-auto max-w-7xl px-4 pb-24 pt-5 lg:mr-64 lg:px-8 lg:pb-10">
-      <header className="mb-6 flex items-start justify-between gap-4"><div><div className="mb-1 text-sm text-muted-foreground">مرحباً، {account?.name ?? me.fullName}</div><h1 className="text-2xl font-black tracking-tight">{tab === "home" ? "ما الذي لدي اليوم؟" : ({ tasks: "مهامي", bookings: "حجوزاتي", notifications: "الإشعارات", salary: "راتبي", account: "حسابي ومستحقاتي" } as Record<string, string>)[tab]}</h1><p className="mt-1 text-sm text-muted-foreground">{account?.jobTitle || account?.department || "بوابة عملك الموحدة"}</p></div><button type="button" onClick={() => selectTab("notifications")} className="relative grid h-11 w-11 place-items-center rounded-xl border border-border bg-card text-muted-foreground hover:text-foreground"><Bell className="h-5 w-5" />{unread ? <span className="absolute left-1 top-1 h-2.5 w-2.5 rounded-full bg-destructive" /> : null}</button></header>
+      <header className="mb-6 flex items-start justify-between gap-4"><div><div className="mb-1 text-sm text-muted-foreground">مرحباً، {account?.name ?? me.fullName}</div><h1 className="text-2xl font-black tracking-tight">{tab === "home" ? "ما الذي لدي اليوم؟" : ({ tasks: "مهامي", bookings: "حجوزاتي", notifications: "الإشعارات", account: "حسابي" } as Record<string, string>)[tab]}</h1><p className="mt-1 text-sm text-muted-foreground">{account?.jobTitle || account?.department || "بوابة عملك الموحدة"}</p></div><button type="button" onClick={() => selectTab("notifications")} className="relative grid h-11 w-11 place-items-center rounded-xl border border-border bg-card text-muted-foreground hover:text-foreground"><Bell className="h-5 w-5" />{unread ? <span className="absolute left-1 top-1 h-2.5 w-2.5 rounded-full bg-destructive" /> : null}</button></header>
 
       {dashboard.isError ? <Failure title="تعذر تحميل مساحة العمل" error={dashboard.error} onRetry={() => void dashboard.refetch()} /> : null}
       {tab === "home" && dashboard.isLoading ? <WorkspaceSkeleton /> : null}
@@ -239,7 +235,7 @@ export default function UnifiedStaffPortal() {
 
       {tab === "notifications" ? <section className="rounded-2xl border border-border bg-card"><div className="border-b border-border p-5"><SectionTitle>كل الإشعارات</SectionTitle></div><div className="divide-y divide-border">{notifications.isLoading ? <div className="p-5"><WorkspaceSkeleton /></div> : null}{notifications.isError ? <div className="p-5"><Failure title="تعذر تحميل الإشعارات" error={notifications.error} onRetry={() => void notifications.refetch()} /></div> : null}{(notifications.data?.data ?? []).map((notice) => <button key={notice.id} type="button" onClick={() => { if (!notice.readAt) void adminFetch(`/staff/portal/notifications/${notice.id}/read`, { method: "POST" }).then(() => queryClient.invalidateQueries({ queryKey: ["staff-portal", "notifications"] })); if (notice.href) window.location.href = notice.href; }} className={`flex w-full gap-3 p-5 text-right hover:bg-muted/35 ${notice.readAt ? "text-muted-foreground" : "bg-primary/5"}`}><Bell className="mt-0.5 h-5 w-5 shrink-0 text-primary" /><div className="min-w-0 flex-1"><div className="font-extrabold">{notice.title}</div><p className="mt-1 text-sm leading-6">{notice.body}</p><div className="mt-2 text-xs">{textDate(notice.createdAt, true)}</div></div></button>)}{notifications.isSuccess && !(notifications.data?.data ?? []).length ? <div className="p-5"><Empty>لا توجد إشعارات.</Empty></div> : null}</div></section> : null}
 
-      {(tab === "account" || tab === "salary") ? <section className="space-y-5">{tab === "account" ? <div className="rounded-2xl border border-border bg-card p-5"><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl bg-primary/10 text-primary"><UserRound className="h-5 w-5" /></span><div><h2 className="font-extrabold">{account?.name ?? me.fullName}</h2><p className="mt-1 text-sm text-muted-foreground">{account?.jobTitle || account?.department || me.role}</p></div></div><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-muted-foreground">الرقم الوظيفي</dt><dd className="mt-1 font-bold">#{account?.id ?? me.id}</dd></div><div><dt className="text-xs text-muted-foreground">القسم</dt><dd className="mt-1 font-bold">{account?.department || "عام"}</dd></div><div><dt className="text-xs text-muted-foreground">الدور</dt><dd className="mt-1 font-bold">{account?.role ?? me.role}</dd></div><div><dt className="text-xs text-muted-foreground">الصلاحيات</dt><dd className="mt-1 font-bold">{(account?.permissions ?? me.permissions).length}</dd></div></dl><Button type="button" variant="outline" className="mt-5 min-h-11 w-full lg:hidden" onClick={() => void signOut()}><LogOut className="h-4 w-4" />تسجيل الخروج</Button></div> : null}<div className="rounded-2xl border border-border bg-card p-5"><SectionTitle action={<div className="flex gap-2"><Button size="sm" variant="outline" disabled={!(payroll.data?.data ?? []).length} onClick={() => { const line = payroll.data?.data?.[0]; if (!line) return; try { openStaffSalarySlip(line, account?.name ?? me.fullName, account?.id ?? me.id, account?.department); } catch (error) { toast({ variant: "destructive", title: error instanceof Error ? error.message : "تعذر طباعة القسيمة" }); } }}>طباعة القسيمة</Button><Button size="sm" variant="outline" disabled={!(payroll.data?.data ?? []).length} onClick={() => { try { openStaffSalaryStatement(payroll.data?.data ?? [], account?.name ?? me.fullName); } catch (error) { toast({ variant: "destructive", title: error instanceof Error ? error.message : "تعذر طباعة الكشف" }); } }}>كشف الرواتب</Button></div>}>راتبي ومستحقاتي</SectionTitle><p className="mt-1 text-sm text-muted-foreground">تظهر لك تفاصيلك المالية فقط، وتبقى الدفعات غير المعتمدة خارج الرصيد الرسمي.</p>{payroll.isError ? <div className="mt-4"><Failure title="تعذر تحميل سجلات الراتب" error={payroll.error} onRetry={() => void payroll.refetch()} /></div> : null}<div className="mt-4 space-y-3">{(payroll.data?.data ?? []).map((line) => <article key={line.id} className="rounded-xl bg-muted/45 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-extrabold">راتب {line.period ?? line.runNo ?? "غير محدد"}</h3><p className="mt-1 text-xs text-muted-foreground">الحالة: {payrollStatusLabel(line)}</p></div><strong className="text-lg text-primary">{money.format(line.netSalary)}</strong></div><dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 text-sm sm:grid-cols-4"><div><dt className="text-xs text-muted-foreground">الأساسي</dt><dd className="font-bold">{money.format(line.baseSalary)}</dd></div><div><dt className="text-xs text-muted-foreground">المكافآت والإضافي</dt><dd className="font-bold text-status-success">+ {money.format(line.bonusAmount + line.overtimeAmount)}</dd></div><div><dt className="text-xs text-muted-foreground">الغرامات والاستقطاعات</dt><dd className="font-bold text-destructive">− {money.format(line.penaltyAmount + line.advanceDeduction + line.insuranceAmount)}</dd></div><div><dt className="text-xs text-muted-foreground">الإجمالي</dt><dd className="font-bold">{money.format(line.grossSalary)}</dd></div></dl><div className="mt-4">{line.receivedAt ? <div className="flex items-center gap-2 text-sm font-bold text-status-success"><CheckCircle2 className="h-4 w-4" />تم التأكيد بواسطة {line.receivedBy} · {textDate(line.receivedAt, true)}</div> : line.canAcknowledge ? <Button className="min-h-11" onClick={() => receipt.mutate(line)} disabled={receipt.isPending}>{receipt.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <><ReceiptText className="h-4 w-4" />تم الاستلام</>}</Button> : <span className="text-sm text-muted-foreground">{line.paidAt ? "بانتظار تأكيد الاستلام" : "سيظهر تاريخ وطريقة الدفع بعد الصرف."}</span>}</div></article>)}{!payroll.isLoading && !(payroll.data?.data ?? []).length ? <Empty>لا توجد مسيرات راتب ظاهرة لك بعد.</Empty> : null}</div><div className="mt-5 grid gap-4 lg:grid-cols-2"><div className="rounded-xl border p-4"><h3 className="font-bold">سجل المكافآت والجزاءات</h3><div className="mt-3 space-y-2 text-sm">{(payroll.data?.adjustments ?? []).slice(0, 12).map((item: any) => <div key={item.id} className="flex justify-between gap-3 border-b pb-2"><div><b>{item.title}</b><p className="text-xs text-muted-foreground">{textDate(item.date)} · {item.addedBy}</p></div><span className={item.kind === "penalty" ? "text-destructive" : "text-status-success"}>{item.kind === "penalty" ? "−" : "+"}{money.format(item.amount)}</span></div>)}{!(payroll.data?.adjustments ?? []).length ? <p className="text-sm text-muted-foreground">لا توجد مكافآت أو جزاءات مسجلة.</p> : null}</div></div><div className="rounded-xl border p-4"><h3 className="font-bold">السلف</h3><div className="mt-3 space-y-2 text-sm">{(payroll.data?.advances ?? []).slice(0, 8).map((advance: any) => <div key={advance.id} className="border-b pb-2"><div className="flex justify-between"><b>{advance.advanceNo}</b><span>{money.format(advance.amount)}</span></div><p className="mt-1 text-xs text-muted-foreground">المتبقي {money.format(advance.remainingAmount)} · الاستقطاع الشهري {money.format(advance.monthlyDeduction)}</p></div>)}{!(payroll.data?.advances ?? []).length ? <p className="text-sm text-muted-foreground">لا توجد سلف مسجلة.</p> : null}</div></div></div></div></section> : null}
+      {tab === "account" ? <section className="space-y-5"><div className="rounded-2xl border border-border bg-card p-5"><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl bg-primary/10 text-primary"><UserRound className="h-5 w-5" /></span><div><h2 className="font-extrabold">{account?.name ?? me.fullName}</h2><p className="mt-1 text-sm text-muted-foreground">{account?.jobTitle || account?.department || me.role}</p></div></div><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-muted-foreground">الرقم الوظيفي</dt><dd className="mt-1 font-bold">#{account?.id ?? me.id}</dd></div><div><dt className="text-xs text-muted-foreground">القسم</dt><dd className="mt-1 font-bold">{account?.department || "عام"}</dd></div><div><dt className="text-xs text-muted-foreground">الدور</dt><dd className="mt-1 font-bold">{account?.role ?? me.role}</dd></div><div><dt className="text-xs text-muted-foreground">الصلاحيات</dt><dd className="mt-1 font-bold">{(account?.permissions ?? me.permissions).length}</dd></div></dl><Button type="button" variant="outline" className="mt-5 min-h-11 w-full lg:hidden" onClick={() => void signOut()}><LogOut className="h-4 w-4" />تسجيل الخروج</Button></div></section> : null}
       <StaffTaskDialog taskId={selectedTaskId} open={selectedTaskId !== null} onOpenChange={(open) => { if (!open) setSelectedTaskId(null); }} />
     </main>
     <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">{navigation.map((item) => <button key={item.id} type="button" onClick={() => selectTab(item.id)} className={`relative flex min-h-16 flex-col items-center justify-center gap-1 text-[10px] font-bold ${tab === item.id ? "text-primary" : "text-muted-foreground"}`}><item.icon className="h-5 w-5" />{item.label}{item.id === "notifications" && unread ? <span className="absolute top-2 h-2 w-2 rounded-full bg-destructive" /> : null}</button>)}</nav>

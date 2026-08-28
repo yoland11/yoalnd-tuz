@@ -25797,8 +25797,84 @@ async function handleHrAdmin(
     name: auth.fullName || auth.username,
     role: auth.role,
   };
-  const method = req.method,
-    resource = parts[2],
+  const method = req.method;
+  // The simple salaries screen intentionally reuses the durable payroll tables,
+  // but keeps its records isolated from the legacy cycle experience via
+  // `run_kind = 'simple'`.  No schema change or legacy-data rewrite is needed.
+  const simpleRows = <T = any>(result: any): T[] => (result?.rows ?? []) as T[];
+  const canSimpleSalary = (kind: "view" | "manage" | "pay") =>
+    auth.role === "admin" ||
+    auth.role === "manager" ||
+    auth.role === "accountant" ||
+    hasPermission(auth, `salary.${kind}` as Permission) ||
+    (kind === "view" && (hasPermission(auth, "hr") || hasPermission(auth, "payroll_view"))) ||
+    (kind === "manage" && hasPermission(auth, "payroll_edit")) ||
+    (kind === "pay" && hasPermission(auth, "payroll_pay"));
+  const simpleSalaryResponse = async () => {
+    const params = req.nextUrl.searchParams;
+    const month = String(params.get("month") || new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit" }).format(new Date()).slice(0, 7));
+    const department = String(params.get("department") || "").trim();
+    const search = String(params.get("search") || "").trim();
+    const status = String(params.get("status") || "").trim();
+    const historyEmployeeId = Number(params.get("historyEmployeeId") || 0);
+    const list = simpleRows<any>(await db.execute(sql`select l.id,l.payroll_run_id as "runId",l.staff_id as "employeeId",s.full_name as "employeeName",s.username,s.department,r.period as month,l.base_salary::float as "baseSalary",l.bonus_amount::float as bonus,l.penalty_amount::float as deduction,l.net_salary::float as "netSalary",l.payment_status as "paymentStatus",l.line_notes as notes,l.amount_paid::float as "amountPaid",r.paid_at as "paidAt",r.paid_by_name as "paidBy" from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id join staff s on s.id=l.staff_id where r.run_kind='simple' and r.deleted_at is null and r.period=${month} ${department ? sql`and s.department=${department}` : sql``} ${search ? sql`and (s.full_name ilike ${`%${search}%`} or s.username ilike ${`%${search}%`})` : sql``} ${status === "paid" ? sql`and l.payment_status='paid'` : status === "unpaid" ? sql`and l.payment_status<>'paid'` : sql``} order by s.full_name,l.id desc`));
+    const staff = simpleRows<any>(await db.execute(sql`select id,full_name as "fullName",username,department,base_salary::float as "baseSalary" from staff where is_active=true order by full_name,id`));
+    const history = Number.isInteger(historyEmployeeId) && historyEmployeeId > 0
+      ? simpleRows<any>(await db.execute(sql`select l.id,r.period as month,l.base_salary::float as "baseSalary",l.bonus_amount::float as bonus,l.penalty_amount::float as deduction,l.net_salary::float as "netSalary",l.payment_status as "paymentStatus",r.paid_at as "paidAt" from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id where l.staff_id=${historyEmployeeId} and r.run_kind='simple' and r.deleted_at is null order by r.period desc,l.id desc limit 36`))
+      : [];
+    const totals = list.reduce((sum, item) => ({ count: sum.count + 1, base: sum.base + Number(item.baseSalary || 0), bonus: sum.bonus + Number(item.bonus || 0), deduction: sum.deduction + Number(item.deduction || 0), net: sum.net + Number(item.netSalary || 0) }), { count: 0, base: 0, bonus: 0, deduction: 0, net: 0 });
+    return { month, rows: list, staff, history, totals };
+  };
+  if (parts[2] === "simple-salaries") {
+    if (!canSimpleSalary("view")) return error("لا تملك صلاحية عرض الرواتب", 403);
+    if (method === "GET") return json(await simpleSalaryResponse());
+    const payload = await body(req);
+    const parsedInput = z.object({ employeeId: z.coerce.number().int().positive(), month: z.string().regex(/^\d{4}-\d{2}$/), baseSalary: z.coerce.number().min(0).max(1_000_000_000), bonus: z.coerce.number().min(0).max(1_000_000_000).default(0), deduction: z.coerce.number().min(0).max(1_000_000_000).default(0), notes: z.string().trim().max(2000).optional().default("") }).safeParse(payload ?? {});
+    if (!parsedInput.success) return validationError("admin.hr.simple-salaries", parsedInput);
+    const input = parsedInput.data;
+    const netSalary = Math.max(0, Math.round((input.baseSalary + input.bonus - input.deduction) * 100) / 100);
+    if (method === "POST" && !parts[3]) {
+      if (!canSimpleSalary("manage")) return error("لا تملك صلاحية إدارة الرواتب", 403);
+      const employee = simpleRows<any>(await db.execute(sql`select id,full_name,username from staff where id=${input.employeeId} and is_active=true limit 1`))[0];
+      if (!employee) return error("الموظف غير موجود أو غير نشط", 404);
+      const result = await db.transaction(async (tx) => {
+        const run = simpleRows<any>(await tx.execute(sql`insert into payroll_runs(run_no,period,period_type,period_key,run_kind,status,notes,period_start_date,period_end_date,created_by,created_by_name) values(${`SAL-${input.month.replace("-", "")}`},${input.month},'monthly',${`simple:${input.month}`},'simple','approved','سجل رواتب مبسط',${`${input.month}-01`},(${`${input.month}-01`}::date + interval '1 month - 1 day')::date,${actor.id},${actor.name}) on conflict (period_key) where deleted_at is null do update set updated_at=now() returning *`))[0];
+        const existing = simpleRows<any>(await tx.execute(sql`select id,payment_status from payroll_lines where payroll_run_id=${run.id} and staff_id=${input.employeeId} for update`))[0];
+        if (existing?.payment_status === "paid") throw new Error("تم صرف راتب هذا الموظف لهذا الشهر؛ استخدم تصحيح الراتب");
+        const line = existing ? simpleRows<any>(await tx.execute(sql`update payroll_lines set base_salary=${input.baseSalary},bonus_amount=${input.bonus},penalty_amount=${input.deduction},gross_salary=${input.baseSalary + input.bonus},net_salary=${netSalary},line_notes=${input.notes || null},payment_status='unpaid',amount_paid=0 where id=${existing.id} returning *`))[0] : simpleRows<any>(await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,bonus_amount,penalty_amount,gross_salary,net_salary,payment_status,amount_paid,line_notes,calculation_details) values(${run.id},${input.employeeId},${input.baseSalary},${input.bonus},${input.deduction},${input.baseSalary + input.bonus},${netSalary},'unpaid',0,${input.notes || null},${JSON.stringify({ simpleSalary: true })}::jsonb) returning *`))[0];
+        await tx.execute(sql`update payroll_runs set total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${run.id}),total_deductions=(select coalesce(sum(penalty_amount),0) from payroll_lines where payroll_run_id=${run.id}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${run.id}),updated_at=now() where id=${run.id}`);
+        return { run, line, action: existing ? "salary_updated" : "salary_created" };
+      });
+      void logAdminActivity(req, result.action, "salary", result.line.id, { employeeId: input.employeeId, month: input.month, baseSalary: input.baseSalary, bonus: input.bonus, deduction: input.deduction, netSalary });
+      return json(result, 201);
+    }
+    const lineId = parts[3] ? int(parts[3]) : 0;
+    if (!lineId) return error("معرف سجل الراتب غير صحيح", 400);
+    if (method === "PATCH") {
+      if (!canSimpleSalary("manage")) return error("لا تملك صلاحية إدارة الرواتب", 403);
+      const current = simpleRows<any>(await db.execute(sql`select l.*,r.period from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id where l.id=${lineId} and r.run_kind='simple' and r.deleted_at is null limit 1`))[0];
+      if (!current) return error("سجل الراتب غير موجود", 404);
+      if (current.payment_status === "paid") return error("تم صرف الراتب؛ استخدم تصحيح الراتب", 409);
+      const updated = simpleRows<any>(await db.execute(sql`update payroll_lines set base_salary=${input.baseSalary},bonus_amount=${input.bonus},penalty_amount=${input.deduction},gross_salary=${input.baseSalary + input.bonus},net_salary=${netSalary},line_notes=${input.notes || null} where id=${lineId} returning *`))[0];
+      void logAdminActivity(req, "salary_updated", "salary", lineId, { oldValues: { baseSalary: current.base_salary, bonus: current.bonus_amount, deduction: current.penalty_amount }, newValues: { baseSalary: input.baseSalary, bonus: input.bonus, deduction: input.deduction, netSalary } });
+      return json(updated);
+    }
+    if (method === "POST" && parts[4] === "pay") {
+      if (!canSimpleSalary("pay")) return error("لا تملك صلاحية صرف الرواتب", 403);
+      const row = simpleRows<any>(await db.execute(sql`select l.payroll_run_id as "runId",l.id from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id where l.id=${lineId} and r.run_kind='simple' and r.deleted_at is null limit 1`))[0];
+      if (!row) return error("سجل الراتب غير موجود", 404);
+      try {
+        const paid = await payEmployeeSalary(Number(row.runId), lineId, { amount: netSalary, paymentMethod: "main_cash_box", notes: input.notes || null, idempotencyKey: `simple-salary:${lineId}` }, actor);
+        void logAdminActivity(req, "salary_paid", "salary", lineId, { employeeId: input.employeeId, month: input.month, amount: netSalary });
+        return json(paid);
+      } catch (cause) {
+        console.warn("simple salary payment failed", { lineId, code: (cause as any)?.code ?? null, message: safeServerError(cause) });
+        return error(cause instanceof Error ? cause.message : "تعذر صرف الراتب", 409);
+      }
+    }
+    return error("الطلب غير مدعوم", 405);
+  }
+  const resource = parts[2],
     id = parts[3] ? int(parts[3]) : null;
   const adminOnly = () =>
     auth.role === "admin" ||
