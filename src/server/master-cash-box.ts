@@ -13,6 +13,7 @@ import {
   companyLoansTable,
   companyLoanRepaymentsTable,
 } from "@workspace/db";
+import { isPaymentStateSourceType, reconcilePaymentState } from "./payment-state";
 
 export type FinancialActor = {
   id: number | null;
@@ -520,28 +521,9 @@ export function canApproveFinancialTransactions(actor: FinancialActor) {
   return isMainFinancialAdministrator(actor);
 }
 
-/** Rebuild invoice payment state from valid, posted receipt allocations only. */
+/** @deprecated Use the canonical reconciliation engine for all approved money. */
 export async function recalculateSalesInvoicePaymentFromAllocations(tx: any, invoiceId: number) {
-  const result: any = await tx.execute(sql`
-    WITH invoice AS (
-      SELECT id, total::numeric AS total FROM sales_invoices WHERE id = ${invoiceId} FOR UPDATE
-    ), paid AS (
-      SELECT coalesce(sum(greatest(a.amount::numeric - CASE WHEN a.reversed_at IS NOT NULL THEN a.amount::numeric ELSE coalesce(a.reversed_amount::numeric, 0) END, 0)), 0)::numeric AS value
-      FROM receipt_voucher_allocations a
-      JOIN receipt_vouchers v ON v.id = a.receipt_voucher_id
-      WHERE a.source_type = 'sales_invoice' AND a.source_id = ${invoiceId}
-        AND a.posted_at IS NOT NULL
-        AND coalesce(v.approval_status, 'executed') = 'executed'
-    )
-    UPDATE sales_invoices s SET
-      paid_amount = paid.value,
-      remaining_amount = greatest(invoice.total - paid.value, 0),
-      payment_status = CASE WHEN paid.value <= 0 THEN 'unpaid' WHEN paid.value < invoice.total THEN 'partial' WHEN paid.value = invoice.total THEN 'paid' ELSE 'overpaid' END,
-      updated_at = now()
-    FROM invoice, paid WHERE s.id = invoice.id
-    RETURNING s.id, s.total, s.paid_amount, s.remaining_amount, s.payment_status
-  `);
-  return (result.rows ?? [])[0] ?? null;
+  return reconcilePaymentState(tx, { sourceType: "sales_invoice", sourceId: invoiceId });
 }
 
 /** Applies a full or partial receipt reversal to its allocation ledger. */
@@ -569,7 +551,7 @@ async function reverseReceiptVoucherAllocations(
     FOR UPDATE
   `);
   let remaining = money(amount);
-  const invoiceIds = new Set<number>();
+  const sourcesToReconcile = new Map<string, { sourceType: string; sourceId: number }>();
   for (const row of rowsResult.rows ?? []) {
     if (remaining <= 0.005) break;
     const available = money(money(row.amount) - money(row.reversed_amount));
@@ -583,14 +565,14 @@ async function reverseReceiptVoucherAllocations(
           reversal_transaction_id = ${reversalTransactionId}
       WHERE id = ${Number(row.id)}
     `);
-    if (row.source_type === "sales_invoice" && row.source_id)
-      invoiceIds.add(Number(row.source_id));
+    if (row.source_id && isPaymentStateSourceType(row.source_type))
+      sourcesToReconcile.set(`${row.source_type}:${row.source_id}`, { sourceType: row.source_type, sourceId: Number(row.source_id) });
     remaining = money(remaining - reversed);
   }
   if (remaining > 0.005)
     throw new Error("مبلغ عكس سند القبض أكبر من التخصيصات الصالحة المتبقية.");
-  for (const invoiceId of invoiceIds)
-    await recalculateSalesInvoicePaymentFromAllocations(tx, invoiceId);
+  for (const source of sourcesToReconcile.values())
+    await reconcilePaymentState(tx, source);
 }
 
 /** Posts the receipt plan inside the same transaction as cashbox and journal. */
@@ -608,7 +590,7 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
   if (Math.abs(allocated - amount) >= 0.01)
     throw new Error("إجمالي توزيعات سند القبض لا يساوي المبلغ المستلم.");
 
-  const salesInvoiceIds = new Set<number>();
+  const sourcesToReconcile = new Map<string, { sourceType: string; sourceId: number }>();
   for (const allocation of allocations) {
     const value = money(allocation.amount);
     if (allocation.source_type === "customer_credit") continue;
@@ -631,7 +613,7 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
     } else if (allocation.source_type === "sales_invoice") {
       // The authoritative values are rebuilt after posting, never incremented from client data.
       updated = await tx.execute(sql`SELECT id FROM sales_invoices WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id} FOR UPDATE`);
-      salesInvoiceIds.add(Number(allocation.source_id));
+      sourcesToReconcile.set(`${allocation.source_type}:${allocation.source_id}`, { sourceType: allocation.source_type, sourceId: Number(allocation.source_id) });
     } else if (allocation.source_type === "order") {
       updated = await tx.execute(sql`
         UPDATE orders SET deposit_amount = deposit_amount::numeric + ${value},
@@ -707,9 +689,12 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
     }
     if (!(updated.rows ?? []).length)
       throw new Error("لا يمكن توزيع المبلغ لأن الرصيد المتبقي تغيّر أو أن السجل لا يتبع للعميل.");
+    if (isPaymentStateSourceType(allocation.source_type))
+      sourcesToReconcile.set(`${allocation.source_type}:${allocation.source_id}`, { sourceType: allocation.source_type, sourceId: Number(allocation.source_id) });
   }
   await tx.execute(sql`UPDATE receipt_voucher_allocations SET posted_at = now() WHERE receipt_voucher_id = ${voucherId} AND posted_at IS NULL`);
-  for (const invoiceId of salesInvoiceIds) await recalculateSalesInvoicePaymentFromAllocations(tx, invoiceId);
+  for (const source of sourcesToReconcile.values())
+    await reconcilePaymentState(tx, source);
   return allocations;
 }
 
@@ -1001,6 +986,11 @@ async function executePendingFinancialTransaction(
           WHERE id = ${repayment.loanId}
         `);
       }
+      // The source-module branches above preserve their existing validation
+      // and side effects. The final financial snapshot is always rebuilt from
+      // approved records, never from an incremented client/request value.
+      if (isPaymentStateSourceType(transaction.sourceType))
+        await reconcilePaymentState(tx, { sourceType: transaction.sourceType, sourceId });
     }
 
     await tx.insert(financialAuditLogsTable).values([
@@ -1450,6 +1440,8 @@ export async function reverseFinancialTransaction(
           : undefined,
       );
     }
+    if (Number.isInteger(receiptVoucherId) && receiptVoucherId > 0 && isPaymentStateSourceType(original.sourceType))
+      await reconcilePaymentState(tx, { sourceType: original.sourceType, sourceId: receiptVoucherId });
 
     // 4) Recompute master balance from executed entries (_reversal nets to zero).
     const [tot] = await tx

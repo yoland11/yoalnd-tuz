@@ -17894,7 +17894,7 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
       });
       return json(rows.map(addressPayload));
     }
-    if (method === "POST") {
+    if (method === "POST" && !parts[3]) {
       const data = await body(req);
       let values: any;
       try {
@@ -25829,12 +25829,79 @@ async function handleHrAdmin(
     if (!canSimpleSalary("view")) return error("لا تملك صلاحية عرض الرواتب", 403);
     if (method === "GET") return json(await simpleSalaryResponse());
     const payload = await body(req);
-    const parsedInput = z.object({ employeeId: z.coerce.number().int().positive(), month: z.string().regex(/^\d{4}-\d{2}$/), baseSalary: z.coerce.number().min(0).max(1_000_000_000), bonus: z.coerce.number().min(0).max(1_000_000_000).default(0), deduction: z.coerce.number().min(0).max(1_000_000_000).default(0), notes: z.string().trim().max(2000).optional().default("") }).safeParse(payload ?? {});
-    if (!parsedInput.success) return validationError("admin.hr.simple-salaries", parsedInput);
-    const input = parsedInput.data;
-    const netSalary = Math.max(0, Math.round((input.baseSalary + input.bonus - input.deduction) * 100) / 100);
+    const salaryInputSchema = z.object({ employeeId: z.coerce.number().int().positive(), month: z.string().regex(/^\d{4}-\d{2}$/), baseSalary: z.coerce.number().min(0).max(1_000_000_000), bonus: z.coerce.number().min(0).max(1_000_000_000).default(0), deduction: z.coerce.number().min(0).max(1_000_000_000).default(0), notes: z.string().trim().max(2000).optional().default("") });
+    const paymentNotesSchema = z.object({ notes: z.string().trim().max(2000).optional().default("") });
+    const paySimpleSalary = async (lineId: number, notes: string) => {
+      const row = simpleRows<any>(await db.execute(sql`
+        select l.id,l.payroll_run_id as "runId",l.staff_id as "employeeId",
+               l.net_salary::float as "netSalary",l.amount_paid::float as "amountPaid",
+               l.payment_status as "paymentStatus",r.period,s.full_name as "employeeName"
+        from payroll_lines l
+        join payroll_runs r on r.id=l.payroll_run_id
+        join staff s on s.id=l.staff_id
+        where l.id=${lineId} and r.run_kind='simple' and r.deleted_at is null
+        limit 1
+      `))[0];
+      if (!row) return { kind: "skipped" as const, lineId, reason: "السجل غير صالح" };
+      if (String(row.paymentStatus) === "paid" || Number(row.amountPaid || 0) >= Number(row.netSalary || 0)) {
+        return { kind: "skipped" as const, lineId, reason: "تم صرفه مسبقاً", employeeId: Number(row.employeeId) };
+      }
+      const amount = Math.max(0, Math.round((Number(row.netSalary || 0) - Number(row.amountPaid || 0)) * 100) / 100);
+      if (!amount) return { kind: "skipped" as const, lineId, reason: "السجل غير صالح", employeeId: Number(row.employeeId) };
+      const paid = await payEmployeeSalary(Number(row.runId), lineId, {
+        // The amount is resolved from the locked server-side salary record. Never
+        // accept a payable amount from the browser.
+        amount,
+        paymentMethod: "main_cash_box",
+        notes: notes || null,
+        idempotencyKey: `simple-salary:${lineId}`,
+      }, actor);
+      if (!paid.duplicate) {
+        void createNotification({
+          audienceType: "staff",
+          staffId: Number(row.employeeId),
+          type: "simple_salary_paid",
+          title: "تم صرف الراتب",
+          body: `تم صرف راتب شهر ${row.period} · ${formatCurrency(amount)}.`,
+          entityType: "payroll_line",
+          entityId: lineId,
+          href: "/staff?tab=salary",
+        }).catch((notificationError) => console.error("[SIMPLE_SALARY_NOTIFICATION_FAILED]", {
+          requestId: makeRequestId(req.headers.get("x-request-id")), lineId,
+          message: notificationError instanceof Error ? notificationError.message : "unknown",
+        }));
+      }
+      void logAdminActivity(req, "salary_paid", "salary", lineId, {
+        employeeId: Number(row.employeeId), month: row.period, amount, duplicate: paid.duplicate,
+      });
+      return { kind: "processed" as const, lineId, employeeId: Number(row.employeeId), amount, paid };
+    };
+    if (method === "POST" && parts[3] === "bulk-pay") {
+      if (!canSimpleSalary("pay")) return error("لا تملك صلاحية صرف الرواتب", 403);
+      const parsed = z.object({ lineIds: z.array(z.coerce.number().int().positive()).min(1).max(100), notes: z.string().trim().max(2000).optional().default("") }).safeParse(payload ?? {});
+      if (!parsed.success) return validationError("admin.hr.simple-salaries.bulk-pay", parsed);
+      const uniqueLineIds = [...new Set(parsed.data.lineIds)];
+      const results: Array<any> = [];
+      for (const lineId of uniqueLineIds) {
+        try {
+          results.push(await paySimpleSalary(lineId, parsed.data.notes));
+        } catch (cause) {
+          console.warn("simple salary bulk payment failed", { lineId, code: (cause as any)?.code ?? null, message: safeServerError(cause) });
+          results.push({ kind: "failed", lineId, reason: cause instanceof Error ? cause.message : "تعذر صرف الراتب" });
+        }
+      }
+      return json({
+        processed: results.filter((item) => item.kind === "processed"),
+        skipped: results.filter((item) => item.kind === "skipped"),
+        failed: results.filter((item) => item.kind === "failed"),
+      });
+    }
     if (method === "POST" && !parts[3]) {
       if (!canSimpleSalary("manage")) return error("لا تملك صلاحية إدارة الرواتب", 403);
+      const parsedInput = salaryInputSchema.safeParse(payload ?? {});
+      if (!parsedInput.success) return validationError("admin.hr.simple-salaries", parsedInput);
+      const input = parsedInput.data;
+      const netSalary = Math.max(0, Math.round((input.baseSalary + input.bonus - input.deduction) * 100) / 100);
       const employee = simpleRows<any>(await db.execute(sql`select id,full_name,username from staff where id=${input.employeeId} and is_active=true limit 1`))[0];
       if (!employee) return error("الموظف غير موجود أو غير نشط", 404);
       const result = await db.transaction(async (tx) => {
@@ -25842,7 +25909,7 @@ async function handleHrAdmin(
         const existing = simpleRows<any>(await tx.execute(sql`select id,payment_status from payroll_lines where payroll_run_id=${run.id} and staff_id=${input.employeeId} for update`))[0];
         if (existing?.payment_status === "paid") throw new Error("تم صرف راتب هذا الموظف لهذا الشهر؛ استخدم تصحيح الراتب");
         const line = existing ? simpleRows<any>(await tx.execute(sql`update payroll_lines set base_salary=${input.baseSalary},bonus_amount=${input.bonus},penalty_amount=${input.deduction},gross_salary=${input.baseSalary + input.bonus},net_salary=${netSalary},line_notes=${input.notes || null},payment_status='unpaid',amount_paid=0 where id=${existing.id} returning *`))[0] : simpleRows<any>(await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,bonus_amount,penalty_amount,gross_salary,net_salary,payment_status,amount_paid,line_notes,calculation_details) values(${run.id},${input.employeeId},${input.baseSalary},${input.bonus},${input.deduction},${input.baseSalary + input.bonus},${netSalary},'unpaid',0,${input.notes || null},${JSON.stringify({ simpleSalary: true })}::jsonb) returning *`))[0];
-        await tx.execute(sql`update payroll_runs set total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${run.id}),total_deductions=(select coalesce(sum(penalty_amount),0) from payroll_lines where payroll_run_id=${run.id}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${run.id}),updated_at=now() where id=${run.id}`);
+        await tx.execute(sql`update payroll_runs set status='approved',total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${run.id}),total_deductions=(select coalesce(sum(penalty_amount),0) from payroll_lines where payroll_run_id=${run.id}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${run.id}),updated_at=now() where id=${run.id}`);
         return { run, line, action: existing ? "salary_updated" : "salary_created" };
       });
       void logAdminActivity(req, result.action, "salary", result.line.id, { employeeId: input.employeeId, month: input.month, baseSalary: input.baseSalary, bonus: input.bonus, deduction: input.deduction, netSalary });
@@ -25852,6 +25919,10 @@ async function handleHrAdmin(
     if (!lineId) return error("معرف سجل الراتب غير صحيح", 400);
     if (method === "PATCH") {
       if (!canSimpleSalary("manage")) return error("لا تملك صلاحية إدارة الرواتب", 403);
+      const parsedInput = salaryInputSchema.safeParse(payload ?? {});
+      if (!parsedInput.success) return validationError("admin.hr.simple-salaries", parsedInput);
+      const input = parsedInput.data;
+      const netSalary = Math.max(0, Math.round((input.baseSalary + input.bonus - input.deduction) * 100) / 100);
       const current = simpleRows<any>(await db.execute(sql`select l.*,r.period from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id where l.id=${lineId} and r.run_kind='simple' and r.deleted_at is null limit 1`))[0];
       if (!current) return error("سجل الراتب غير موجود", 404);
       if (current.payment_status === "paid") return error("تم صرف الراتب؛ استخدم تصحيح الراتب", 409);
@@ -25861,12 +25932,10 @@ async function handleHrAdmin(
     }
     if (method === "POST" && parts[4] === "pay") {
       if (!canSimpleSalary("pay")) return error("لا تملك صلاحية صرف الرواتب", 403);
-      const row = simpleRows<any>(await db.execute(sql`select l.payroll_run_id as "runId",l.id from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id where l.id=${lineId} and r.run_kind='simple' and r.deleted_at is null limit 1`))[0];
-      if (!row) return error("سجل الراتب غير موجود", 404);
+      const parsed = paymentNotesSchema.safeParse(payload ?? {});
+      if (!parsed.success) return validationError("admin.hr.simple-salaries.pay", parsed);
       try {
-        const paid = await payEmployeeSalary(Number(row.runId), lineId, { amount: netSalary, paymentMethod: "main_cash_box", notes: input.notes || null, idempotencyKey: `simple-salary:${lineId}` }, actor);
-        void logAdminActivity(req, "salary_paid", "salary", lineId, { employeeId: input.employeeId, month: input.month, amount: netSalary });
-        return json(paid);
+        return json(await paySimpleSalary(lineId, parsed.data.notes));
       } catch (cause) {
         console.warn("simple salary payment failed", { lineId, code: (cause as any)?.code ?? null, message: safeServerError(cause) });
         return error(cause instanceof Error ? cause.message : "تعذر صرف الراتب", 409);
@@ -61723,6 +61792,49 @@ async function handleUnifiedStaffPortal(
         code: "DATABASE_ERROR",
         requestId,
         retryable: true,
+      });
+    }
+  }
+
+  // Simple salary data is intentionally isolated from the historical payroll
+  // cycle UI.  The authenticated session is the only source of staff identity;
+  // this endpoint never accepts an employee id from the client.
+  if (resource === "salary") {
+    if (method !== "GET") return error("إجراء الراتب غير مدعوم", 405);
+    const requestedLineId = int(parts[3] ?? "");
+    try {
+      const salaryResult: any = await db.execute(sql`
+        select l.id,r.period as month,l.base_salary::float as "baseSalary",
+               l.bonus_amount::float as bonus,l.penalty_amount::float as deduction,
+               l.net_salary::float as "netSalary",l.payment_status as "paymentStatus",
+               l.amount_paid::float as "amountPaid",r.paid_at as "paidAt"
+        from payroll_lines l
+        join payroll_runs r on r.id=l.payroll_run_id
+        where l.staff_id=${auth.id} and r.run_kind='simple' and r.deleted_at is null
+        order by r.period desc,l.id desc
+        limit 60
+      `);
+      const lines = (salaryResult?.rows ?? []) as any[];
+      const safeLines = lines.map((line: any) => ({
+        id: Number(line.id), month: String(line.month ?? ""),
+        baseSalary: Number(line.baseSalary ?? 0), bonus: Number(line.bonus ?? 0),
+        deduction: Number(line.deduction ?? 0), netSalary: Number(line.netSalary ?? 0),
+        paymentStatus: String(line.paymentStatus ?? "unpaid"), amountPaid: Number(line.amountPaid ?? 0),
+        paidAt: line.paidAt ? new Date(line.paidAt).toISOString() : null,
+      }));
+      if (requestedLineId) {
+        const detail = safeLines.find((line: { id: number }) => line.id === requestedLineId);
+        if (!detail) return error("سجل الراتب غير موجود", 404);
+        return json({ data: detail });
+      }
+      return json({ data: safeLines, current: safeLines[0] ?? null });
+    } catch (salaryError) {
+      console.error("[STAFF_PORTAL_SIMPLE_SALARY_LOAD_FAILED]", {
+        requestId, staffId: auth.id, code: (salaryError as any)?.code ?? null,
+        message: salaryError instanceof Error ? salaryError.message : "unknown",
+      });
+      return error("تعذر تحميل بيانات الراتب.", 500, {
+        code: "DATABASE_ERROR", requestId, retryable: true,
       });
     }
   }

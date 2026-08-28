@@ -5,7 +5,7 @@ import {
   Archive, Bell, BellRing, CalendarDays, CheckCircle2, ChevronLeft,
   ClipboardCheck, Clock3, Home, Loader2, LogOut, MapPin,
   MessageCircle, PackageSearch, QrCode, ShieldCheck,
-  UserRound, UsersRound,
+  UserRound, UsersRound, WalletCards,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,7 +22,7 @@ import {
   type AdminMe,
 } from "@/views/admin/_lib";
 
-type Tab = "home" | "tasks" | "bookings" | "notifications" | "account";
+type Tab = "home" | "tasks" | "bookings" | "salary" | "notifications" | "account";
 type Task = {
   id: number; taskNo?: string | null; title: string; description: string; status: string; priority: string; dueAt: string | null; startAt: string | null;
   relatedType: string | null; relatedId: number | null; department?: string | null; location?: string | null; notes?: string; completionNotes?: string; submittedAt?: string | null; completedAt?: string | null;
@@ -35,6 +35,7 @@ type Task = {
 type Booking = { id: number; source: string; service: string; customer: string; date: string | null; time: string | null; location: string | null; status: string; href: string };
 type Notice = { id: number; type: string; title: string; body: string; href: string | null; readAt: string | null; createdAt: string };
 type Payroll = { id: number; runNo: string | null; period: string | null; status: string | null; paidAt: string | null; baseSalary: number; overtimeAmount: number; bonusAmount: number; penaltyAmount: number; advanceDeduction: number; insuranceAmount: number; grossSalary: number; netSalary: number; receivedAt: string | null; receivedBy: string | null; canAcknowledge: boolean };
+type SimpleSalary = { id: number; month: string; baseSalary: number; bonus: number; deduction: number; netSalary: number; paymentStatus: string; paidAt: string | null };
 
 const money = new Intl.NumberFormat("ar-IQ-u-nu-latn", { style: "currency", currency: "IQD", maximumFractionDigits: 0 });
 const dateTime = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { dateStyle: "medium", timeStyle: "short" });
@@ -63,6 +64,13 @@ function openStaffSalaryStatement(lines: Payroll[], employeeName: string) {
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
   const rows = lines.map((line) => `<tr><td>${printEscape(line.period || line.runNo)}</td><td>${printEscape(money.format(line.baseSalary))}</td><td>${printEscape(money.format(line.bonusAmount))}</td><td>${printEscape(money.format(line.overtimeAmount))}</td><td>${printEscape(money.format(line.penaltyAmount + line.advanceDeduction + line.insuranceAmount))}</td><td>${printEscape(money.format(line.netSalary))}</td><td>${printEscape(payrollStatusLabel(line))}</td></tr>`).join("") || '<tr><td colspan="7">لا توجد سجلات راتب</td></tr>';
   popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف رواتب ${printEscape(employeeName)}</title><style>${salarySlipCss()} .salary-statement{padding:8mm}.salary-statement table{width:100%;border-collapse:collapse;margin-top:12px}.salary-statement th,.salary-statement td{border:1px solid #111;padding:7px;text-align:right}.salary-statement th{background:#f2f2f2}.salary-statement tr{break-inside:avoid;page-break-inside:avoid}</style></head><body><section class="report-sheet salary-statement"><header class="report-head"><div><div class="report-company">AJN</div><div class="report-title">كشف الرواتب السنوي</div></div><div class="report-meta">الموظف: ${printEscape(employeeName)}<br>تاريخ الطباعة: ${printEscape(dateOnly.format(new Date()))}</div></header><table><thead><tr><th>الفترة</th><th>الأساسي</th><th>المكافآت</th><th>الإضافي</th><th>الاستقطاعات</th><th>الصافي</th><th>الحالة</th></tr></thead><tbody>${rows}</tbody></table></section><script>window.onload=()=>window.print()<\/script></body></html>`);
+  popup.document.close();
+}
+
+function openSimpleSalaryReceipt(line: SimpleSalary, employeeName: string, department?: string | null) {
+  const popup = window.open("", "_blank", "width=860,height=720");
+  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>وصل راتب ${printEscape(employeeName)}</title><style>${salarySlipCss()}</style></head><body><section class="report-sheet salary-slip"><header class="report-head"><div><div class="report-company">AJN</div><div class="report-title">وصل راتب موظف</div></div><div class="report-meta">${printEscape(line.month)}</div></header><div class="salary-person"><div class="field"><span>الموظف</span><b>${printEscape(employeeName)}</b></div><div class="field"><span>القسم</span><b>${printEscape(department || "—")}</b></div><div class="field"><span>الحالة</span><b>تم الصرف</b></div><div class="field"><span>تاريخ الصرف</span><b>${printEscape(textDate(line.paidAt))}</b></div></div><table class="salary-components"><thead><tr><th>البيان</th><th>المبلغ</th></tr></thead><tbody><tr><td>الراتب الأساسي</td><td>${printEscape(money.format(line.baseSalary))}</td></tr><tr><td>المكافأة</td><td>${printEscape(money.format(line.bonus))}</td></tr><tr><td>الخصم</td><td>${printEscape(money.format(line.deduction))}</td></tr></tbody></table><div class="salary-net"><span>صافي الراتب</span><b>${printEscape(money.format(line.netSalary))}</b></div></section><script>window.onload=()=>window.print()<\/script></body></html>`);
   popup.document.close();
 }
 
@@ -139,10 +147,11 @@ export default function UnifiedStaffPortal() {
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>(() => {
     const value = new URLSearchParams(window.location.search).get("tab");
-    return value === "tasks" || value === "bookings" || value === "notifications" || value === "account" ? value : "home";
+    return value === "tasks" || value === "bookings" || value === "salary" || value === "notifications" || value === "account" ? value : "home";
   });
   const { toast } = useToast();
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  const [salaryDetails, setSalaryDetails] = useState<SimpleSalary | null>(null);
   useEffect(() => {
     let active = true;
     void fetchAdminMe({ force: true }).then((user) => {
@@ -157,6 +166,7 @@ export default function UnifiedStaffPortal() {
   const dashboard = useQuery({ queryKey: ["staff-portal", "dashboard"], queryFn: () => adminFetch<any>("/staff/portal/dashboard"), enabled: Boolean(me) });
   const bookings = useQuery({ queryKey: ["staff-portal", "bookings"], queryFn: () => adminFetch<{ today: string; data: Booking[] }>("/staff/portal/bookings"), enabled: Boolean(me) });
   const notifications = useQuery({ queryKey: ["staff-portal", "notifications"], queryFn: () => adminFetch<{ data: Notice[] }>("/staff/portal/notifications"), enabled: Boolean(me) });
+  const salary = useQuery({ queryKey: ["staff-portal", "salary"], queryFn: () => adminFetch<{ data: SimpleSalary[]; current: SimpleSalary | null }>("/staff/portal/salary"), enabled: Boolean(me) });
   const tasks = (dashboard.data?.tasks ?? []) as Task[];
   const bookingRows = bookings.data?.data ?? [];
   const unread = (notifications.data?.data ?? []).filter((notice) => !notice.readAt).length;
@@ -187,7 +197,7 @@ export default function UnifiedStaffPortal() {
 
   const selectTab = (next: Tab) => { setTab(next); window.history.replaceState(null, "", next === "home" ? "/staff" : `/staff?tab=${next}`); };
   const navigation = useMemo(() => [
-    { id: "home" as Tab, label: "الرئيسية", icon: Home }, { id: "tasks" as Tab, label: "مهامي", icon: ClipboardCheck }, { id: "bookings" as Tab, label: "حجوزاتي", icon: CalendarDays }, { id: "notifications" as Tab, label: "الإشعارات", icon: Bell }, { id: "account" as Tab, label: "حسابي", icon: UserRound },
+    { id: "home" as Tab, label: "الرئيسية", icon: Home }, { id: "tasks" as Tab, label: "مهامي", icon: ClipboardCheck }, { id: "bookings" as Tab, label: "حجوزاتي", icon: CalendarDays }, { id: "salary" as Tab, label: "راتبي", icon: WalletCards }, { id: "notifications" as Tab, label: "الإشعارات", icon: Bell }, { id: "account" as Tab, label: "حسابي", icon: UserRound },
   ], []);
 
   if (me === undefined) return <div className="grid min-h-dvh place-items-center bg-background"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
@@ -235,8 +245,10 @@ export default function UnifiedStaffPortal() {
 
       {tab === "notifications" ? <section className="rounded-2xl border border-border bg-card"><div className="border-b border-border p-5"><SectionTitle>كل الإشعارات</SectionTitle></div><div className="divide-y divide-border">{notifications.isLoading ? <div className="p-5"><WorkspaceSkeleton /></div> : null}{notifications.isError ? <div className="p-5"><Failure title="تعذر تحميل الإشعارات" error={notifications.error} onRetry={() => void notifications.refetch()} /></div> : null}{(notifications.data?.data ?? []).map((notice) => <button key={notice.id} type="button" onClick={() => { if (!notice.readAt) void adminFetch(`/staff/portal/notifications/${notice.id}/read`, { method: "POST" }).then(() => queryClient.invalidateQueries({ queryKey: ["staff-portal", "notifications"] })); if (notice.href) window.location.href = notice.href; }} className={`flex w-full gap-3 p-5 text-right hover:bg-muted/35 ${notice.readAt ? "text-muted-foreground" : "bg-primary/5"}`}><Bell className="mt-0.5 h-5 w-5 shrink-0 text-primary" /><div className="min-w-0 flex-1"><div className="font-extrabold">{notice.title}</div><p className="mt-1 text-sm leading-6">{notice.body}</p><div className="mt-2 text-xs">{textDate(notice.createdAt, true)}</div></div></button>)}{notifications.isSuccess && !(notifications.data?.data ?? []).length ? <div className="p-5"><Empty>لا توجد إشعارات.</Empty></div> : null}</div></section> : null}
 
+      {tab === "salary" ? <section className="space-y-4"><div className="rounded-2xl border border-border bg-card p-5"><SectionTitle>راتبي</SectionTitle><p className="mt-1 text-sm text-muted-foreground">هذه البيانات تخصك فقط.</p></div>{salary.isLoading ? <WorkspaceSkeleton /> : null}{salary.isError ? <Failure title="تعذر تحميل بيانات الراتب" error={salary.error} onRetry={() => void salary.refetch()} /> : null}{salary.data?.current ? <><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[["الشهر", salary.data.current.month], ["الراتب الأساسي", money.format(salary.data.current.baseSalary)], ["المكافأة", money.format(salary.data.current.bonus)], ["الخصم", money.format(salary.data.current.deduction)], ["الصافي", money.format(salary.data.current.netSalary)]].map(([label, value]) => <div key={String(label)} className="rounded-xl border border-border bg-card p-4"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 font-extrabold">{value}</p></div>)}</div><div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4 text-sm"><div><b>{salary.data.current.paymentStatus === "paid" ? "تم الصرف" : "غير مصروف"}</b>{salary.data.current.paidAt ? <p className="mt-2 text-muted-foreground">تاريخ الصرف: {textDate(salary.data.current.paidAt)}</p> : null}</div>{salary.data.current.paymentStatus === "paid" ? <Button type="button" variant="outline" className="min-h-11" onClick={() => openSimpleSalaryReceipt(salary.data.current!, account?.name ?? me.fullName ?? me.username, account?.department)}>عرض وصل الراتب</Button> : null}</div></> : salary.isSuccess ? <Empty>لا يوجد راتب مسجل لك حالياً.</Empty> : null}<section className="rounded-2xl border border-border bg-card"><div className="border-b border-border p-5"><SectionTitle>سجل الرواتب</SectionTitle></div><div className="overflow-x-auto"><table className="w-full min-w-[730px] text-sm"><thead className="bg-muted/40 text-right"><tr>{["الشهر", "الأساسي", "المكافأة", "الخصم", "الصافي", "الحالة", "تاريخ الصرف", ""].map((label, index) => <th key={`${label}-${index}`} className="p-3">{label}</th>)}</tr></thead><tbody>{salary.data?.data.map((line) => <tr key={line.id} className="border-t border-border"><td className="p-3">{line.month}</td><td>{money.format(line.baseSalary)}</td><td>{money.format(line.bonus)}</td><td>{money.format(line.deduction)}</td><td className="font-bold">{money.format(line.netSalary)}</td><td>{line.paymentStatus === "paid" ? "تم الصرف" : "غير مصروف"}</td><td>{textDate(line.paidAt)}</td><td><Button type="button" size="sm" variant="outline" onClick={() => setSalaryDetails(line)}>التفاصيل</Button></td></tr>)}</tbody></table></div></section></section> : null}
       {tab === "account" ? <section className="space-y-5"><div className="rounded-2xl border border-border bg-card p-5"><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl bg-primary/10 text-primary"><UserRound className="h-5 w-5" /></span><div><h2 className="font-extrabold">{account?.name ?? me.fullName}</h2><p className="mt-1 text-sm text-muted-foreground">{account?.jobTitle || account?.department || me.role}</p></div></div><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-muted-foreground">الرقم الوظيفي</dt><dd className="mt-1 font-bold">#{account?.id ?? me.id}</dd></div><div><dt className="text-xs text-muted-foreground">القسم</dt><dd className="mt-1 font-bold">{account?.department || "عام"}</dd></div><div><dt className="text-xs text-muted-foreground">الدور</dt><dd className="mt-1 font-bold">{account?.role ?? me.role}</dd></div><div><dt className="text-xs text-muted-foreground">الصلاحيات</dt><dd className="mt-1 font-bold">{(account?.permissions ?? me.permissions).length}</dd></div></dl><Button type="button" variant="outline" className="mt-5 min-h-11 w-full lg:hidden" onClick={() => void signOut()}><LogOut className="h-4 w-4" />تسجيل الخروج</Button></div></section> : null}
       <StaffTaskDialog taskId={selectedTaskId} open={selectedTaskId !== null} onOpenChange={(open) => { if (!open) setSelectedTaskId(null); }} />
+      <Dialog open={Boolean(salaryDetails)} onOpenChange={(open) => { if (!open) setSalaryDetails(null); }}><DialogContent dir="rtl"><DialogHeader><DialogTitle>تفاصيل الراتب</DialogTitle></DialogHeader>{salaryDetails ? <div className="space-y-3 text-sm"><p>الشهر: <b>{salaryDetails.month}</b></p><dl className="grid grid-cols-2 gap-3 rounded-xl bg-muted/40 p-4"><div><dt>الراتب الأساسي</dt><dd className="mt-1 font-bold">{money.format(salaryDetails.baseSalary)}</dd></div><div><dt>المكافأة</dt><dd className="mt-1 font-bold">{money.format(salaryDetails.bonus)}</dd></div><div><dt>الخصم</dt><dd className="mt-1 font-bold">{money.format(salaryDetails.deduction)}</dd></div><div><dt>الصافي</dt><dd className="mt-1 font-bold text-primary">{money.format(salaryDetails.netSalary)}</dd></div></dl><p>الحالة: <b>{salaryDetails.paymentStatus === "paid" ? "تم الصرف" : "غير مصروف"}</b></p>{salaryDetails.paidAt ? <p>تاريخ الصرف: <b>{textDate(salaryDetails.paidAt)}</b></p> : null}</div> : null}</DialogContent></Dialog>
     </main>
     <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">{navigation.map((item) => <button key={item.id} type="button" onClick={() => selectTab(item.id)} className={`relative flex min-h-16 flex-col items-center justify-center gap-1 text-[10px] font-bold ${tab === item.id ? "text-primary" : "text-muted-foreground"}`}><item.icon className="h-5 w-5" />{item.label}{item.id === "notifications" && unread ? <span className="absolute top-2 h-2 w-2 rounded-full bg-destructive" /> : null}</button>)}</nav>
   </div>;

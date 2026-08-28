@@ -119,6 +119,30 @@ check(
     api.includes("eq(payrollLinesTable.staffId, auth.id)"),
 );
 check(
+  "simple salary portal derives the employee from the authenticated session",
+  api.includes('if (resource === "salary")') &&
+    api.includes("where l.staff_id=${auth.id} and r.run_kind='simple'") &&
+    !api.includes("resource === \"salary\" && employeeId"),
+);
+check(
+  "simple salary payments resolve the payable amount on the server",
+  api.includes("const paySimpleSalary = async") &&
+    api.includes("const amount = Math.max(0") &&
+    api.includes("idempotencyKey: `simple-salary:${lineId}`"),
+);
+check(
+  "bulk salary payment keeps every employee payment independent",
+  api.includes('parts[3] === "bulk-pay"') &&
+    api.includes("for (const lineId of uniqueLineIds)") &&
+    api.includes('kind: "failed"'),
+);
+check(
+  "staff portal exposes only the employee salary view",
+  portal.includes('label: "راتبي"') &&
+    portal.includes('"/staff/portal/salary"') &&
+    portal.includes("عرض وصل الراتب"),
+);
+check(
   "bookings remain assigned-record only across departments",
   api.includes("isKoshaBookingAssignedTo(row, auth.id)") &&
     api.includes("eq(photographyEventsTable.assignedStaffId, auth.id)") &&

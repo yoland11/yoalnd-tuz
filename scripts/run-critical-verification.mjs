@@ -13,6 +13,7 @@ const steps = [
   ["Runtime DDL protection", "pnpm", ["run", "test:no-runtime-ddl"]],
   ["Database/shared-core change authorization", "pnpm", ["run", "test:critical-file-changes"]],
   ["Financial approval invariant", "pnpm", ["run", "test:financial-approval"]],
+  ["Payment-state reconciliation invariant", "pnpm", ["run", "test:payment-state"]],
   ["Production build", "pnpm", ["run", "build"]],
   ["Git whitespace integrity", "git", ["diff", "--check"]],
 ];
