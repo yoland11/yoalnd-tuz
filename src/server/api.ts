@@ -25901,6 +25901,16 @@ async function handleHrAdmin(
           actor: erpActorFromAdmin(auth),
           metadata: result,
         });
+        void createNotification({
+          audienceType: "staff",
+          staffId: Number((result as any).staff_id ?? (result as any).staffId),
+          type: "salary_modified",
+          title: "تم تعديل بند في راتبك",
+          body: `تم تعديل ${String((result as any).title || "بند الراتب")}. يمكنك مراجعة التفاصيل.`,
+          entityType: "hr_incentive",
+          entityId: id,
+          href: "/staff?tab=salary",
+        }).catch((notificationError) => console.warn("Staff salary notification failed", { incentiveId: id, notificationError }));
         return json(result);
       }
       if (method === "DELETE" && id) {
@@ -25984,6 +25994,16 @@ async function handleHrAdmin(
           actor: erpActorFromAdmin(auth),
           metadata: result,
         });
+        void createNotification({
+          audienceType: "staff",
+          staffId: Number((result as any).staff_id ?? (result as any).staffId),
+          type: "salary_bonus_approved",
+          title: "تم اعتماد بند في راتبك",
+          body: `تم اعتماد ${String((result as any).title || "مكافأة/جزاء")} بقيمة ${formatCurrency((result as any).amount ?? 0)}.`,
+          entityType: "hr_incentive",
+          entityId: id,
+          href: "/staff?tab=salary",
+        }).catch((notificationError) => console.warn("Staff salary notification failed", { incentiveId: id, notificationError }));
         return json(result);
       }
       if (method === "POST" && id && parts[4] === "reject") {
@@ -26122,6 +26142,16 @@ async function handleHrAdmin(
             device: req.headers.get("user-agent") || "",
           },
         );
+        void createNotification({
+          audienceType: "staff",
+          staffId: Number((event as any).staff_id ?? (event as any).staffId),
+          type: "salary_adjustment_added",
+          title: String((event as any).kind) === "penalty" ? "تمت إضافة جزاء إلى راتبك" : "تمت إضافة مكافأة إلى راتبك",
+          body: `${String((event as any).title || "بند راتب")} · ${formatCurrency((event as any).amount ?? 0)}`,
+          entityType: "hr_incentive",
+          entityId: event.id,
+          href: "/staff?tab=salary",
+        }).catch((notificationError) => console.warn("Staff salary notification failed", { incentiveId: event.id, notificationError }));
         return json(event, 201);
       }
     }
@@ -26653,7 +26683,7 @@ async function handleHrAdmin(
           actor: erpActorFromAdmin(auth),
           metadata: result,
         });
-        if (employeeLine) void createNotification({ audienceType: "staff", staffId: Number(employeeLine.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم تسجيل دفعة راتب بقيمة ${formatCurrency(result.payment?.amount ?? payload?.amount)}.`, entityType: "payroll_line", entityId: lineId, href: "/admin/attendance" });
+        if (employeeLine) void createNotification({ audienceType: "staff", staffId: Number(employeeLine.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم تسجيل دفعة راتب بقيمة ${formatCurrency(result.payment?.amount ?? payload?.amount)}.`, entityType: "payroll_line", entityId: lineId, href: "/staff?tab=salary" });
         return json(result, 201);
       }
       if (
@@ -26943,7 +26973,7 @@ async function handleHrAdmin(
           ip: ip(req),
           device: req.headers.get("user-agent") || "",
         });
-        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_approved", title: "تم اعتماد الراتب", body: `تم اعتماد راتب ${run.period}. يمكنك مراجعة تفاصيل احتساب الراتب.`, entityType: "payroll_run", entityId: id, href: "/admin/attendance" });
+        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_approved", title: "تم اعتماد الراتب", body: `تم اعتماد راتب ${run.period}. يمكنك مراجعة تفاصيل احتساب الراتب.`, entityType: "payroll_run", entityId: id, href: "/staff?tab=salary" });
         return json(run);
       }
       if (method === "POST" && id && parts[4] === "pay") {
@@ -26968,7 +26998,7 @@ async function handleHrAdmin(
         } catch {
           /* non-blocking */
         }
-        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم دفع راتب ${run.period} بقيمة ${formatCurrency(line.netSalary)}.`, entityType: "payroll_run", entityId: id, href: "/admin/attendance" });
+        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم دفع راتب ${run.period} بقيمة ${formatCurrency(line.netSalary)}.`, entityType: "payroll_run", entityId: id, href: "/staff?tab=salary" });
         return json(run);
       }
       if (method === "POST" && id && parts[4] === "close") {
@@ -61585,11 +61615,25 @@ async function handleUnifiedStaffPortal(
 
   if (resource === "payroll") {
     if (method === "GET") {
-      const lines = await db.query.payrollLinesTable.findMany({
-        where: eq(payrollLinesTable.staffId, auth.id),
-        orderBy: [desc(payrollLinesTable.createdAt)],
-        limit: 24,
-      });
+      const [lines, incentiveHistory, advances] = await Promise.all([
+        db.query.payrollLinesTable.findMany({
+          where: eq(payrollLinesTable.staffId, auth.id),
+          orderBy: [desc(payrollLinesTable.createdAt)],
+          limit: 24,
+        }),
+        db.execute(sql`
+          SELECT id, created_at, kind, amount, title, reason, status, created_by_name
+          FROM hr_incentive_events
+          WHERE staff_id = ${auth.id}
+          ORDER BY created_at DESC, id DESC
+          LIMIT 100
+        `),
+        db.query.employeeAdvancesTable.findMany({
+          where: eq(employeeAdvancesTable.employeeId, auth.id),
+          orderBy: [desc(employeeAdvancesTable.createdAt)],
+          limit: 100,
+        }),
+      ]);
       const runIds = [...new Set(lines.map((line) => line.payrollRunId))];
       const runs = runIds.length
         ? await db.query.payrollRunsTable.findMany({
@@ -61619,6 +61663,27 @@ async function handleUnifiedStaffPortal(
             canAcknowledge: Boolean(run?.paidAt) && !line.signedAt,
           };
         }),
+        adjustments: (incentiveHistory.rows ?? []).map((row: any) => ({
+          id: Number(row.id),
+          date: row.created_at?.toISOString?.() ?? String(row.created_at ?? ""),
+          kind: String(row.kind ?? "adjustment"),
+          amount: Number(row.amount ?? 0),
+          title: row.title || row.reason || "تعديل راتب",
+          reason: row.reason || null,
+          status: row.status || "pending",
+          addedBy: row.created_by_name || "النظام",
+        })),
+        advances: advances.map((advance) => ({
+          id: advance.id,
+          advanceNo: advance.advanceNo,
+          date: String(advance.requestDate),
+          amount: Number(advance.amount),
+          remainingAmount: Number(advance.remainingAmount),
+          monthlyDeduction: Number(advance.monthlyDeduction),
+          dueDate: advance.dueDate ? String(advance.dueDate) : null,
+          status: advance.status,
+          reason: advance.reason,
+        })),
       });
     }
     const lineId = int(parts[3] ?? "");
@@ -64064,7 +64129,7 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
         paymentMethod: data.paymentMethod, referenceNo: data.referenceNo || null,
         notes: data.notes || null, status: "pending", createdBy: actor.id, createdByName: actor.name,
       }).returning();
-      const request = await createFinancialTransaction({
+      const request = await createAndExecuteSourceFinancialTransaction(tx, {
         transactionDate: data.receivedDate, direction: "revenue", amount: data.amount,
         department: "general", transactionType: "company_loan_received",
         referenceNo: created.loanNo, description: `استلام قرض من ${data.lenderName}`,
@@ -64096,7 +64161,7 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
         referenceNo: data.referenceNo || null, notes: data.notes || null,
         status: "pending", createdBy: actor.id, createdByName: actor.name,
       }).returning();
-      const request = await createFinancialTransaction({
+      const request = await createAndExecuteSourceFinancialTransaction(tx, {
         transactionDate: data.paymentDate, direction: "expense", amount: data.amount,
         department: "general", transactionType: "company_loan_repayment",
         referenceNo: created.repaymentNo, description: `سداد قرض إلى ${loan.lenderName}`,

@@ -483,6 +483,7 @@ function StaffPortalContent() {
     canStaff && { href: "/staff/koshas", label: "الرئيسية", icon: Home, match: location === "/staff/koshas" },
     canStaff && { href: "/staff/koshas/list/all", label: "الحجوزات", icon: ClipboardList, match: location.startsWith("/staff/koshas/list") },
     canStaff && { href: "/staff/koshas/reports", label: "تقاريري", icon: BarChart3, match: location === "/staff/koshas/reports" },
+    { href: "/staff?tab=salary", label: "راتبي", icon: User, match: false },
     { href: "/staff/koshas/notifications", label: "الإشعارات", icon: Bell, match: location === "/staff/koshas/notifications", badge: unread },
   ].filter(Boolean) as Array<{ href: string; label: string; icon: any; match: boolean; badge?: number }>;
 
