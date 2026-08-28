@@ -69305,6 +69305,29 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       );
     }
     const requestId = makeRequestId(req.headers.get("x-request-id"));
+    const missingCompanyLoansSchema =
+      req.nextUrl.pathname.startsWith("/api/admin/loans") &&
+      ((err as any)?.code === "42P01" ||
+        /relation\s+"?(company_loans|company_loan_repayments)"?\s+does not exist/i.test(
+          err instanceof Error ? err.message : "",
+        ));
+    if (missingCompanyLoansSchema) {
+      console.error("AJN company loans schema is unavailable", {
+        requestId,
+        path: req.nextUrl.pathname,
+        code: (err as any)?.code ?? null,
+        error: safeServerError(err),
+      });
+      return error(
+        "وحدة القروض غير مهيأة في قاعدة البيانات بعد. يلزم تطبيق migration القروض فقط قبل تسجيل أو عرض القروض.",
+        503,
+        {
+          code: "DATABASE_ERROR",
+          requestId,
+          retryable: false,
+        },
+      );
+    }
     const mappedError = mapWriteError(err);
     console.error("API route failed", {
       requestId,
