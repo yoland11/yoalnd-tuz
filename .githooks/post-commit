@@ -1,0 +1,30 @@
+#!/bin/sh
+# AJN safe auto-release: an intentional commit on main is pushed only through
+# the existing pre-push verification gate. Vercel's Git integration deploys the
+# accepted commit; this hook never performs database work.
+
+if [ "${AJN_AUTO_RELEASE:-1}" = "0" ]; then
+  echo "AJN AUTO RELEASE: paused (AJN_AUTO_RELEASE=0)."
+  exit 0
+fi
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [ "$branch" != "main" ]; then
+  exit 0
+fi
+
+if ! git remote get-url origin >/dev/null 2>&1; then
+  echo "AJN AUTO RELEASE: skipped (origin remote is unavailable)."
+  exit 0
+fi
+
+echo "AJN AUTO RELEASE: pushing verified main; Vercel will deploy the accepted commit."
+git push origin main
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo "AJN AUTO RELEASE BLOCKED: push or its mandatory safety gate failed."
+  exit "$status"
+fi
+
+echo "AJN AUTO RELEASE: GitHub push accepted."

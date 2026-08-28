@@ -14,7 +14,7 @@ These rules supplement existing project conventions and apply to every agent and
 6. Branch, tenant, organization, status, and permission changes must preserve valid legacy records with missing newer fields where safe.
 7. Financial and multi-record writes must be transactional. Keep durable idempotency for retry-prone financial actions.
 8. Never run destructive diagnostics or smoke tests against production. Database write smoke tests require `AJN_ENV=test`, `ALLOW_TEST_WRITES=true`, and a separate `TEST_DATABASE_URL`; they are skipped (not passed) when that isolated configuration is unavailable.
-9. Do not alter production data during diagnosis, and do not commit, push, or deploy unless the user explicitly requests it.
+9. Do not alter production data during diagnosis. The project owner has enabled the safe auto-release policy: after an intended task is complete and the required verification passes, commit the completed code, push `main`, and let the connected Vercel Production deployment run. Never release partial work, failed validation, migrations, or Production data changes automatically.
 
 ## AJN Production & Database Safety Rules
 
@@ -32,3 +32,10 @@ These rules supplement existing project conventions and apply to every agent and
 12. Production backups and reviewed migrations are separate explicit administrative operations: use their dedicated credentials only. Never use the read-only audit credential for a write or migration.
 13. Any financial operation that creates, approves, rejects, reverses, refunds, cancels, or modifies a payment must invoke the canonical AJN payment-state reconciliation path. Do not manually treat feature-specific paid/remaining/paymentStatus snapshots as authoritative.
 14. Changes to payment, approval, ledger, Cash Box, invoice, booking, order, or supplier-payment logic must run `pnpm run test:payment-state` and `pnpm run verify:critical`; full write coverage remains restricted to an isolated TEST database.
+
+## AJN Safe Auto-Release Policy
+
+1. A completed, verified code change on `main` is released by the Git post-commit hook: it calls `git push origin main`; the existing pre-push gate must pass before the push is allowed, and Vercel deploys the pushed commit through the configured Git integration.
+2. The hook never stages or creates commits. It only acts after an intentional commit, so unfinished files are never published merely because they were saved locally.
+3. Set `AJN_AUTO_RELEASE=0` only for an explicit emergency hold. A failed pre-push verification always blocks the release.
+4. This policy never authorizes migrations, schema changes, Production data writes, secret changes, or bypassing the verification hook.
