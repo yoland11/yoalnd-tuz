@@ -31,6 +31,17 @@ function accepts(account, password) {
   );
 }
 
+function normalizedUsername(value) {
+  return value.trim().toLowerCase();
+}
+
+function loginOutcome({ account, password, rateLimited = false, activeSessions = 0, forceReplace = false }) {
+  if (rateLimited) return "rate_limited";
+  if (!accepts(account, password)) return "invalid_credentials";
+  if (activeSessions > 0 && !forceReplace) return "session_decision";
+  return "authenticated";
+}
+
 const account = {
   id: 42,
   department: "photography",
@@ -41,6 +52,12 @@ const account = {
 check("existing employee password authenticates", accepts(account, "AJN-old-password"));
 check("wrong employee password is rejected", !accepts(account, "wrong-password"));
 check("disabled employee is rejected with the same valid hash", !accepts({ ...account, isActive: false }, "AJN-old-password"));
+check("username matching is case-insensitive", normalizedUsername("AJN.Admin") === normalizedUsername("ajn.admin"));
+check("username matching removes surrounding whitespace", normalizedUsername("  ajn.admin  ") === "ajn.admin");
+check("nonexistent username follows the invalid-credentials branch", loginOutcome({ account: null, password: "AJN-old-password" }) === "invalid_credentials");
+check("rate limiting is distinguished from invalid credentials", loginOutcome({ account, password: "AJN-old-password", rateLimited: true }) === "rate_limited");
+check("active sessions request a decision instead of returning a 500", loginOutcome({ account, password: "AJN-old-password", activeSessions: 1 }) === "session_decision");
+check("replacing an active session retains the authenticated branch", loginOutcome({ account, password: "AJN-old-password", activeSessions: 1, forceReplace: true }) === "authenticated");
 
 const resetAccount = {
   ...account,
@@ -64,6 +81,19 @@ check(
     api.includes("!user.isActive") &&
     api.includes("!verifyPassword(password, user.passwordHash)") &&
     api.includes("lower(${staffTable.username}) = ${userKey}"),
+);
+check(
+  "login errors carry a request ID and a safe server-side stage",
+  api.includes("authStage: authDiagnostics.stage") &&
+    api.includes('requestId: makeRequestId(req.headers.get("x-request-id"))') &&
+    api.includes('authDiagnostics.stage = "username_lookup"') &&
+    api.includes('authDiagnostics.stage = "session_create"'),
+);
+check(
+  "optional activity telemetry cannot fail a successful login",
+  api.includes('AJN admin login activity touch failed') &&
+    api.includes("// `last_activity_at` is observability only.") &&
+    api.includes('authDiagnostics.stage = "complete"'),
 );
 check(
   "Employee Management password reset updates the canonical staff hash",

@@ -990,6 +990,13 @@ export type AdminUser = {
   isActive: boolean;
 };
 
+/**
+ * Request-scoped, non-secret context for an authentication failure.  This is
+ * deliberately passed down from the API router rather than stored globally so
+ * concurrent Vercel requests cannot overwrite one another's diagnostic stage.
+ */
+type AuthLoginDiagnostics = { stage: string | null };
+
 type Json = Record<string, unknown> | unknown[];
 
 const isProd = process.env.NODE_ENV === "production";
@@ -35650,7 +35657,11 @@ async function handleKoshaWorkOrders(
   return error("المسار غير موجود", 404);
 }
 
-async function handleAdmin(req: NextRequest, parts: string[]) {
+async function handleAdmin(
+  req: NextRequest,
+  parts: string[],
+  authDiagnostics?: AuthLoginDiagnostics,
+) {
   const method = req.method;
   const section = parts[1];
 
@@ -35905,9 +35916,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "auth") {
+    if (authDiagnostics) authDiagnostics.stage = "admin_seed";
     await ensureAdminSeeded();
 
     if (method === "POST" && parts[2] === "login") {
+      if (authDiagnostics) authDiagnostics.stage = "request_body";
       const loginBody = await body(req);
       const { username, password } = loginBody;
       const forceReplace = loginBody?.forceReplace === true;
@@ -35921,6 +35934,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       const loginIp = ip(req);
       const userKey = username.trim().toLowerCase();
+      if (authDiagnostics) authDiagnostics.stage = "rate_limit";
       const adminIpLimit = await consumeRateLimit({
         action: "admin-login-ip",
         keyParts: [loginIp],
@@ -35946,6 +35960,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           "محاولات كثيرة، حاول لاحقاً",
         );
       }
+      if (authDiagnostics) authDiagnostics.stage = "username_lookup";
       const user = await db.query.staffTable.findFirst({
         // Staff creation treats usernames case-insensitively. Login must use
         // the same normalization so valid credentials are not rejected after
@@ -35962,11 +35977,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
         return error("بيانات الدخول غير صحيحة", 401);
       }
+      if (authDiagnostics) authDiagnostics.stage = "auth_policy";
       // Single-session policy: if enabled and the account already has a live
       // session, ask before evicting it. Only this user's own sessions are ever
       // touched — never another employee's.
       const policy = await getAuthPolicy();
       if (policy.singleSession) {
+        if (authDiagnostics) authDiagnostics.stage = "active_session_check";
         const activeCount = await countActiveUserSessions(user.id);
         if (activeCount > 0 && !forceReplace) {
           void logAdminActivity(
@@ -35986,6 +36003,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           );
         }
         if (activeCount > 0 && forceReplace) {
+          if (authDiagnostics) authDiagnostics.stage = "active_session_revoke";
           await revokeAllUserSessions(
             user.id,
             user.id,
@@ -36000,12 +36018,29 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           );
         }
       }
+      if (authDiagnostics) authDiagnostics.stage = "session_create";
       const { token } = await createSession(user.id, req);
-      await ensureStaffActivityColumn();
-      await db
-        .update(staffTable)
-        .set({ lastActivityAt: new Date() })
-        .where(eq(staffTable.id, user.id));
+      // `last_activity_at` is observability only.  A legacy deployment that
+      // lacks this additive column must not invalidate a just-created, secure
+      // session or turn a successful password verification into a generic 500.
+      // The canonical session row remains the durable login record.
+      if (authDiagnostics) authDiagnostics.stage = "activity_touch";
+      try {
+        await ensureStaffActivityColumn();
+        await db
+          .update(staffTable)
+          .set({ lastActivityAt: new Date() })
+          .where(eq(staffTable.id, user.id));
+      } catch (activityError) {
+        console.warn("AJN admin login activity touch failed", {
+          requestId: makeRequestId(req.headers.get("x-request-id")),
+          userId: user.id,
+          stage: "activity_touch",
+          code: (activityError as { code?: unknown } | null)?.code ?? null,
+          error: safeServerError(activityError),
+        });
+      }
+      if (authDiagnostics) authDiagnostics.stage = "complete";
       void logAdminActivity(req, "admin_login_success", "staff", user.id, {
         username: userKey,
         portal: portalHeader(req),
@@ -68857,6 +68892,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   const parts = rawParts.map((p) => decodeURIComponent(p)).filter(Boolean);
   const root = parts[0];
   const isAdminAuth = root === "admin" && parts[1] === "auth";
+  const authDiagnostics: AuthLoginDiagnostics = {
+    stage: isAdminAuth ? "route_preflight" : null,
+  };
   // Invoice registers are read-only. Keep them independent from the broad
   // schema bootstrap for unrelated admin modules.
   const isInvoiceRegisterRequest =
@@ -68961,7 +68999,12 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
             ])
           : undefined,
         root === "admin" && !isInvoiceRegisterRequest
-          ? ensureStaffActivityColumn()
+          ? (isAdminAuth
+              ? (() => {
+                  authDiagnostics.stage = "route_preflight_staff_schema";
+                  return ensureStaffActivityColumn();
+                })()
+              : ensureStaffActivityColumn())
           : undefined,
         root === "admin" && !isInvoiceRegisterRequest
           ? ensureAdminProductsColumns()
@@ -69131,6 +69174,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
                                                                     ? await handleAdmin(
                                                                         req,
                                                                         parts,
+                                                                        authDiagnostics,
                                                                       )
                                                                     : null;
 
@@ -69190,6 +69234,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       requestId,
       method: req.method,
       path: req.nextUrl.pathname,
+      authStage: authDiagnostics.stage,
       code: (err as any)?.code,
       mappedCode: mappedError.code,
       error: err instanceof Error ? err.message : "unknown",
@@ -69217,6 +69262,11 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     return error(
       "تعذر إكمال العملية. حاول مرة أخرى، وإذا استمرت المشكلة راجع سجل الخادم.",
       500,
+      {
+        code: "UNKNOWN_ERROR",
+        requestId,
+        retryable: false,
+      },
     );
   }
 }
