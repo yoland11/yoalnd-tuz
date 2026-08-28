@@ -50,7 +50,7 @@ export async function ensureEmployeeSalaryManagementTables() {
 
 async function salaryContext(runId: number, lineId: number, lock = false, tx: any = db) {
   const suffix = lock ? sql` for update` : sql``;
-  return rows<any>(await tx.execute(sql`select l.*,r.run_no,r.period,r.status as run_status,r.payment_date,s.full_name,s.username,s.department from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id join staff s on s.id=l.staff_id where r.id=${runId} and l.id=${lineId} and r.deleted_at is null${suffix}`))[0] ?? null;
+  return rows<any>(await tx.execute(sql`select l.*,r.run_no,r.period,r.run_kind,r.status as run_status,r.payment_date,s.full_name,s.username,s.department from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id join staff s on s.id=l.staff_id where r.id=${runId} and l.id=${lineId} and r.deleted_at is null${suffix}`))[0] ?? null;
 }
 
 async function addEvent(tx: any, line: any, actor: HrActor, action: string, reason: string | null, oldValues: any, newValues: any, financialTransactionId?: number | null) {
@@ -122,7 +122,16 @@ export async function payEmployeeSalary(runId: number, lineId: number, input: un
     if (!line) throw new Error("سجل الراتب غير موجود");
     const previous = rows<any>(await tx.execute(sql`select * from employee_salary_payments where idempotency_key=${idempotency} limit 1`))[0];
     if (previous) return { payment: previous, duplicate: true };
-    if (!["approved", "ready_to_pay", "partially_paid"].includes(String(line.run_status))) throw new Error("يجب اعتماد دورة الرواتب وتجهيزها للصرف قبل الدفع");
+    // Simple salaries do not use the legacy payroll-cycle workflow. They still
+    // follow the same transactional, idempotent Cash Box and ledger posting.
+    const isSimpleSalary = String(line.run_kind) === "simple";
+    if (isSimpleSalary
+      ? ["cancelled", "reversed"].includes(String(line.run_status))
+      : !["approved", "ready_to_pay", "partially_paid"].includes(String(line.run_status))) {
+      throw new Error(isSimpleSalary
+        ? "لا يمكن صرف سجل راتب ملغي أو معكوس"
+        : "يجب اعتماد دورة الرواتب وتجهيزها للصرف قبل الدفع");
+    }
     const oldPaid = num(line.amount_paid), remaining = Math.max(0, num(line.net_salary) - oldPaid);
     if (remaining <= 0) throw new Error("تم صرف هذا الراتب مسبقًا");
     if (data.amount > remaining) throw new Error("مبلغ الدفع أكبر من المتبقي على الراتب");

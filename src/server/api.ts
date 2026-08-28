@@ -25930,6 +25930,33 @@ async function handleHrAdmin(
       void logAdminActivity(req, "salary_updated", "salary", lineId, { oldValues: { baseSalary: current.base_salary, bonus: current.bonus_amount, deduction: current.penalty_amount }, newValues: { baseSalary: input.baseSalary, bonus: input.bonus, deduction: input.deduction, netSalary } });
       return json(updated);
     }
+    if (method === "DELETE") {
+      if (!canSimpleSalary("manage")) return error("لا تملك صلاحية حذف الرواتب", 403);
+      const deleted = await db.transaction(async (tx) => {
+        const current = simpleRows<any>(await tx.execute(sql`
+          select l.id,l.payroll_run_id as "runId",l.staff_id,l.amount_paid,l.payment_status,r.period
+          from payroll_lines l
+          join payroll_runs r on r.id=l.payroll_run_id
+          where l.id=${lineId} and r.run_kind='simple' and r.deleted_at is null
+          for update
+        `))[0];
+        if (!current) throw new Error("سجل الراتب غير موجود");
+        if (String(current.payment_status) === "paid" || Number(current.amount_paid || 0) > 0) {
+          throw new Error("لا يمكن حذف راتب تم صرفه أو دُفع منه مبلغ");
+        }
+        const payment = simpleRows<any>(await tx.execute(sql`select id from employee_salary_payments where payroll_line_id=${lineId} and status='paid' limit 1`))[0];
+        if (payment) throw new Error("لا يمكن حذف راتب مرتبط بحركة صرف");
+        await tx.execute(sql`delete from payroll_lines where id=${lineId}`);
+        await tx.execute(sql`update payroll_runs set total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=payroll_runs.id),total_deductions=(select coalesce(sum(penalty_amount),0) from payroll_lines where payroll_run_id=payroll_runs.id),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=payroll_runs.id),updated_at=now() where id=${Number(current.runId)}`);
+        return current;
+      });
+      void logAdminActivity(req, "salary_deleted", "salary", lineId, {
+        employeeId: deleted.staff_id,
+        month: deleted.period,
+        oldValues: { amountPaid: deleted.amount_paid, paymentStatus: deleted.payment_status },
+      });
+      return json({ deleted: true, id: lineId });
+    }
     if (method === "POST" && parts[4] === "pay") {
       if (!canSimpleSalary("pay")) return error("لا تملك صلاحية صرف الرواتب", 403);
       const parsed = paymentNotesSchema.safeParse(payload ?? {});

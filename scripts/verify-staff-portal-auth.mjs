@@ -14,6 +14,7 @@ const api = readFileSync("src/server/api.ts", "utf8");
 const client = readFileSync("src/views/admin/_lib.ts", "utf8");
 const portal = readFileSync("src/views/staff/unified-portal.tsx", "utf8");
 const app = readFileSync("src/App.tsx", "utf8");
+const salaries = readFileSync("src/server/employee-salaries.ts", "utf8");
 
 let checks = 0;
 function check(label, condition) {
@@ -131,10 +132,23 @@ check(
     api.includes("idempotencyKey: `simple-salary:${lineId}`"),
 );
 check(
+  "simple salary payment does not require a legacy payroll cycle",
+  salaries.includes("r.run_kind") &&
+    salaries.includes('const isSimpleSalary = String(line.run_kind) === "simple"') &&
+    salaries.includes("Simple salaries do not use the legacy payroll-cycle workflow"),
+);
+check(
   "bulk salary payment keeps every employee payment independent",
   api.includes('parts[3] === "bulk-pay"') &&
     api.includes("for (const lineId of uniqueLineIds)") &&
     api.includes('kind: "failed"'),
+);
+check(
+  "unpaid simple salaries can be removed without deleting financial history",
+  api.includes('if (method === "DELETE")') &&
+    api.includes("لا يمكن حذف راتب تم صرفه أو دُفع منه مبلغ") &&
+    api.includes("where l.id=${lineId} and r.run_kind='simple'") &&
+    api.includes('"salary_deleted"'),
 );
 check(
   "staff portal exposes only the employee salary view",
