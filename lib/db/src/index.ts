@@ -10,10 +10,21 @@ let dbInstance: NodePgDatabase<typeof schema> | null = null;
 /**
  * A serverless function can be replicated many times.  Keeping the local
  * connection pool small prevents one burst of requests from exhausting a
- * session-pooler connection limit.  Deployments can still override this with
- * DB_POOL_MAX, while local long-running development keeps the existing limit.
+ * session-pooler connection limit.  Vercel functions must always use one
+ * connection: a deployment may run many isolated function instances, so an
+ * inherited DB_POOL_MAX value would multiply connections and exhaust the
+ * Supabase session pool. Local long-running development may still override
+ * the default deliberately.
  */
 const defaultPoolMax = process.env.VERCEL ? 1 : 5;
+
+export function resolvePoolMax(env: NodeJS.ProcessEnv = process.env): number {
+  if (env.VERCEL) return 1;
+  return (
+    Number.parseInt(env.DB_POOL_MAX ?? String(defaultPoolMax), 10) ||
+    defaultPoolMax
+  );
+}
 
 export function getPool(): pg.Pool {
   if (!poolInstance) {
@@ -24,11 +35,7 @@ export function getPool(): pg.Pool {
     }
     poolInstance = new Pool({
       connectionString: process.env.DATABASE_URL,
-      max:
-        Number.parseInt(
-          process.env.DB_POOL_MAX ?? String(defaultPoolMax),
-          10,
-        ) || defaultPoolMax,
+      max: resolvePoolMax(),
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 10_000,
       allowExitOnIdle: true,
