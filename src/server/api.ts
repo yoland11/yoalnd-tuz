@@ -69346,15 +69346,10 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
               ensurePerformanceIndexes(),
             ])
           : undefined,
-        root === "admin" && !isInvoiceRegisterRequest
-          ? (isAdminAuth
-              ? (() => {
-                  authDiagnostics.stage = "route_preflight_staff_schema";
-                  return ensureStaffActivityColumn();
-                })()
-              : ensureStaffActivityColumn())
+        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth
+          ? ensureStaffActivityColumn()
           : undefined,
-        root === "admin" && !isInvoiceRegisterRequest
+        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth
           ? ensureAdminProductsColumns()
           : undefined,
         root === "products" || shouldBootstrapAdminSchemas

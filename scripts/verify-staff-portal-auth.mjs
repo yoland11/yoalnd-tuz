@@ -93,7 +93,8 @@ check(
 check(
   "health and administrator authentication remain available during additive index recovery",
   api.includes('const isHealthCheck =') &&
-    api.includes('if (!isAdminAuth && !isHealthCheck) await assertCurrentSchema()'),
+    api.includes('if (!isAdminAuth && !isHealthCheck) await assertCurrentSchema()') &&
+    api.includes('root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth'),
 );
 check(
   "optional activity telemetry cannot fail a successful login",
