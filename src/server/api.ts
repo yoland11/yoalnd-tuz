@@ -10407,31 +10407,6 @@ function qrTrackingUrl(
   return fallback;
 }
 
-async function findBookingConflict(input: {
-  serviceId: number;
-  eventDate?: string | null;
-  customFields?: Record<string, unknown> | null;
-  excludeId?: number;
-}) {
-  const day = String(input.eventDate ?? "").slice(0, 10);
-  if (!day) return null;
-  const crewName = String((input.customFields as any)?.crewName ?? "").trim();
-  const rows = await db.query.serviceOrdersTable.findMany({
-    where: sql`${serviceOrdersTable.archivedAt} is null and ${serviceOrdersTable.status} not in ('cancelled','completed','delivered') and ${serviceOrdersTable.eventDate} like ${`${day}%`}`,
-    limit: 80,
-  });
-  return (
-    rows.find((row) => {
-      if (input.excludeId && row.id === input.excludeId) return false;
-      const rowCrew = String((row.customFields as any)?.crewName ?? "").trim();
-      return (
-        row.serviceId === input.serviceId ||
-        (crewName && rowCrew && rowCrew === crewName)
-      );
-    }) ?? null
-  );
-}
-
 async function insertServiceOrderWithTracking(
   values: Omit<
     typeof serviceOrdersTable.$inferInsert,
@@ -15317,16 +15292,6 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       formatIraqiPhone(phone),
       "زبون",
     );
-    const conflict = await findBookingConflict({
-      serviceId: data.serviceId,
-      eventDate,
-      customFields,
-    });
-    if (conflict)
-      return error(
-        "يوجد حجز آخر بنفس التاريخ للخدمة أو الكادر. اختر موعداً أو كادراً مختلفاً.",
-        409,
-      );
     let order: typeof serviceOrdersTable.$inferSelect;
     try {
       order = await createServiceOrderWithHistory(
@@ -23935,12 +23900,6 @@ async function handleEnterpriseAdmin(
       const service = await db.query.servicesTable.findFirst({
         where: eq(servicesTable.id, current.serviceId),
       });
-      const conflict = await findBookingConflict({
-        serviceId: current.serviceId,
-        eventDate,
-        customFields: (current.customFields as Record<string, unknown>) ?? {},
-      });
-      if (conflict) return error("يوجد حجز متعارض في التاريخ الجديد", 409);
       const row = await insertServiceOrderWithTracking({
         serviceId: current.serviceId,
         customerName: current.customerName,
@@ -47323,16 +47282,6 @@ async function handleAdmin(
         formatIraqiPhone(phone),
         "زبون",
       );
-      const conflict = await findBookingConflict({
-        serviceId: data.serviceId,
-        eventDate,
-        customFields,
-      });
-      if (conflict)
-        return error(
-          "يوجد حجز آخر بنفس التاريخ للخدمة أو الكادر. اختر موعداً أو كادراً مختلفاً.",
-          409,
-        );
       let order: typeof serviceOrdersTable.$inferSelect;
       try {
         order = await createServiceOrderWithHistory(
@@ -47715,19 +47664,6 @@ async function handleAdmin(
           >),
           paymentMethod,
         };
-      }
-      if (update.serviceId !== undefined || update.eventDate !== undefined || update.customFields !== undefined) {
-        const conflict = await findBookingConflict({
-          serviceId: update.serviceId ?? prev.serviceId,
-          eventDate: update.eventDate ?? prev.eventDate,
-          customFields: update.customFields ?? (prev.customFields as any),
-          excludeId: id,
-        });
-        if (conflict)
-          return error(
-            "يوجد حجز آخر بنفس التاريخ للخدمة أو الكادر. اختر موعداً أو كادراً مختلفاً.",
-            409,
-          );
       }
       if (
         b?.totalAmount !== undefined ||

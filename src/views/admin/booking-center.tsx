@@ -15,6 +15,7 @@ import {
   Clock3,
   Crown,
   ExternalLink,
+  FileDown,
   Flower2,
   Gift,
   GraduationCap,
@@ -501,6 +502,7 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
     : booking.source === "store"
       ? `/admin/orders?editOrder=${booking.id}`
       : booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`;
+  const pdfHref = `/admin/invoice/${booking.id}?type=${booking.source === "kosha" ? "kosha" : "booking"}&pdf=1`;
   return (
     <article className="ajn-booking-preview">
       <div className="flex items-start justify-between gap-3">
@@ -511,7 +513,7 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
       <div className="ajn-preview-progress"><span><i style={{ width: `${readiness}%` }} /></span><small>الجاهزية {readiness}%</small></div>
       <div className="ajn-preview-finance"><div><small>الإجمالي</small><Money value={booking.total} /></div><div><small>المتبقي</small><Money value={booking.remaining} className={booking.remaining > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600"} /></div></div>
       {booking.assignedStaff?.length ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Users className="h-3.5 w-3.5 text-primary" /><span className="truncate">{booking.assignedStaff.map((staff) => staff.name).join("، ")}</span></div> : null}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3"><span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{booking.hall || "الموقع غير محدد"}</span></span><div className="flex items-center gap-1"><Button size="sm" variant="outline" asChild><Link href={editHref}><Pencil className="h-3.5 w-3.5" /> تعديل الحجز</Link></Button><Button size="sm" variant="ghost" asChild><Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link></Button></div></div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3"><span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{booking.hall || "الموقع غير محدد"}</span></span><div className="flex items-center gap-1"><Button size="sm" variant="outline" asChild><Link href={editHref}><Pencil className="h-3.5 w-3.5" /> تعديل الحجز</Link></Button><Button size="sm" variant="outline" asChild><Link href={pdfHref}><FileDown className="h-3.5 w-3.5" /> حفظ PDF</Link></Button><Button size="sm" variant="ghost" asChild><Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link></Button></div></div>
     </article>
   );
 }
@@ -828,7 +830,7 @@ function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; i
           <div><div className="flex flex-wrap items-center gap-2"><h1>{data.number}</h1><StatusBadge status={data.status} /></div><p>{data.customerName} · {data.phone}</p></div>
         </div>
         <div className="ajn-workspace-facts"><span><CalendarDays /> <b>{data.eventDate || "غير محدد"}</b><small>{data.eventTime}</small></span><span><MapPin /> <b>{data.hall || "الموقع غير محدد"}</b></span><span><CircleDollarSign /> <b className="text-rose-600 dark:text-rose-300"><Money value={data.remaining} /></b><small>المبلغ المتبقي</small></span></div>
-        <div className="flex flex-wrap gap-2"><Button variant="outline" asChild><a href={whatsapp} target="_blank" rel="noreferrer"><MessageCircle className="h-4 w-4" /> واتساب</a></Button>{data.mapUrl && <Button variant="outline" asChild><a href={data.mapUrl} target="_blank" rel="noreferrer"><MapPin className="h-4 w-4" /> الخريطة</a></Button>}<Button className="ajn-rose-button" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : `/admin/orders?serviceOrder=${id}`}><Banknote className="h-4 w-4" /> استلام دفعة</Link></Button></div>
+        <div className="flex flex-wrap gap-2"><Button variant="outline" asChild><a href={whatsapp} target="_blank" rel="noreferrer"><MessageCircle className="h-4 w-4" /> واتساب</a></Button>{data.mapUrl && <Button variant="outline" asChild><a href={data.mapUrl} target="_blank" rel="noreferrer"><MapPin className="h-4 w-4" /> الخريطة</a></Button>}<Button variant="outline" asChild><Link href={`${invoiceUrl}&pdf=1`}><FileDown className="h-4 w-4" /> حفظ الحجز PDF</Link></Button><Button className="ajn-rose-button" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : `/admin/orders?serviceOrder=${id}`}><Banknote className="h-4 w-4" /> استلام دفعة</Link></Button></div>
       </header>
 
       <div className="ajn-workspace-layout">

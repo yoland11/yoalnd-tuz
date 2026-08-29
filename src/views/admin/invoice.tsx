@@ -33,6 +33,7 @@ export default function Invoice() {
   const requestedType = searchParams.get("type");
   const type = requestedType === "kosha" ? "kosha" : requestedType === "booking" ? "booking" : "order";
   const autoPrint = searchParams.get("print") === "1";
+  const autoDownload = searchParams.get("pdf") === "1";
   const id = params?.id ? Number(params.id) : 0;
   const [data, setData] = useState<InvoiceData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -41,6 +42,7 @@ export default function Invoice() {
   const [websiteQr, setWebsiteQr] = useState("");
   const sheetRef = useRef<HTMLDivElement>(null);
   const autoPrintStarted = useRef(false);
+  const autoDownloadStarted = useRef(false);
   const { data: settings } = usePublicSettings();
 
   useEffect(() => {
@@ -74,6 +76,13 @@ export default function Invoice() {
     const timer = window.setTimeout(() => void printDocumentWhenImagesReady(sheetRef.current || document), 120);
     return () => window.clearTimeout(timer);
   }, [autoPrint, data, model]);
+
+  useEffect(() => {
+    if (!autoDownload || !data || !model || !sheetRef.current || autoDownloadStarted.current) return;
+    autoDownloadStarted.current = true;
+    const timer = window.setTimeout(() => void downloadPdf(), 180);
+    return () => window.clearTimeout(timer);
+  }, [autoDownload, data, model]);
 
   async function downloadPdf() {
     if (!sheetRef.current || !data) return;
