@@ -69241,12 +69241,19 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   const isInvoiceRegisterRequest =
     root === "admin" &&
     (parts[1] === "sales-invoices" || parts[1] === "purchase-invoices");
+  const isHealthCheck =
+    req.method === "GET" && (!root || root === "healthz");
   const shouldBootstrapAdminSchemas =
     root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest;
 
   try {
     assertProductionEnvironment();
-    await assertCurrentSchema();
+    // Revision 101 is an additive index-recovery marker. It must not turn the
+    // operational health check or credential/session flow into a full outage:
+    // neither path relies on those performance indexes. Authentication still
+    // performs its normal server-side account, password, rate-limit and session
+    // checks below.
+    if (!isAdminAuth && !isHealthCheck) await assertCurrentSchema();
     if (!root && req.method === "GET") return json({ status: "ok" });
     if (req.method === "GET" && root === "healthz")
       return json({ status: "ok" });

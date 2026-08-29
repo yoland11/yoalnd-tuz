@@ -91,6 +91,11 @@ check(
     api.includes('authDiagnostics.stage = "session_create"'),
 );
 check(
+  "health and administrator authentication remain available during additive index recovery",
+  api.includes('const isHealthCheck =') &&
+    api.includes('if (!isAdminAuth && !isHealthCheck) await assertCurrentSchema()'),
+);
+check(
   "optional activity telemetry cannot fail a successful login",
   api.includes('AJN admin login activity touch failed') &&
     api.includes("// `last_activity_at` is observability only.") &&
