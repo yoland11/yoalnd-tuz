@@ -69243,6 +69243,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     (parts[1] === "sales-invoices" || parts[1] === "purchase-invoices");
   const isHealthCheck =
     req.method === "GET" && (!root || root === "healthz");
+  const exposeAuthDiagnostics =
+    isAdminAuth && req.headers.get("x-ajn-auth-diagnostics") === "1";
   const shouldBootstrapAdminSchemas =
     root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest;
 
@@ -69632,6 +69634,15 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         code: "UNKNOWN_ERROR",
         requestId,
         retryable: false,
+        headers: exposeAuthDiagnostics
+          ? {
+              "x-ajn-auth-stage": authDiagnostics.stage ?? "unknown",
+              "x-ajn-auth-error-code":
+                typeof (err as { code?: unknown } | null)?.code === "string"
+                  ? String((err as { code: string }).code).slice(0, 24)
+                  : "unknown",
+            }
+          : undefined,
       },
     );
   }

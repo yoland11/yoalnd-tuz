@@ -88,7 +88,9 @@ check(
   api.includes("authStage: authDiagnostics.stage") &&
     api.includes('requestId: makeRequestId(req.headers.get("x-request-id"))') &&
     api.includes('authDiagnostics.stage = "username_lookup"') &&
-    api.includes('authDiagnostics.stage = "session_create"'),
+    api.includes('authDiagnostics.stage = "session_create"') &&
+    api.includes('x-ajn-auth-diagnostics') &&
+    api.includes('x-ajn-auth-stage'),
 );
 check(
   "health and administrator authentication remain available during additive index recovery",
