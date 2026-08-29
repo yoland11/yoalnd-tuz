@@ -63853,6 +63853,39 @@ async function handleStaffPortal(
     const booking = nativeBooking;
     if (!booking) return error("الحجز غير موجود", 404);
 
+    // A crew must never close a native kosha booking while the customer's
+    // official balance is still outstanding. Field collection is deliberately
+    // a separate workflow: it creates a receipt request first, then the main
+    // administrator approves the linked financial transaction. This server
+    // gate also protects direct API calls that bypass the staff UI.
+    const officialRemainingBeforeCompletion = money(booking.remainingAmount);
+    if (officialRemainingBeforeCompletion > 0.005) {
+      const pendingCollection = await db
+        .select({ amount: koshaPaymentRequestsTable.amount })
+        .from(koshaPaymentRequestsTable)
+        .where(
+          and(
+            eq(koshaPaymentRequestsTable.bookingId, id),
+            inArray(koshaPaymentRequestsTable.status, [
+              "pending",
+              "pending_manager_approval",
+              "processing",
+            ]),
+          ),
+        )
+        .limit(1);
+      const pendingAmount = money(pendingCollection[0]?.amount ?? 0);
+      if (pendingAmount >= officialRemainingBeforeCompletion - 0.005)
+        return error(
+          "تم تسجيل تحصيل المتبقي وهو بانتظار الاعتماد المالي؛ لا يمكن إتمام الحجز قبل تحديث الرصيد الرسمي.",
+          409,
+        );
+      return error(
+        "لا يمكن إتمام الحجز قبل تسجيل واعتماد تحصيل المبلغ المتبقي على العميل.",
+        409,
+      );
+    }
+
     const event = await addKoshaEvent({
       bookingId: id,
       staff: auth,

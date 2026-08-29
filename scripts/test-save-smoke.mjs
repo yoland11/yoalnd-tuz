@@ -162,6 +162,8 @@ check("kosha field collection starts pending manager approval without a financia
 check("kosha approval posts booking, receipt allocation, cash and journal in one transaction", api.includes('result = await db.transaction(async (tx) =>') && api.includes('sourceEvent: "kosha_field_collection"') && api.includes("createAndExecuteSourceFinancialTransaction(") && api.includes("receiptVoucherAllocationsTable"));
 check("kosha rejection requires a recorded reason and never posts cash", api.includes("سبب رفض التحصيل مطلوب") && api.includes("rejection_reason") && api.includes("payment_rejected"));
 check("kosha staff collection is embedded in booking details with method and receipt proof", koshaStaff.includes("CollectPanel") && koshaStaff.includes("طريقة الدفع") && koshaStaff.includes("صورة وصل الاستلام"));
+check("kosha completion is server-gated until the customer's official remaining balance is settled", api.includes("officialRemainingBeforeCompletion") && api.includes("لا يمكن إتمام الحجز قبل تسجيل واعتماد تحصيل المبلغ المتبقي على العميل"));
+check("kosha collection stays separate from field stages and explains the unified customer and cash-box flow", koshaStaff.includes("الحسابات والتحصيل") && koshaStaff.includes("قسم مالي مستقل عن مراحل التنفيذ") && koshaStaff.includes("سند قبض موحّد"));
 check("main approval screen exposes booking, customer, receipt and required rejection reason", koshaCollections.includes("فتح الحجز") && koshaCollections.includes("حساب العميل") && koshaCollections.includes("فتح صورة الوصل") && koshaCollections.includes("سبب الرفض مطلوب"));
 // Task photo workflow reuses the original task and attachment records. The
 // source assertions are intentionally read-only and never touch storage or DB.

@@ -270,6 +270,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [operationsTab, setOperationsTab] = useState<"checklist" | "scan" | "damage">("checklist");
   const stageRef = useRef<HTMLDivElement>(null);
+  const collectionRef = useRef<HTMLElement>(null);
 
   const reload = useCallback(async () => {
     try { setData(await staffApi.booking(id, source)); setErr(null); }
@@ -289,11 +290,12 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
     (p) => p.status === "pending" || p.status === "pending_manager_approval",
   );
   const pendingPricing = isKoshaPendingPricing(b);
+  const completionNeedsCollection = source === "kosha" && b.remainingAmount > 0.005;
   const preparationPercent = workflowStageRank(current) >= workflowStageRank("ready") ? 100 : 0;
   const installationPercent = workflowStageRank(current) >= workflowStageRank("executed") ? 100 : 0;
   const overallPercent = Math.round((workflowStageRank(current) / Math.max(1, WORKFLOW_STAGES.length - 1)) * 100);
 
-  async function run(fn: () => Promise<any>) {
+  async function run(fn: () => Promise<any>, successMessage = "تم تحديث مرحلة التنفيذ بنجاح") {
     if (busy) return;
     setBusy(true); setErr(null); setNotice(null);
     try {
@@ -301,7 +303,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
       if (isQueued(res)) { setNotice("تم الحفظ محليًا — سيُرفع تلقائيًا عند عودة الاتصال"); setPanel(null); }
       else {
         if (res && (res as any).booking) setData(res as BookingDetail); else await reload();
-        setNotice("تم تحديث مرحلة التنفيذ بنجاح");
+        setNotice(successMessage);
         setPanel(null);
         requestAnimationFrame(() => stageRef.current?.scrollIntoView({ block: "nearest" }));
       }
@@ -317,6 +319,15 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
 
   function onAdvance() {
     if (!next) return;
+    if (next === "delivered" && completionNeedsCollection) {
+      setErr(
+        pendingPay
+          ? "تم تسجيل تحصيل المتبقي، لكنه بانتظار الاعتماد المالي. لا يمكن إتمام الحجز قبل اعتماد الدفعة وتحديث الرصيد الرسمي."
+          : "سجّل تحصيل المبلغ المتبقي أولاً من قسم الحسابات والتحصيل قبل إتمام الحجز.",
+      );
+      requestAnimationFrame(() => collectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
+      return;
+    }
     if (next === "executing") return setPanel("before-install");
     if (next === "executed") return setPanel("after-install");
     if (next === "before_return") return setPanel("before-return");
@@ -457,31 +468,44 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
         {/* Delivery form */}
         {panel === "delivered" && <DeliveryPanel busy={busy} onCancel={() => setPanel(null)} onSave={(payload) => run(() => staffApi.delivery(id, payload, source))} />}
 
-        {/* Collect remaining */}
-        {source === "kosha" && !pendingPricing && b.remainingAmount > 0 && (
-          pendingPay
-            ? <Banner kind="info"><AlertTriangle className="ml-1 inline h-4 w-4" /> تم استلام {money(pendingPay.amount)} د.ع ميدانيًا وهي بانتظار موافقة الإدارة الرئيسية. لا تدخل هذه الدفعة ضمن الرصيد الرسمي قبل الاعتماد.</Banner>
-            : <CollectPanel total={b.totalAmount} paid={b.paidAmount} remaining={b.remainingAmount} busy={busy} onSubmit={(input) => run(() => staffApi.collect(id, input, source))} />
-        )}
-
-        {/* Payment requests history */}
-        {data.paymentRequests.length > 0 && (
-          <div className="rounded-xl border border-border bg-card p-3">
-            <div className="mb-2 text-sm font-bold">سجل التحصيل</div>
-            <div className="space-y-1.5 text-sm">
-              {data.paymentRequests.map((p) => (
-                <div key={p.id} className="rounded-lg border border-border/50 p-2">
-                  <div className="flex items-center justify-between gap-2"><span>{money(p.amount)} د.ع · {p.paymentMethod === "transfer" ? "تحويل" : p.paymentMethod === "card" || p.paymentMethod === "pos" ? "بطاقة" : p.paymentMethod === "other" ? "أخرى" : "نقداً"}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${p.status === "approved" ? "bg-status-success/15 text-status-success dark:text-status-success" : p.status === "rejected" ? "bg-destructive/15 text-destructive" : "bg-status-warning/15 text-status-warning"}`}>
-                      {p.status === "approved" ? "معتمد" : p.status === "rejected" ? "مرفوض" : "بانتظار اعتماد الإدارة"}
-                    </span>
-                  </div>
-                  {p.rejectionReason ? <div className="mt-1 text-xs text-destructive">سبب الرفض: {p.rejectionReason}</div> : null}
-                  {p.receiptImage ? <a className="mt-1 block text-xs text-primary underline" href={p.receiptImage} target="_blank" rel="noreferrer">فتح صورة الوصل</a> : null}
-                </div>
-              ))}
+        {/* Financial collection is intentionally independent from field execution stages. */}
+        {source === "kosha" && !pendingPricing && (
+          <section ref={collectionRef} className="scroll-mt-20 space-y-3 rounded-xl border-2 border-primary/30 bg-primary/[0.03] p-3">
+            <div className="flex items-start gap-2">
+              <div className="rounded-lg bg-primary/10 p-2 text-primary"><Banknote className="h-4 w-4" /></div>
+              <div>
+                <h2 className="text-sm font-bold">الحسابات والتحصيل</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">قسم مالي مستقل عن مراحل التنفيذ. يُربط التحصيل باسم العميل والحجز، ولا يدخل الصندوق الرئيسي أو الرصيد الرسمي إلا بعد الاعتماد المالي.</p>
+              </div>
             </div>
-          </div>
+
+            {b.remainingAmount > 0 ? (
+              pendingPay
+                ? <Banner kind="info"><AlertTriangle className="ml-1 inline h-4 w-4" /> تم تسجيل استلام {money(pendingPay.amount)} د.ع من العميل، وهي بانتظار الاعتماد المالي. لا يمكن إتمام الحجز قبل اعتمادها وتحديث المتبقي الرسمي.</Banner>
+                : <CollectPanel total={b.totalAmount} paid={b.paidAmount} remaining={b.remainingAmount} busy={busy} onSubmit={(input) => run(() => staffApi.collect(id, input, source), "تم تسجيل التحصيل باسم العميل وإرساله للاعتماد المالي")} />
+            ) : (
+              <Banner kind="ok">تمت تسوية رصيد العميل بالكامل. يمكنك إكمال آخر مرحلة من الحجز.</Banner>
+            )}
+
+            {data.paymentRequests.length > 0 && (
+              <div className="rounded-xl border border-border bg-card p-3">
+                <div className="mb-2 text-sm font-bold">سجل التحصيل</div>
+                <div className="space-y-1.5 text-sm">
+                  {data.paymentRequests.map((p) => (
+                    <div key={p.id} className="rounded-lg border border-border/50 p-2">
+                      <div className="flex items-center justify-between gap-2"><span>{money(p.amount)} د.ع · {p.paymentMethod === "transfer" ? "تحويل" : p.paymentMethod === "card" || p.paymentMethod === "pos" ? "بطاقة" : p.paymentMethod === "other" ? "أخرى" : "نقداً"}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${p.status === "approved" ? "bg-status-success/15 text-status-success dark:text-status-success" : p.status === "rejected" ? "bg-destructive/15 text-destructive" : "bg-status-warning/15 text-status-warning"}`}>
+                          {p.status === "approved" ? "معتمد" : p.status === "rejected" ? "مرفوض" : "بانتظار اعتماد الإدارة"}
+                        </span>
+                      </div>
+                      {p.rejectionReason ? <div className="mt-1 text-xs text-destructive">سبب الرفض: {p.rejectionReason}</div> : null}
+                      {p.receiptImage ? <a className="mt-1 block text-xs text-primary underline" href={p.receiptImage} target="_blank" rel="noreferrer">فتح صورة الوصل</a> : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
         )}
 
         {/* Media gallery */}
@@ -526,7 +550,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
       {next && !panel && (
         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 p-3 pb-safe backdrop-blur">
           <div className="mx-auto max-w-xl"><button onClick={onAdvance} disabled={busy} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground disabled:opacity-60">
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />} الانتقال إلى: {STAGE_LABEL[next]}
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : next === "delivered" && completionNeedsCollection ? <Banknote className="h-4 w-4" /> : <ArrowRight className="h-4 w-4" />} {next === "delivered" && completionNeedsCollection ? "تحصيل المتبقي مطلوب قبل الإتمام" : `الانتقال إلى: ${STAGE_LABEL[next]}`}
           </button></div>
         </div>
       )}
@@ -671,7 +695,7 @@ function CollectPanel({ total, paid, remaining, busy, onSubmit }: {
         className="mt-3 w-full rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
         {busy || uploadingReceipt ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "تأكيد التحصيل وإرساله للاعتماد"}
       </button>
-      <div className="mt-1.5 text-center text-xs text-muted-foreground">يمكن إكمال مرحلة التشغيل بشكل مستقل؛ الدفعة لا تدخل الصندوق أو الرصيد الرسمي إلا بعد اعتماد الإدارة الرئيسية.</div>
+      <div className="mt-1.5 text-center text-xs text-muted-foreground">يُسجّل التحصيل باسم العميل والحجز في سند قبض موحّد. لا يدخل الصندوق أو الرصيد الرسمي إلا بعد اعتماد الإدارة الرئيسية، ولا يمكن الإتمام النهائي قبل تسوية المتبقي.</div>
     </div>
   );
 }

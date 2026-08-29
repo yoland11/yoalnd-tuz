@@ -125,6 +125,12 @@ check("event-running can close through the returned milestone",
   go("event_running", "delivered").ok, true);
 check("field preparation center remains in the booking detail",
   staffBookingDetail.includes("<KoshaOperationsPanel") && staffOperations.includes("مركز التجهيز الميداني"), true);
+check("customer settlement is a separate field-collection section, not an execution stage",
+  staffBookingDetail.includes("الحسابات والتحصيل") && staffBookingDetail.includes("قسم مالي مستقل عن مراحل التنفيذ"), true);
+check("server blocks native kosha completion while an official customer balance remains",
+  staffApi.includes("officialRemainingBeforeCompletion") && staffApi.includes("لا يمكن إتمام الحجز قبل تسجيل واعتماد تحصيل المبلغ المتبقي على العميل"), true);
+check("a full pending collection still cannot close before main financial approval",
+  staffApi.includes("تم تسجيل تحصيل المتبقي وهو بانتظار الاعتماد المالي") && staffBookingDetail.includes("تحصيل المتبقي مطلوب قبل الإتمام"), true);
 
 // ── Illegal moves ──
 check("cannot skip several stages", go("booked", "on_the_way").ok, false);
