@@ -95,6 +95,7 @@ const koshaCollections = readFileSync("src/views/admin/kosha-collections.tsx", "
 const koshaAdmin = readFileSync("src/views/admin/koshas.tsx", "utf8");
 const bookingCenter = readFileSync("src/views/admin/booking-center.tsx", "utf8");
 const bookingEditor = readFileSync("src/views/admin/orders.tsx", "utf8");
+const serviceDetails = readFileSync("src/lib/service-details.ts", "utf8");
 const bookingPhotos = readFileSync("src/lib/booking-photos.ts", "utf8");
 const imageUploadEditor = readFileSync("src/components/image-upload-editor.tsx", "utf8");
 const taskSchema = readFileSync("lib/db/src/schema/admin-extensions.ts", "utf8");
@@ -146,6 +147,7 @@ check("booking center keeps form values and focuses returned invalid fields", bo
 check("booking form supports multiple stored photos and mobile camera without database binaries", bookingCenter.includes("multiple={replacePhotoIndex == null}") && bookingEditor.includes("showCameraAction") && imageUploadEditor.includes('capture="environment"') && bookingPhotos.includes("isStoredBookingPhoto"));
 check("booking create and edit derive deposit, remaining and payment status from amounts", bookingCenter.includes("depositTooHigh") && bookingEditor.includes("const paidAmount = Math.min(totalAmount, enteredPaidAmount)") && api.includes("settleByAmount: true") && api.includes("لا يمكن أن يتجاوز العربون المبلغ الكلي للحجز"));
 check("booking photo and financial edits stay on the same booking and enter the existing timeline", bookingEditor.includes('`/admin/service-orders/${order.id}`') && api.includes('type: "booking_photos_updated"') && api.includes('["remainingAmount", prev.remainingAmount, row.remainingAmount]'));
+check("photography bookings expose video or photo-session details and retain session-specific fields only for sessions", serviceDetails.includes('label: "نوع التصوير"') && serviceDetails.includes('label: "تصوير فيديو"') && serviceDetails.includes('label: "جلسة تصوير"') && serviceDetails.includes('label: "مكان جلسة التصوير"') && serviceDetails.includes('label: "نوع التسليم"') && serviceDetails.includes('label: "عدد اللقطات"') && serviceDetails.includes('dependsOn: { key: "photographyServiceKind", value: "photo_session" }') && serviceDetails.includes('delete next.photoShotCount'));
 check("bundle sale resolves components server-side", api.includes("resolveSalesInvoiceBundleLines") && api.includes("salesInvoiceBundleSnapshotsTable"));
 check("bundle stock uses the same conditional invoice transaction", api.includes("sales_invoice_bundle_stock_deducted") && api.includes("stock::numeric >="));
 check("bundle snapshot schema preserves original components", bundleSchema.includes("salesInvoiceBundleSnapshotsTable") && bundleSchema.includes("components"));

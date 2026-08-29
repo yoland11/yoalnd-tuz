@@ -66,6 +66,42 @@ export function getServiceDetailFields(serviceType?: string | null): ServiceDeta
       ];
     case "photography":
       return [
+        {
+          key: "photographyServiceKind",
+          label: "نوع التصوير",
+          type: "select",
+          options: [
+            { value: "video", label: "تصوير فيديو" },
+            { value: "photo_session", label: "جلسة تصوير" },
+          ],
+        },
+        {
+          key: "photoSessionLocation",
+          label: "مكان جلسة التصوير",
+          type: "select",
+          options: [
+            { value: "indoor", label: "داخلية" },
+            { value: "outdoor", label: "خارجية" },
+          ],
+          dependsOn: { key: "photographyServiceKind", value: "photo_session" },
+        },
+        {
+          key: "photoSessionDelivery",
+          label: "نوع التسليم",
+          type: "select",
+          options: [
+            { value: "album", label: "ألبوم" },
+            { value: "shots", label: "لقطات" },
+          ],
+          dependsOn: { key: "photographyServiceKind", value: "photo_session" },
+        },
+        {
+          key: "photoShotCount",
+          label: "عدد اللقطات",
+          type: "number",
+          min: 1,
+          dependsOn: { key: "photographyServiceKind", value: "photo_session" },
+        },
         { key: "crewName", label: "كادر التصوير", type: "select", source: "crews" },
         { key: "sessionTime", label: "وقت الجلسة", type: "time" },
         { key: "shootingLocation", label: "موقع التصوير", type: "text" },
@@ -156,7 +192,8 @@ export function serviceDetailsToRows(serviceType: string | null | undefined, det
         const count = Array.isArray(value) ? value.length : 1;
         return { key: field.key, label: field.label, value: `${count} ملف` };
       }
-      return { key: field.key, label: field.label, value: String(value) };
+      const optionLabel = field.type === "select" ? field.options?.find((option) => option.value === String(value))?.label : undefined;
+      return { key: field.key, label: field.label, value: optionLabel ?? String(value) };
     })
     .filter(Boolean) as { key: string; label: string; value: string }[];
   if (normalizeServiceType(serviceType) === "gifts" && Number(source.wrappingFee) > 0) {
@@ -200,6 +237,11 @@ export function primaryLocationFromDetails(serviceType: string | null | undefine
 
 export function withDerivedServiceDetails(serviceType: string | null | undefined, details: Record<string, any>) {
   const next = { ...details };
+  if (normalizeServiceType(serviceType) === "photography" && next.photographyServiceKind !== "photo_session") {
+    delete next.photoSessionLocation;
+    delete next.photoSessionDelivery;
+    delete next.photoShotCount;
+  }
   if (normalizeServiceType(serviceType) === "gifts") {
     next.wrappingFee = next.wrapping === "تغليف" ? 1000 : 0;
   }
