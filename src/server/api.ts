@@ -64304,6 +64304,9 @@ const companyLoanRepaymentSchema = companyLoanCreateSchema.pick({
   referenceNo: true,
   notes: true,
 }).extend({ paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+const companyLoanCancelSchema = z.object({
+  reason: z.string().trim().min(3).max(500),
+});
 
 function companyLoanNumber(prefix: string) {
   return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`;
@@ -64365,6 +64368,160 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
     });
     void logAdminActivity(req, "company_loan_created", "company_loan", loan.id, { loanNo: loan.loanNo, amount: data.amount });
     return json(loan, 201);
+  }
+
+  // A loan and its pending financial approval must remain a single source of
+  // truth.  Editing is intentionally limited to pending requests, before any
+  // Cash Box or ledger posting can have happened.
+  if (req.method === "PUT" && id && !parts[3]) {
+    const parsed = companyLoanCreateSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("company-loans.update", parsed);
+    const data = parsed.data;
+    const actor = financialActor(auth);
+    try {
+      const loan = await db.transaction(async (tx) => {
+        const lockedLoan = (await tx.execute(
+          sql`SELECT * FROM company_loans WHERE id = ${id} FOR UPDATE`,
+        )).rows[0] as any;
+        if (!lockedLoan) throw new Error("القرض غير موجود");
+        if (lockedLoan.status !== "pending" || Number(lockedLoan.total_repaid) > 0) {
+          throw new Error("لا يمكن تعديل القرض بعد اعتماده أو بدء السداد");
+        }
+        const transactionId = Number(lockedLoan.receipt_transaction_id);
+        if (!Number.isInteger(transactionId) || transactionId <= 0) {
+          throw new Error("طلب الموافقة المالية المرتبط بالقرض غير موجود");
+        }
+        const lockedTransaction = (await tx.execute(
+          sql`SELECT id, approval_status FROM financial_transactions WHERE id = ${transactionId} FOR UPDATE`,
+        )).rows[0] as any;
+        if (!lockedTransaction || lockedTransaction.approval_status !== "pending") {
+          throw new Error("لا يمكن تعديل القرض بعد اعتماد أو رفض الطلب المالي");
+        }
+
+        const [updatedTransaction] = await tx.update(financialTransactionsTable).set({
+          transactionDate: data.receivedDate,
+          amount: String(data.amount),
+          paymentMethod: data.paymentMethod,
+          referenceNo: lockedLoan.loan_no,
+          description: `استلام قرض من ${data.lenderName}`,
+          customerName: data.lenderName,
+          customerPhone: data.lenderPhone || null,
+          notes: data.notes || null,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(financialTransactionsTable.id, transactionId),
+          eq(financialTransactionsTable.approvalStatus, "pending"),
+        )).returning();
+        if (!updatedTransaction) throw new Error("تمت معالجة طلب الموافقة المالية مسبقاً");
+
+        const [saved] = await tx.update(companyLoansTable).set({
+          lenderName: data.lenderName,
+          lenderPhone: data.lenderPhone || null,
+          originalAmount: String(data.amount),
+          remainingAmount: String(data.amount),
+          receivedDate: data.receivedDate,
+          paymentMethod: data.paymentMethod,
+          referenceNo: data.referenceNo || null,
+          notes: data.notes || null,
+          updatedAt: new Date(),
+        }).where(eq(companyLoansTable.id, id)).returning();
+        await tx.insert(financialAuditLogsTable).values({
+          transactionId,
+          action: "company_loan_updated",
+          actorId: actor.id,
+          actorName: actor.name,
+          oldValues: {
+            lenderName: lockedLoan.lender_name,
+            amount: lockedLoan.original_amount,
+            receivedDate: lockedLoan.received_date,
+            paymentMethod: lockedLoan.payment_method,
+          },
+          newValues: {
+            lenderName: data.lenderName,
+            amount: data.amount,
+            receivedDate: data.receivedDate,
+            paymentMethod: data.paymentMethod,
+          },
+        });
+        return saved;
+      });
+      void logAdminActivity(req, "company_loan_updated", "company_loan", loan.id, {
+        loanNo: loan.loanNo,
+        amount: data.amount,
+        actorId: actor.id,
+      });
+      return json(loan);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "تعذر تعديل القرض";
+      return error(message, message === "القرض غير موجود" ? 404 : 409);
+    }
+  }
+
+  // "Delete" means cancel the still-pending request.  We retain the loan,
+  // linked approval and audit history so that no financial record disappears.
+  if (req.method === "DELETE" && id && !parts[3]) {
+    const parsed = companyLoanCancelSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("company-loans.cancel", parsed);
+    const { reason } = parsed.data;
+    const actor = financialActor(auth);
+    try {
+      const cancelled = await db.transaction(async (tx) => {
+        const lockedLoan = (await tx.execute(
+          sql`SELECT * FROM company_loans WHERE id = ${id} FOR UPDATE`,
+        )).rows[0] as any;
+        if (!lockedLoan) throw new Error("القرض غير موجود");
+        if (lockedLoan.status !== "pending" || Number(lockedLoan.total_repaid) > 0) {
+          throw new Error("لا يمكن إلغاء قرض بعد اعتماده أو بدء السداد");
+        }
+        const transactionId = Number(lockedLoan.receipt_transaction_id);
+        if (!Number.isInteger(transactionId) || transactionId <= 0) {
+          throw new Error("طلب الموافقة المالية المرتبط بالقرض غير موجود");
+        }
+        const lockedTransaction = (await tx.execute(
+          sql`SELECT id, approval_status FROM financial_transactions WHERE id = ${transactionId} FOR UPDATE`,
+        )).rows[0] as any;
+        if (!lockedTransaction || lockedTransaction.approval_status !== "pending") {
+          throw new Error("لا يمكن إلغاء القرض بعد اعتماد أو رفض الطلب المالي");
+        }
+
+        const [rejectedTransaction] = await tx.update(financialTransactionsTable).set({
+          approvalStatus: "rejected",
+          rejectedBy: actor.id,
+          rejectedByName: actor.name,
+          rejectedAt: new Date(),
+          rejectionReason: reason,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(financialTransactionsTable.id, transactionId),
+          eq(financialTransactionsTable.approvalStatus, "pending"),
+        )).returning();
+        if (!rejectedTransaction) throw new Error("تمت معالجة طلب الموافقة المالية مسبقاً");
+
+        const [saved] = await tx.update(companyLoansTable).set({
+          status: "cancelled",
+          updatedAt: new Date(),
+        }).where(eq(companyLoansTable.id, id)).returning();
+        await tx.insert(financialAuditLogsTable).values({
+          transactionId,
+          action: "company_loan_cancelled",
+          actorId: actor.id,
+          actorName: actor.name,
+          oldValues: { loanStatus: lockedLoan.status, approvalStatus: "pending" },
+          newValues: { loanStatus: "cancelled", approvalStatus: "rejected" },
+          reason,
+        });
+        return saved;
+      });
+      void logAdminActivity(req, "company_loan_cancelled", "company_loan", cancelled.id, {
+        loanNo: cancelled.loanNo,
+        reason,
+        actorId: actor.id,
+      });
+      return json({ ok: true, loan: cancelled });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "تعذر إلغاء القرض";
+      return error(message, message === "القرض غير موجود" ? 404 : 409);
+    }
   }
 
   if (req.method === "POST" && id && parts[3] === "repayments") {
