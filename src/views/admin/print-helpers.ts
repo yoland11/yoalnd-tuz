@@ -897,6 +897,32 @@ export function salarySlipCss() {
   `;
 }
 
+export type SimpleSalarySlipPrintInput = {
+  companyName?: string | null;
+  logoUrl?: string | null;
+  employeeName: string;
+  department?: string | null;
+  month: string;
+  baseSalary: number;
+  bonus: number;
+  deduction: number;
+  netSalary: number;
+  paymentStatus: "paid" | "unpaid" | string;
+  paidAt?: string | null;
+};
+
+/** A4 print window for the new simple salary module. */
+export function openSimpleSalarySlipPrintWindow(input: SimpleSalarySlipPrintInput) {
+  const popup = window.open("", "_blank", "width=980,height=760");
+  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  const status = input.paymentStatus === "paid" ? "تم الصرف" : "غير مصروف";
+  const paidAt = input.paidAt ? statementDate(input.paidAt) : "—";
+  const logo = input.logoUrl ? `<img class="report-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : "";
+  const money = (value: number) => statementEsc(statementMoney(value));
+  popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>قسيمة راتب ${statementEsc(input.employeeName)}</title><style>${salarySlipCss()}</style></head><body><section class="report-sheet salary-slip"><header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div><div class="report-title">قسيمة راتب موظف</div></div>${logo}<div class="report-meta">الشهر: <span class="num">${statementEsc(input.month)}</span><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header><div class="salary-person"><div class="field"><span>الموظف</span><b>${statementEsc(input.employeeName)}</b></div><div class="field"><span>القسم</span><b>${statementEsc(input.department || "—")}</b></div><div class="field"><span>الحالة</span><b>${status}</b></div><div class="field"><span>تاريخ الصرف</span><b class="num">${statementEsc(paidAt)}</b></div></div><table class="salary-components"><thead><tr><th>البيان</th><th>المبلغ</th></tr></thead><tbody><tr><td>الراتب الأساسي</td><td class="num">${money(input.baseSalary)}</td></tr><tr><td>المكافأة</td><td class="num">${money(input.bonus)}</td></tr><tr><td>الخصم</td><td class="num">${money(input.deduction)}</td></tr></tbody></table><div class="salary-net"><span>صافي الراتب</span><b class="num">${money(input.netSalary)}</b></div><div class="salary-signatures"><div>توقيع الموظف</div><div>اعتماد الإدارة</div></div><footer class="report-footer">قسيمة للقراءة والطباعة فقط · لا تنشئ أو تعدل أي حركة مالية</footer></section>${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.close();
+}
+
 /** A4 portrait sheet containing two identical compact luxury invoices for cutting. */
 export function luxuryDuplicateInvoiceCss() {
   return `
