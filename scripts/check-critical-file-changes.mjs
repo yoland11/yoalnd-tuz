@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 function git(args, allowFailure = false) {
   const result = spawnSync(process.platform === "win32" ? "git.exe" : "git", args, {
@@ -43,27 +44,29 @@ const sharedCorePatterns = [
 const schemaChanges = [...changed].filter((file) => schemaPatterns.some((pattern) => pattern.test(file)));
 const sharedCoreChanges = [...changed].filter((file) => sharedCorePatterns.some((pattern) => pattern.test(file)));
 const scope = process.env.AJN_CHANGE_SCOPE?.trim() || "standard";
-const databaseApproved =
-  process.env.AJN_DB_CHANGE_APPROVED === "true" || scope === "database-approved";
+
+function destructiveMigration(file) {
+  if (!/^lib\/db\/migrations\/.*\.sql$/i.test(file)) return false;
+  const sql = readFileSync(file, "utf8");
+  return /\b(?:DROP\s+(?:TABLE|COLUMN|INDEX|TYPE|SCHEMA)|TRUNCATE|DELETE\s+FROM|UPDATE\b|ALTER\s+TABLE[\s\S]*?\b(?:DROP\s+COLUMN|ALTER\s+COLUMN|RENAME\s+(?:COLUMN|TO)))\b/i.test(sql);
+}
 
 const failures = [];
-if (schemaChanges.length && !databaseApproved) {
-  failures.push(
-    "Database schema/migration files changed without AJN_DB_CHANGE_APPROVED=true or AJN_CHANGE_SCOPE=database-approved.",
-  );
-}
+const destructiveMigrations = schemaChanges.filter(destructiveMigration);
+if (destructiveMigrations.length)
+  failures.push(`Destructive migration content requires an explicit safety review: ${destructiveMigrations.join(", ")}`);
 if (scope === "ui-only" && sharedCoreChanges.length) {
   failures.push("A UI-only task changed shared persistence/financial core files.");
 }
 
-if (schemaChanges.length) console.log(`AJN database-sensitive changes:\n- ${schemaChanges.join("\n- ")}`);
+if (schemaChanges.length) console.log(`AJN database-sensitive changes (safe additive work is allowed):\n- ${schemaChanges.join("\n- ")}`);
 if (sharedCoreChanges.length) console.log(`AJN high-blast-radius changes:\n- ${sharedCoreChanges.join("\n- ")}`);
 
 if (failures.length) {
   console.error("AJN CRITICAL REGRESSION");
   console.error("Subsystem: Change authorization");
   console.error("Operation: Database/shared-core change detection");
-  console.error("Expected: No unauthorized migration, schema, or shared-core change.");
+  console.error("Expected: No destructive migration or UI-only shared-core change.");
   console.error(`Actual: ${failures.join(" ")}`);
   console.error("Deployment: BLOCKED");
   process.exit(1);

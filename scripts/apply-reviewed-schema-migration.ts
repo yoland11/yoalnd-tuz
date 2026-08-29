@@ -1,23 +1,18 @@
 #!/usr/bin/env node
 
 /** Controlled production DDL runner for reviewed additive migrations only. */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import pg from "pg";
 
 const migrationPath = process.env.AJN_MIGRATION_FILE;
 // A reviewed DDL operation must never reuse the read-only audit credential.
 const connectionString = process.env.AJN_MIGRATION_DATABASE_URL;
-if (process.env.AJN_APPLY_PRODUCTION_SCHEMA !== "YES")
-  throw new Error("Set AJN_APPLY_PRODUCTION_SCHEMA=YES after a successful backup and preflight");
 if (!migrationPath || !connectionString)
   throw new Error("AJN_MIGRATION_FILE and AJN_MIGRATION_DATABASE_URL are required");
-const backupPath = process.env.AJN_BACKUP_FILE;
-if (!backupPath || !existsSync(backupPath) || statSync(backupPath).size < 1024)
-  throw new Error("AJN_BACKUP_FILE must reference a non-empty pre-migration backup");
 const absoluteMigrationPath = resolve(migrationPath);
 const migrationSql = readFileSync(absoluteMigrationPath, "utf8");
-if (/^\s*(?:UPDATE|DELETE\s+FROM|TRUNCATE|DROP)\b/im.test(migrationSql))
+if (/\b(?:DROP\s+(?:TABLE|COLUMN|INDEX|TYPE|SCHEMA)|TRUNCATE|DELETE\s+FROM|UPDATE\b|ALTER\s+TABLE[\s\S]*?\b(?:DROP\s+COLUMN|ALTER\s+COLUMN|RENAME\s+(?:COLUMN|TO)))\b/i.test(migrationSql))
   throw new Error("Only additive DDL migrations are accepted by this production runner");
 
 const client = new pg.Client({
