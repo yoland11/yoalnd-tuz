@@ -16,6 +16,8 @@ function check(name, ok) {
 const cashbox = readFileSync("src/server/master-cash-box.ts", "utf8");
 const api = readFileSync("src/server/api.ts", "utf8");
 const sales = readFileSync("src/views/admin/master-cash.tsx", "utf8");
+const dailyCash = readFileSync("src/server/daily-cash.ts", "utf8");
+const eventBrain = readFileSync("src/server/event-brain.ts", "utf8");
 const sourceGate = cashbox.slice(
   cashbox.indexOf("export async function createAndExecuteSourceFinancialTransaction"),
   cashbox.indexOf("export async function rejectFinancialTransaction"),
@@ -38,6 +40,12 @@ check("Kosha field collections are also restricted to the principal admin", api.
 check("sales initial payment stays unofficial until approval", api.includes('paymentStatus: paidAmount > 0 ? "pending_approval" : paymentStatus'));
 check("sales official payment is applied only in the cash-box executor", executor.includes('transaction.sourceType === "sales_invoice"'));
 check("research payments stay pending until approval", executor.includes('transaction.sourceType === "research_order"'));
+check("loan receipt is classified as a liability cash movement, not operating revenue", api.includes('transactionType: "company_loan_received"') && api.includes('sourceType: "company_loan"') && cashbox.includes('return "2300"') && cashbox.includes('isBalanceSheetTransfer(transaction)'));
+check("loan movements present as cash flow liabilities instead of revenue or expense", cashbox.includes('accountingClassificationLabel: "استلام قرض / التزام"') && cashbox.includes('accountingClassificationLabel: "تسديد قرض / تخفيض التزام"') && sales.includes('movementDisplay(row)'));
+check("daily revenue and expenses exclude loan principal", dailyCash.includes("company_loan_received','company_loan_repayment") && dailyCash.includes("company_loan','company_loan_repayment"));
+check("event dashboard revenue excludes loan principal", eventBrain.includes("company_loan_received','company_loan_repayment"));
+check("loan repayment is approval-first and durably idempotent", api.includes('idempotency_key = ${data.idempotencyKey}') && api.includes('FOR UPDATE') && api.includes('transactionType: "company_loan_repayment"'));
+check("reversing a loan repayment restores the company liability", cashbox.includes('company_loan_repayment_reversed') && cashbox.includes('net_repaid'));
 check("financial approvals UI uses the server-side approval API", sales.includes('/admin/master-cash/transactions/${id}/approve'));
 check("financial approvals have a dedicated admin route", api.includes("if (section !== \"master-cash\")") && readFileSync("src/views/admin/index.tsx", "utf8").includes('path="/admin/financial-approvals"'));
 

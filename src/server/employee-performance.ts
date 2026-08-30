@@ -219,6 +219,8 @@ export async function computeEmployeeScores(range: PerfRange = defaultRange()): 
         coalesce(sum(amount::numeric),0)::float as revenue
       from financial_transactions
       where approval_status = 'executed' and direction = 'revenue' and requested_by is not null
+        and coalesce(source_type,'') not in ('company_loan','company_loan_repayment','employee_advance')
+        and transaction_type not in ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment')
         and transaction_date >= ${from} and transaction_date <= ${to}
       group by requested_by, department
     `),
@@ -441,6 +443,8 @@ export async function getPerformanceTrends(
       coalesce(sum(amount::numeric),0)::float as revenue
     from financial_transactions
     where approval_status = 'executed' and direction = 'revenue'
+      and coalesce(source_type,'') not in ('company_loan','company_loan_repayment','employee_advance')
+      and transaction_type not in ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment')
       and transaction_date::timestamp >= now() - interval '${sql.raw(back)}'
       ${staffFilter}
     group by 1 order by 1

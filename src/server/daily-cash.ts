@@ -208,6 +208,8 @@ async function aggregateDailyCash(from: string, to: string) {
       FROM financial_transactions
       WHERE approval_status='executed'
         AND COALESCE(source_type,'') NOT IN ('sales_invoice','order','service_order','kosha_booking')
+        AND COALESCE(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance')
+        AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment')
         AND transaction_date >= ${from} AND transaction_date <= ${to}
       GROUP BY transaction_date
     `),
@@ -221,8 +223,11 @@ async function aggregateDailyCash(from: string, to: string) {
         UNION ALL
         SELECT transaction_date::text AS day,
           COALESCE(SUM(CASE WHEN direction='expense' AND transaction_type NOT LIKE '%_reversal' THEN amount::numeric WHEN direction='revenue' AND transaction_type LIKE '%_reversal' THEN -amount::numeric ELSE 0 END),0) AS total
-        FROM financial_transactions
-        WHERE approval_status='executed' AND transaction_date >= ${from} AND transaction_date <= ${to}
+      FROM financial_transactions
+        WHERE approval_status='executed'
+          AND COALESCE(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance')
+          AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment')
+          AND transaction_date >= ${from} AND transaction_date <= ${to}
         GROUP BY transaction_date
       ) rows GROUP BY day
     `),
