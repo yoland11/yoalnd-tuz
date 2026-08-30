@@ -613,6 +613,11 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   const [imageUploading, setImageUploading] = useState(false);
   const [notes, setNotes] = useState("");
   const [selected, setSelected] = useState<ServiceKey[]>(["kosha"]);
+  const [photographyType, setPhotographyType] = useState<"video" | "photo_session">("photo_session");
+  const [photographyLocation, setPhotographyLocation] = useState<"indoor" | "outdoor">("indoor");
+  const [photographyDelivery, setPhotographyDelivery] = useState<"album" | "shots">("shots");
+  const [photographyShotsCount, setPhotographyShotsCount] = useState("");
+  const [photographyReelsRequested, setPhotographyReelsRequested] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const focusField = (field: string) => {
     const fieldId: Record<string, string> = {
@@ -672,6 +677,19 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             ...fieldsWithBookingPhotos({}, bookingPhotos),
             departments: selected,
             bookingCenterServices: selected.map((type) => ({ type, status: "waiting", amount: 0 })),
+            ...(selected.includes("photography")
+              ? {
+                  photographyServiceKind: photographyType,
+                  photographyReelsRequested,
+                  ...(photographyType === "photo_session"
+                    ? {
+                        photoSessionLocation: photographyLocation,
+                        photoSessionDelivery: photographyDelivery,
+                        photoShotCount: photographyShotsCount ? num(photographyShotsCount) : null,
+                      }
+                    : {}),
+                }
+              : {}),
           },
         }),
       });
@@ -700,6 +718,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
         ? "مدفوع بالكامل"
         : "مدفوع جزئياً";
   const toggle = (type: ServiceKey) => setSelected((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type]);
+  const photographySelected = selected.includes("photography");
   return (
     <section className="ajn-unified-form">
       <div className="ajn-section-heading"><div><span>إدخال سريع</span><h2>إنشاء حجز متعدد الخدمات</h2><p>لن تُنشأ فاتورة أو حركة صندوق حتى تنفيذ الإجراء من وحدته المالية الحالية.</p></div><Button variant="ghost" onClick={onCancel}>إغلاق</Button></div>
@@ -744,6 +763,15 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
           <div><span>الخدمات المطلوبة</span><strong>{selected.length} خدمات محددة</strong></div>
           <div className="grid grid-cols-2 gap-2">{SERVICE_META.map((meta) => { const Icon = meta.icon; const checked = selected.includes(meta.key); return <button type="button" key={meta.key} className={checked ? "is-selected" : ""} onClick={() => toggle(meta.key)} aria-pressed={checked}><Icon /><span>{meta.short}</span>{checked && <CheckCircle2 />}</button>; })}</div>
           {fieldErrors.serviceId ? <p className="text-xs text-destructive">{fieldErrors.serviceId}</p> : null}
+          {photographySelected ? <section className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
+            <div><h3 className="font-semibold text-foreground">تفاصيل التصوير</h3><p className="mt-1 text-xs text-muted-foreground">تُحفظ هذه التفاصيل مع الحجز لتظهر لفريق التصوير.</p></div>
+            <div className="space-y-1.5"><Label htmlFor="booking-photography-type">نوع التصوير</Label><select id="booking-photography-type" value={photographyType} onChange={(event) => setPhotographyType(event.target.value as "video" | "photo_session")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="video">تصوير فيديو</option><option value="photo_session">جلسة تصوير</option></select></div>
+            {photographyType === "photo_session" ? <>
+              <div className="grid grid-cols-2 gap-2"><div className="space-y-1.5"><Label htmlFor="booking-photography-location">المكان</Label><select id="booking-photography-location" value={photographyLocation} onChange={(event) => setPhotographyLocation(event.target.value as "indoor" | "outdoor")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="indoor">داخلي</option><option value="outdoor">خارجي</option></select></div><div className="space-y-1.5"><Label htmlFor="booking-photography-delivery">الطلب</Label><select id="booking-photography-delivery" value={photographyDelivery} onChange={(event) => setPhotographyDelivery(event.target.value as "album" | "shots")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="album">ألبوم</option><option value="shots">لقطات</option></select></div></div>
+              <div className="space-y-1.5"><Label htmlFor="booking-photography-shots">عدد اللقطات</Label><Input id="booking-photography-shots" inputMode="numeric" min="1" type="number" value={photographyShotsCount} onChange={(event) => setPhotographyShotsCount(event.target.value.replace(/[^0-9]/g, ""))} placeholder="مثال: 30" /></div>
+            </> : null}
+            <label className="flex cursor-pointer items-center justify-between rounded-lg border border-border/45 bg-background/80 px-3 py-2 text-sm"><span>هل تريد ريلز معها؟</span><input type="checkbox" checked={photographyReelsRequested} onChange={(event) => setPhotographyReelsRequested(event.target.checked)} className="h-4 w-4 accent-rose-600" /><span className="sr-only">طلب ريلز</span></label>
+          </section> : null}
           <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending || imageUploading || depositTooHigh} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : "حفظ الحجز"}</Button></div>
         </div>
       </div>
