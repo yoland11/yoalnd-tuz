@@ -113,6 +113,8 @@ function createPdfSnapshot(element: HTMLElement) {
 export type PdfExportOptions = {
   /** jsPDF page format — "a4" (default) or a custom [widthMm, heightMm] for thermal receipts. */
   format?: string | number[];
+  /** Page orientation. Defaults to portrait to preserve existing document exports. */
+  orientation?: "portrait" | "landscape";
   /** page margin in mm (number or [top,right,bottom,left]). Default 8. */
   margin?: number | number[];
   /** html2canvas sampling scale. Use 3.125 for roughly 300 DPI from CSS's 96 DPI baseline. */
@@ -151,7 +153,7 @@ export async function downloadElementPdf(
           imageTimeout: 15000,
           onclone: preparePdfClone,
         },
-        jsPDF: { unit: "mm", format: options?.format ?? "a4", orientation: "portrait" },
+        jsPDF: { unit: "mm", format: options?.format ?? "a4", orientation: options?.orientation ?? "portrait" },
         pagebreak: { mode: options?.pagebreakMode ?? ["avoid-all", "css", "legacy"] },
       })
       .from(snapshot)

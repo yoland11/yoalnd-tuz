@@ -29,10 +29,14 @@ import {
   customerStatementTransactionTotals,
   filterCustomerStatementTransactions,
   openCustomerStatementPrintWindow,
+  openSalesInvoiceRegisterPrintWindow,
   openSalesInvoicePrintWindow,
   prepareSalesInvoicePrintWindow,
+  salesInvoiceRegisterPrintHtml,
+  salesInvoiceRegisterSheetCss,
   type SalesInvoicePrintSize,
   type SalesInvoiceReceiptInput,
+  type SalesInvoiceRegisterPrintInput,
 } from "./print-helpers";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
@@ -115,7 +119,47 @@ type InvoiceRegisterResponse = {
   total?: number;
   summary?: InvoiceRegisterSummary;
   filters?: { employees: Array<{ id: number; name: string; role: string }> };
+  exportTruncated?: boolean;
 };
+
+type InvoiceRegisterFilters = {
+  from: string;
+  to: string;
+  reversed: string;
+  paymentStatus: string;
+  paymentMethod: string;
+  status: string;
+  branchId: string;
+  cashBox: string;
+  employeeId: string;
+  scope: "" | "mine";
+  search: string;
+};
+
+function salesInvoiceRegisterParams(
+  filters: InvoiceRegisterFilters,
+  options: { page?: number; exportAll?: boolean } = {},
+) {
+  const params = new URLSearchParams();
+  if (options.exportAll) {
+    params.set("export", "true");
+  } else {
+    params.set("limit", "20");
+    params.set("offset", String(((options.page ?? 1) - 1) * 20));
+  }
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  if (filters.reversed) params.set("reversed", filters.reversed);
+  if (filters.paymentStatus) params.set("paymentStatus", filters.paymentStatus);
+  if (filters.paymentMethod) params.set("paymentMethod", filters.paymentMethod);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.branchId) params.set("branchId", filters.branchId);
+  if (filters.cashBox) params.set("cashBox", filters.cashBox);
+  if (filters.employeeId) params.set("employeeId", filters.employeeId);
+  if (filters.scope) params.set("scope", filters.scope);
+  if (filters.search) params.set("search", filters.search);
+  return params;
+}
 
 type PrinterSettings = {
   defaultPaperSize: SalesInvoicePrintSize;
@@ -383,18 +427,19 @@ export default function SalesPage() {
   const { data: invoicesList, isLoading: invoicesLoading, isError: invoicesError, error: invoicesLoadError, isFetching: invoicesFetching, refetch: refetchInvoices } = useQuery<InvoiceRegisterResponse>({
     queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo, listReversed, listPaymentStatus, listPaymentMethod, listStatus, listBranchId, listCashBox, listEmployeeId, listScope, deferredListSearch],
     queryFn: () => {
-      const params = new URLSearchParams({ limit: "20", offset: String((listPage - 1) * 20) });
-      if (listFrom) params.set("from", listFrom);
-      if (listTo) params.set("to", listTo);
-      if (listReversed) params.set("reversed", listReversed);
-      if (listPaymentStatus) params.set("paymentStatus", listPaymentStatus);
-      if (listPaymentMethod) params.set("paymentMethod", listPaymentMethod);
-      if (listStatus) params.set("status", listStatus);
-      if (listBranchId) params.set("branchId", listBranchId);
-      if (listCashBox) params.set("cashBox", listCashBox);
-      if (listEmployeeId) params.set("employeeId", listEmployeeId);
-      if (listScope) params.set("scope", listScope);
-      if (deferredListSearch) params.set("search", deferredListSearch);
+      const params = salesInvoiceRegisterParams({
+        from: listFrom,
+        to: listTo,
+        reversed: listReversed,
+        paymentStatus: listPaymentStatus,
+        paymentMethod: listPaymentMethod,
+        status: listStatus,
+        branchId: listBranchId,
+        cashBox: listCashBox,
+        employeeId: listEmployeeId,
+        scope: listScope,
+        search: deferredListSearch,
+      }, { page: listPage });
       return adminFetch<InvoiceRegisterResponse>(
         `/admin/sales-invoices?${params}`,
       );
@@ -1324,6 +1369,8 @@ function InvoiceListView({
 }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { data: invoiceSettings } = usePublicSettings();
+  const [registerReportAction, setRegisterReportAction] = useState<"print" | "pdf" | null>(null);
   const [cancellingInvoice, setCancellingInvoice] = useState<SalesInvoice | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelPassword, setCancelPassword] = useState("");
@@ -1352,6 +1399,118 @@ function InvoiceListView({
     setCustomerLinkRepairSelection(customerLinkRepairPreview.data.preview.filter((row) => row.category === "confirmed_match").map((row) => row.invoiceId));
   }, [customerLinkRepairPreview.data]);
   const [deletingInvoice, setDeletingInvoice] = useState<SalesInvoice | null>(null);
+
+  function registerFilters() {
+    return {
+      from,
+      to,
+      reversed,
+      paymentStatus,
+      paymentMethod,
+      status: invoiceStatus,
+      branchId,
+      cashBox,
+      employeeId,
+      scope,
+      search: search.trim(),
+    } satisfies InvoiceRegisterFilters;
+  }
+
+  async function loadRegisterReport() {
+    const result = await adminFetch<InvoiceRegisterResponse>(
+      `/admin/sales-invoices?${salesInvoiceRegisterParams(registerFilters(), { exportAll: true })}`,
+    );
+    const rows = Array.isArray(result.data)
+      ? result.data
+      : Array.isArray(result.invoices)
+        ? result.invoices
+        : [];
+    const selectedEmployee = employees.find((employee) => String(employee.id) === employeeId);
+    const filters = [
+      paymentStatus ? `الدفع: ${INVOICE_PAYMENT_STATUS_OPTIONS.find((option) => option.value === paymentStatus)?.label ?? paymentStatus}` : "",
+      paymentMethod ? `الطريقة: ${PAYMENT_METHODS.find((option) => option.value === paymentMethod)?.label ?? paymentMethod}` : "",
+      invoiceStatus ? `الفاتورة: ${{ active: "نشطة", draft: "مسودة", cancelled: "ملغاة" }[invoiceStatus] ?? invoiceStatus}` : "",
+      branchId ? `الفرع: ${options?.branches?.find((option) => option.value === branchId)?.label ?? branchId}` : "",
+      cashBox ? `الصندوق: ${options?.cashBoxes?.find((option) => option.value === cashBox)?.label ?? cashBox}` : "",
+      reversed ? `المالية: ${reversed === "true" ? "معكوسة" : "فعّالة"}` : "",
+      scope === "mine" ? "النطاق: فواتيري" : "",
+      search.trim() ? `البحث: ${search.trim()}` : "",
+    ].filter(Boolean);
+    const report: SalesInvoiceRegisterPrintInput = {
+      companyName: invoiceSettings?.site_name ?? "مجموعة علي جان نهاد",
+      logoUrl: logoSrc(invoiceSettings),
+      companyPhone: invoiceSettings?.phone || invoiceSettings?.whatsapp,
+      companyAddress: invoiceSettings?.address,
+      companyWebsite: invoiceSettings?.website,
+      employeeName: selectedEmployee?.name ?? (scope === "mine" ? "فواتيري" : "كل الموظفين"),
+      periodFrom: from || null,
+      periodTo: to || null,
+      filters,
+      rows: rows.map((invoice) => ({
+        invoiceNo: invoice.invoiceNo,
+        date: invoice.date,
+        customerName: invoice.customerName,
+        total: invoice.total,
+        paidAmount: invoice.paidAmount,
+        remainingAmount: invoice.remainingAmount,
+        paymentStatus: invoice.paymentStatus,
+        paymentMethod: invoice.paymentMethod,
+        employeeName: invoice.createdByName,
+        branchName: invoice.branchName,
+      })),
+      totalSales: result.summary?.totalSales ?? 0,
+      totalPaid: result.summary?.collectedTotal ?? 0,
+      totalRemaining: result.summary?.remainingTotal ?? 0,
+    };
+    return { report, exportTruncated: result.exportTruncated === true };
+  }
+
+  async function printRegisterReport() {
+    if (registerReportAction) return;
+    setRegisterReportAction("print");
+    try {
+      const { report, exportTruncated } = await loadRegisterReport();
+      openSalesInvoiceRegisterPrintWindow(report);
+      if (exportTruncated) {
+        toast({ title: "تمت طباعة أول 5000 فاتورة", description: "استخدم فلاتر إضافية لتصدير السجل كاملاً.", variant: "destructive" });
+      }
+    } catch (reportError) {
+      toast({ title: "تعذر تجهيز تقرير الطباعة", description: apiErrorMessage(reportError), variant: "destructive" });
+    } finally {
+      setRegisterReportAction(null);
+    }
+  }
+
+  async function downloadRegisterReportPdf() {
+    if (registerReportAction) return;
+    setRegisterReportAction("pdf");
+    let wrapper: HTMLDivElement | null = null;
+    try {
+      const { report, exportTruncated } = await loadRegisterReport();
+      wrapper = document.createElement("div");
+      wrapper.className = "sales-register-pdf-host";
+      wrapper.innerHTML = `<style>${salesInvoiceRegisterSheetCss()}</style>${salesInvoiceRegisterPrintHtml(report)}`;
+      document.body.appendChild(wrapper);
+      await waitForInvoicePrintImages(wrapper);
+      const employeeSegment = employeeId ? `-${report.employeeName}` : "";
+      await downloadElementPdf(wrapper, `سجل-فواتير-المبيعات${employeeSegment}.pdf`, {
+        format: "a4",
+        orientation: "landscape",
+        margin: 9,
+        scale: 2,
+        pagebreakMode: ["css", "legacy"],
+      });
+      toast({ title: "تم حفظ تقرير PDF", description: `يشمل ${report.rows.length} فاتورة مطابقة للفلاتر.` });
+      if (exportTruncated) {
+        toast({ title: "التقرير يتضمن أول 5000 فاتورة فقط", description: "استخدم فلاتر إضافية لتصدير السجل كاملاً.", variant: "destructive" });
+      }
+    } catch (reportError) {
+      toast({ title: "تعذر حفظ تقرير PDF", description: apiErrorMessage(reportError), variant: "destructive" });
+    } finally {
+      wrapper?.remove();
+      setRegisterReportAction(null);
+    }
+  }
   // After a successful permanent deletion: refresh the register + dependent
   // stats without a full reload, and step back a page if we just removed the
   // last row of a non-first page.
@@ -1404,9 +1563,18 @@ function InvoiceListView({
           <h1 className="text-xl font-bold">سجل فواتير المبيعات</h1>
           <p className="text-xs text-muted-foreground">{loading ? "جارٍ تحميل السجل..." : `${total} فاتورة`}</p>
         </div>
+        <div className="ms-auto flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => { void printRegisterReport(); }} disabled={loading || !!error || !!registerReportAction}>
+            <Printer className="ml-1 h-4 w-4" />{registerReportAction === "print" ? "جارٍ التجهيز..." : "طباعة التقرير"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => { void downloadRegisterReportPdf(); }} disabled={loading || !!error || !!registerReportAction}>
+            <Download className="ml-1 h-4 w-4" />{registerReportAction === "pdf" ? "جارٍ الحفظ..." : "حفظ PDF"}
+          </Button>
+        </div>
         {canRepairCustomerLinks ? <Button variant="outline" size="sm" onClick={() => setCustomerLinkRepairOpen(true)}>ربط الفواتير القديمة بالعملاء</Button> : null}
       </div>
       <InvoiceRegisterSummaryCards summary={summary} loading={loading} />
+      <p className="text-xs text-muted-foreground">الطباعة وPDF يشملان جميع الفواتير المطابقة للموظف والفلاتر الحالية، وليس صفحة الجدول فقط.</p>
       {/* Filters */}
       <div className="flex flex-wrap gap-3 bg-card rounded-xl border border-border/40 p-4">
         <div className="flex flex-wrap items-end gap-1">

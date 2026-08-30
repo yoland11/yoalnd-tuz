@@ -684,6 +684,98 @@ export function openCustomerStatementPrintWindow(input: CustomerStatementPrintIn
   popup.document.close();
 }
 
+export type SalesInvoiceRegisterPrintRow = {
+  invoiceNo: string;
+  date: string;
+  customerName?: string | null;
+  total: string | number;
+  paidAmount: string | number;
+  remainingAmount: string | number;
+  paymentStatus?: string | null;
+  paymentMethod?: string | null;
+  employeeName?: string | null;
+  branchName?: string | null;
+};
+
+export type SalesInvoiceRegisterPrintInput = {
+  companyName?: string | null;
+  logoUrl?: string | null;
+  companyPhone?: string | null;
+  companyAddress?: string | null;
+  companyWebsite?: string | null;
+  employeeName: string;
+  periodFrom?: string | null;
+  periodTo?: string | null;
+  filters?: string[];
+  rows: SalesInvoiceRegisterPrintRow[];
+  totalSales: string | number;
+  totalPaid: string | number;
+  totalRemaining: string | number;
+};
+
+const salesInvoiceRegisterPaymentStatusAr: Record<string, string> = {
+  paid: "مدفوع بالكامل",
+  partial: "مدفوع جزئياً",
+  unpaid: "غير مدفوع",
+  overpaid: "مدفوع بزيادة",
+};
+
+const salesInvoiceRegisterPaymentMethodAr: Record<string, string> = {
+  cash: "نقداً",
+  card: "بطاقة",
+  transfer: "تحويل",
+  credit: "آجل",
+};
+
+/** A4 RTL report shared by the sales register browser print and PDF export. */
+export function salesInvoiceRegisterSheetCss() {
+  return `${sheetReportCss("a4")}
+    @page { size: A4 landscape; margin: 9mm; }
+    .sales-register-sheet { min-height: 190mm; }
+    .sales-register-sheet .report-head { align-items:flex-start; }
+    .sales-register-sheet .register-logo { width:auto; max-width:36mm; height:18mm; object-fit:contain; }
+    .sales-register-sheet .register-subtitle { margin:3px 0 0; font-size:10px; color:#333; }
+    .sales-register-sheet .register-meta { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:10px 0; border:1px solid #000; padding:7px; font-size:10px; }
+    .sales-register-sheet .register-meta strong { display:block; margin-bottom:2px; }
+    .sales-register-sheet .register-filters { margin:0 0 10px; font-size:9px; color:#333; }
+    .sales-register-sheet .report-summary { grid-template-columns:repeat(4,1fr); }
+    .sales-register-sheet .report-table { font-size:9px; }
+    .sales-register-sheet .report-table thead { display:table-header-group; }
+    .sales-register-sheet .report-table th { text-align:center; padding:5px 4px; }
+    .sales-register-sheet .report-table td { padding:5px 4px; text-align:center; }
+    .sales-register-sheet .report-table td.name { text-align:right; }
+    .sales-register-sheet .report-table tr { break-inside:avoid; page-break-inside:avoid; }
+    .sales-register-sheet .num { direction:ltr; unicode-bidi:isolate; white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .sales-register-sheet .empty-row { padding:18px !important; text-align:center !important; }
+    .sales-register-pdf-host { position:fixed; left:-10000px; top:0; width:279mm; padding:0; overflow:visible; background:#fff; color:#000; }
+    @media print {
+      html,body { margin:0 !important; padding:0 !important; background:#fff !important; }
+      .sales-register-sheet { width:100% !important; box-shadow:none !important; }
+      .sales-register-sheet .report-table,.sales-register-sheet .report-summary,.sales-register-sheet .register-meta { visibility:visible !important; }
+      * { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    }
+  `;
+}
+
+export function salesInvoiceRegisterPrintHtml(input: SalesInvoiceRegisterPrintInput) {
+  const dateText = (value?: string | null) => value ? statementDate(value) : "—";
+  const paymentStatus = (value?: string | null) => salesInvoiceRegisterPaymentStatusAr[String(value ?? "")] || String(value || "—");
+  const paymentMethod = (value?: string | null) => salesInvoiceRegisterPaymentMethodAr[String(value ?? "")] || String(value || "—");
+  const rows = input.rows.map((row, index) => `<tr><td class="num">${statementEsc(index + 1)}</td><td class="num">${statementEsc(row.invoiceNo)}</td><td class="num">${statementEsc(dateText(row.date))}</td><td class="name">${statementEsc(row.customerName || "عميل نقدي")}</td><td class="num">${statementEsc(formatCurrency(row.total))}</td><td class="num">${statementEsc(formatCurrency(row.paidAmount))}</td><td class="num">${statementEsc(formatCurrency(row.remainingAmount))}</td><td>${statementEsc(paymentStatus(row.paymentStatus))}</td><td>${statementEsc(paymentMethod(row.paymentMethod))}</td><td class="name">${statementEsc(row.employeeName || "—")}</td></tr>`).join("") || "<tr><td colspan=\"10\" class=\"empty-row\">لا توجد فواتير مطابقة للفلاتر المحددة.</td></tr>";
+  const logo = input.logoUrl ? `<img class="register-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : "<div></div>";
+  const contact = [input.companyAddress, input.companyPhone, input.companyWebsite].filter(Boolean).map(statementEsc).join(" · ");
+  const period = input.periodFrom || input.periodTo ? `${dateText(input.periodFrom)} — ${dateText(input.periodTo)}` : "كل الفترات";
+  const filters = input.filters?.filter(Boolean).join(" · ") || "بدون فلاتر إضافية";
+  return `<main class="report-sheet sales-register-sheet"><header class="report-head">${logo}<div><div class="report-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div><h1 class="report-title">سجل فواتير المبيعات</h1><p class="register-subtitle">تقرير حسب الموظف والفلاتر المحددة</p></div><div class="report-meta">تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span><br>عدد الفواتير: <span class="num">${statementEsc(input.rows.length)}</span></div></header><section class="register-meta"><div><strong>الموظف</strong><span>${statementEsc(input.employeeName)}</span></div><div><strong>الفترة</strong><span class="num">${statementEsc(period)}</span></div><div><strong>الفلاتر</strong><span>${statementEsc(filters)}</span></div></section><section class="report-summary"><div class="report-stat"><span>عدد الفواتير</span><strong class="num">${statementEsc(input.rows.length)}</strong></div><div class="report-stat"><span>إجمالي المبيعات</span><strong class="num">${statementEsc(formatCurrency(input.totalSales))}</strong></div><div class="report-stat"><span>إجمالي المدفوع</span><strong class="num">${statementEsc(formatCurrency(input.totalPaid))}</strong></div><div class="report-stat"><span>إجمالي المتبقي</span><strong class="num">${statementEsc(formatCurrency(input.totalRemaining))}</strong></div></section><table class="report-table"><thead><tr><th>#</th><th>رقم الفاتورة</th><th>التاريخ</th><th>العميل</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>حالة الدفع</th><th>طريقة الدفع</th><th>الموظف</th></tr></thead><tbody>${rows}</tbody></table><footer class="report-footer">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}${contact ? `<br>${contact}` : ""}</footer></main>`;
+}
+
+export function openSalesInvoiceRegisterPrintWindow(input: SalesInvoiceRegisterPrintInput) {
+  const popup = window.open("", "_blank", "width=1280,height=820");
+  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>سجل فواتير المبيعات</title><style>${salesInvoiceRegisterSheetCss()}</style></head><body>${salesInvoiceRegisterPrintHtml(input)}${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.close();
+}
+
 export type EmployeeAccountStatementPayment = {
   date: string;
   amount: number;
