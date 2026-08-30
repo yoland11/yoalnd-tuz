@@ -1,5 +1,5 @@
 import { useDeferredValue, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
   Trash2,
@@ -17,6 +17,8 @@ import {
   Pencil,
   Printer,
   ScanLine,
+  Eye,
+  Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,9 +38,9 @@ import {
   formatCurrency,
 } from "./_lib";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
-import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { openSalesInvoicePrintWindow } from "./print-helpers";
+import { usePublicSettings } from "@/lib/public-settings";
 import {
   InvoicePaymentStatusBadge,
   InvoiceRegisterSummaryCards,
@@ -182,6 +184,8 @@ export default function PurchasesPage() {
   } | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingNo, setEditingNo] = useState<string>("");
+  const [paymentDetailsInvoice, setPaymentDetailsInvoice] =
+    useState<PurchaseInvoice | null>(null);
   const [quickSupplier, setQuickSupplier] = useState(false);
   const [quickSupplierForm, setQuickSupplierForm] = useState({
     name: "",
@@ -549,43 +553,9 @@ export default function PurchasesPage() {
   }
 
   async function printInvoice(inv: PurchaseInvoice) {
-    let full: any = inv;
     try {
-      full = await adminFetch(`/admin/purchase-invoices/${inv.id}`);
-    } catch {
-      /* fall back to row */
-    }
-    const items: any[] = Array.isArray(full.items) ? full.items : [];
-    try {
-      openSalesInvoicePrintWindow({
-        paperSize: "80mm",
-        documentTitle: "فاتورة مشتريات",
-        invoiceNo: String(full.invoiceNo ?? inv.invoiceNo),
-        issuedAt: full.date ?? full.createdAt ?? inv.date,
-        customerName: full.supplierName ?? inv.supplierName,
-        customerPhone: full.supplierPhone ?? full.supplier?.phone ?? null,
-        paymentMethod: full.paymentMethod ?? inv.paymentMethod,
-        paymentStatus: full.paymentStatus ?? inv.paymentStatus,
-        employeeName: full.createdByName ?? inv.createdByName,
-        items: items.map((item) => ({
-          productName: String(item.productName ?? item.name ?? ""),
-          quantity: item.quantity ?? 0,
-          unitPrice: item.costPrice ?? item.unitPrice ?? 0,
-          total: item.total ?? 0,
-        })),
-        subtotal: full.subtotal ?? inv.subtotal,
-        discount: full.discountAmount ?? inv.discountAmount,
-        tax: full.taxAmount ?? inv.taxAmount,
-        deliveryFee: full.shippingCost ?? inv.shippingCost,
-        total: full.total ?? inv.total,
-        paid: full.paidAmount ?? inv.paidAmount,
-        remaining: full.remainingAmount ?? inv.remainingAmount,
-        notes: full.notes ?? inv.notes,
-        logoUrl: logoSrc(settings),
-        companyName: settings?.site_name,
-        companyPhone: settings?.phone ?? settings?.whatsapp,
-        companyAddress: settings?.address,
-      });
+      const full = await adminFetch<PurchaseInvoiceDetails>(`/admin/purchase-invoices/${inv.id}`);
+      printPurchaseInvoiceStatement(full, settings);
     } catch (error) {
       toast({
         title: "تعذر فتح نافذة الطباعة",
@@ -634,6 +604,7 @@ export default function PurchasesPage() {
         ? invoicesList.invoices
         : [];
     return (
+      <>
       <PurchaseListView
         invoices={invoiceRows}
         total={
@@ -668,10 +639,21 @@ export default function PurchasesPage() {
         onCashBox={setListCashBox}
         options={registerOptions}
         onBack={() => setListMode(false)}
+        onDetails={setPaymentDetailsInvoice}
         onEdit={editInvoice}
         onPrint={printInvoice}
         onDelete={deleteInvoice}
       />
+      <PurchaseInvoicePaymentDialog
+        invoice={paymentDetailsInvoice}
+        onClose={() => setPaymentDetailsInvoice(null)}
+        onChanged={() => {
+          void refetchInvoices();
+          queryClient.invalidateQueries({ queryKey: ["admin", "suppliers"] });
+          queryClient.invalidateQueries({ queryKey: ["admin", "suppliers", "dashboard"] });
+        }}
+      />
+      </>
     );
   }
 
@@ -1270,6 +1252,217 @@ export default function PurchasesPage() {
   );
 }
 
+type PurchasePaymentHistory = {
+  id: number;
+  transactionNo?: string | null;
+  transactionDate: string;
+  amount: string | number;
+  direction: string;
+  paymentMethod?: string | null;
+  approvalStatus: string;
+  referenceNo?: string | null;
+  notes?: string | null;
+  requestedByName?: string | null;
+  executedByName?: string | null;
+  executedAt?: string | null;
+  attachments?: string[];
+};
+
+type PurchaseInvoiceDetails = PurchaseInvoice & {
+  payments?: PurchasePaymentHistory[];
+  paymentSummary?: {
+    total: number;
+    paidAmount: number;
+    remainingAmount: number;
+    paymentStatus: string;
+    percentage: number;
+  };
+};
+
+const paymentMethodLabel: Record<string, string> = {
+  cash: "نقداً",
+  transfer: "تحويل",
+  card: "بطاقة",
+  pos: "نقطة بيع",
+  other: "أخرى",
+  credit: "آجل",
+};
+
+const paymentApprovalLabel: Record<string, string> = {
+  draft: "مسودة",
+  pending: "بانتظار الموافقة",
+  approved: "معتمدة بانتظار التنفيذ",
+  executed: "منفذة",
+  rejected: "مرفوضة",
+  reversed: "معكوسة",
+};
+
+function escapePurchasePrint(value: unknown) {
+  return String(value ?? "—")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function printPurchaseInvoiceStatement(invoice: PurchaseInvoiceDetails, settings: any) {
+  const popup = window.open("", "_blank", "noopener,noreferrer,width=920,height=900");
+  if (!popup) throw new Error("يرجى السماح بالنوافذ المنبثقة للطباعة");
+  const summary = invoice.paymentSummary ?? {
+    total: Number(invoice.total ?? 0),
+    paidAmount: Number(invoice.paidAmount ?? 0),
+    remainingAmount: Number(invoice.remainingAmount ?? 0),
+    paymentStatus: invoice.paymentStatus ?? "unpaid",
+    percentage: 0,
+  };
+  const payments = Array.isArray(invoice.payments) ? invoice.payments : [];
+  const items = Array.isArray((invoice as any).items) ? (invoice as any).items : [];
+  const rows = payments.length
+    ? payments.map((payment, index) => `<tr>
+        <td>${index + 1}</td><td>${escapePurchasePrint(payment.executedAt || payment.transactionDate)}</td>
+        <td>${escapePurchasePrint(formatCurrency(payment.amount))}</td>
+        <td>${escapePurchasePrint(paymentMethodLabel[payment.paymentMethod ?? ""] ?? payment.paymentMethod)}</td>
+        <td>الصندوق الرئيسي</td><td>${escapePurchasePrint(payment.executedByName || payment.requestedByName)}</td>
+        <td>${escapePurchasePrint(payment.notes)}</td><td>${escapePurchasePrint(paymentApprovalLabel[payment.approvalStatus] ?? payment.approvalStatus)}</td>
+      </tr>`).join("")
+    : '<tr><td colspan="8" class="empty">لا توجد دفعات مسجلة</td></tr>';
+  const itemRows = items.map((item: any, index: number) => `<tr><td>${index + 1}</td><td>${escapePurchasePrint(item.productName || item.name)}</td><td>${escapePurchasePrint(item.quantity)}</td><td>${escapePurchasePrint(formatCurrency(item.costPrice || item.unitPrice || 0))}</td><td>${escapePurchasePrint(formatCurrency(item.total || 0))}</td></tr>`).join("");
+  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"/><title>كشف فاتورة شراء ${escapePurchasePrint(invoice.invoiceNo)}</title><style>
+    @page { size: A4; margin: 13mm; } * { box-sizing: border-box; } body { font-family: Tahoma, Arial, sans-serif; color:#172033; font-size:12px; } h1,h2,p { margin:0; } .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #e25f52; padding-bottom:14px; margin-bottom:16px; } .brand { color:#c9463b; font-weight:700; font-size:18px; } .muted { color:#667085; margin-top:5px; } .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; margin:14px 0; } .card { border:1px solid #e4e7ec; border-radius:8px; padding:10px; } .card strong { display:block; margin-top:5px; font-size:14px; } .remaining { background:#fff6e8; border-color:#f6c56b; } table { width:100%; border-collapse:collapse; margin-top:10px; } th,td { border:1px solid #e4e7ec; padding:7px; text-align:right; vertical-align:top; } th { background:#f8fafc; } .empty { text-align:center; color:#667085; padding:15px; } .section { margin-top:20px; } .footer { margin-top:24px; border-top:1px solid #e4e7ec; padding-top:9px; color:#667085; font-size:11px; }
+  </style></head><body><header class="head"><div><h1>كشف فاتورة شراء</h1><p class="muted">${escapePurchasePrint(settings?.site_name || "AJN ERP")}</p></div><div><p><b>رقم الفاتورة:</b> ${escapePurchasePrint(invoice.invoiceNo)}</p><p class="muted">تاريخ الفاتورة: ${escapePurchasePrint(invoice.date)}</p></div></header>
+  <section class="grid"><div class="card"><span>المورد</span><strong>${escapePurchasePrint(invoice.supplierName)}</strong></div><div class="card"><span>حالة الدفع</span><strong>${escapePurchasePrint(invoicePaymentLabel(summary.paymentStatus))}</strong></div><div class="card"><span>طريقة الدفع</span><strong>${escapePurchasePrint(paymentMethodLabel[invoice.paymentMethod ?? ""] ?? invoice.paymentMethod)}</strong></div></section>
+  <section class="grid"><div class="card"><span>إجمالي الفاتورة</span><strong>${escapePurchasePrint(formatCurrency(summary.total))}</strong></div><div class="card"><span>إجمالي المدفوع المنفذ</span><strong>${escapePurchasePrint(formatCurrency(summary.paidAmount))}</strong></div><div class="card remaining"><span>المبلغ المتبقي</span><strong>${escapePurchasePrint(formatCurrency(summary.remainingAmount))}</strong></div></section>
+  <section class="section"><h2>الأصناف المشتراة</h2><table><thead><tr><th>#</th><th>الصنف</th><th>الكمية</th><th>سعر الشراء</th><th>الإجمالي</th></tr></thead><tbody>${itemRows || '<tr><td colspan="5" class="empty">لا توجد أصناف</td></tr>'}</tbody></table></section>
+  <section class="section"><h2>سجل الدفعات</h2><table><thead><tr><th>#</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>الصندوق</th><th>الموظف</th><th>الملاحظة</th><th>الحالة</th></tr></thead><tbody>${rows}</tbody></table></section><footer class="footer">تمت الطباعة في ${escapePurchasePrint(new Date().toLocaleString("en-CA"))}</footer></body></html>`);
+  popup.document.close();
+  popup.focus();
+  window.setTimeout(() => popup.print(), 250);
+}
+
+function invoicePaymentLabel(status: string) {
+  return status === "paid" ? "مدفوع بالكامل" : status === "partial" ? "مدفوع جزئياً" : "غير مدفوع";
+}
+
+function PurchaseInvoicePaymentDialog({
+  invoice,
+  onClose,
+  onChanged,
+}: {
+  invoice: PurchaseInvoice | null;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const { toast } = useToast();
+  const [amount, setAmount] = useState("");
+  const [paymentDate, setPaymentDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [paymentMethod, setPaymentMethod] = useState("cash");
+  const [referenceNo, setReferenceNo] = useState("");
+  const [notes, setNotes] = useState("");
+  const [attachmentUrl, setAttachmentUrl] = useState("");
+  const detailsQuery = useQuery<PurchaseInvoiceDetails>({
+    queryKey: ["admin", "purchase-invoice-details", invoice?.id],
+    queryFn: () => adminFetch(`/admin/purchase-invoices/${invoice!.id}`),
+    enabled: Boolean(invoice?.id),
+  });
+  const details = detailsQuery.data;
+  const summary = details?.paymentSummary ?? {
+    total: Number(details?.total ?? invoice?.total ?? 0),
+    paidAmount: Number(details?.paidAmount ?? invoice?.paidAmount ?? 0),
+    remainingAmount: Number(details?.remainingAmount ?? invoice?.remainingAmount ?? 0),
+    paymentStatus: details?.paymentStatus ?? invoice?.paymentStatus ?? "unpaid",
+    percentage: 0,
+  };
+  const enteredAmount = Number(amount || 0);
+  const remainingAfter = Math.max(0, summary.remainingAmount - enteredAmount);
+  const submitPayment = useMutation({
+    mutationFn: () => {
+      const requestKey = typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `purchase-payment-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      return adminFetch(`/admin/purchase-invoices/${invoice!.id}/payments`, {
+        method: "POST",
+        headers: { "x-idempotency-key": requestKey },
+        body: JSON.stringify({
+          amount: enteredAmount,
+          date: paymentDate,
+          paymentMethod,
+          referenceNo: referenceNo.trim() || null,
+          notes: notes.trim() || null,
+          attachments: attachmentUrl.trim() ? [attachmentUrl.trim()] : [],
+        }),
+      });
+    },
+    onSuccess: async () => {
+      toast({ title: "تم إرسال الدفعة للموافقة المالية" });
+      setAmount(""); setReferenceNo(""); setNotes(""); setAttachmentUrl("");
+      onChanged();
+      await detailsQuery.refetch();
+    },
+    onError: (error) => toast({
+      title: "تعذر تسجيل دفعة المورد",
+      description: apiErrorMessage(error),
+      variant: "destructive",
+    }),
+  });
+  const close = () => {
+    if (submitPayment.isPending) return;
+    setAmount(""); setReferenceNo(""); setNotes(""); setAttachmentUrl("");
+    onClose();
+  };
+  const history = details?.payments ?? [];
+  const canSubmit = enteredAmount > 0 && enteredAmount <= summary.remainingAmount;
+  return <Dialog open={Boolean(invoice)} onOpenChange={(open) => !open && close()}>
+    <DialogContent dir="rtl" className="max-h-[92vh] max-w-5xl overflow-y-auto">
+      <DialogHeader>
+        <DialogTitle>تفاصيل فاتورة الشراء والدفع</DialogTitle>
+      </DialogHeader>
+      {detailsQuery.isLoading ? <p className="py-10 text-center text-muted-foreground">جارٍ تحميل تفاصيل الفاتورة...</p> : details ? <div className="space-y-5">
+        <div className="grid gap-3 rounded-xl border bg-muted/20 p-4 sm:grid-cols-3">
+          <div><p className="text-xs text-muted-foreground">رقم الفاتورة</p><b>{details.invoiceNo}</b></div>
+          <div><p className="text-xs text-muted-foreground">المورد</p><b>{details.supplierName || "—"}</b></div>
+          <div><p className="text-xs text-muted-foreground">تاريخ الفاتورة</p><b>{details.date}</b></div>
+        </div>
+        <section className="rounded-xl border bg-card p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">ملخص حالة الدفع</h3><InvoicePaymentStatusBadge status={summary.paymentStatus} /></div>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <PaymentMetric title="إجمالي الفاتورة" value={formatCurrency(summary.total)} />
+            <PaymentMetric title="إجمالي المدفوع" value={formatCurrency(summary.paidAmount)} />
+            <PaymentMetric title="المبلغ المتبقي" value={formatCurrency(summary.remainingAmount)} emphasis />
+            <PaymentMetric title="نسبة السداد" value={`${summary.percentage || (summary.total ? Math.round((summary.paidAmount / summary.total) * 100) : 0)}%`} />
+          </div>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, Math.max(0, summary.percentage || (summary.total ? (summary.paidAmount / summary.total) * 100 : 0)))}%` }} /></div>
+        </section>
+        <section className="rounded-xl border bg-card p-4">
+          <div className="mb-3 flex items-center gap-2"><Wallet className="h-4 w-4 text-primary" /><h3 className="font-semibold">تسجيل دفعة</h3></div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <PaymentMetric title="المتبقي قبل الدفع" value={formatCurrency(summary.remainingAmount)} />
+            <label className="grid gap-1 text-sm"><span>مبلغ الدفع *</span><input type="number" min="0" max={summary.remainingAmount} value={amount} onChange={(event) => setAmount(event.target.value)} className="rounded-lg border bg-background px-3 py-2" /></label>
+            <PaymentMetric title="المتبقي بعد الدفع" value={formatCurrency(remainingAfter)} emphasis />
+            <label className="grid gap-1 text-sm"><span>تاريخ الدفع *</span><input type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} className="rounded-lg border bg-background px-3 py-2" /></label>
+            <label className="grid gap-1 text-sm"><span>طريقة الدفع *</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className="rounded-lg border bg-background px-3 py-2">{PAYMENT_METHODS.filter((method) => method.value !== "credit").map((method) => <option key={method.value} value={method.value}>{method.label}</option>)}</select></label>
+            <div className="grid gap-1 text-sm"><span>الصندوق / الحساب</span><div className="rounded-lg border bg-muted px-3 py-2">الصندوق الرئيسي</div></div>
+            <label className="grid gap-1 text-sm"><span>رقم المرجع</span><input value={referenceNo} onChange={(event) => setReferenceNo(event.target.value)} className="rounded-lg border bg-background px-3 py-2" /></label>
+            <label className="grid gap-1 text-sm"><span>رابط الوصل أو المرفق (اختياري)</span><input value={attachmentUrl} onChange={(event) => setAttachmentUrl(event.target.value)} className="rounded-lg border bg-background px-3 py-2" /></label>
+            <label className="grid gap-1 text-sm sm:col-span-2 lg:col-span-3"><span>ملاحظة</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} className="min-h-20 rounded-lg border bg-background p-3" /></label>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">يُسجل وقت التنفيذ الفعلي تلقائياً عند اعتماد الدفعة. لا يتغير رصيد المورد أو الصندوق قبل الاعتماد والتنفيذ.</p>
+          <div className="mt-3 flex justify-end"><Button onClick={() => submitPayment.mutate()} disabled={!canSubmit || submitPayment.isPending || summary.remainingAmount <= 0}>{submitPayment.isPending ? "جارٍ الإرسال..." : "تأكيد الدفع"}</Button></div>
+        </section>
+        <section className="rounded-xl border bg-card p-4">
+          <h3 className="mb-3 font-semibold">سجل الدفعات</h3>
+          <div className="overflow-x-auto"><table className="w-full min-w-[860px] text-sm"><thead className="border-b text-xs text-muted-foreground"><tr><th className="p-2 text-right">#</th><th className="p-2 text-right">تاريخ الدفع</th><th className="p-2 text-right">المبلغ</th><th className="p-2 text-right">الطريقة</th><th className="p-2 text-right">الصندوق</th><th className="p-2 text-right">الموظف</th><th className="p-2 text-right">الملاحظة</th><th className="p-2 text-right">الحالة</th></tr></thead><tbody>{history.map((payment, index) => <tr key={payment.id} className="border-b"><td className="p-2">{index + 1}</td><td className="p-2">{payment.executedAt ? new Date(payment.executedAt).toLocaleString("en-CA") : payment.transactionDate}</td><td className="p-2 font-medium">{formatCurrency(payment.amount)}</td><td className="p-2">{paymentMethodLabel[payment.paymentMethod ?? ""] ?? payment.paymentMethod ?? "—"}</td><td className="p-2">الصندوق الرئيسي</td><td className="p-2">{payment.executedByName || payment.requestedByName || "—"}</td><td className="p-2">{payment.notes || "—"}</td><td className="p-2"><span className="rounded-full bg-muted px-2 py-1 text-xs">{paymentApprovalLabel[payment.approvalStatus] ?? payment.approvalStatus}</span></td></tr>)}{!history.length && <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">لا توجد دفعات مسجلة لهذه الفاتورة.</td></tr>}</tbody><tfoot><tr><td colSpan={2} className="p-3 font-semibold">إجمالي المدفوع المنفذ</td><td className="p-3 font-bold text-emerald-700">{formatCurrency(summary.paidAmount)}</td><td colSpan={5} /></tr></tfoot></table></div>
+        </section>
+      </div> : <p className="py-10 text-center text-destructive">تعذر تحميل تفاصيل الفاتورة.</p>}
+      <DialogFooter><Button variant="outline" onClick={close}>إغلاق</Button></DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+function PaymentMetric({ title, value, emphasis = false }: { title: string; value: string; emphasis?: boolean }) {
+  return <div className={`rounded-lg border p-3 ${emphasis ? "border-amber-400/50 bg-amber-50/40 dark:bg-amber-950/10" : "bg-muted/20"}`}><p className="text-xs text-muted-foreground">{title}</p><p className="mt-1 font-bold">{value}</p></div>;
+}
+
 // ── Purchase List Sub-View ─────────────────────────────────────────────────
 function PurchaseListView({
   invoices,
@@ -1295,6 +1488,7 @@ function PurchaseListView({
   onCashBox,
   options,
   onBack,
+  onDetails,
   onEdit,
   onPrint,
   onDelete,
@@ -1326,6 +1520,7 @@ function PurchaseListView({
   onCashBox: (v: string) => void;
   options?: InvoiceRegisterOptions;
   onBack: () => void;
+  onDetails: (inv: PurchaseInvoice) => void;
   onEdit: (inv: PurchaseInvoice) => void;
   onPrint: (inv: PurchaseInvoice) => void;
   onDelete: (inv: PurchaseInvoice) => void;
@@ -1575,6 +1770,15 @@ function PurchaseListView({
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onDetails(inv)}
+                          title="تفاصيل وسداد"
+                          className="text-primary"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"

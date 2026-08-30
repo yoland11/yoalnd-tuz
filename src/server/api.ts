@@ -52994,6 +52994,15 @@ async function deleteSalesInvoice(
   }
 }
 
+const purchaseInvoiceSupplierPaymentSchema = z.object({
+  amount: z.coerce.number().positive("مبلغ الدفع يجب أن يكون أكبر من صفر").max(999_999_999_999),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ الدفع غير صحيح").optional(),
+  paymentMethod: z.enum(["cash", "transfer", "card", "pos", "other", "credit"]).optional(),
+  referenceNo: z.string().trim().max(120).optional().nullable(),
+  notes: z.string().trim().max(2_000).optional().nullable(),
+  attachments: z.array(z.string().trim().max(2_000)).max(20).optional().default([]),
+});
+
 async function handlePurchaseInvoices(
   req: NextRequest,
   parts: string[],
@@ -53165,8 +53174,57 @@ async function handlePurchaseInvoices(
         Array.isArray(p.images) && p.images.length ? p.images[0] : null,
       ]),
     );
+    const payments = await db
+      .select({
+        id: financialTransactionsTable.id,
+        transactionNo: financialTransactionsTable.transactionNo,
+        transactionDate: financialTransactionsTable.transactionDate,
+        amount: financialTransactionsTable.amount,
+        direction: financialTransactionsTable.direction,
+        paymentMethod: financialTransactionsTable.paymentMethod,
+        approvalStatus: financialTransactionsTable.approvalStatus,
+        transactionType: financialTransactionsTable.transactionType,
+        referenceNo: financialTransactionsTable.referenceNo,
+        notes: financialTransactionsTable.notes,
+        requestedByName: financialTransactionsTable.requestedByName,
+        executedByName: financialTransactionsTable.executedByName,
+        executedAt: financialTransactionsTable.executedAt,
+        attachments: financialTransactionsTable.attachments,
+        reversedTransactionId: financialTransactionsTable.reversedTransactionId,
+      })
+      .from(financialTransactionsTable)
+      .where(
+        and(
+          eq(financialTransactionsTable.sourceType, "purchase_invoice"),
+          eq(financialTransactionsTable.sourceId, String(id)),
+        ),
+      )
+      .orderBy(desc(financialTransactionsTable.transactionDate), desc(financialTransactionsTable.id));
+    // This view is deliberately derived from executed financial rows. Pending
+    // requests remain visible in the history but never reduce supplier debt.
+    const executedPaidAmount = Math.max(
+      0,
+      payments.reduce(
+        (sum, payment) =>
+          payment.approvalStatus === "executed"
+            ? sum + (payment.direction === "expense" ? Number(payment.amount ?? 0) : -Number(payment.amount ?? 0))
+            : sum,
+        0,
+      ),
+    );
+    const total = Number(inv.total ?? 0);
+    const paidAmount = Math.min(total, executedPaidAmount);
+    const remainingAmount = Math.max(0, total - paidAmount);
+    const paymentStatus = paidAmount <= 0 ? "unpaid" : remainingAmount <= 0 ? "paid" : "partial";
     return json({
       ...inv,
+      // Do not treat the persisted snapshot as authoritative in the details UI:
+      // canonical execution history is the source for these display values.
+      paidAmount: String(paidAmount),
+      remainingAmount: String(remainingAmount),
+      paymentStatus,
+      paymentSummary: { total, paidAmount, remainingAmount, paymentStatus, percentage: total > 0 ? Math.round((paidAmount / total) * 100) : 0 },
+      payments,
       items: items.map((it: any) => ({
         ...it,
         image: it.productId ? (imgMap.get(it.productId) ?? null) : null,
@@ -53186,8 +53244,11 @@ async function handlePurchaseInvoices(
       ),
     });
     if (!invoice) return error("فاتورة الشراء غير موجودة أو غير نشطة", 404);
-    const b = await body(req);
-    const amount = Math.round((Number(b?.amount) || 0) * 100) / 100;
+    const parsedPayment = purchaseInvoiceSupplierPaymentSchema.safeParse(await body(req));
+    if (!parsedPayment.success)
+      return validationError("purchase-invoice.supplier-payment", parsedPayment);
+    const b = parsedPayment.data;
+    const amount = Math.round(b.amount * 100) / 100;
     const remaining = Math.max(0, Number(invoice.remainingAmount ?? 0));
     const pendingResult = await db.execute(sql`
       SELECT coalesce(sum(amount::numeric), 0)::float AS amount
@@ -53225,7 +53286,8 @@ async function handlePurchaseInvoices(
         sourceEvent: `supplier_payment:${idempotencyKey.slice(-24)}`,
         idempotencyKey,
         customerName: invoice.supplierName || null,
-        notes: nullableText(b?.notes),
+        notes: nullableText(b.notes),
+        attachments: b.attachments,
       },
       financialActor(auth),
     );
