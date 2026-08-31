@@ -1544,3 +1544,28 @@ a:hover {
   .flower-design-studio__summary { background: var(--florist-ivory); box-shadow: 0 -.35rem .8rem rgb(78 110 69 / 14%); }
   .flower-design-studio__mobile-cart { background: var(--florist-green); }
 }
+
+/* Public gallery inside the bouquet designer. Uploading remains in the existing
+   permission-protected admin gallery; this surface is browse-only. */
+.flower-design-studio__gallery { padding-top: .15rem; }
+.flower-design-studio__gallery-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: 1rem; }
+.flower-design-studio__gallery-categories { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; gap: .45rem; }
+.flower-design-studio__gallery-category { min-height: 2.75rem; border: 1px solid rgb(78 110 69 / 18%); border-radius: 999px; background: #fff; color: #536550; padding: .45rem .85rem; font-size: .82rem; font-weight: 650; transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease; }
+.flower-design-studio__gallery-category:hover, .flower-design-studio__gallery-category.is-active { border-color: rgb(78 110 69 / 48%); background: var(--florist-mint); color: #314d2b; }
+.flower-design-studio__gallery-manage { min-height: 2.75rem; flex: 0 0 auto; border-color: rgb(78 110 69 / 28%); color: var(--florist-green); }
+.flower-design-studio__gallery-manage svg { width: 1rem; height: 1rem; }
+.flower-design-studio__gallery-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }
+.flower-design-studio__gallery-card { display: grid; min-width: 0; overflow: hidden; border: 1px solid rgb(78 110 69 / 15%); border-radius: 1rem; background: rgb(255 253 248 / 92%); color: #31402f; text-align: right; box-shadow: 0 .25rem .6rem rgb(78 110 69 / 7%); transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
+.flower-design-studio__gallery-card:hover { border-color: rgb(201 168 106 / 64%); box-shadow: 0 .45rem .8rem rgb(78 110 69 / 12%); transform: translateY(-2px); }
+.flower-design-studio__gallery-media { position: relative; display: block; aspect-ratio: 4 / 3; overflow: hidden; background: var(--florist-mint); }
+.flower-design-studio__gallery-media img, .flower-design-studio__gallery-media video { width: 100%; height: 100%; object-fit: cover; }
+.flower-design-studio__gallery-play { position: absolute; right: .7rem; bottom: .7rem; display: grid; width: 2.5rem; height: 2.5rem; place-items: center; border: 1px solid rgb(255 255 255 / 62%); border-radius: 999px; background: rgb(49 77 43 / 78%); color: #fff; box-shadow: 0 .2rem .5rem rgb(0 0 0 / 18%); }
+.flower-design-studio__gallery-play svg { width: 1rem; height: 1rem; margin-right: .1rem; fill: currentColor; }
+.flower-design-studio__gallery-caption { display: grid; gap: .22rem; padding: .7rem .8rem .8rem; }
+.flower-design-studio__gallery-caption b { overflow: hidden; color: #31402f; font-size: .85rem; text-overflow: ellipsis; white-space: nowrap; }
+.flower-design-studio__gallery-caption small { overflow: hidden; color: #71806d; font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.flower-design-studio__gallery-preview { display: grid; gap: .65rem; }
+.flower-design-studio__gallery-preview img, .flower-design-studio__gallery-preview video { width: 100%; max-height: min(68dvh, 42rem); border-radius: .75rem; background: #f2f5ef; object-fit: contain; }
+.flower-design-studio__gallery-preview p { margin: 0; color: #667462; font-size: .88rem; }
+@media (max-width: 780px) { .flower-design-studio__gallery-toolbar { align-items: stretch; flex-direction: column; }.flower-design-studio__gallery-manage { width: 100%; }.flower-design-studio__gallery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; } }
+@media (max-width: 420px) { .flower-design-studio__gallery-grid { grid-template-columns: 1fr; } }
