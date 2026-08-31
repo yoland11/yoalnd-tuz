@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useListGallery, useCreateGalleryItem, useDeleteGalleryItem,
   getListGalleryQueryKey,
 } from "@workspace/api-client-react";
-import { Plus, Trash2, X, Eye } from "lucide-react";
+import { Plus, Trash2, X, Eye, FolderOpen, ImageIcon, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./_layout";
@@ -13,16 +13,37 @@ import { ImageUploadEditor, type ImageEditResult } from "@/components/image-uplo
 import type { ImageMetadata } from "@/lib/image-tools";
 import { useToast } from "@/hooks/use-toast";
 
+const DEFAULT_GALLERY_SECTIONS = ["عام", "كوشات", "تصوير", "تخرج", "ورود", "تجهيزات", "ديكور", "دعوات"];
+const normalizedCategory = (category?: string | null) => {
+  const value = category?.trim();
+  return !value || value === "general" ? "عام" : value;
+};
+
 export default function GalleryPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { data: items, isLoading } = useListGallery({});
+  const { data: items, isLoading, isError, refetch } = useListGallery({});
   const create = useCreateGalleryItem();
   const del = useDeleteGalleryItem();
   const [form, setForm] = useState<{ mediaUrl: string; mediaType: string; titleAr: string; category: string; imageMetadata?: ImageMetadata }>({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام", imageMetadata: {} });
   const [showForm, setShowForm] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  const [activeCategory, setActiveCategory] = useState("all");
   const { data: publicSettings } = usePublicSettings();
+
+  const sections = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of items ?? []) {
+      const category = normalizedCategory(item.category);
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
+    const values = [...new Set([...DEFAULT_GALLERY_SECTIONS, ...counts.keys()])];
+    return values.map((value) => ({ value, label: value, count: counts.get(value) ?? 0 }));
+  }, [items]);
+  const visibleItems = useMemo(
+    () => activeCategory === "all" ? (items ?? []) : (items ?? []).filter((item) => normalizedCategory(item.category) === activeCategory),
+    [activeCategory, items],
+  );
 
   function invalidate() { qc.invalidateQueries({ queryKey: getListGalleryQueryKey() }); }
 
@@ -39,23 +60,71 @@ export default function GalleryPage() {
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    create.mutate({ data: form }, {
-      onSuccess: () => { invalidate(); setShowForm(false); setForm({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام", imageMetadata: {} }); toast({ title: "تمت إضافة الوسائط" }); },
+    const category = normalizedCategory(form.category);
+    create.mutate({ data: { ...form, category } }, {
+      onSuccess: () => { invalidate(); setActiveCategory(category); setShowForm(false); setForm({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام", imageMetadata: {} }); toast({ title: "تمت إضافة الوسائط" }); },
       onError: (err: any) => toast({ title: "تعذر إضافة الوسائط", description: err?.message, variant: "destructive" }),
     });
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-foreground">الصور والملفات</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">الصور والملفات</h1>
+          <p className="mt-1 text-sm text-muted-foreground">رتّب الصور ضمن أقسام ليسهل العثور عليها وعرضها.</p>
+        </div>
         <Button onClick={() => setShowForm(true)} size="sm" className="gap-2"><Plus className="w-4 h-4" /> إضافة</Button>
       </div>
 
+      <section className="rounded-2xl border border-border/45 bg-card p-3" aria-label="أقسام معرض الصور">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground"><FolderOpen className="h-4 w-4 text-primary" /> الأقسام</div>
+        <div className="mt-3 flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="تصفية صور المعرض حسب القسم">
+          <Button
+            type="button"
+            size="sm"
+            variant={activeCategory === "all" ? "default" : "outline"}
+            className="shrink-0 gap-1.5"
+            role="tab"
+            aria-selected={activeCategory === "all"}
+            onClick={() => setActiveCategory("all")}
+          >
+            <ImageIcon className="h-3.5 w-3.5" /> كل الصور <span className="text-xs opacity-80">{items?.length ?? 0}</span>
+          </Button>
+          {sections.map((section) => (
+            <Button
+              key={section.value}
+              type="button"
+              size="sm"
+              variant={activeCategory === section.value ? "default" : "outline"}
+              className="shrink-0 gap-1.5"
+              role="tab"
+              aria-selected={activeCategory === section.value}
+              onClick={() => setActiveCategory(section.value)}
+            >
+              {section.label} <span className="text-xs opacity-80">{section.count}</span>
+            </Button>
+          ))}
+        </div>
+      </section>
+
       {isLoading ? <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">{[1,2,3,4,5,6].map(i => <Skeleton key={i} className="aspect-square rounded-xl" />)}</div>
-      : !items || items.length === 0 ? <EmptyState /> : (
+      : isError ? (
+        <div className="rounded-2xl border border-destructive/30 bg-destructive/5 px-5 py-8 text-center">
+          <p className="font-semibold text-foreground">تعذر تحميل معرض الصور</p>
+          <p className="mt-1 text-sm text-muted-foreground">لم يتم عرض حالة فارغة بدلاً من الخطأ.</p>
+          <Button type="button" variant="outline" size="sm" className="mt-4 gap-2" onClick={() => refetch()}><RotateCcw className="h-4 w-4" /> إعادة المحاولة</Button>
+        </div>
+      ) : !items || items.length === 0 ? <EmptyState /> : visibleItems.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-border/60 px-5 py-10 text-center">
+          <FolderOpen className="mx-auto h-8 w-8 text-muted-foreground" />
+          <p className="mt-3 font-semibold text-foreground">لا توجد صور في قسم {activeCategory}</p>
+          <p className="mt-1 text-sm text-muted-foreground">أضف صورة جديدة واختر هذا القسم لتظهر هنا.</p>
+          <Button type="button" variant="outline" size="sm" className="mt-4" onClick={() => setActiveCategory("all")}>عرض كل الصور</Button>
+        </div>
+      ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {items.map(item => (
+          {visibleItems.map(item => (
             <div key={item.id} className="relative group bg-card rounded-xl overflow-hidden border border-border/30">
               {item.mediaType === "video"
                 ? <video src={item.mediaUrl} className="w-full aspect-square object-cover" />
@@ -69,6 +138,7 @@ export default function GalleryPage() {
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
+              <span className="absolute right-2 top-2 rounded-full bg-black/60 px-2 py-1 text-[11px] font-medium text-white backdrop-blur-sm">{normalizedCategory(item.category)}</span>
               {item.titleAr && <p className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent text-white text-xs p-2 truncate">{item.titleAr}</p>}
             </div>
           ))}
@@ -113,9 +183,12 @@ export default function GalleryPage() {
                   className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
               </div>
               <div>
-                <label className="block text-xs text-muted-foreground mb-1">التصنيف</label>
-                <input value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+                <label htmlFor="gallery-category" className="block text-xs text-muted-foreground mb-1">القسم</label>
+                <input id="gallery-category" list="gallery-category-options" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+                  placeholder="مثال: كوشات"
                   className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                <datalist id="gallery-category-options">{sections.map(section => <option key={section.value} value={section.label} />)}</datalist>
+                <p className="mt-1 text-[11px] text-muted-foreground">اختر قسماً موجوداً أو اكتب اسماً جديداً.</p>
               </div>
             </div>
             <Button type="submit" disabled={!form.mediaUrl || create.isPending} className="w-full">
