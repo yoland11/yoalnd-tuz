@@ -87,7 +87,7 @@ export default function Invoice() {
   async function downloadPdf() {
     if (!sheetRef.current || !data) return;
     setDownloading(true);
-    try { await downloadElementPdf(sheetRef.current, `ajn-event-invoice-${data.trackingCode ?? data.id}.pdf`, { format: [216, 303], margin: 0, scale: 3.125, pagebreakMode: ["css", "legacy"] }); }
+    try { await downloadElementPdf(sheetRef.current, `ajn-event-invoice-${data.trackingCode ?? data.id}.pdf`, { format: [216, 303], margin: 0, scale: 3.125, pagebreakMode: ["css", "legacy"] }); toast.success("تم حفظ ملف PDF كاملاً"); }
     catch (cause) { toast.error(cause instanceof Error ? cause.message : "تعذر إنشاء ملف PDF"); }
     finally { setDownloading(false); }
   }

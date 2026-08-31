@@ -6,6 +6,26 @@ type Html2PdfWorker = {
   save: () => Promise<void>;
 };
 
+async function waitForPdfAssets(element: HTMLElement) {
+  const images = Array.from(element.querySelectorAll<HTMLImageElement>("img"));
+  const waitForImage = (image: HTMLImageElement) => {
+    if (image.complete) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = () => resolve();
+      image.addEventListener("load", done, { once: true });
+      image.addEventListener("error", done, { once: true });
+    });
+  };
+
+  const fontsReady = document.fonts?.ready?.catch(() => undefined) ?? Promise.resolve();
+  const assetsReady = Promise.all([fontsReady, ...images.map(waitForImage)]).then(() => undefined);
+  const timeout = new Promise<void>((resolve) => window.setTimeout(resolve, 20_000));
+  await Promise.race([assetsReady, timeout]);
+
+  // Let the final font/image layout settle before cloning the A4 surface.
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+}
+
 function preparePdfClone(doc: Document) {
   const style = doc.createElement("style");
   style.textContent = `
@@ -78,7 +98,7 @@ function createPdfSnapshot(element: HTMLElement) {
   wrapper.style.position = "fixed";
   wrapper.style.top = "0";
   wrapper.style.left = "-100000px";
-  wrapper.style.width = `${Math.max(element.scrollWidth, element.offsetWidth, 1)}px`;
+  wrapper.style.width = `${Math.max(element.offsetWidth, 1)}px`;
   wrapper.style.backgroundColor = "#ffffff";
   wrapper.style.pointerEvents = "none";
   wrapper.style.zIndex = "-1";
@@ -132,6 +152,8 @@ export async function downloadElementPdf(
     throw new Error("العنصر غير جاهز للتصدير");
   }
 
+  await waitForPdfAssets(element);
+
   const mod = await import("html2pdf.js");
   const factory = ((mod as any).default ?? mod) as () => Html2PdfWorker;
   if (typeof factory !== "function") {
@@ -148,9 +170,12 @@ export async function downloadElementPdf(
         html2canvas: {
           scale: options?.scale ?? Math.min(2, window.devicePixelRatio || 1.5),
           useCORS: true,
-          allowTaint: true,
+          // A tainted canvas cannot be saved as a PDF. Cross-origin images are
+          // loaded only when they expose CORS headers, preserving the rest of
+          // the invoice instead of making the whole download fail.
+          allowTaint: false,
           backgroundColor: "#ffffff",
-          imageTimeout: 15000,
+          imageTimeout: 20_000,
           onclone: preparePdfClone,
         },
         jsPDF: { unit: "mm", format: options?.format ?? "a4", orientation: options?.orientation ?? "portrait" },
