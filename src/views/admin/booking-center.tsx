@@ -424,6 +424,24 @@ function BookingDashboard() {
     queryClient.invalidateQueries({ queryKey: ["admin", "service-orders"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
   };
+  const openCreateBooking = () => {
+    setShowCreate(true);
+    window.requestAnimationFrame(() =>
+      document.getElementById("booking-create-form")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      }),
+    );
+  };
+  const showServiceBookings = (service: ServiceKey) => {
+    setServiceFilter(service);
+    window.requestAnimationFrame(() =>
+      document.getElementById("booking-list")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      }),
+    );
+  };
 
   return (
     <div className="ajn-booking-center" dir="rtl">
@@ -435,7 +453,14 @@ function BookingDashboard() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" asChild><Link href="/admin/calendar"><CalendarDays className="h-4 w-4" /> التقويم</Link></Button>
-          <Button className="ajn-rose-button" onClick={() => setShowCreate((value) => !value)}><Plus className="h-4 w-4" /> حجز موحّد جديد</Button>
+          <Button
+            className="ajn-rose-button"
+            onClick={openCreateBooking}
+            aria-controls="booking-create-form"
+            aria-expanded={showCreate}
+          >
+            <Plus className="h-4 w-4" /> حجز موحّد جديد
+          </Button>
         </div>
       </header>
 
@@ -467,7 +492,7 @@ function BookingDashboard() {
               </button>
               <div className="ajn-service-stats"><span>معلق <b>{card.pending}</b></span><span>جاري <b>{card.inProgress}</b></span><span>مكتمل <b>{card.completed}</b></span></div>
               <div className="ajn-service-revenue"><small>إيراد الشهر</small><Money value={card.revenue} /></div>
-              <Button variant="ghost" size="sm" onClick={() => setServiceFilter(card.key)}>فتح <ChevronLeft className="h-4 w-4" /></Button>
+              <Button variant="ghost" size="sm" onClick={() => showServiceBookings(card.key)}>فتح <ChevronLeft className="h-4 w-4" /></Button>
             </article>
           );
         })}
@@ -476,13 +501,20 @@ function BookingDashboard() {
         </article>
       </section>
 
-      <section className="ajn-booking-list-panel">
+      <section id="booking-list" className="ajn-booking-list-panel" tabIndex={-1}>
         <div className="ajn-section-heading">
           <div><span>العمل الجاري</span><h2>{serviceFilter === "all" ? "كل الحجوزات" : SERVICE_META.find((item) => item.key === serviceFilter)?.label}</h2></div>
           <div className="relative w-full sm:w-80"><Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} className="pr-10" placeholder="رقم الحجز، العميل، الهاتف أو القاعة" /></div>
         </div>
         {centralBookingsQuery.isLoading ? (
           <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-48 rounded-xl" />)}</div>
+        ) : centralBookingsQuery.isError ? (
+          <div className="ajn-empty" role="alert">
+            <AlertTriangle />
+            <h3>تعذر تحميل الحجوزات</h3>
+            <p>تعذر الاتصال بسجل الحجوزات. لم يتم استبدال الخطأ بحالة «لا توجد حجوزات».</p>
+            <Button type="button" variant="outline" onClick={() => centralBookingsQuery.refetch()}>إعادة المحاولة</Button>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="ajn-empty"><CalendarDays /><h3>لا توجد حجوزات مطابقة</h3><p>غيّر البحث أو أنشئ أول حجز موحّد لهذه الخدمة.</p></div>
         ) : (
@@ -513,7 +545,20 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
       <div className="ajn-preview-progress"><span><i style={{ width: `${readiness}%` }} /></span><small>الجاهزية {readiness}%</small></div>
       <div className="ajn-preview-finance"><div><small>الإجمالي</small><Money value={booking.total} /></div><div><small>المتبقي</small><Money value={booking.remaining} className={booking.remaining > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600"} /></div></div>
       {booking.assignedStaff?.length ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Users className="h-3.5 w-3.5 text-primary" /><span className="truncate">{booking.assignedStaff.map((staff) => staff.name).join("، ")}</span></div> : null}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3"><span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{booking.hall || "الموقع غير محدد"}</span></span><div className="flex items-center gap-1"><Button size="sm" variant="outline" asChild><Link href={editHref}><Pencil className="h-3.5 w-3.5" /> تعديل الحجز</Link></Button><Button size="sm" variant="outline" asChild><Link href={pdfHref}><FileDown className="h-3.5 w-3.5" /> حفظ PDF</Link></Button><Button size="sm" variant="ghost" asChild><Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link></Button></div></div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
+        <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{booking.hall || "الموقع غير محدد"}</span></span>
+        <div className="flex flex-wrap items-center justify-end gap-1">
+          <Button size="sm" variant="outline" asChild>
+            <Link href={editHref} aria-label={`تعديل الحجز ${booking.number || booking.customerName}`}><Pencil className="h-3.5 w-3.5" /> تعديل الحجز</Link>
+          </Button>
+          <Button size="sm" variant="outline" asChild>
+            <Link href={pdfHref} target="_blank" rel="noopener noreferrer" aria-label={`حفظ PDF للحجز ${booking.number || booking.customerName}`}><FileDown className="h-3.5 w-3.5" /> حفظ PDF</Link>
+          </Button>
+          <Button size="sm" variant="ghost" asChild>
+            <Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`} aria-label={`فتح مساحة عمل الحجز ${booking.number || booking.customerName}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link>
+          </Button>
+        </div>
+      </div>
     </article>
   );
 }
@@ -720,7 +765,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   const toggle = (type: ServiceKey) => setSelected((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type]);
   const photographySelected = selected.includes("photography");
   return (
-    <section className="ajn-unified-form">
+    <section id="booking-create-form" className="ajn-unified-form" tabIndex={-1}>
       <div className="ajn-section-heading"><div><span>إدخال سريع</span><h2>إنشاء حجز متعدد الخدمات</h2><p>لن تُنشأ فاتورة أو حركة صندوق حتى تنفيذ الإجراء من وحدته المالية الحالية.</p></div><Button variant="ghost" onClick={onCancel}>إغلاق</Button></div>
       <div className="grid gap-4 p-5 lg:grid-cols-[1.15fr_.85fr]">
         <div className="space-y-4">
@@ -784,8 +829,10 @@ function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: num
   const [editing, setEditing] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("edit") === "1");
   const serviceOrdersQuery = useQuery({ queryKey: ["admin", "booking-workspace", "service-orders"], queryFn: () => adminFetch<ServiceOrder[]>("/admin/service-orders?limit=250"), enabled: source === "service" });
   const koshaQuery = useQuery({ queryKey: ["admin", "booking-workspace", "kosha"], queryFn: () => adminFetch<KoshaBooking[]>("/admin/kosha-bookings?search=&status="), enabled: source === "kosha" });
+  const activeQuery = source === "service" ? serviceOrdersQuery : koshaQuery;
   const data = useMemo(() => unify(serviceOrdersQuery.data ?? [], koshaQuery.data ?? []).find((booking) => booking.source === source && booking.id === id), [source, id, serviceOrdersQuery.data, koshaQuery.data]);
-  if (serviceOrdersQuery.isLoading || koshaQuery.isLoading) return <div className="space-y-4"><Skeleton className="h-44 rounded-2xl" /><Skeleton className="h-[520px] rounded-2xl" /></div>;
+  if (activeQuery.isLoading) return <div className="space-y-4"><Skeleton className="h-44 rounded-2xl" /><Skeleton className="h-[520px] rounded-2xl" /></div>;
+  if (activeQuery.isError) return <div className="ajn-empty" role="alert"><AlertTriangle /><h2>تعذر فتح الحجز</h2><p>حدث خطأ أثناء تحميل بيانات الحجز. لم يتم اعتبار هذا الخطأ حجزاً غير موجود.</p><div className="flex flex-wrap justify-center gap-2"><Button type="button" variant="outline" onClick={() => activeQuery.refetch()}>إعادة المحاولة</Button><Button asChild><Link href="/admin/bookings">العودة إلى مركز الحجوزات</Link></Button></div></div>;
   if (!data) return <div className="ajn-empty"><AlertTriangle /><h2>الحجز غير موجود</h2><p>قد يكون مؤرشفاً أو لم تعد لديك صلاحية عرضه.</p><Button asChild><Link href="/admin/bookings">العودة إلى مركز الحجوزات</Link></Button></div>;
   const closeEditor = () => {
     setEditing(false);
