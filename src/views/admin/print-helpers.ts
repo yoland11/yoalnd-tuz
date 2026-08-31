@@ -210,6 +210,39 @@ export type SalesInvoiceReceiptInput = {
   showAddress?: boolean;
 };
 
+export type PurchaseInvoiceStatementInput = {
+  invoiceNo: string;
+  issuedAt?: string | null;
+  supplierName?: string | null;
+  supplierPhone?: string | null;
+  paymentMethod?: string | null;
+  paymentStatus?: string | null;
+  employeeName?: string | null;
+  items: Array<{
+    productName: string;
+    quantity: number | string;
+    unitPrice: number | string;
+    total: number | string;
+  }>;
+  total: number | string;
+  paid: number | string;
+  remaining: number | string;
+  supplierOutstanding?: number | string | null;
+  notes?: string | null;
+  payments?: Array<{
+    date?: string | null;
+    amount: number | string;
+    paymentMethod?: string | null;
+    employeeName?: string | null;
+    notes?: string | null;
+    status?: string | null;
+  }>;
+  logoUrl?: string | null;
+  companyName?: string | null;
+  companyPhone?: string | null;
+  companyAddress?: string | null;
+};
+
 /** Escapes dynamic invoice content before it is written to a print-window HTML document. */
 function escapePrintHtml(value: unknown) {
   return String(value ?? "").replace(
@@ -482,6 +515,110 @@ export function openSalesInvoicePrintWindow(
   popup.document.write(
     `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.invoiceNo)}</title><style>${css}</style></head><body>${body}${printWhenImagesReadyScript()}</body></html>`,
   );
+  popup.document.close();
+}
+
+function purchasePaymentMethodLabel(value?: string | null) {
+  return (
+    {
+      cash: "نقداً",
+      card: "بطاقة",
+      transfer: "تحويل",
+      pos: "نقطة بيع",
+      other: "أخرى",
+      credit: "آجل",
+    } as Record<string, string>
+  )[String(value ?? "").toLowerCase()] ?? String(value ?? "—");
+}
+
+function purchasePaymentStatusLabel(value?: string | null) {
+  return (
+    {
+      paid: "مدفوع بالكامل",
+      partial: "مدفوع جزئياً",
+      unpaid: "غير مدفوع",
+      pending: "بانتظار الموافقة",
+      approved: "معتمدة بانتظار التنفيذ",
+      executed: "منفذة",
+      rejected: "مرفوضة",
+      reversed: "معكوسة",
+    } as Record<string, string>
+  )[String(value ?? "").toLowerCase()] ?? String(value ?? "غير مدفوع");
+}
+
+/**
+ * Shared A4 purchase invoice statement used by both the browser printer and
+ * the PDF exporter. Keeping the markup here prevents the purchase register
+ * and supplier payment history from drifting into separate print designs.
+ */
+function purchaseInvoiceStatementMarkup(input: PurchaseInvoiceStatementInput) {
+  const esc = escapePrintHtml;
+  const company = input.companyName?.trim() || "مجموعة علي جان نهاد";
+  const invoiceDate = input.issuedAt
+    ? new Intl.DateTimeFormat("en-CA", { dateStyle: "medium" }).format(
+        new Date(input.issuedAt),
+      )
+    : "—";
+  const items = input.items.length
+    ? input.items
+        .map(
+          (item, index) =>
+            `<tr><td class="num">${index + 1}</td><td>${esc(item.productName)}</td><td class="num">${esc(item.quantity)}</td><td class="num">${esc(formatCurrency(item.unitPrice))}</td><td class="num">${esc(formatCurrency(item.total))}</td></tr>`,
+        )
+        .join("")
+    : '<tr><td colspan="5" class="empty">لا توجد أصناف مسجلة</td></tr>';
+  const payments = input.payments?.length
+    ? input.payments
+        .map(
+          (payment, index) =>
+            `<tr><td class="num">${index + 1}</td><td class="num">${esc(payment.date || "—")}</td><td class="num">${esc(formatCurrency(payment.amount))}</td><td>${esc(purchasePaymentMethodLabel(payment.paymentMethod))}</td><td>الصندوق الرئيسي</td><td>${esc(payment.employeeName || "—")}</td><td>${esc(payment.notes || "—")}</td><td>${esc(purchasePaymentStatusLabel(payment.status))}</td></tr>`,
+        )
+        .join("")
+    : '<tr><td colspan="8" class="empty">لا توجد دفعات مسجلة</td></tr>';
+  const supplierBalance = Number(input.supplierOutstanding ?? 0);
+
+  return `<main class="report-sheet purchase-invoice-sheet">
+    <header class="report-head"><div>${input.logoUrl ? `<img class="report-logo" src="${esc(input.logoUrl)}" alt="" onerror="this.remove()">` : ""}<div class="report-company">${esc(company)}</div><div class="report-meta">فاتورة مشتريات / كشف سداد مورد</div></div><div class="report-meta"><div><b>رقم الفاتورة:</b> <span class="num">${esc(input.invoiceNo)}</span></div><div><b>التاريخ:</b> <span class="num">${esc(invoiceDate)}</span></div></div></header>
+    <section class="report-summary"><div class="report-stat"><span>المورد</span><strong>${esc(input.supplierName || "—")}</strong></div><div class="report-stat"><span>حالة الدفع</span><strong>${esc(purchasePaymentStatusLabel(input.paymentStatus))}</strong></div><div class="report-stat"><span>إجمالي الفاتورة</span><strong class="num">${esc(formatCurrency(input.total))}</strong></div><div class="report-stat"><span>رصيد المورد المستحق</span><strong class="num">${esc(formatCurrency(supplierBalance))}</strong></div></section>
+    <section class="purchase-totals"><div><span>إجمالي المدفوع</span><b class="num">${esc(formatCurrency(input.paid))}</b></div><div><span>المبلغ المتبقي</span><b class="num">${esc(formatCurrency(input.remaining))}</b></div></section>
+    <section><h2>أصناف فاتورة الشراء</h2><table class="report-table"><thead><tr><th>#</th><th>الصنف</th><th>الكمية</th><th>سعر الشراء</th><th>الإجمالي</th></tr></thead><tbody>${items}</tbody></table></section>
+    <section><h2>سجل الدفعات</h2><table class="report-table"><thead><tr><th>#</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>الصندوق</th><th>الموظف</th><th>الملاحظة</th><th>الحالة</th></tr></thead><tbody>${payments}</tbody></table></section>
+    ${input.notes ? `<section class="purchase-notes"><h2>ملاحظات</h2><p>${esc(input.notes)}</p></section>` : ""}
+    <footer class="report-footer">تمت الطباعة في ${esc(new Intl.DateTimeFormat("en-CA", { dateStyle: "medium", timeStyle: "short" }).format(new Date()))}${input.companyPhone ? ` · ${esc(input.companyPhone)}` : ""}${input.companyAddress ? ` · ${esc(input.companyAddress)}` : ""}</footer>
+  </main>`;
+}
+
+function purchaseInvoiceStatementCss() {
+  return `${sheetReportCss("a4")}
+    .purchase-invoice-sheet h2 { margin: 16px 0 7px; font-size: 14px; }
+    .purchase-invoice-sheet .num { direction: ltr; unicode-bidi: embed; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .purchase-invoice-sheet .purchase-totals { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; margin:12px 0; }
+    .purchase-invoice-sheet .purchase-totals > div { border:2px solid #000; padding:8px; display:flex; justify-content:space-between; gap:12px; font-weight:800; }
+    .purchase-invoice-sheet .purchase-totals b { font-size:15px; }
+    .purchase-invoice-sheet .empty { text-align:center; padding:12px; color:#000; }
+    .purchase-invoice-sheet .purchase-notes { border:1px solid #000; padding:8px; margin-top:12px; }
+    .purchase-invoice-sheet .purchase-notes h2 { margin-top:0; }
+  `;
+}
+
+export function createPurchaseInvoicePrintElement(
+  input: PurchaseInvoiceStatementInput,
+): HTMLDivElement {
+  const wrapper = document.createElement("div");
+  wrapper.dir = "rtl";
+  wrapper.style.width = "794px";
+  wrapper.style.background = "#fff";
+  wrapper.innerHTML = `<style>${purchaseInvoiceStatementCss()}</style>${purchaseInvoiceStatementMarkup(input)}`;
+  return wrapper;
+}
+
+export function openPurchaseInvoicePrintWindow(
+  input: PurchaseInvoiceStatementInput,
+) {
+  const popup = window.open("", "_blank", "noopener,noreferrer,width=980,height=860");
+  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  popup.document.open();
+  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${escapePrintHtml(input.invoiceNo)}</title><style>${purchaseInvoiceStatementCss()}</style></head><body>${purchaseInvoiceStatementMarkup(input)}${printWhenImagesReadyScript()}</body></html>`);
   popup.document.close();
 }
 

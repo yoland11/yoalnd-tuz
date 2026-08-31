@@ -17,8 +17,8 @@ import {
   Pencil,
   Printer,
   ScanLine,
-  Eye,
   Wallet,
+  FileDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,6 +41,12 @@ import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
 import { usePublicSettings } from "@/lib/public-settings";
+import { downloadElementPdf } from "@/lib/pdf";
+import {
+  createPurchaseInvoicePrintElement,
+  openPurchaseInvoicePrintWindow,
+  type PurchaseInvoiceStatementInput,
+} from "./print-helpers";
 import {
   InvoicePaymentStatusBadge,
   InvoiceRegisterSummaryCards,
@@ -296,7 +302,10 @@ export default function PurchasesPage() {
   );
   // Cash is a method, not proof that the supplier was paid in full. The
   // entered amount becomes a pending financial approval and may be partial.
-  const paidAmt = Math.max(0, parseFloat(form.paidAmount || "0") || 0);
+  const paidAmt = Math.min(
+    grandTotal,
+    Math.max(0, parseFloat(form.paidAmount || "0") || 0),
+  );
   const remaining = +(grandTotal - paidAmt).toFixed(2);
   const autoStatus =
     paidAmt >= grandTotal ? "paid" : paidAmt > 0 ? "partial" : "unpaid";
@@ -566,6 +575,23 @@ export default function PurchasesPage() {
     }
   }
 
+  async function downloadInvoicePdf(inv: PurchaseInvoice) {
+    try {
+      const full = await adminFetch<PurchaseInvoiceDetails>(
+        `/admin/purchase-invoices/${inv.id}`,
+      );
+      await downloadPurchaseInvoicePdf(full, settings);
+      toast({ title: "تم حفظ فاتورة المشتريات بصيغة PDF" });
+    } catch (error) {
+      toast({
+        title: "تعذر إنشاء ملف PDF",
+        description:
+          error instanceof Error ? error.message : "تعذر تجهيز الفاتورة",
+        variant: "destructive",
+      });
+    }
+  }
+
   async function deleteInvoice(inv: PurchaseInvoice) {
     if (
       !confirm(
@@ -642,6 +668,7 @@ export default function PurchasesPage() {
         onDetails={setPaymentDetailsInvoice}
         onEdit={editInvoice}
         onPrint={printInvoice}
+        onPdf={downloadInvoicePdf}
         onDelete={deleteInvoice}
       />
       <PurchaseInvoicePaymentDialog
@@ -652,6 +679,7 @@ export default function PurchasesPage() {
           queryClient.invalidateQueries({ queryKey: ["admin", "suppliers"] });
           queryClient.invalidateQueries({ queryKey: ["admin", "suppliers", "dashboard"] });
         }}
+        settings={settings}
       />
       </>
     );
@@ -1050,11 +1078,17 @@ export default function PurchasesPage() {
 
           {/* Payment */}
           <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">
-            <h3 className="font-semibold text-sm">الدفع</h3>
+            <div>
+              <h3 className="font-semibold text-sm">ملخص الدفع الأولي</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                تُسجَّل الدفعة للموافقة المالية أولاً، ولا يتغيّر رصيد الصندوق أو المورد قبل التنفيذ.
+              </p>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               {PAYMENT_METHODS.map((m) => (
                 <button
                   key={m.value}
+                  type="button"
                   onClick={() =>
                     setForm((f) => ({
                       ...f,
@@ -1073,15 +1107,22 @@ export default function PurchasesPage() {
             </div>
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">
-                المبلغ المدفوع
+                الدفعة الأولى
               </label>
               <input
                 type="number"
                 min="0"
                 value={form.paidAmount}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, paidAmount: e.target.value }))
-                }
+                onChange={(e) => {
+                  const nextAmount = Math.min(
+                    grandTotal,
+                    Math.max(0, Number(e.target.value) || 0),
+                  );
+                  setForm((f) => ({
+                    ...f,
+                    paidAmount: String(nextAmount),
+                  }));
+                }}
                 max={grandTotal}
                 placeholder="0"
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -1089,16 +1130,20 @@ export default function PurchasesPage() {
               />
             </div>
             {grandTotal > 0 && (
-              <div
-                className={`flex justify-between text-sm font-medium ${remaining > 0 ? "text-status-danger" : "text-status-success"}`}
-              >
-                <span>{remaining > 0 ? "المتبقي" : "الباقي"}</span>
-                <span>
-                  {formatCurrency(Math.abs(remaining))}
-                  {remaining < 0 ? " (زيادة)" : ""}
-                </span>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded-lg bg-muted/50 p-2.5">
+                  <span className="block text-xs text-muted-foreground">إجمالي الفاتورة</span>
+                  <strong>{formatCurrency(grandTotal)}</strong>
+                </div>
+                <div className="rounded-lg bg-amber-50/70 p-2.5 text-status-danger dark:bg-amber-950/20">
+                  <span className="block text-xs text-muted-foreground">المتبقي على المورد</span>
+                  <strong>{formatCurrency(remaining)}</strong>
+                </div>
               </div>
             )}
+            <p className="text-xs leading-5 text-muted-foreground">
+              بعد الحفظ، افتح سجل المشتريات واختر «تسجيل دفعة» لإضافة دفعات جديدة ومراجعة سجل السداد.
+            </p>
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">
                 ملاحظات
@@ -1277,6 +1322,9 @@ type PurchaseInvoiceDetails = PurchaseInvoice & {
     paymentStatus: string;
     percentage: number;
   };
+  supplierAccountSummary?: {
+    outstandingBalance: number;
+  };
 };
 
 const paymentMethodLabel: Record<string, string> = {
@@ -1306,7 +1354,7 @@ function escapePurchasePrint(value: unknown) {
     .replace(/'/g, "&#039;");
 }
 
-function printPurchaseInvoiceStatement(invoice: PurchaseInvoiceDetails, settings: any) {
+function legacyPurchaseInvoiceStatementPrint(invoice: PurchaseInvoiceDetails, settings: any) {
   const popup = window.open("", "_blank", "noopener,noreferrer,width=920,height=900");
   if (!popup) throw new Error("يرجى السماح بالنوافذ المنبثقة للطباعة");
   const summary = invoice.paymentSummary ?? {
@@ -1340,6 +1388,78 @@ function printPurchaseInvoiceStatement(invoice: PurchaseInvoiceDetails, settings
   window.setTimeout(() => popup.print(), 250);
 }
 
+function purchaseInvoicePrintInput(
+  invoice: PurchaseInvoiceDetails,
+  settings: any,
+): PurchaseInvoiceStatementInput {
+  const summary = invoice.paymentSummary ?? {
+    total: Number(invoice.total ?? 0),
+    paidAmount: Number(invoice.paidAmount ?? 0),
+    remainingAmount: Number(invoice.remainingAmount ?? 0),
+    paymentStatus: invoice.paymentStatus ?? "unpaid",
+  };
+  return {
+    invoiceNo: invoice.invoiceNo,
+    issuedAt: invoice.date,
+    supplierName: invoice.supplierName,
+    paymentMethod: invoice.paymentMethod,
+    paymentStatus: summary.paymentStatus,
+    employeeName: invoice.createdByName,
+    items: Array.isArray((invoice as any).items)
+      ? (invoice as any).items.map((item: any) => ({
+          productName: item.productName || item.name || "—",
+          quantity: item.quantity ?? 0,
+          unitPrice: item.costPrice ?? item.unitPrice ?? 0,
+          total: item.total ?? 0,
+        }))
+      : [],
+    total: summary.total,
+    paid: summary.paidAmount,
+    remaining: summary.remainingAmount,
+    supplierOutstanding: invoice.supplierAccountSummary?.outstandingBalance ?? 0,
+    notes: invoice.notes,
+    payments: (invoice.payments ?? []).map((payment) => ({
+      date: payment.executedAt || payment.transactionDate,
+      amount: payment.amount,
+      paymentMethod: payment.paymentMethod,
+      employeeName: payment.executedByName || payment.requestedByName,
+      notes: payment.notes,
+      status: payment.approvalStatus,
+    })),
+    companyName: settings?.site_name || settings?.siteName,
+    companyPhone: settings?.phone || settings?.site_phone,
+    companyAddress: settings?.address || settings?.site_address,
+    logoUrl: settings?.logo_url || settings?.logoUrl,
+  };
+}
+
+function printPurchaseInvoiceStatement(
+  invoice: PurchaseInvoiceDetails,
+  settings: any,
+) {
+  openPurchaseInvoicePrintWindow(purchaseInvoicePrintInput(invoice, settings));
+}
+
+async function downloadPurchaseInvoicePdf(
+  invoice: PurchaseInvoiceDetails,
+  settings: any,
+) {
+  const element = createPurchaseInvoicePrintElement(
+    purchaseInvoicePrintInput(invoice, settings),
+  );
+  document.body.appendChild(element);
+  try {
+    await downloadElementPdf(element, `purchase-invoice-${invoice.invoiceNo}.pdf`, {
+      format: "a4",
+      margin: 8,
+      scale: 2,
+      pagebreakMode: ["css", "legacy"],
+    });
+  } finally {
+    element.remove();
+  }
+}
+
 function invoicePaymentLabel(status: string) {
   return status === "paid" ? "مدفوع بالكامل" : status === "partial" ? "مدفوع جزئياً" : "غير مدفوع";
 }
@@ -1348,10 +1468,12 @@ function PurchaseInvoicePaymentDialog({
   invoice,
   onClose,
   onChanged,
+  settings,
 }: {
   invoice: PurchaseInvoice | null;
   onClose: () => void;
   onChanged: () => void;
+  settings?: any;
 }) {
   const { toast } = useToast();
   const [amount, setAmount] = useState("");
@@ -1360,6 +1482,7 @@ function PurchaseInvoicePaymentDialog({
   const [referenceNo, setReferenceNo] = useState("");
   const [notes, setNotes] = useState("");
   const [attachmentUrl, setAttachmentUrl] = useState("");
+  const [exportingPdf, setExportingPdf] = useState(false);
   const detailsQuery = useQuery<PurchaseInvoiceDetails>({
     queryKey: ["admin", "purchase-invoice-details", invoice?.id],
     queryFn: () => adminFetch(`/admin/purchase-invoices/${invoice!.id}`),
@@ -1412,12 +1535,48 @@ function PurchaseInvoicePaymentDialog({
   };
   const history = details?.payments ?? [];
   const canSubmit = enteredAmount > 0 && enteredAmount <= summary.remainingAmount;
+  const printCurrentInvoice = () => {
+    if (!details) return;
+    try {
+      printPurchaseInvoiceStatement(details, settings);
+    } catch (error) {
+      toast({
+        title: "تعذر فتح نافذة الطباعة",
+        description: error instanceof Error ? error.message : "تعذر تجهيز الفاتورة",
+        variant: "destructive",
+      });
+    }
+  };
+  const exportCurrentInvoicePdf = async () => {
+    if (!details || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      await downloadPurchaseInvoicePdf(details, settings);
+      toast({ title: "تم حفظ فاتورة المشتريات بصيغة PDF" });
+    } catch (error) {
+      toast({
+        title: "تعذر إنشاء ملف PDF",
+        description: error instanceof Error ? error.message : "تعذر تجهيز الفاتورة",
+        variant: "destructive",
+      });
+    } finally {
+      setExportingPdf(false);
+    }
+  };
   return <Dialog open={Boolean(invoice)} onOpenChange={(open) => !open && close()}>
     <DialogContent dir="rtl" className="max-h-[92vh] max-w-5xl overflow-y-auto">
       <DialogHeader>
         <DialogTitle>تفاصيل فاتورة الشراء والدفع</DialogTitle>
       </DialogHeader>
       {detailsQuery.isLoading ? <p className="py-10 text-center text-muted-foreground">جارٍ تحميل تفاصيل الفاتورة...</p> : details ? <div className="space-y-5">
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={printCurrentInvoice}>
+            <Printer className="h-4 w-4" />طباعة الفاتورة
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => void exportCurrentInvoicePdf()} disabled={exportingPdf}>
+            <FileDown className="h-4 w-4" />{exportingPdf ? "جارٍ إنشاء PDF..." : "حفظ PDF"}
+          </Button>
+        </div>
         <div className="grid gap-3 rounded-xl border bg-muted/20 p-4 sm:grid-cols-3">
           <div><p className="text-xs text-muted-foreground">رقم الفاتورة</p><b>{details.invoiceNo}</b></div>
           <div><p className="text-xs text-muted-foreground">المورد</p><b>{details.supplierName || "—"}</b></div>
@@ -1425,11 +1584,12 @@ function PurchaseInvoicePaymentDialog({
         </div>
         <section className="rounded-xl border bg-card p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">ملخص حالة الدفع</h3><InvoicePaymentStatusBadge status={summary.paymentStatus} /></div>
-          <div className="grid gap-3 sm:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <PaymentMetric title="إجمالي الفاتورة" value={formatCurrency(summary.total)} />
             <PaymentMetric title="إجمالي المدفوع" value={formatCurrency(summary.paidAmount)} />
             <PaymentMetric title="المبلغ المتبقي" value={formatCurrency(summary.remainingAmount)} emphasis />
             <PaymentMetric title="نسبة السداد" value={`${summary.percentage || (summary.total ? Math.round((summary.paidAmount / summary.total) * 100) : 0)}%`} />
+            <PaymentMetric title="المتبقي للمورد" value={formatCurrency(details.supplierAccountSummary?.outstandingBalance ?? 0)} emphasis />
           </div>
           <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, Math.max(0, summary.percentage || (summary.total ? (summary.paidAmount / summary.total) * 100 : 0)))}%` }} /></div>
         </section>
@@ -1447,7 +1607,7 @@ function PurchaseInvoicePaymentDialog({
             <label className="grid gap-1 text-sm sm:col-span-2 lg:col-span-3"><span>ملاحظة</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} className="min-h-20 rounded-lg border bg-background p-3" /></label>
           </div>
           <p className="mt-2 text-xs text-muted-foreground">يُسجل وقت التنفيذ الفعلي تلقائياً عند اعتماد الدفعة. لا يتغير رصيد المورد أو الصندوق قبل الاعتماد والتنفيذ.</p>
-          <div className="mt-3 flex justify-end"><Button onClick={() => submitPayment.mutate()} disabled={!canSubmit || submitPayment.isPending || summary.remainingAmount <= 0}>{submitPayment.isPending ? "جارٍ الإرسال..." : "تأكيد الدفع"}</Button></div>
+          <div className="mt-3 flex justify-end"><Button onClick={() => submitPayment.mutate()} disabled={!canSubmit || submitPayment.isPending || summary.remainingAmount <= 0}>{submitPayment.isPending ? "جارٍ الإرسال..." : "تسجيل دفعة جديدة"}</Button></div>
         </section>
         <section className="rounded-xl border bg-card p-4">
           <h3 className="mb-3 font-semibold">سجل الدفعات</h3>
@@ -1491,6 +1651,7 @@ function PurchaseListView({
   onDetails,
   onEdit,
   onPrint,
+  onPdf,
   onDelete,
   loading,
   error,
@@ -1523,6 +1684,7 @@ function PurchaseListView({
   onDetails: (inv: PurchaseInvoice) => void;
   onEdit: (inv: PurchaseInvoice) => void;
   onPrint: (inv: PurchaseInvoice) => void;
+  onPdf: (inv: PurchaseInvoice) => void;
   onDelete: (inv: PurchaseInvoice) => void;
   loading: boolean;
   error: unknown;
@@ -1771,13 +1933,14 @@ function PurchaseListView({
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-center gap-1">
                         <Button
-                          variant="ghost"
+                          variant="outline"
                           size="sm"
                           onClick={() => onDetails(inv)}
                           title="تفاصيل وسداد"
                           className="text-primary"
                         >
-                          <Eye className="w-4 h-4" />
+                          <Wallet className="w-4 h-4" />
+                          تسجيل دفعة
                         </Button>
                         <Button
                           variant="ghost"
@@ -1786,6 +1949,14 @@ function PurchaseListView({
                           title="طباعة"
                         >
                           <Printer className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onPdf(inv)}
+                          title="حفظ PDF"
+                        >
+                          <FileDown className="w-4 h-4" />
                         </Button>
                         {inv.status === "active" ? (
                           <Button

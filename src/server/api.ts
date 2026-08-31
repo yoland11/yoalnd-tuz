@@ -53216,6 +53216,63 @@ async function handlePurchaseInvoices(
     const paidAmount = Math.min(total, executedPaidAmount);
     const remainingAmount = Math.max(0, total - paidAmount);
     const paymentStatus = paidAmount <= 0 ? "unpaid" : remainingAmount <= 0 ? "paid" : "partial";
+    // Supplier debt is derived from executed financial history rather than
+    // persisted paid/remaining snapshots. Pending, rejected, and reversed
+    // requests are deliberately excluded from the supplier balance.
+    const supplierInvoices = inv.supplierId
+      ? await db
+          .select({ id: purchaseInvoicesTable.id, total: purchaseInvoicesTable.total })
+          .from(purchaseInvoicesTable)
+          .where(
+            and(
+              eq(purchaseInvoicesTable.supplierId, inv.supplierId),
+              eq(purchaseInvoicesTable.status, "active"),
+            ),
+          )
+      : [];
+    const supplierInvoiceIds = supplierInvoices.map((supplierInvoice) =>
+      String(supplierInvoice.id),
+    );
+    const supplierPayments = supplierInvoiceIds.length
+      ? await db
+          .select({
+            sourceId: financialTransactionsTable.sourceId,
+            amount: financialTransactionsTable.amount,
+            direction: financialTransactionsTable.direction,
+            approvalStatus: financialTransactionsTable.approvalStatus,
+          })
+          .from(financialTransactionsTable)
+          .where(
+            and(
+              eq(financialTransactionsTable.sourceType, "purchase_invoice"),
+              inArray(financialTransactionsTable.sourceId, supplierInvoiceIds),
+            ),
+          )
+      : [];
+    const executedSupplierPayments = new Map<string, number>();
+    for (const supplierPayment of supplierPayments) {
+      if (supplierPayment.approvalStatus !== "executed") continue;
+      const effect =
+        supplierPayment.direction === "expense"
+          ? Number(supplierPayment.amount ?? 0)
+          : -Number(supplierPayment.amount ?? 0);
+      const sourceId = String(supplierPayment.sourceId ?? "");
+      executedSupplierPayments.set(
+        sourceId,
+        (executedSupplierPayments.get(sourceId) ?? 0) + effect,
+      );
+    }
+    const supplierOutstandingBalance = supplierInvoices.reduce(
+      (sum, supplierInvoice) => {
+        const invoiceTotal = Number(supplierInvoice.total ?? 0);
+        const paid = Math.min(
+          invoiceTotal,
+          Math.max(0, executedSupplierPayments.get(String(supplierInvoice.id)) ?? 0),
+        );
+        return sum + Math.max(0, invoiceTotal - paid);
+      },
+      0,
+    );
     return json({
       ...inv,
       // Do not treat the persisted snapshot as authoritative in the details UI:
@@ -53224,6 +53281,7 @@ async function handlePurchaseInvoices(
       remainingAmount: String(remainingAmount),
       paymentStatus,
       paymentSummary: { total, paidAmount, remainingAmount, paymentStatus, percentage: total > 0 ? Math.round((paidAmount / total) * 100) : 0 },
+      supplierAccountSummary: { outstandingBalance: supplierOutstandingBalance },
       payments,
       items: items.map((it: any) => ({
         ...it,
