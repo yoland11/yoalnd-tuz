@@ -24,6 +24,7 @@ import {
   Loader2,
   MapPin,
   MoreHorizontal,
+  MessageCircle,
   PackageCheck,
   PackageOpen,
   Pencil,
@@ -37,6 +38,7 @@ import {
   ShoppingBag,
   Sparkles,
   TriangleAlert,
+  Truck,
   UserRound,
   Users,
   Warehouse,
@@ -371,24 +373,32 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
   const nextWarehouse = nextStep(WAREHOUSE_STEPS, overview.data?.warehouseStage);
   const department = booking.raw?.departmentName || booking.raw?.department || booking.services[0]?.type || "تنظيم المناسبات";
   const responsibleTeam = booking.raw?.teamName || booking.raw?.assignedTeam || booking.raw?.assignedStaffName || "فريق العمليات";
+  const whatsappNumber = String(booking.phone || "").replace(/\D/g, "").replace(/^0/, "964");
+  const transportationMode = booking.source === "kosha" ? booking.raw?.transportationMode : null;
+  const transportationLabel = transportationMode === "ajn"
+    ? `النقل بواسطة AJN${Number(booking.raw?.transportationFee ?? 0) > 0 ? ` — ${formatCurrency(Number(booking.raw.transportationFee))}` : ""}`
+    : transportationMode === "customer" ? "النقل من مسؤولية الزبون" : null;
 
   return <div className="ajn-booking-operations" dir="rtl">
     <div className="ajn-op-back"><Button variant="ghost" asChild><Link href="/admin/bookings"><ChevronLeft className="h-4 w-4" /> مركز الحجوزات</Link></Button><span>مساحة تشغيل موحدة · البيانات من وحدات AJN الأصلية</span></div>
 
     <header className="ajn-op-sticky">
       <div className="ajn-op-header-main">
-        <div className="ajn-op-identity"><span className="ajn-op-mark"><Sparkles /></span><div><small className="ajn-op-page-label">تفاصيل الحجز</small><div className="ajn-op-title"><h1>{booking.number}</h1><OperationStatus value={overview.data?.bookingStage ?? booking.status} /></div><p><UserRound /> {booking.customerName} <span>·</span> {booking.phone}</p></div></div>
+        <div className="ajn-op-identity"><span className="ajn-op-mark"><Sparkles /></span><div><small className="ajn-op-page-label">تفاصيل الحجز</small><div className="ajn-op-title"><h1>تفاصيل الحجز</h1><OperationStatus value={overview.data?.bookingStage ?? booking.status} /><Badge variant="outline">{department}</Badge></div><p><b>{booking.number}</b><span>·</span><UserRound /> {booking.customerName}</p></div></div>
         <div className="ajn-op-facts">
           <span><CalendarDays /><b>{readableDate(booking.eventDate)}</b><small>{booking.eventTime || "الوقت غير محدد"}</small></span>
           <span><MapPin /><b>{booking.hall || "الموقع غير محدد"}</b><small>{booking.services.map((service) => service.type).slice(0, 2).join(" · ") || "حجز مناسبة"}</small></span>
+          {transportationLabel ? <span><Truck /><b>{transportationLabel}</b><small>خدمة النقل</small></span> : null}
           <span><Building2 /><b>{department}</b><small>القسم</small></span>
           <span><Users /><b>{responsibleTeam}</b><small>الفريق المسؤول</small></span>
           <span><CircleDollarSign /><b>{booking.paymentStatus || "غير مكتمل"}</b><small>حالة الدفع</small></span>
           <span><Warehouse /><b>{STAGE_LABELS[overview.data?.warehouseStage ?? "reserved"]}</b><small>حالة المستودع</small></span>
         </div>
-        <div className="ajn-op-header-actions">{onEdit ? <Button variant="outline" onClick={onEdit}><Pencil /> تعديل الحجز</Button> : null}<BookingBranchControl booking={booking} /><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><Button className="ajn-op-primary" asChild><Link href={paymentUrl}><Banknote /> استلام دفعة</Link></Button><Button variant="outline" asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></Button><Button variant="outline" onClick={() => window.print()}><Printer /> طباعة العقد</Button><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
+        <div className="ajn-op-header-actions">{onEdit ? <Button variant="outline" onClick={onEdit}><Pencil /> تعديل</Button> : null}<Button variant="outline" onClick={() => window.print()}><Printer /> طباعة</Button>{whatsappNumber ? <Button variant="outline" onClick={() => window.open(`https://wa.me/${whatsappNumber}`, "_blank", "noopener,noreferrer")}><MessageCircle /> إرسال</Button> : null}<Button className="ajn-op-primary" asChild><Link href={paymentUrl}><Banknote /> تسجيل دفعة</Link></Button><BookingBranchControl booking={booking} /><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
       </div>
     </header>
+
+    <BookingFinancialCards booking={booking} onFinance={() => changeTab("finance")} />
 
     <section className="ajn-op-workflows">
       <WorkflowRail title="مسار الحجز" icon={CalendarDays} steps={BOOKING_STEPS} current={overview.data?.bookingStage ?? "booked"} onStep={(stage, label) => setConfirm({ kind: "booking", stage, label })} />
@@ -419,6 +429,18 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <ConfirmAction open={Boolean(confirm)} onOpenChange={(open) => !open && setConfirm(null)} title={confirm?.kind === "booking" ? `نقل الحجز إلى «${confirm?.label}»؟` : `نقل المستودع إلى «${confirm?.label}»؟`} description={confirm?.kind === "booking" ? "سيتحقق النظام من المخزون والأصول والمهام والحالة المالية، ثم يسجل المستخدم والوقت في السجل والتايملاين." : "قد يؤدي هذا الإجراء إلى صرف المخزون أو التحقق من إرجاع الأصول حسب المرحلة المختارة."} actionLabel={confirm?.label ?? "تأكيد"} danger={confirm?.stage === "cancelled"} busy={workflow.isPending} onConfirm={() => confirm && workflow.mutate({ kind: confirm.kind, stage: confirm.stage })} />
   </div>;
+}
+
+function BookingFinancialCards({ booking, onFinance }: { booking: BookingOperationsBooking; onFinance: () => void }) {
+  const progress = booking.total > 0 ? Math.max(0, Math.min(100, Math.round((booking.paid / booking.total) * 100))) : 0;
+  const status = booking.paymentStatus || (booking.remaining <= 0 ? "مدفوع بالكامل" : booking.paid > 0 ? "مدفوع جزئياً" : "غير مدفوع");
+  const cards = [
+    ["إجمالي الحجز", money(booking.total), ReceiptText, "neutral"],
+    ["المدفوع", money(booking.paid), CheckCircle2, "positive"],
+    ["المتبقي", money(booking.remaining), Banknote, booking.remaining > 0 ? "negative" : "positive"],
+    ["تاريخ المناسبة", readableDate(booking.eventDate), CalendarDays, "neutral"],
+  ] as const;
+  return <section className="ajn-op-financial-cards" aria-label="ملخص الحجز المالي">{cards.map(([label, value, Icon, tone]) => <button type="button" key={label} className={`is-${tone}`} onClick={onFinance}><span><Icon /></span><div><small>{label}</small><strong>{value}</strong></div></button>)}<button type="button" className="ajn-op-payment-card" onClick={onFinance}><span><CircleDollarSign /></span><div><small>حالة الدفع</small><strong>{status}</strong><i><em style={{ width: `${progress}%` }} /></i></div><b>{progress}%</b></button></section>;
 }
 
 function OperationsSummary({ data, booking, onTab }: { data?: OverviewData; booking: BookingOperationsBooking; onTab: (tab: string) => void }) {
