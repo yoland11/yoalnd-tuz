@@ -1,4 +1,4 @@
-import { useDeferredValue, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -200,6 +200,32 @@ export default function PurchasesPage() {
   });
   const firstFieldRef = useRef<HTMLSelectElement>(null);
   const submitKeyRef = useRef<string | null>(null);
+
+  // Master Cash links use ?invoice=<id> so the user lands on this exact
+  // purchase invoice and its payment history, rather than a generic register.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const invoiceId = Number(new URLSearchParams(window.location.search).get("invoice"));
+    if (!Number.isInteger(invoiceId) || invoiceId <= 0) return;
+
+    let active = true;
+    setListMode(true);
+    void adminFetch<PurchaseInvoice>(`/admin/purchase-invoices/${invoiceId}`)
+      .then((invoice) => {
+        if (active) setPaymentDetailsInvoice(invoice);
+      })
+      .catch((error) => {
+        if (!active) return;
+        toast({
+          title: "تعذر فتح فاتورة المشتريات",
+          description: apiErrorMessage(error),
+          variant: "destructive",
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const { data: products = [] } = useQuery<Product[]>({
     queryKey: ["admin", "products-all"],
