@@ -12,6 +12,7 @@ import {
   salesInvoicesTable,
   companyLoansTable,
   companyLoanRepaymentsTable,
+  vehicleExpensesTable,
 } from "@workspace/db";
 import { isPaymentStateSourceType, reconcilePaymentState } from "./payment-state";
 
@@ -894,6 +895,26 @@ async function executePendingFinancialTransaction(
         await tx.execute(
           sql`UPDATE expenses SET approval_status = 'executed', updated_at = now() WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
         );
+      } else if (transaction.sourceType === "vehicle_expense") {
+        const [vehicleExpense] = await tx
+          .update(vehicleExpensesTable)
+          .set({ status: "executed", updatedAt: now })
+          .where(and(
+            eq(vehicleExpensesTable.id, sourceId),
+            eq(vehicleExpensesTable.financialTransactionId, id),
+          ))
+          .returning();
+        if (!vehicleExpense)
+          throw new Error("مصروف السيارة المرتبط بالطلب المالي غير موجود");
+        await tx.insert(financialAuditLogsTable).values({
+          transactionId: id,
+          action: "vehicle_expense_posted",
+          actorId: actor.id,
+          actorName: actor.name,
+          oldValues: { status: "pending", vehicleId: vehicleExpense.vehicleId },
+          newValues: { status: "executed", amount, vehicleId: vehicleExpense.vehicleId },
+          reason: "تم اعتماد مصروف السيارة من الصندوق الرئيسي",
+        });
       } else if (transaction.sourceType === "sales_invoice") {
         // A sales document may be created before its collection is approved.
         // Only the approval transaction is allowed to make the payment official.
@@ -1204,6 +1225,10 @@ export async function rejectFinancialTransaction(
       await db.execute(
         sql`UPDATE expenses SET approval_status = 'rejected', updated_at = now() WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
       );
+    } else if (existing.sourceType === "vehicle_expense") {
+      await db.execute(
+        sql`UPDATE vehicle_expenses SET status = 'rejected', updated_at = now() WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
+      );
     } else if (existing.sourceType === "receipt_voucher") {
       await db.execute(
         sql`UPDATE receipt_vouchers SET approval_status = 'rejected' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
@@ -1507,6 +1532,32 @@ export async function reverseFinancialTransaction(
         actorId: actor.id, actorName: actor.name,
         oldValues: { repaymentStatus: "executed" },
         newValues: { repaymentStatus: completesOriginal ? "reversed" : "partially_reversed", reversedAmount: amount },
+        reason: cleanReason,
+      });
+    }
+    if (original.sourceType === "vehicle_expense" && Number.isInteger(receiptVoucherId) && receiptVoucherId > 0) {
+      const [vehicleExpense] = await tx
+        .update(vehicleExpensesTable)
+        .set({
+          status: completesOriginal ? "reversed" : "partially_reversed",
+          reversedAt: now,
+          reversalReason: cleanReason,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(vehicleExpensesTable.id, receiptVoucherId),
+          eq(vehicleExpensesTable.financialTransactionId, original.id),
+        ))
+        .returning();
+      if (!vehicleExpense)
+        throw new Error("مصروف السيارة المرتبط بالحركة المعكوسة غير موجود");
+      await tx.insert(financialAuditLogsTable).values({
+        transactionId: original.id,
+        action: "vehicle_expense_reversed",
+        actorId: actor.id,
+        actorName: actor.name,
+        oldValues: { status: "executed", vehicleId: vehicleExpense.vehicleId },
+        newValues: { status: vehicleExpense.status, reversedAmount: amount, vehicleId: vehicleExpense.vehicleId },
         reason: cleanReason,
       });
     }

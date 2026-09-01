@@ -239,6 +239,7 @@ import {
   customerAttributionsTable,
   companyLoansTable,
   companyLoanRepaymentsTable,
+  vehicleExpensesTable,
 } from "@workspace/db";
 import {
   dailyCashListQuerySchema,
@@ -5894,6 +5895,11 @@ const KoshaBookingCreateSchema = z.object({
   welcomeBoards: z.array(z.string()).optional().default([]),
   selectedAccessories: z.array(z.string()).optional().default([]),
   venueImages: z.array(z.string()).optional().default([]),
+  transportationMode: z.enum(["ajn", "customer"]).optional().nullable(),
+  transportationFee: z.coerce.number().nonnegative().optional().default(0),
+  transportationVehicleId: z.coerce.number().int().positive().optional().nullable(),
+  transportationDriverId: z.coerce.number().int().positive().optional().nullable(),
+  transportationNotes: z.string().max(2000).optional().nullable(),
   notes: z.string().optional().default(""),
 });
 
@@ -5923,6 +5929,11 @@ const KoshaBookingUpdateSchema = z.object({
   selectedAddons: z.array(z.string()).optional(),
   welcomeBoards: z.array(z.string()).optional(),
   selectedAccessories: z.array(z.string()).optional(),
+  transportationMode: z.enum(["ajn", "customer"]).optional().nullable(),
+  transportationFee: z.coerce.number().nonnegative().optional(),
+  transportationVehicleId: z.coerce.number().int().positive().optional().nullable(),
+  transportationDriverId: z.coerce.number().int().positive().optional().nullable(),
+  transportationNotes: z.string().max(2000).optional().nullable(),
   notes: z.string().optional().nullable(),
   status: z.enum(KOSHA_BOOKING_STATUS_VALUES).optional(),
   executionStage: z
@@ -6635,11 +6646,23 @@ async function koshaValuesFromData(data: any, existingId?: number) {
 }
 
 async function formatKoshaBooking(row: any) {
-  const kosha = row.koshaId
+  const [kosha, transportationVehicle, transportationDriver] = await Promise.all([
+    row.koshaId
     ? await db.query.koshasTable.findFirst({
         where: eq(koshasTable.id, row.koshaId),
       })
-    : null;
+    : Promise.resolve(null),
+    row.transportationVehicleId ?? row.transportation_vehicle_id
+      ? db.query.fleetVehiclesTable.findFirst({
+          where: eq(fleetVehiclesTable.id, Number(row.transportationVehicleId ?? row.transportation_vehicle_id)),
+        })
+      : Promise.resolve(null),
+    row.transportationDriverId ?? row.transportation_driver_id
+      ? db.query.staffTable.findFirst({
+          where: eq(staffTable.id, Number(row.transportationDriverId ?? row.transportation_driver_id)),
+        })
+      : Promise.resolve(null),
+  ]);
   const bookingDetails = (row.bookingDetails ??
     row.booking_details ??
     {}) as Record<string, any>;
@@ -6719,6 +6742,14 @@ async function formatKoshaBooking(row: any) {
       formatIraqiPhone(row.alternatePhone ?? row.alternate_phone) || "",
     cityArea: row.cityArea ?? "",
     hallLocation: row.hallLocation ?? "",
+    transportationMode: row.transportationMode ?? row.transportation_mode ?? null,
+    transportationFee: Number(row.transportationFee ?? row.transportation_fee ?? 0),
+    transportationVehicleId: row.transportationVehicleId ?? row.transportation_vehicle_id ?? null,
+    transportationVehicleName: transportationVehicle?.name ?? null,
+    transportationVehiclePlate: transportationVehicle?.plateNumber ?? null,
+    transportationDriverId: row.transportationDriverId ?? row.transportation_driver_id ?? null,
+    transportationDriverName: transportationDriver?.fullName ?? transportationDriver?.username ?? null,
+    transportationNotes: row.transportationNotes ?? row.transportation_notes ?? null,
     selectedAddons: Array.isArray(row.selectedAddons ?? row.selected_addons)
       ? (row.selectedAddons ?? row.selected_addons)
       : [],
@@ -14479,6 +14510,28 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       data.customerName,
       [data.brideName, data.groomName].filter(Boolean).join(" و ") || "زبون",
     );
+    const transportationMode = data.transportationMode ?? null;
+    const transportationFee = transportationMode === "ajn" ? money(data.transportationFee) : 0;
+    let transportationVehicleId: number | null = null;
+    let transportationDriverId: number | null = null;
+    if (transportationMode === "ajn") {
+      if (transportationFee <= 0)
+        return error("أجرة النقل مطلوبة عندما يكون النقل بواسطة AJN", 400);
+      if (!data.transportationVehicleId)
+        return error("اختر سيارة للنقل بواسطة AJN", 400);
+      const vehicle = await db.query.fleetVehiclesTable.findFirst({
+        where: and(eq(fleetVehiclesTable.id, data.transportationVehicleId), eq(fleetVehiclesTable.isActive, true)),
+      });
+      if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
+      transportationVehicleId = vehicle.id;
+      if (data.transportationDriverId) {
+        const driver = await db.query.staffTable.findFirst({
+          where: eq(staffTable.id, data.transportationDriverId),
+        });
+        if (!driver) return error("السائق المختار غير موجود", 404);
+        transportationDriverId = driver.id;
+      }
+    }
     const venueImages = await persistMediaList(
       data.venueImages ?? [],
       "koshas/bookings",
@@ -14559,6 +14612,12 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
         hallLocation: nullableText(
           data.hallLocation || data.nearestPoint || data.area,
         ),
+        transportationMode,
+        transportationFee: String(transportationFee),
+        transportationVehicleId,
+        transportationDriverId,
+        transportationNotes:
+          transportationMode === "ajn" ? nullableText(data.transportationNotes) : null,
         selectedAddons,
         welcomeBoards,
         selectedAccessories,
@@ -14578,6 +14637,12 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
           accessoryDetails,
           optionsTotal,
           total: bookingTotal,
+          transportation: transportationMode === "ajn" ? {
+            mode: "ajn",
+            fee: transportationFee,
+            vehicleId: transportationVehicleId,
+            driverId: transportationDriverId,
+          } : transportationMode === "customer" ? { mode: "customer" } : null,
         },
         // Customer books with no price — the admin sets it later ("حسب الاتفاق").
         totalAmount: "0",
@@ -20921,6 +20986,81 @@ async function handleAdminKoshas(
           update.internalNotes = nullableText(parsed.data.internalNotes);
         if (parsed.data.dueDate !== undefined)
           update.dueDate = parsed.data.dueDate;
+        const transportationRequested = [
+          "transportationMode",
+          "transportationFee",
+          "transportationVehicleId",
+          "transportationDriverId",
+          "transportationNotes",
+        ].some((key) => Object.prototype.hasOwnProperty.call(parsed.data, key));
+        if (transportationRequested) {
+          const currentMode = (existing as any).transportationMode ?? null;
+          const currentFee = money((existing as any).transportationFee);
+          const currentVehicleId = (existing as any).transportationVehicleId ?? null;
+          const currentDriverId = (existing as any).transportationDriverId ?? null;
+          const nextMode = parsed.data.transportationMode === undefined
+            ? currentMode
+            : parsed.data.transportationMode;
+          const requestedFee = parsed.data.transportationFee === undefined
+            ? currentFee
+            : money(parsed.data.transportationFee);
+          const requestedVehicleId = parsed.data.transportationVehicleId === undefined
+            ? currentVehicleId
+            : parsed.data.transportationVehicleId;
+          const requestedDriverId = parsed.data.transportationDriverId === undefined
+            ? currentDriverId
+            : parsed.data.transportationDriverId;
+          const changed = nextMode !== currentMode || requestedFee !== currentFee || requestedVehicleId !== currentVehicleId || requestedDriverId !== currentDriverId ||
+            (parsed.data.transportationNotes !== undefined && nullableText(parsed.data.transportationNotes) !== ((existing as any).transportationNotes ?? null));
+          if (changed) {
+            const [postedPayment] = await db
+              .select({ id: financialTransactionsTable.id })
+              .from(financialTransactionsTable)
+              .where(and(
+                eq(financialTransactionsTable.sourceType, "kosha_booking"),
+                eq(financialTransactionsTable.sourceId, String(id)),
+                eq(financialTransactionsTable.approvalStatus, "executed"),
+              ))
+              .limit(1);
+            if (Number(existing.paidAmount) > 0 || postedPayment)
+              return error("لا يمكن تغيير خدمة النقل بعد تسجيل دفعات منفذة. استخدم تصحيحاً أو عكساً مالياً أولاً.", 409);
+          }
+          if (nextMode === "ajn") {
+            if (requestedFee <= 0)
+              return error("أجرة النقل مطلوبة عندما يكون النقل بواسطة AJN", 400);
+            if (!requestedVehicleId)
+              return error("اختر سيارة للنقل بواسطة AJN", 400);
+            const vehicle = await db.query.fleetVehiclesTable.findFirst({
+              where: and(eq(fleetVehiclesTable.id, requestedVehicleId), eq(fleetVehiclesTable.isActive, true)),
+            });
+            if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
+            if (requestedDriverId) {
+              const driver = await db.query.staffTable.findFirst({ where: eq(staffTable.id, requestedDriverId) });
+              if (!driver) return error("السائق المختار غير موجود", 404);
+            }
+            update.transportationMode = "ajn";
+            update.transportationFee = String(requestedFee);
+            update.transportationVehicleId = requestedVehicleId;
+            update.transportationDriverId = requestedDriverId;
+            update.transportationNotes = nullableText(parsed.data.transportationNotes ?? (existing as any).transportationNotes);
+          } else {
+            update.transportationMode = nextMode === "customer" ? "customer" : null;
+            update.transportationFee = "0";
+            update.transportationVehicleId = null;
+            update.transportationDriverId = null;
+            update.transportationNotes = null;
+          }
+          update.bookingDetails = {
+            ...((existing.bookingDetails as Record<string, unknown>) ?? {}),
+            ...((update.bookingDetails as Record<string, unknown> | undefined) ?? {}),
+            transportation: update.transportationMode === "ajn" ? {
+              mode: "ajn",
+              fee: Number(update.transportationFee),
+              vehicleId: update.transportationVehicleId,
+              driverId: update.transportationDriverId,
+            } : update.transportationMode === "customer" ? { mode: "customer" } : null,
+          };
+        }
         const sameStringList = (left: unknown, right: unknown) =>
           JSON.stringify(normalizeKoshaStringList(left)) ===
           JSON.stringify(normalizeKoshaStringList(right));
@@ -21013,17 +21153,24 @@ async function handleAdminKoshas(
           parsed.data.paidAmount !== undefined ||
           parsed.data.paymentStatus !== undefined ||
           parsed.data.paymentMethod !== undefined ||
-          parsed.data.pricing !== undefined
+          parsed.data.pricing !== undefined ||
+          transportationRequested
         ) {
           if (!canEditOrderFinancials(auth))
             return error("لا تملك صلاحية تعديل المبالغ المالية للحجز", 403, {
               code: "PERMISSION_DENIED",
             });
           const pricing = parsed.data.pricing;
+          const transportFeeForTotal = money(
+            update.transportationFee ?? (existing as any).transportationFee ?? 0,
+          );
+          const priorTransportFee = money((existing as any).transportationFee ?? 0);
           const totalAmount = money(
             parsed.data.totalAmount ??
               pricing?.totalAmount ??
-              existing.totalAmount,
+              (transportationRequested
+                ? Number(existing.totalAmount) - priorTransportFee + transportFeeForTotal
+                : existing.totalAmount),
           );
           const paidAmount = money(
             parsed.data.paidAmount ??
@@ -21079,6 +21226,7 @@ async function handleAdminKoshas(
                 welcomeBoardPrice: money(pricing.welcomeBoardPrice),
                 accessoriesPrice: money(pricing.accessoriesPrice),
                 addonsPrice: money(pricing.addonsPrice),
+                transportationFee: transportFeeForTotal,
                 discountAmount: money(pricing.discountAmount),
                 totalAmount: finalTotal,
                 paidAmount: finalPaid,
@@ -21228,6 +21376,9 @@ async function handleAdminKoshas(
           ["paidAmount", existing.paidAmount, row.paidAmount],
           ["remainingAmount", existing.remainingAmount, row.remainingAmount],
           ["paymentStatus", existing.paymentStatus, row.paymentStatus],
+          ["transportationMode", (existing as any).transportationMode, (row as any).transportationMode],
+          ["transportationFee", (existing as any).transportationFee, (row as any).transportationFee],
+          ["transportationVehicleId", (existing as any).transportationVehicleId, (row as any).transportationVehicleId],
         ].filter(([, before, after]) => String(before ?? "") !== String(after ?? ""));
         if (importantChanges.length) {
           void addEntityTimeline({
@@ -21243,6 +21394,34 @@ async function handleAdminKoshas(
             bookingId: row.id,
             message: timelineError instanceof Error ? timelineError.message : "unknown",
           }));
+        }
+        if (transportationRequested) {
+          const transportationEvent = (row as any).transportationMode === "ajn"
+            ? "transportation_fee_updated"
+            : "transportation_mode_selected";
+          void addEntityTimeline({
+            entityType: "kosha_booking",
+            entityId: row.id,
+            type: transportationEvent,
+            title: (row as any).transportationMode === "ajn" ? "تم تحديث خدمة النقل بواسطة AJN" : "تم تحديد النقل من مسؤولية الزبون",
+            body: (row as any).transportationMode === "ajn"
+              ? `أجرة النقل: ${formatCurrency((row as any).transportationFee)}`
+              : "لا تُنشأ أجور نقل أو حركة سيارة لهذا الحجز.",
+            actor: erpActorFromAdmin(auth),
+            metadata: {
+              oldMode: (existing as any).transportationMode ?? null,
+              newMode: (row as any).transportationMode ?? null,
+              vehicleId: (row as any).transportationVehicleId ?? null,
+              fee: Number((row as any).transportationFee ?? 0),
+            },
+          }).catch(() => null);
+          void logAdminActivity(
+            req,
+            transportationEvent,
+            "kosha_booking",
+            row.id,
+            { oldMode: (existing as any).transportationMode ?? null, newMode: (row as any).transportationMode ?? null, fee: Number((row as any).transportationFee ?? 0), vehicleId: (row as any).transportationVehicleId ?? null },
+          );
         }
         await syncKoshaFinancialPayment(row, financialActor(auth));
         const wasPendingPricing =
@@ -21406,6 +21585,43 @@ const EnterpriseVehicleSchema = z.object({
   notes: z.string().trim().max(1000).optional().nullable(),
   isActive: z.boolean().optional().default(true),
 });
+
+const VEHICLE_EXPENSE_TYPES = [
+  "fuel",
+  "maintenance",
+  "oil_change",
+  "tires",
+  "driver_wage",
+  "washing",
+  "fees_parking",
+  "repair",
+  "spare_parts",
+  "other",
+] as const;
+
+const VehicleExpenseSchema = z.object({
+  bookingId: z.coerce.number().int().positive().optional().nullable(),
+  expenseType: z.enum(VEHICLE_EXPENSE_TYPES),
+  amount: z.coerce.number().positive().max(999_999_999_999),
+  expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  paymentMethod: z.enum(["cash", "transfer", "card", "pos", "other"]).default("cash"),
+  description: z.string().trim().max(2000).optional().nullable(),
+  attachments: z.array(z.string().max(2000)).max(20).optional().default([]),
+  idempotencyKey: z.string().trim().min(12).max(180),
+});
+
+const VEHICLE_EXPENSE_LABELS: Record<(typeof VEHICLE_EXPENSE_TYPES)[number], string> = {
+  fuel: "وقود",
+  maintenance: "صيانة",
+  oil_change: "تبديل زيت",
+  tires: "إطارات",
+  driver_wage: "أجرة سائق",
+  washing: "غسيل",
+  fees_parking: "رسوم / مواقف",
+  repair: "تصليح",
+  spare_parts: "قطع غيار",
+  other: "مصروف آخر",
+};
 
 const EnterpriseLocationSchema = z.object({
   resourceType: z.enum(["vehicle", "crew", "photography", "kosha", "audio"]),
@@ -21803,6 +22019,183 @@ async function handleEnterpriseAdmin(
 
   if (section === "command-center" && method === "GET")
     return json(await getCachedEnterpriseCommandCenter());
+
+  if (section === "vehicles" && parts[1] && parts[2] === "financial" && method === "GET") {
+    const vehicleId = int(parts[1]);
+    if (!vehicleId) return error("معرف السيارة غير صحيح", 400);
+    const vehicle = await db.query.fleetVehiclesTable.findFirst({ where: eq(fleetVehiclesTable.id, vehicleId) });
+    if (!vehicle) return error("السيارة غير موجودة", 404);
+    const from = req.nextUrl.searchParams.get("from")?.trim() || null;
+    const to = req.nextUrl.searchParams.get("to")?.trim() || null;
+    const bookingRows = await db.query.koshaBookingsTable.findMany({
+      where: and(
+        eq(koshaBookingsTable.transportationVehicleId, vehicleId),
+        eq(koshaBookingsTable.transportationMode, "ajn"),
+        sql`${koshaBookingsTable.archivedAt} is null`,
+        sql`${koshaBookingsTable.status} <> 'cancelled'`,
+        from ? gte(koshaBookingsTable.eventDate, from) : undefined,
+        to ? lte(koshaBookingsTable.eventDate, to) : undefined,
+      ),
+      orderBy: [desc(koshaBookingsTable.eventDate), desc(koshaBookingsTable.id)],
+      limit: 500,
+    });
+    const driverIds = bookingRows.map((row) => row.transportationDriverId).filter((value): value is number => Number.isInteger(value));
+    const drivers = driverIds.length ? await db.query.staffTable.findMany({ where: inArray(staffTable.id, [...new Set(driverIds)]) }) : [];
+    const driverById = new Map(drivers.map((row) => [row.id, row]));
+    const expenseRows = await db.query.vehicleExpensesTable.findMany({
+      where: and(
+        eq(vehicleExpensesTable.vehicleId, vehicleId),
+        from ? gte(vehicleExpensesTable.expenseDate, new Date(`${from}T00:00:00`)) : undefined,
+        to ? lte(vehicleExpensesTable.expenseDate, new Date(`${to}T23:59:59`)) : undefined,
+      ),
+      orderBy: [desc(vehicleExpensesTable.expenseDate), desc(vehicleExpensesTable.id)],
+      limit: 500,
+    });
+    const executedTransactionIds = expenseRows
+      .filter((row) => ["executed", "partially_reversed", "reversed"].includes(row.status) && Number.isInteger(row.financialTransactionId))
+      .map((row) => Number(row.financialTransactionId));
+    const reversals = executedTransactionIds.length ? await db.query.financialTransactionsTable.findMany({
+      where: and(inArray(financialTransactionsTable.reversedTransactionId, executedTransactionIds), eq(financialTransactionsTable.approvalStatus, "executed")),
+    }) : [];
+    const reversedByTransaction = new Map<number, number>();
+    for (const reversal of reversals) {
+      const originalId = Number(reversal.reversedTransactionId);
+      reversedByTransaction.set(originalId, money(reversedByTransaction.get(originalId) ?? 0) + money(reversal.amount));
+    }
+    const bookingById = new Map(bookingRows.map((row) => [row.id, row]));
+    const trips = bookingRows.map((booking) => {
+      const total = money(booking.totalAmount);
+      const paid = money(booking.paidAmount);
+      const fee = money(booking.transportationFee);
+      // Partial booking payments are attributed pro-rata. This is deterministic,
+      // reversals-safe, and never creates a second cash or revenue movement.
+      const executedTransportationRevenue = total > 0 ? money(fee * Math.min(1, Math.max(0, paid / total))) : 0;
+      const tripExpenses = expenseRows.reduce((sum, expense) => {
+        if (expense.bookingId !== booking.id || !expense.financialTransactionId) return sum;
+        const reversed = money(reversedByTransaction.get(expense.financialTransactionId) ?? 0);
+        return sum + Math.max(0, money(expense.amount) - reversed);
+      }, 0);
+      const driver = booking.transportationDriverId ? driverById.get(booking.transportationDriverId) : null;
+      return {
+        bookingId: booking.id,
+        bookingNo: booking.trackingCode ?? `KB-${booking.id}`,
+        customerName: booking.customerName,
+        eventDate: booking.eventDate,
+        transportationFee: fee,
+        executedTransportationRevenue,
+        paymentStatus: booking.paymentStatus,
+        executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
+        driverName: driver?.fullName || driver?.username || null,
+        tripExpense: money(tripExpenses),
+        tripProfit: money(executedTransportationRevenue - tripExpenses),
+      };
+    });
+    const expenses = expenseRows.map((expense) => {
+      const reversed = expense.financialTransactionId ? money(reversedByTransaction.get(expense.financialTransactionId) ?? 0) : 0;
+      const effectiveAmount = ["executed", "partially_reversed", "reversed"].includes(expense.status)
+        ? money(Math.max(0, money(expense.amount) - reversed))
+        : 0;
+      const booking = expense.bookingId ? bookingById.get(expense.bookingId) : null;
+      return {
+        id: expense.id,
+        date: expense.expenseDate.toISOString(),
+        expenseType: expense.expenseType,
+        expenseTypeLabel: VEHICLE_EXPENSE_LABELS[expense.expenseType as keyof typeof VEHICLE_EXPENSE_LABELS] ?? expense.expenseType,
+        amount: money(expense.amount),
+        effectiveAmount,
+        bookingId: expense.bookingId,
+        bookingNo: booking?.trackingCode ?? (expense.bookingId ? `KB-${expense.bookingId}` : null),
+        cashbox: expense.cashAccountCode === "MASTER" ? "الصندوق الرئيسي" : expense.cashAccountCode,
+        description: expense.description,
+        status: expense.status,
+        financialTransactionId: expense.financialTransactionId,
+        paymentMethod: expense.paymentMethod,
+      };
+    });
+    const transportationRevenue = money(trips.reduce((sum, row) => sum + row.executedTransportationRevenue, 0));
+    const vehicleExpenses = money(expenses.reduce((sum, row) => sum + row.effectiveAmount, 0));
+    const categories = Object.fromEntries(VEHICLE_EXPENSE_TYPES.map((type) => [type, money(expenses.filter((row) => row.expenseType === type).reduce((sum, row) => sum + row.effectiveAmount, 0))]));
+    return json({
+      vehicle: { id: vehicle.id, name: vehicle.name, plateNumber: vehicle.plateNumber, status: vehicle.status },
+      summary: { transportationRevenue, vehicleExpenses, netProfit: money(transportationRevenue - vehicleExpenses), tripCount: trips.filter((row) => row.executedTransportationRevenue > 0).length, categories },
+      trips,
+      expenses,
+    });
+  }
+
+  if (section === "vehicles" && parts[1] && parts[2] === "expenses" && method === "POST" && !parts[3]) {
+    const financeAuth = await requirePermission(req, "accounting");
+    if (isResponse(financeAuth)) return financeAuth;
+    const vehicleId = int(parts[1]);
+    if (!vehicleId) return error("معرف السيارة غير صحيح", 400);
+    const parsed = VehicleExpenseSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("enterprise.vehicle-expense.create", parsed);
+    const data = parsed.data;
+    const vehicle = await db.query.fleetVehiclesTable.findFirst({ where: and(eq(fleetVehiclesTable.id, vehicleId), eq(fleetVehiclesTable.isActive, true)) });
+    if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
+    if (data.bookingId) {
+      const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, data.bookingId) });
+      if (!booking) return error("الحجز المرتبط غير موجود", 404);
+      if (booking.transportationVehicleId !== vehicleId)
+        return error("الحجز المرتبط لا يستخدم هذه السيارة للنقل", 400);
+    }
+    const result = await db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(vehicleExpensesTable).where(eq(vehicleExpensesTable.idempotencyKey, data.idempotencyKey)).limit(1);
+      if (existing) return { expense: existing, duplicate: true };
+      const [expense] = await tx.insert(vehicleExpensesTable).values({
+        vehicleId,
+        bookingId: data.bookingId ?? null,
+        expenseType: data.expenseType,
+        amount: String(money(data.amount)),
+        expenseDate: new Date(`${data.expenseDate}T12:00:00`),
+        cashAccountCode: "MASTER",
+        paymentMethod: data.paymentMethod === "card" ? "pos" : data.paymentMethod,
+        description: data.description?.trim() || null,
+        attachments: data.attachments,
+        status: "pending",
+        idempotencyKey: data.idempotencyKey,
+        createdBy: financeAuth.id,
+        createdByName: financeAuth.fullName || financeAuth.username,
+      }).returning();
+      const financial = await createAndExecuteSourceFinancialTransaction(tx, {
+        transactionDate: data.expenseDate,
+        direction: "expense",
+        amount: money(data.amount),
+        department: "koshas",
+        transactionType: "vehicle_expense",
+        referenceNo: `VE-${vehicleId}-${expense.id}`,
+        description: `${VEHICLE_EXPENSE_LABELS[data.expenseType]} · ${vehicle.name}${data.description ? ` · ${data.description}` : ""}`,
+        paymentMethod: data.paymentMethod,
+        sourceType: "vehicle_expense",
+        sourceId: expense.id,
+        sourceEvent: "vehicle_expense",
+        idempotencyKey: `vehicle-expense-finance:${data.idempotencyKey}`,
+        notes: data.description?.trim() || null,
+        attachments: data.attachments,
+      }, financialActor(financeAuth));
+      const [linked] = await tx.update(vehicleExpensesTable).set({ financialTransactionId: financial.id, updatedAt: new Date() }).where(eq(vehicleExpensesTable.id, expense.id)).returning();
+      return { expense: linked, duplicate: false };
+    });
+    if (!result.duplicate)
+      await recordEnterpriseMutation(req, financeAuth, "vehicle_expense_created", "vehicle_expense", result.expense.id, "تم إنشاء طلب مصروف سيارة بانتظار الاعتماد", { vehicleId, bookingId: result.expense.bookingId, amount: Number(result.expense.amount), expenseType: result.expense.expenseType });
+    return json({ ...result.expense, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
+  }
+
+  if (section === "vehicles" && parts[1] && parts[2] === "expenses" && parts[3] && parts[4] === "reverse" && method === "POST") {
+    const financeAuth = await requirePermission(req, "accounting");
+    if (isResponse(financeAuth)) return financeAuth;
+    const vehicleId = int(parts[1]);
+    const expenseId = int(parts[3]);
+    if (!vehicleId || !expenseId) return error("مرجع مصروف السيارة غير صحيح", 400);
+    const payload = await body(req);
+    const reason = String(payload?.reason ?? "").trim();
+    const expense = await db.query.vehicleExpensesTable.findFirst({ where: and(eq(vehicleExpensesTable.id, expenseId), eq(vehicleExpensesTable.vehicleId, vehicleId)) });
+    if (!expense) return error("مصروف السيارة غير موجود", 404);
+    if (!expense.financialTransactionId) return error("لا توجد حركة مالية مرتبطة بهذا المصروف", 409);
+    const result = await reverseFinancialTransaction(expense.financialTransactionId, financialActor(financeAuth), reason, undefined, undefined, { idempotencyKey: `vehicle-expense-reversal:${expense.id}`, sourceType: "vehicle_expense", sourceId: expense.id, sourceEvent: "vehicle_expense_reversal", description: `عكس مصروف السيارة #${expense.id}: ${reason}` });
+    await recordEnterpriseMutation(req, financeAuth, "vehicle_expense_reversed", "vehicle_expense", expense.id, "تم عكس مصروف السيارة", { vehicleId, financialTransactionId: expense.financialTransactionId, reverseTransactionId: result.reverse.id, reason });
+    return json({ ok: true, reverseTransactionId: result.reverse.id });
+  }
 
   if (section === "branches") {
     if (method === "GET") {
@@ -48967,6 +49360,15 @@ async function handleAdmin(
           quantity: 1,
           price: Number(pricing.addonsPrice ?? 0),
         },
+        ...(formatted.transportationMode === "ajn" ? [{
+          id: `transportation-${booking.id}`,
+          productNameAr: "خدمة النقل",
+          category: "النقل بواسطة AJN",
+          description: [formatted.transportationVehicleName, formatted.transportationVehiclePlate, formatted.transportationDriverName].filter(Boolean).join(" · "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(formatted.transportationFee ?? 0),
+        }] : []),
       ].filter((item) => item.price > 0 || item.description);
       const qr = await ensureQrForEntity("kosha_booking", booking, req);
       return json({
@@ -49008,6 +49410,10 @@ async function handleAdmin(
         deposit: Number(formatted.paidAmount ?? 0),
         balance: Number(formatted.remainingAmount ?? 0),
         paymentStatus: formatted.paymentStatus ?? "unpaid",
+        transportationMode: formatted.transportationMode ?? null,
+        transportationFee: Number(formatted.transportationFee ?? 0),
+        transportationVehicleName: formatted.transportationVehicleName ?? null,
+        transportationVehiclePlate: formatted.transportationVehiclePlate ?? null,
         paymentMethod: details.paymentMethod ?? pricing.paymentMethod ?? null,
         dueDate: formatted.dueDate ?? null,
         createdByName:
@@ -49039,6 +49445,15 @@ async function handleAdmin(
           additionalCharges: Number(
             pricing.additionalCharges ?? pricing.additionalAmount ?? 0,
           ),
+          transportationMode: formatted.transportationMode ?? null,
+          transportationLabel: formatted.transportationMode === "ajn"
+            ? "النقل بواسطة AJN"
+            : formatted.transportationMode === "customer"
+              ? "النقل من مسؤولية الزبون"
+              : null,
+          transportationVehicle: formatted.transportationMode === "ajn"
+            ? [formatted.transportationVehicleName, formatted.transportationVehiclePlate].filter(Boolean).join(" · ") || null
+            : null,
         },
         items: components.length
           ? components

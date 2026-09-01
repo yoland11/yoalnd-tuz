@@ -63,6 +63,7 @@
     "test:save-smoke": "node ./scripts/run-critical-save-smoke.mjs",
     "test:financial-approval": "node ./scripts/test-financial-approval.mjs",
     "test:payment-state": "node ./scripts/test-payment-state.mjs",
+    "test:vehicle-transportation": "node ./scripts/test-vehicle-transportation-logic.mjs",
     "schema:preflight": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/schema-preflight.ts",
     "schema:backup": "pnpm --filter @workspace/db exec tsx ../../scripts/backup-production-readonly.ts",
     "schema:apply": "pnpm --filter @workspace/db exec tsx ../../scripts/apply-reviewed-schema-migration.ts",

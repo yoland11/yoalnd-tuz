@@ -128,6 +128,15 @@ type KoshaBooking = {
   paidAmount?: number;
   remainingAmount?: number;
   paymentStatus?: string;
+  // A null mode is intentional for legacy bookings: do not guess who supplied transport.
+  transportationMode?: "ajn" | "customer" | null;
+  transportationFee?: number;
+  transportationVehicleId?: number | null;
+  transportationVehicleName?: string | null;
+  transportationVehiclePlate?: string | null;
+  transportationDriverId?: number | null;
+  transportationDriverName?: string | null;
+  transportationNotes?: string | null;
   status: string;
   executionStage?: string;
   bookingDetails?: Record<string, any>;
@@ -301,7 +310,24 @@ function unify(serviceOrders: ServiceOrder[], koshaBookings: KoshaBooking[]): Un
     createdAt: order.createdAt,
     raw: order,
   }));
-  const koshas: UnifiedBooking[] = koshaBookings.map((booking) => ({
+  const koshas: UnifiedBooking[] = koshaBookings.map((booking) => {
+    const transportationFee = booking.transportationMode === "ajn"
+      ? Math.max(0, num(booking.transportationFee))
+      : 0;
+    const bookingTotal = num(booking.totalAmount);
+    // Transportation remains in the same booking total, but is surfaced as a
+    // distinct operational service. This never creates another booking or sale.
+    const services: BookingService[] = [
+      {
+        type: "kosha",
+        status: normalizeServiceStatus(booking.executionStage || booking.status),
+        amount: Math.max(0, bookingTotal - transportationFee),
+      },
+      ...(booking.transportationMode === "ajn" && transportationFee > 0
+        ? [{ type: "transportation" as const, status: normalizeServiceStatus(booking.executionStage || booking.status), amount: transportationFee, notes: booking.transportationVehicleName || booking.transportationNotes || undefined }]
+        : []),
+    ];
+    return {
     source: "kosha",
     id: booking.id,
     number: booking.trackingCode || `KB-${String(booking.id).padStart(5, "0")}`,
@@ -313,16 +339,17 @@ function unify(serviceOrders: ServiceOrder[], koshaBookings: KoshaBooking[]): Un
     hall: booking.hallLocation || [booking.province, booking.area].filter(Boolean).join(" / "),
     mapUrl: String(booking.bookingDetails?.mapUrl ?? booking.bookingDetails?.googleMap ?? ""),
     status: booking.status,
-    total: num(booking.totalAmount),
+    total: bookingTotal,
     paid: num(booking.paidAmount),
     remaining: num(booking.remainingAmount),
     paymentStatus: booking.paymentStatus || "unpaid",
-    services: [{ type: "kosha", status: normalizeServiceStatus(booking.executionStage || booking.status), amount: num(booking.totalAmount) }],
+    services,
     notes: booking.notes || "",
     contractNumber: String(booking.bookingDetails?.contractNumber ?? ""),
     createdAt: booking.createdAt,
     raw: booking,
-  }));
+  };
+  });
   return [...services, ...koshas].sort((a, b) => String(b.createdAt ?? b.eventDate).localeCompare(String(a.createdAt ?? a.eventDate)));
 }
 
@@ -354,6 +381,14 @@ function getReadiness(booking: UnifiedBooking) {
   const paymentScore = booking.remaining <= 0 ? 100 : booking.total > 0 ? Math.max(15, (booking.paid / booking.total) * 100) : 40;
   const contract = booking.contractNumber ? 100 : 35;
   return Math.round(serviceScore * 0.55 + paymentScore * 0.3 + contract * 0.15);
+}
+
+function transportationSummary(booking: UnifiedBooking) {
+  if (booking.source !== "kosha") return null;
+  const raw = booking.raw as KoshaBooking & { transportationMode?: string | null; transportationFee?: number | string | null };
+  if (raw.transportationMode === "customer") return "النقل: من مسؤولية الزبون";
+  if (raw.transportationMode === "ajn") return `النقل: بواسطة AJN — ${formatCurrency(num(raw.transportationFee))}`;
+  return null;
 }
 
 export default function BookingCenterPage() {
@@ -529,6 +564,7 @@ function BookingDashboard() {
 
 function BookingPreview({ booking }: { booking: UnifiedBooking }) {
   const readiness = getReadiness(booking);
+  const transport = transportationSummary(booking);
   const editHref = booking.source === "service" || booking.source === "kosha"
     ? `/admin/bookings/${booking.source}/${booking.id}?edit=1`
     : booking.source === "store"
@@ -544,6 +580,7 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
       <div className="ajn-preview-services">{booking.services.slice(0, 5).map((service) => { const meta = SERVICE_META.find((item) => item.key === service.type)!; const Icon = meta.icon; return <span key={service.type} title={meta.label}><Icon /><small>{meta.short}</small></span>; })}</div>
       <div className="ajn-preview-progress"><span><i style={{ width: `${readiness}%` }} /></span><small>الجاهزية {readiness}%</small></div>
       <div className="ajn-preview-finance"><div><small>الإجمالي</small><Money value={booking.total} /></div><div><small>المتبقي</small><Money value={booking.remaining} className={booking.remaining > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600"} /></div></div>
+      {transport ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Car className="h-3.5 w-3.5 text-amber-600" /><span>{transport}</span></div> : null}
       {booking.assignedStaff?.length ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Users className="h-3.5 w-3.5 text-primary" /><span className="truncate">{booking.assignedStaff.map((staff) => staff.name).join("، ")}</span></div> : null}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
         <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{booking.hall || "الموقع غير محدد"}</span></span>

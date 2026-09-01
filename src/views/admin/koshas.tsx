@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, BarChart3, Check, Edit2, Eye, EyeOff, FileDown, Gift, Image as ImageIcon, Layers, LayoutGrid, MapPin, Minus, Package, Plus, Printer, Save, ScanLine, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, BarChart3, Car, Check, Edit2, Eye, EyeOff, FileDown, Gift, Image as ImageIcon, Layers, LayoutGrid, MapPin, Minus, Package, Plus, Printer, Save, ScanLine, Sparkles, Trash2, X } from "lucide-react";
 import { LiveScanner } from "../staff/live-scanner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -50,6 +50,14 @@ export type KoshaBooking = {
   alternatePhone: string;
   cityArea: string;
   hallLocation: string;
+  transportationMode?: "ajn" | "customer" | null;
+  transportationFee?: number;
+  transportationVehicleId?: number | null;
+  transportationVehicleName?: string | null;
+  transportationVehiclePlate?: string | null;
+  transportationDriverId?: number | null;
+  transportationDriverName?: string | null;
+  transportationNotes?: string | null;
   selectedAddons: string[];
   welcomeBoards: string[];
   selectedAccessories: string[];
@@ -1158,6 +1166,7 @@ export function AdminKoshaBookingsPage() {
       { name: "سعر بورد الترحيب", price: Number(pricing.welcomeBoardPrice ?? 0) },
       { name: "سعر الإكسسوارات", price: Number(pricing.accessoriesPrice ?? 0) },
       { name: "سعر الخدمات الإضافية", price: Number(pricing.addonsPrice ?? 0) },
+      ...(full.transportationMode === "ajn" ? [{ name: "أجرة النقل — النقل بواسطة AJN", price: Number(full.transportationFee ?? pricing.transportationFee ?? 0) }] : []),
       { name: "الخصم", price: -Number(pricing.discountAmount ?? 0) },
     ].filter((row) => Number(row.price) !== 0);
     const lineItems = pricedLines.length ? pricedLines : [{ name: "إجمالي الحجز حسب الاتفاق", price: total }];
@@ -1479,6 +1488,22 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
 
         <KoshaDetailSection title="بيانات الحجز">
           <KoshaDetailGrid items={[["اسم الزبون", booking.customerName], ["رقم الهاتف", booking.phone], ["تاريخ الحجز", booking.eventDate], ["وقت الحجز", booking.eventTime], ["حالة الطلب", STATUS_LABELS[booking.status] ?? booking.status], ["الموظف الأساسي", booking.primaryEmployeeName ?? "—"], ["الموظف المساعد", booking.assistantEmployeeName ?? "—"], ["الملاحظات", booking.notes]]} />
+        </KoshaDetailSection>
+
+        <KoshaDetailSection title="خدمة النقل">
+          {booking.transportationMode === "ajn" ? (
+            <KoshaDetailGrid items={[
+              ["طريقة النقل", "النقل بواسطة AJN"],
+              ["أجرة النقل", formatCurrency(Number(booking.transportationFee ?? 0))],
+              ["السيارة", [booking.transportationVehicleName, booking.transportationVehiclePlate].filter(Boolean).join(" · ") || "—"],
+              ["السائق", booking.transportationDriverName ?? "—"],
+              ["ملاحظات النقل", booking.transportationNotes ?? "—"],
+            ]} />
+          ) : booking.transportationMode === "customer" ? (
+            <div className="rounded-lg border border-border/30 bg-muted/30 px-3 py-2.5 text-sm font-medium text-muted-foreground">النقل من مسؤولية الزبون</div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-border/35 bg-background/40 px-3 py-2.5 text-sm text-muted-foreground">لم تُحدد خدمة النقل لهذا الحجز القديم.</div>
+          )}
         </KoshaDetailSection>
 
         <KoshaDetailSection title="الطاقم وإخراج/استلام الأصول">
@@ -2112,6 +2137,11 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
     paidAmount: String(booking.paidAmount ?? 0),
     paymentMethod: String(savedPricing.paymentMethod ?? (booking.paymentStatus === "paid" ? "cash" : "transfer")),
     financialNotes: String(savedPricing.financialNotes ?? ""),
+    transportationMode: booking.transportationMode ?? null as "ajn" | "customer" | null,
+    transportationFee: textNumber(booking.transportationFee ?? savedPricing.transportationFee),
+    transportationVehicleId: booking.transportationVehicleId ?? null as number | null,
+    transportationDriverId: booking.transportationDriverId ?? null as number | null,
+    transportationNotes: booking.transportationNotes ?? "",
   });
   const initialForm = useRef(JSON.stringify(form));
   const dirty = JSON.stringify(form) !== initialForm.current;
@@ -2119,18 +2149,21 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
   useEffect(() => setPreviewReady(false), [form]);
   const { data: koshas = [] } = useQuery<Kosha[]>({ queryKey: ["admin", "koshas", "booking-editor"], queryFn: () => adminFetch("/admin/koshas") });
   const { data: packages = [] } = useQuery<KoshaPackage[]>({ queryKey: ["admin", "kosha-packages", "booking-editor"], queryFn: () => adminFetch("/admin/kosha-packages") });
+  const { data: fleetData } = useQuery<{ data: Array<{ id: number; name: string; plateNumber: string; status: string; isActive: boolean }> }>({ queryKey: ["admin", "enterprise", "vehicles", "booking-editor"], queryFn: () => adminFetch("/admin/enterprise/vehicles") });
+  const { data: staff = [] } = useQuery<Array<{ id: number; fullName?: string; username?: string; isActive?: boolean }>>({ queryKey: ["admin", "staff", "booking-editor"], queryFn: () => adminFetch("/admin/staff") });
   const { data: options } = useQuery<{ addons: KoshaOption[]; welcomeBoards: KoshaOption[]; accessories: KoshaOption[]; provinces: Array<{ id: number; name: string }> }>({
     queryKey: ["koshas", "options", "booking-editor"], queryFn: () => fetch("/api/koshas/options").then((response) => response.json()),
   });
   const requestedPaidAmount = Number(form.paidAmount || 0) || 0;
+  const transportationFee = form.transportationMode === "ajn" ? (Number(form.transportationFee || 0) || 0) : 0;
   const breakdownTotal = Math.max(0,
     (Number(form.koshaPrice || 0) || 0) +
     (Number(form.welcomeBoardPrice || 0) || 0) +
     (Number(form.accessoriesPrice || 0) || 0) +
     (Number(form.addonsPrice || 0) || 0) -
-    (Number(form.discountAmount || 0) || 0),
+    (Number(form.discountAmount || 0) || 0) + transportationFee,
   );
-  const pricedTotal = (Number(form.totalAmount || 0) || 0) > 0 ? Number(form.totalAmount || 0) || 0 : breakdownTotal;
+  const pricedTotal = Math.max(Number(form.totalAmount || 0) || 0, breakdownTotal);
   const paidAmount = form.paymentMethod === "cash" ? pricedTotal : requestedPaidAmount;
   const remainingAmount = Math.max(0, pricedTotal - paidAmount);
   const computedPaymentStatus = pricedTotal <= 0 ? "pending_pricing" : remainingAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
@@ -2153,6 +2186,7 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
           welcomeBoardPrice: Number(form.welcomeBoardPrice || 0) || 0,
           accessoriesPrice: Number(form.accessoriesPrice || 0) || 0,
           addonsPrice: Number(form.addonsPrice || 0) || 0,
+          transportationFee,
           discountAmount: Number(form.discountAmount || 0) || 0,
           totalAmount: pricedTotal,
           paidAmount,
@@ -2216,6 +2250,27 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
           <KoshaBookingOptionPicker title="بورد الترحيب" options={options?.welcomeBoards ?? []} selected={form.welcomeBoards} single onToggle={(name) => setForm({ ...form, welcomeBoards: form.welcomeBoards.includes(name) ? [] : [name] })} />
           <KoshaBookingOptionPicker title="الإكسسوارات" options={options?.accessories ?? []} selected={form.selectedAccessories} onToggle={(name) => toggle("selectedAccessories", name)} />
 
+          <div className="rounded-xl border border-primary/25 bg-primary/5 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-primary"><Car className="h-4 w-4" /></span>
+                <div><h4 className="text-sm font-bold text-foreground">خدمة النقل</h4><p className="mt-0.5 text-xs text-muted-foreground">تبقى أجرة النقل جزءاً من الحجز وتُنسب تحليلياً للسيارة بعد تنفيذ دفعة الزبون.</p></div>
+              </div>
+              {form.transportationMode === "customer" ? <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">النقل من مسؤولية الزبون</span> : null}
+            </div>
+            {Number(booking.paidAmount ?? 0) > 0 ? <p className="mt-3 rounded-lg border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning">تم تسجيل دفعة لهذا الحجز؛ لا يمكن تغيير خدمة النقل هنا. استخدم التصحيح أو العكس المالي أولاً.</p> : null}
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              <button type="button" disabled={Number(booking.paidAmount ?? 0) > 0} onClick={() => setForm({ ...form, transportationMode: "ajn" })} className={`rounded-lg border px-3 py-3 text-right text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${form.transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل بواسطة AJN</button>
+              <button type="button" disabled={Number(booking.paidAmount ?? 0) > 0} onClick={() => setForm({ ...form, transportationMode: "customer", transportationFee: "0", transportationVehicleId: null, transportationDriverId: null, transportationNotes: "" })} className={`rounded-lg border px-3 py-3 text-right text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${form.transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل من مسؤولية الزبون</button>
+            </div>
+            {form.transportationMode === "ajn" ? <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Field label="أجرة النقل" type="number" value={form.transportationFee} onChange={(value) => setForm({ ...form, transportationFee: value })} />
+              <div><label className="mb-1 block text-xs text-muted-foreground">السيارة</label><select value={form.transportationVehicleId ?? ""} onChange={(event) => setForm({ ...form, transportationVehicleId: event.target.value ? Number(event.target.value) : null })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">اختر السيارة</option>{(fleetData?.data ?? []).filter((vehicle) => vehicle.isActive && vehicle.status !== "inactive").map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.name} · {vehicle.plateNumber}</option>)}</select></div>
+              <div><label className="mb-1 block text-xs text-muted-foreground">السائق (اختياري)</label><select value={form.transportationDriverId ?? ""} onChange={(event) => setForm({ ...form, transportationDriverId: event.target.value ? Number(event.target.value) : null })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">بدون تحديد</option>{staff.filter((member) => member.isActive !== false).map((member) => <option key={member.id} value={member.id}>{member.fullName || member.username || `#${member.id}`}</option>)}</select></div>
+              <Field label="ملاحظات النقل (اختياري)" value={form.transportationNotes} onChange={(value) => setForm({ ...form, transportationNotes: value })} />
+            </div> : null}
+          </div>
+
           <div className="space-y-3 rounded-xl border border-primary/25 bg-primary/5 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -2231,6 +2286,7 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
               <Field label="سعر بورد الترحيب" type="number" value={form.welcomeBoardPrice} onChange={(value) => setForm({ ...form, welcomeBoardPrice: value })} />
               <Field label="سعر الإكسسوارات" type="number" value={form.accessoriesPrice} onChange={(value) => setForm({ ...form, accessoriesPrice: value })} />
               <Field label="سعر الخدمات الإضافية" type="number" value={form.addonsPrice} onChange={(value) => setForm({ ...form, addonsPrice: value })} />
+              <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2"><div className="text-xs text-muted-foreground">أجرة النقل</div><div className="mt-1 text-sm font-bold text-foreground">{form.transportationMode === "ajn" ? formatCurrency(transportationFee) : form.transportationMode === "customer" ? "النقل من مسؤولية الزبون" : "—"}</div></div>
               <Field label="خصم إن وجد" type="number" value={form.discountAmount} onChange={(value) => setForm({ ...form, discountAmount: value })} />
               <Field label="المبلغ الكلي" type="number" value={form.totalAmount} onChange={(value) => setForm({ ...form, totalAmount: value })} />
               <div><label className="mb-1 block text-xs text-muted-foreground">طريقة الدفع</label><select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value, paidAmount: event.target.value === "cash" ? String(pricedTotal) : form.paidAmount })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="pos">بطاقة</option></select></div>

@@ -43,6 +43,7 @@ export * from "./photography-integration";
 export * from "./master-cash-box";
 export * from "./customer-receivables";
 export * from "./enterprise";
+export * from "./vehicle-finance";
 export * from "./desktop";
 export * from "./print-queue";
 export * from "./graduation";

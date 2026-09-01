@@ -1,6 +1,8 @@
 import { boolean, date, integer, jsonb, numeric, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
+import { fleetVehiclesTable } from "./enterprise";
+import { staffTable } from "./staff";
 
 export const koshasTable = pgTable("koshas", {
   id: serial("id").primaryKey(),
@@ -96,6 +98,13 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
   alternatePhone: varchar("alternate_phone", { length: 20 }),
   cityArea: text("city_area"),
   hallLocation: text("hall_location"),
+  // Transportation remains part of this Kosha booking. Legacy rows are left
+  // nullable so their historical transport responsibility is never guessed.
+  transportationMode: varchar("transportation_mode", { length: 24 }),
+  transportationFee: numeric("transportation_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+  transportationVehicleId: integer("transportation_vehicle_id").references(() => fleetVehiclesTable.id, { onDelete: "restrict" }),
+  transportationDriverId: integer("transportation_driver_id").references(() => staffTable.id, { onDelete: "set null" }),
+  transportationNotes: text("transportation_notes"),
   selectedAddons: jsonb("selected_addons").$type<string[]>().notNull().default([]),
   welcomeBoards: jsonb("welcome_boards").$type<string[]>().notNull().default([]),
   selectedAccessories: jsonb("selected_accessories").$type<string[]>().notNull().default([]),

@@ -55,6 +55,10 @@ import {
   Settings2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -228,11 +232,51 @@ type Intelligence = {
   lostTime: Array<{ reason: string; minutes: number }>;
 };
 
+type VehicleFinancials = {
+  vehicle: { id: number; name: string; plateNumber: string; status: string };
+  summary: {
+    transportationRevenue: number;
+    vehicleExpenses: number;
+    netProfit: number;
+    tripCount: number;
+    categories: Record<string, number>;
+  };
+  trips: Array<{
+    bookingId: number;
+    bookingNo: string;
+    customerName: string;
+    eventDate?: string | null;
+    transportationFee: number;
+    executedTransportationRevenue: number;
+    paymentStatus?: string | null;
+    executionStatus: "executed" | "pending";
+    driverName?: string | null;
+    tripExpense: number;
+    tripProfit: number;
+  }>;
+  expenses: Array<{
+    id: number;
+    date: string;
+    expenseType: string;
+    expenseTypeLabel: string;
+    amount: number;
+    effectiveAmount: number;
+    bookingId?: number | null;
+    bookingNo?: string | null;
+    cashbox: string;
+    description?: string | null;
+    status: string;
+    financialTransactionId?: number | null;
+    paymentMethod?: string | null;
+  }>;
+};
+
 const TABS = [
   { value: "overview", label: "مركز القيادة", icon: Gauge },
   { value: "operations", label: "العمليات الحية", icon: Route },
   { value: "queue", label: "الطابور", icon: Users },
   { value: "assets", label: "الأصول", icon: Boxes },
+  { value: "vehicle-profitability", label: "أرباح السيارات", icon: Car },
   { value: "intelligence", label: "الذكاء والتحليل", icon: BrainCircuit },
   { value: "knowledge", label: "المعرفة", icon: BookOpen },
   { value: "closing", label: "إغلاق اليوم", icon: ClipboardCheck },
@@ -385,7 +429,9 @@ export default function EnterpriseCommandCenterPage() {
   const queryClient = useQueryClient();
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("tab") === "assets") setTab("assets");
+    const requestedTab = params.get("tab");
+    if (requestedTab && TABS.some((item) => item.value === requestedTab))
+      setTab(requestedTab as typeof tab);
     const assetId = Number(params.get("asset"));
     if (Number.isInteger(assetId) && assetId > 0) setFocusedAssetId(assetId);
   }, []);
@@ -711,6 +757,9 @@ export default function EnterpriseCommandCenterPage() {
             active={tab === "assets"}
             focusProductId={focusedAssetId}
           />
+        </TabsContent>
+        <TabsContent value="vehicle-profitability">
+          <VehicleProfitabilityTab active={tab === "vehicle-profitability"} />
         </TabsContent>
         <TabsContent value="intelligence">
           <IntelligenceTab active={tab === "intelligence"} />
@@ -1608,6 +1657,150 @@ function BranchManagementPanel({ command }: { command?: CommandCenter }) {
         </div>
       </div>
     </Panel>
+  );
+}
+
+const VEHICLE_EXPENSE_OPTIONS = [
+  ["fuel", "وقود"],
+  ["maintenance", "صيانة"],
+  ["oil_change", "تبديل زيت"],
+  ["tires", "إطارات"],
+  ["driver_wage", "أجرة سائق"],
+  ["washing", "غسيل"],
+  ["fees_parking", "رسوم / مواقف"],
+  ["repair", "تصليح"],
+  ["spare_parts", "قطع غيار"],
+  ["other", "مصروف آخر"],
+] as const;
+
+function newVehicleExpenseKey() {
+  const uuid = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `vehicle-expense-${uuid}`;
+}
+
+function VehicleProfitabilityTab({ active }: { active: boolean }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [vehicleId, setVehicleId] = useState<number | null>(null);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [expenseOpen, setExpenseOpen] = useState(false);
+  const [reverseExpense, setReverseExpense] = useState<VehicleFinancials["expenses"][number] | null>(null);
+  const [reverseReason, setReverseReason] = useState("");
+  const [expense, setExpense] = useState({
+    expenseType: "fuel",
+    amount: "",
+    expenseDate: new Date().toISOString().slice(0, 10),
+    paymentMethod: "cash",
+    bookingId: "",
+    description: "",
+    attachmentUrl: "",
+    idempotencyKey: newVehicleExpenseKey(),
+  });
+  const vehicles = useQuery<{ data: Array<{ id: number; name: string; plateNumber: string; status: string; isActive: boolean }> }>({
+    queryKey: ["admin", "enterprise", "vehicles"],
+    queryFn: () => adminFetch("/admin/enterprise/vehicles"),
+    enabled: active,
+    staleTime: 30_000,
+  });
+  const activeVehicles = (vehicles.data?.data ?? []).filter((vehicle) => vehicle.isActive && vehicle.status !== "inactive");
+  useEffect(() => {
+    if (!active || vehicleId || !activeVehicles.length) return;
+    setVehicleId(activeVehicles[0].id);
+  }, [active, vehicleId, activeVehicles]);
+  const financials = useQuery<VehicleFinancials>({
+    queryKey: ["admin", "enterprise", "vehicle-financial", vehicleId, from, to],
+    queryFn: () => adminFetch(`/admin/enterprise/vehicles/${vehicleId}/financial?${new URLSearchParams({ ...(from ? { from } : {}), ...(to ? { to } : {}) }).toString()}`),
+    enabled: active && Boolean(vehicleId),
+    staleTime: 12_000,
+  });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["admin", "enterprise", "vehicle-financial"] });
+  const createExpense = useMutation({
+    mutationFn: () => adminFetch(`/admin/enterprise/vehicles/${vehicleId}/expenses`, {
+      method: "POST",
+      body: JSON.stringify({
+        expenseType: expense.expenseType,
+        amount: Number(expense.amount),
+        expenseDate: expense.expenseDate,
+        paymentMethod: expense.paymentMethod,
+        bookingId: expense.bookingId ? Number(expense.bookingId) : null,
+        description: expense.description.trim() || null,
+        attachments: expense.attachmentUrl.trim() ? [expense.attachmentUrl.trim()] : [],
+        idempotencyKey: expense.idempotencyKey,
+      }),
+    }),
+    onSuccess: () => {
+      setExpenseOpen(false);
+      setExpense((current) => ({ ...current, amount: "", bookingId: "", description: "", attachmentUrl: "", idempotencyKey: newVehicleExpenseKey() }));
+      refresh();
+      toast({ title: "تم إنشاء طلب مصروف السيارة", description: "سيُخصم من الصندوق الرئيسي بعد الاعتماد فقط." });
+    },
+    onError: (error) => toast({ title: "تعذر تسجيل المصروف", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  const reverse = useMutation({
+    mutationFn: () => adminFetch(`/admin/enterprise/vehicles/${vehicleId}/expenses/${reverseExpense?.id}/reverse`, {
+      method: "POST",
+      body: JSON.stringify({ reason: reverseReason.trim() }),
+    }),
+    onSuccess: () => {
+      setReverseExpense(null);
+      setReverseReason("");
+      refresh();
+      toast({ title: "تم عكس مصروف السيارة", description: "تم إنشاء حركة عكسية مع حفظ السجل الأصلي." });
+    },
+    onError: (error) => toast({ title: "تعذر عكس المصروف", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  const data = financials.data;
+  const canCreateExpense = Boolean(vehicleId) && Number(expense.amount) > 0 && Boolean(expense.expenseDate);
+  return (
+    <div className="space-y-4">
+      <Panel>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <SectionTitle icon={Car} title="تقرير أرباح السيارات" description="أجور النقل تُنسب تحليلياً للسيارة بعد تنفيذ دفعات الحجز؛ المال الفعلي يبقى في الصندوق الرئيسي أو الحساب البنكي." />
+          <div className="flex flex-wrap items-center gap-2">
+            <select aria-label="اختر السيارة" value={vehicleId ?? ""} onChange={(event) => setVehicleId(event.target.value ? Number(event.target.value) : null)} className="h-9 min-w-48 rounded-lg border border-border/40 bg-background px-3 text-sm">
+              <option value="">اختر السيارة</option>
+              {activeVehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.name} · {vehicle.plateNumber}</option>)}
+            </select>
+            <Button type="button" onClick={() => { setExpense((current) => ({ ...current, idempotencyKey: newVehicleExpenseKey() })); setExpenseOpen(true); }} disabled={!vehicleId} className="gap-2">
+              <BadgeDollarSign className="h-4 w-4" /> إضافة مصروف سيارة
+            </Button>
+          </div>
+        </div>
+        <div className="mt-2 flex flex-wrap items-end gap-2 border-t border-border/20 pt-3">
+          <div><Label htmlFor="vehicle-report-from" className="text-xs text-muted-foreground">من تاريخ</Label><Input id="vehicle-report-from" type="date" value={from} onChange={(event) => setFrom(event.target.value)} className="mt-1 h-9 w-40" /></div>
+          <div><Label htmlFor="vehicle-report-to" className="text-xs text-muted-foreground">إلى تاريخ</Label><Input id="vehicle-report-to" type="date" value={to} onChange={(event) => setTo(event.target.value)} className="mt-1 h-9 w-40" /></div>
+          <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => { setFrom(""); setTo(""); }}><RefreshCw className="h-4 w-4" />إعادة الضبط</Button>
+        </div>
+      </Panel>
+
+      {!vehicleId ? <Empty message="اختر سيارة لعرض حسابها المالي." /> : financials.isLoading ? <LoadingGrid /> : data ? <>
+        <div className="grid gap-3 md:grid-cols-3">
+          <Metric icon={Route} label="إجمالي أجور النقل المنفذة" value={formatCurrency(data.summary.transportationRevenue)} />
+          <Metric icon={Wrench} label="مصاريف السيارة المنفذة" value={formatCurrency(data.summary.vehicleExpenses)} warning={data.summary.vehicleExpenses > data.summary.transportationRevenue} />
+          <Metric icon={BarChart3} label="صافي ربح السيارة" value={formatCurrency(data.summary.netProfit)} warning={data.summary.netProfit < 0} />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-5">
+          <Panel className="xl:col-span-3 overflow-x-auto">
+            <SectionTitle icon={Route} title="سجل أجور النقل" description={`${data.summary.tripCount} رحلة نقل منفذة ضمن الفترة المحددة.`} />
+            <table className="w-full min-w-[850px] text-right text-sm"><thead className="border-b border-border/30 text-xs text-muted-foreground"><tr><th className="p-2">الحجز</th><th className="p-2">الزبون</th><th className="p-2">تاريخ المناسبة</th><th className="p-2">أجرة النقل</th><th className="p-2">المنفذ</th><th className="p-2">مصروف الرحلة</th><th className="p-2">ربح النقل</th><th className="p-2">السائق</th></tr></thead><tbody>{data.trips.length ? data.trips.map((trip) => <tr key={trip.bookingId} className="border-b border-border/15 last:border-0"><td className="p-2"><Link href={`/admin/bookings/kosha/${trip.bookingId}`} className="font-medium text-primary hover:underline">{trip.bookingNo}</Link></td><td className="p-2">{trip.customerName}</td><td className="p-2 tabular-nums">{trip.eventDate?.slice(0, 10) || "—"}</td><td className="p-2 font-medium tabular-nums">{formatCurrency(trip.transportationFee)}</td><td className="p-2"><span className={trip.executionStatus === "executed" ? "rounded-full bg-emerald-500/10 px-2 py-1 text-xs text-emerald-700" : "rounded-full bg-amber-500/10 px-2 py-1 text-xs text-amber-700"}>{trip.executionStatus === "executed" ? formatCurrency(trip.executedTransportationRevenue) : "بانتظار دفعة منفذة"}</span></td><td className="p-2 tabular-nums text-rose-700">{formatCurrency(trip.tripExpense)}</td><td className="p-2 font-medium tabular-nums text-emerald-700">{formatCurrency(trip.tripProfit)}</td><td className="p-2">{trip.driverName || "—"}</td></tr>) : <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا توجد حجوزات نقل لهذه السيارة ضمن الفترة المحددة.</td></tr>}</tbody></table>
+          </Panel>
+          <Panel className="xl:col-span-2">
+            <SectionTitle icon={BarChart3} title="توزيع مصاريف السيارة" description="لا تُعد أجور النقل ربحاً قبل طرح المصاريف المنفذة." />
+            <div className="space-y-2">{VEHICLE_EXPENSE_OPTIONS.map(([value, label]) => { const amount = Number(data.summary.categories[value] ?? 0); const ratio = data.summary.vehicleExpenses > 0 ? Math.round((amount / data.summary.vehicleExpenses) * 100) : 0; return <div key={value} className="rounded-lg border border-border/20 bg-background/35 p-3"><div className="flex items-center justify-between gap-3 text-sm"><span>{label}</span><strong className="tabular-nums">{formatCurrency(amount)}</strong></div><Progress value={ratio} className="mt-2 h-1.5" /></div>; })}</div>
+          </Panel>
+        </div>
+        <Panel className="overflow-x-auto">
+          <SectionTitle icon={Wrench} title="سجل مصاريف السيارة" description="المصروف لا يخصم من الصندوق ولا من ربح السيارة إلا بعد الاعتماد." />
+          <table className="w-full min-w-[830px] text-right text-sm"><thead className="border-b border-border/30 text-xs text-muted-foreground"><tr><th className="p-2">التاريخ</th><th className="p-2">النوع</th><th className="p-2">المبلغ</th><th className="p-2">الحجز</th><th className="p-2">الصندوق</th><th className="p-2">الحالة</th><th className="p-2">إجراء</th></tr></thead><tbody>{data.expenses.length ? data.expenses.map((row) => <tr key={row.id} className="border-b border-border/15 last:border-0"><td className="p-2 tabular-nums">{row.date.slice(0, 10)}</td><td className="p-2">{row.expenseTypeLabel}</td><td className="p-2 font-medium tabular-nums">{formatCurrency(row.amount)}</td><td className="p-2">{row.bookingId ? <Link href={`/admin/bookings/kosha/${row.bookingId}`} className="text-primary hover:underline">{row.bookingNo}</Link> : "—"}</td><td className="p-2">{row.cashbox}</td><td className="p-2"><span className={row.status === "executed" ? "rounded-full bg-emerald-500/10 px-2 py-1 text-xs text-emerald-700" : row.status.includes("reversed") ? "rounded-full bg-slate-500/10 px-2 py-1 text-xs text-slate-600" : "rounded-full bg-amber-500/10 px-2 py-1 text-xs text-amber-700"}>{row.status === "executed" ? "منفذ" : row.status === "pending" ? "بانتظار الاعتماد" : row.status === "rejected" ? "مرفوض" : row.status === "partially_reversed" ? "معكوس جزئياً" : "معكوس"}</span></td><td className="p-2">{row.status === "executed" ? <Button type="button" size="sm" variant="outline" className="h-8 border-destructive/30 text-destructive hover:bg-destructive/5" onClick={() => { setReverseExpense(row); setReverseReason(""); }}>عكس</Button> : "—"}</td></tr>) : <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا توجد مصاريف مسجلة.</td></tr>}</tbody></table>
+        </Panel>
+      </> : <Empty message="تعذر تحميل الحساب المالي للسيارة." />}
+
+      <Dialog open={expenseOpen} onOpenChange={setExpenseOpen}><DialogContent dir="rtl" className="max-h-[92dvh] max-w-xl overflow-y-auto"><DialogHeader><DialogTitle>إضافة مصروف سيارة</DialogTitle><DialogDescription>سيُنشأ طلب مالي بانتظار الاعتماد. الحركة المنفذة وحدها تُخصم من الصندوق الرئيسي وتؤثر في ربح السيارة.</DialogDescription></DialogHeader><div className="grid gap-4 sm:grid-cols-2"><div><Label>السيارة</Label><Input className="mt-1.5" value={data?.vehicle ? `${data.vehicle.name} · ${data.vehicle.plateNumber}` : ""} readOnly /></div><div><Label>نوع المصروف</Label><select value={expense.expenseType} onChange={(event) => setExpense((current) => ({ ...current, expenseType: event.target.value }))} className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-sm">{VEHICLE_EXPENSE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div><Label>المبلغ</Label><Input className="mt-1.5" type="number" min="1" value={expense.amount} onChange={(event) => setExpense((current) => ({ ...current, amount: event.target.value }))} /></div><div><Label>التاريخ</Label><Input className="mt-1.5" type="date" value={expense.expenseDate} onChange={(event) => setExpense((current) => ({ ...current, expenseDate: event.target.value }))} /></div><div><Label>طريقة الدفع</Label><select value={expense.paymentMethod} onChange={(event) => setExpense((current) => ({ ...current, paymentMethod: event.target.value }))} className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="cash">نقدي</option><option value="transfer">تحويل</option><option value="card">بطاقة / POS</option></select></div><div><Label>الصندوق / الحساب</Label><Input className="mt-1.5" value="الصندوق الرئيسي" readOnly /></div><div className="sm:col-span-2"><Label>الحجز المرتبط (اختياري)</Label><select value={expense.bookingId} onChange={(event) => setExpense((current) => ({ ...current, bookingId: event.target.value }))} className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="">مصروف عام للسيارة</option>{data?.trips.map((trip) => <option key={trip.bookingId} value={trip.bookingId}>{trip.bookingNo} · {trip.customerName}</option>)}</select></div><div className="sm:col-span-2"><Label>الوصف / السبب</Label><Textarea className="mt-1.5 min-h-20" value={expense.description} onChange={(event) => setExpense((current) => ({ ...current, description: event.target.value }))} /></div><div className="sm:col-span-2"><Label>رابط المرفق / الوصل (اختياري)</Label><Input className="mt-1.5" type="url" dir="ltr" placeholder="https://…" value={expense.attachmentUrl} onChange={(event) => setExpense((current) => ({ ...current, attachmentUrl: event.target.value }))} /></div></div><DialogFooter className="gap-2 sm:justify-start sm:space-x-0"><Button type="button" variant="outline" onClick={() => setExpenseOpen(false)}>إلغاء</Button><Button type="button" disabled={!canCreateExpense || createExpense.isPending} onClick={() => createExpense.mutate()}>{createExpense.isPending ? <Loader2 className="ms-2 h-4 w-4 animate-spin" /> : <BadgeDollarSign className="ms-2 h-4 w-4" />}حفظ طلب المصروف</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={Boolean(reverseExpense)} onOpenChange={(open) => !open && setReverseExpense(null)}><DialogContent dir="rtl" className="max-w-md"><DialogHeader><DialogTitle>عكس مصروف السيارة</DialogTitle><DialogDescription>سيُنشئ النظام حركة عكسية تحفظ السجل الأصلي وتعيد مبلغ الصندوق مرة واحدة.</DialogDescription></DialogHeader><div><Label>سبب العكس</Label><Textarea className="mt-1.5" value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} /></div><DialogFooter className="gap-2 sm:justify-start sm:space-x-0"><Button type="button" variant="outline" onClick={() => setReverseExpense(null)}>إلغاء</Button><Button type="button" variant="destructive" disabled={reverse.isPending || reverseReason.trim().length < 3} onClick={() => reverse.mutate()}>{reverse.isPending ? <Loader2 className="ms-2 h-4 w-4 animate-spin" /> : null}تأكيد العكس</Button></DialogFooter></DialogContent></Dialog>
+    </div>
   );
 }
 
