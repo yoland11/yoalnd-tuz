@@ -295,6 +295,21 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
   const staffResult = await db.execute(sql`select s.*, ss.approval_status as salary_settings_approval, ss.enable_overtime, ss.enable_attendance_integration, ss.enable_advance_deduction, ss.enable_bonuses, ss.enable_penalties, ss.shift_start, ss.shift_end, ss.weekly_days_off, ss.risk_allowance, ss.weekend_hour_rate, ss.holiday_hour_rate, ss.tax_deduction, ss.insurance_deduction, ss.retirement_deduction, ss.late_deduction as setting_late_deduction, ss.absence_deduction as setting_absence_deduction, ss.other_deduction, ss.monthly_bonus, ss.performance_bonus, ss.commission, ss.annual_bonus, ss.other_bonus, ss.max_monthly_overtime from staff s left join employee_salary_settings ss on ss.staff_id=s.id where s.is_active=true ${data.department ? sql`and s.department=${data.department}` : sql``} ${ids.length ? sql`and s.id in (${sql.join(ids.map((id) => sql`${id}`), sql`,`)})` : sql``} order by s.id`);
   const staff = rows<any>(staffResult);
   if (!staff.length) throw new Error("لا يوجد موظفون نشطون يطابقون اختيار الرواتب");
+  // Effective-dated base movements are the source of truth for newly built
+  // periods. They deliberately affect only this and later periods; historical
+  // payroll lines retain the base salary captured when they were created.
+  const baseMovementResult = await db.execute(sql`
+    select distinct on (staff_id) id,staff_id,amount,effective_date
+    from employee_salary_adjustments
+    where adjustment_type='base_salary_adjustment'
+      and status='active'
+      and effective_date <= ${dates.end}
+      and staff_id in (${sql.join(staff.map((employee) => sql`${Number(employee.id)}`), sql`,`)})
+    order by staff_id,effective_date desc,id desc
+  `);
+  const effectiveBaseMovements = new Map<number, any>(
+    rows<any>(baseMovementResult).map((movement) => [Number(movement.staff_id), movement]),
+  );
   const incomplete = staff.map((s) => ({ staff: s, missing: [num(s.base_salary) <= 0 ? "الراتب الأساسي" : null, !["monthly", "weekly", "daily", "hourly"].includes(String(s.salary_type ?? "")) ? "نوع الراتب" : null, !["main_cash_box", "bank", "cash", "transfer", "card"].includes(String(s.payment_method ?? "")) ? "طريقة الدفع" : null, String(s.salary_status ?? "") !== "active" ? "حالة الرواتب النشطة" : null, !s.salary_settings_approval ? "إعدادات الراتب" : null, s.salary_settings_approval === "pending" ? "اعتماد إعدادات الراتب" : null].filter(Boolean) })).filter((entry) => entry.missing.length);
   if (incomplete.length) {
     const error: any = new Error("Salary settings are incomplete for this employee.");
@@ -324,13 +339,15 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
   for (const event of rows<any>(eventResult)) { const row = incentives.get(Number(event.staff_id)) ?? { bonus: 0, penalty: 0 }; if (["bonus", "reward"].includes(String(event.kind))) row.bonus += num(event.amount); else if (event.kind === "penalty") row.penalty += num(event.amount); incentives.set(Number(event.staff_id), row); }
   const lines: any[] = [];
   for (const employee of staff) {
+    const effectiveBaseMovement = effectiveBaseMovements.get(Number(employee.id));
+    const effectiveBaseSalary = effectiveBaseMovement ? num(effectiveBaseMovement.amount) : num(employee.base_salary);
     const attendanceEnabled = employee.enable_attendance_integration !== false;
     const overtimeEnabled = employee.enable_overtime !== false;
     const attendanceRecords = attendance.get(Number(employee.id)) ?? [];
     const attendanceMetrics = calculateAttendancePayroll({
       periodStart: dates.start,
       periodEnd: dates.end,
-      baseSalary: num(employee.base_salary),
+      baseSalary: effectiveBaseSalary,
       dailyWorkingHours: num(employee.daily_working_hours),
       workingDaysPerWeek: num(employee.working_days_per_week),
       weeklyDaysOff: Array.isArray(employee.weekly_days_off) ? employee.weekly_days_off : undefined,
@@ -353,7 +370,7 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
     const rawOvertimeHours = attendanceEnabled && overtimeEnabled ? attendanceMetrics.overtimeHours : 0;
     const overtimeHours = Math.min(rawOvertimeHours, num(employee.max_monthly_overtime) || rawOvertimeHours);
     const overtimeScale = rawOvertimeHours > 0 ? overtimeHours / rawOvertimeHours : 0;
-    const type = String(employee.salary_type ?? "monthly"); const configuredBase = num(employee.base_salary);
+    const type = String(employee.salary_type ?? "monthly"); const configuredBase = effectiveBaseSalary;
     const monthEnd = new Date(`${dates.period}-01T00:00:00Z`); monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1, 0); const fullMonthDays = scheduledDays(`${dates.period}-01`, monthEnd.toISOString().slice(0, 10), num(employee.working_days_per_week)) || 1; const recurringScale = dates.periodType === "monthly" && dates.start === `${dates.period}-01` && dates.end === monthEnd.toISOString().slice(0, 10) ? 1 : Math.min(1, scheduled / fullMonthDays);
     const payableDays = attendanceDays + (attendancePolicy.paidLeaveCountsAsPresent ? paidLeaveDays : 0);
     const base = type === "weekly" ? configuredBase * (dates.calendarDays / 7) : type === "daily" ? configuredBase * payableDays : type === "hourly" ? (num(employee.hourly_rate) || configuredBase) * hours : configuredBase * recurringScale;
@@ -384,7 +401,7 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
       originalCalculated: { baseSalary: base, overtimeAmount, bonusAmount: incentive.bonus + fixedBonuses, allowances, commissionAmount, absenceDeduction, lateDeduction, earlyLeaveDeduction, unpaidLeaveDeduction, grossSalary: num(gross - manualEarnings), totalDeductions: num(deductions - manualDeduction), netSalary: Math.max(0, num(gross - manualEarnings - (deductions - manualDeduction))) },
       manualEdit: previousLine?.calculation_details?.manualEdit ?? null,
       manualAdjustment: previousLine?.calculation_details?.manualEdit ?? null,
-      sources: { attendance: attendanceRecords.map((record) => Number(record.id)), advances: advance.history.filter((a: any) => ["approved", "paid"].includes(a.status)).map((a: any) => ({ advanceNo: a.advanceNo, monthlyDeduction: a.monthlyDeduction, remainingAmount: a.remainingAmount })) },
+      sources: { attendance: attendanceRecords.map((record) => Number(record.id)), advances: advance.history.filter((a: any) => ["approved", "paid"].includes(a.status)).map((a: any) => ({ advanceNo: a.advanceNo, monthlyDeduction: a.monthlyDeduction, remainingAmount: a.remainingAmount })), baseSalaryMovementId: effectiveBaseMovement ? Number(effectiveBaseMovement.id) : null },
     };
     lines.push({ employee, type, scheduled, attendanceDays, paidLeaveDays, unpaidLeaveDays, absenceDays, hours, overtimeHours, recurringScale, base, overtimeAmount, incentive, fixedBonuses, commissionAmount, allowances, manualEarnings, manualDeduction, lineNotes: previousLine?.line_notes ?? null, advanceDeduction, absenceDeduction, unpaidLeaveDeduction, lateDeduction, earlyLeaveDeduction, insuranceAmount, otherDeductions, fixedDeduction, gross, deductions, net, calculationDetails, att: attendanceMetrics });
   }

@@ -29,6 +29,22 @@ const adjustmentSchema = z.object({
   includeIn: z.enum(["current", "next"]).default("current"),
   attachment: z.string().max(7_000_000).optional().nullable(),
 });
+const movementSchema = z.object({
+  movementType: z.enum(["bonus", "deduction", "base_salary_adjustment"]),
+  amount: z.coerce.number().positive().max(1_000_000_000).optional(),
+  baseSalary: z.coerce.number().positive().max(1_000_000_000).optional(),
+  effectiveDate: z.string().date(),
+  reason: z.string().trim().min(3).max(1000),
+  notes: z.string().trim().max(2000).optional().nullable(),
+  attachment: z.string().max(7_000_000).optional().nullable(),
+}).superRefine((value, context) => {
+  if (value.movementType === "base_salary_adjustment" && !value.baseSalary) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["baseSalary"], message: "الراتب الأساسي الجديد مطلوب" });
+  }
+  if (value.movementType !== "base_salary_adjustment" && !value.amount) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["amount"], message: "المبلغ مطلوب" });
+  }
+});
 const attachmentSchema = z.object({ name: z.string().trim().min(1).max(240), mimeType: z.string().trim().min(1).max(120), dataUrl: z.string().min(20).max(7_000_000), notes: z.string().trim().max(1000).optional().nullable() });
 const reasonSchema = z.object({ reason: z.string().trim().min(3).max(1000) });
 const correctionSchema = z.object({
@@ -191,6 +207,94 @@ export async function addEmployeeSalaryAdjustment(runId: number, lineId: number,
     const adjustment = rows<any>(await tx.execute(sql`insert into employee_salary_adjustments(payroll_run_id,payroll_line_id,staff_id,direction,adjustment_type,amount,reason,notes,attachment,effective_date,include_in,status,old_values,new_values,created_by,created_by_name) values(${runId},${lineId},${line.staff_id},${data.direction},${data.adjustmentType},${data.amount},${data.reason},${data.notes || null},${data.attachment || null},${data.effectiveDate || todayBaghdad()},${data.includeIn},${status},${JSON.stringify(before)}::jsonb,${JSON.stringify(afterValues)}::jsonb,${actor.id},${actor.name}) returning *`))[0];
     if (data.includeIn === "next") await addEvent(tx, line, actor, data.direction === "addition" ? "salary_addition_scheduled" : "salary_deduction_scheduled", data.reason, before, { ...before, scheduledAdjustmentId: adjustment.id, amount: data.amount });
     return { adjustment, before, after: afterValues };
+  });
+}
+
+/**
+ * The unified salary-movement command deliberately reuses the existing
+ * employee_salary_adjustments audit table.  A base-salary change is stored as
+ * an effective-dated instruction; it never rewrites previous payroll rows.
+ */
+export async function addEmployeeSalaryMovement(runId: number, lineId: number, input: unknown, actor: HrActor) {
+  await ensureEmployeeSalaryManagementTables();
+  const data = movementSchema.parse(input);
+  return db.transaction(async (tx) => {
+    const line = await salaryContext(runId, lineId, true, tx);
+    if (!line) throw new Error("سجل الراتب غير موجود");
+    if (["cancelled", "reversed"].includes(String(line.run_status))) throw new Error("لا يمكن إضافة حركة إلى راتب ملغي أو معكوس");
+
+    const periodStart = `${String(line.period)}-01`;
+    const periodEnd = new Date(`${periodStart}T00:00:00Z`);
+    periodEnd.setUTCMonth(periodEnd.getUTCMonth() + 1, 0);
+    const affectsCurrentLine = data.effectiveDate <= periodEnd.toISOString().slice(0, 10);
+    const paid = num(line.amount_paid) > 0;
+    if (paid && affectsCurrentLine) {
+      throw new Error("الراتب المصروف لا يُعدّل مباشرة؛ استخدم تصحيح/تسوية الراتب للحفاظ على حركة الصندوق والسجل المالي");
+    }
+    if (data.movementType !== "base_salary_adjustment" && !affectsCurrentLine) {
+      throw new Error("المكافأة أو الاستقطاع يضافان إلى سجل الشهر المحدد؛ اختر سجل الراتب للشهر المقصود");
+    }
+    if (affectsCurrentLine && !["draft", "calculated", "under_review", "pending_manager_approval", "rejected", "approved", "ready_to_pay"].includes(String(line.run_status))) {
+      throw new Error("حالة الراتب لا تسمح بإضافة حركة حالياً");
+    }
+
+    const before = salaryNumbers(line);
+    let next = { ...line };
+    const isBase = data.movementType === "base_salary_adjustment";
+    const amount = isBase ? num(data.baseSalary) : num(data.amount);
+    const direction = data.movementType === "deduction" ? "deduction" : "addition";
+    const status = isBase ? "active" : "applied";
+    const includeIn = isBase ? "from_effective_month" : "current";
+
+    if (affectsCurrentLine) {
+      if (data.movementType === "bonus") next.bonus_amount = num(next.bonus_amount) + amount;
+      if (data.movementType === "deduction") next.manual_deduction = num(next.manual_deduction) + amount;
+      if (isBase) next.base_salary = amount;
+      const after = salaryNumbers(next);
+      await tx.execute(sql`update payroll_lines set base_salary=${next.base_salary},bonus_amount=${next.bonus_amount},manual_deduction=${next.manual_deduction},gross_salary=${after.gross},net_salary=${after.net},payment_status='unpaid',line_notes=concat_ws(E'\n',line_notes,${`${isBase ? "تعديل راتب أساسي" : data.movementType === "bonus" ? "مكافأة" : "استقطاع"}: ${data.reason} (${amount})`}) where id=${lineId}`);
+      await tx.execute(sql`update payroll_runs set total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${runId}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${runId}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${runId}),updated_at=now() where id=${runId}`);
+      next = { ...next, ...after };
+    }
+
+    const newValues = {
+      ...salaryNumbers(next),
+      movementType: data.movementType,
+      affectsCurrentLine,
+      baseSalary: isBase ? amount : num(line.base_salary),
+      previousBaseSalary: isBase ? num(line.base_salary) : undefined,
+    };
+    const adjustment = rows<any>(await tx.execute(sql`insert into employee_salary_adjustments(payroll_run_id,payroll_line_id,staff_id,direction,adjustment_type,amount,reason,notes,attachment,effective_date,include_in,status,old_values,new_values,created_by,created_by_name) values(${runId},${lineId},${line.staff_id},${direction},${data.movementType},${amount},${data.reason},${data.notes || null},${data.attachment || null},${data.effectiveDate},${includeIn},${status},${JSON.stringify({ ...before, baseSalary: num(line.base_salary) })}::jsonb,${JSON.stringify(newValues)}::jsonb,${actor.id},${actor.name}) returning *`))[0];
+    const action = isBase ? "salary_base_adjusted" : data.movementType === "bonus" ? "salary_bonus_created" : "salary_deduction_created";
+    await addEvent(tx, line, actor, action, data.reason, { ...before, baseSalary: num(line.base_salary) }, { ...newValues, movementId: adjustment.id });
+    return { adjustment, before, after: newValues, affectsCurrentLine };
+  });
+}
+
+export async function cancelEmployeeSalaryMovement(runId: number, lineId: number, adjustmentId: number, input: unknown, actor: HrActor) {
+  await ensureEmployeeSalaryManagementTables();
+  const data = reasonSchema.parse(input);
+  return db.transaction(async (tx) => {
+    const line = await salaryContext(runId, lineId, true, tx);
+    if (!line) throw new Error("سجل الراتب غير موجود");
+    if (num(line.amount_paid) > 0) throw new Error("الحركة ضمن راتب مصروف؛ استخدم تصحيح/تسوية الراتب بدلاً من الإلغاء");
+    const adjustment = rows<any>(await tx.execute(sql`select * from employee_salary_adjustments where id=${adjustmentId} and payroll_run_id=${runId} and payroll_line_id=${lineId} for update`))[0];
+    if (!adjustment) throw new Error("حركة الراتب غير موجودة");
+    if (String(adjustment.status) === "cancelled") return { adjustment, duplicate: true };
+    if (!['bonus', 'deduction', 'base_salary_adjustment'].includes(String(adjustment.adjustment_type))) throw new Error("هذه الحركة التاريخية لا يمكن إلغاؤها من المسار الموحد");
+    const before = salaryNumbers(line);
+    const affectsCurrentLine = Boolean(adjustment.new_values?.affectsCurrentLine);
+    let next = { ...line };
+    if (affectsCurrentLine) {
+      if (adjustment.adjustment_type === "bonus") next.bonus_amount = Math.max(0, num(next.bonus_amount) - num(adjustment.amount));
+      if (adjustment.adjustment_type === "deduction") next.manual_deduction = Math.max(0, num(next.manual_deduction) - num(adjustment.amount));
+      if (adjustment.adjustment_type === "base_salary_adjustment") next.base_salary = num(adjustment.old_values?.baseSalary);
+      const after = salaryNumbers(next);
+      await tx.execute(sql`update payroll_lines set base_salary=${next.base_salary},bonus_amount=${next.bonus_amount},manual_deduction=${next.manual_deduction},gross_salary=${after.gross},net_salary=${after.net},payment_status='unpaid' where id=${lineId}`);
+      await tx.execute(sql`update payroll_runs set total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${runId}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${runId}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${runId}),updated_at=now() where id=${runId}`);
+    }
+    await tx.execute(sql`update employee_salary_adjustments set status='cancelled',notes=concat_ws(E'\n',notes,${`ألغيت بواسطة ${actor.name}: ${data.reason}`}) where id=${adjustmentId}`);
+    await addEvent(tx, line, actor, "salary_movement_cancelled", data.reason, before, { ...salaryNumbers(next), adjustmentId, affectsCurrentLine });
+    return { adjustmentId, cancelled: true, before, after: salaryNumbers(next) };
   });
 }
 

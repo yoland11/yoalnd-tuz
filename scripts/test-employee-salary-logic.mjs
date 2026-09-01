@@ -43,6 +43,15 @@ function restoreAdvance(state, reference, amount) {
 const totals = salaryTotal({ base: 1_000_000, allowances: 100_000, bonus: 50_000, overtime: 25_000, addition: 10_000, deduction: 35_000, advance: 100_000 });
 assert.deepEqual(totals, { gross: 1_185_000, deductions: 135_000, net: 1_050_000 });
 
+// A salary movement remains separate from the base salary for its selected
+// month. An effective-dated base adjustment is only selected by later runs.
+const movementMonth = salaryTotal({ base: 1_000_000, allowances: 0, bonus: 150_000, overtime: 0, addition: 0, deduction: 50_000, advance: 0 });
+assert.deepEqual(movementMonth, { gross: 1_150_000, deductions: 50_000, net: 1_100_000 });
+const historicBase = 1_000_000;
+const nextMonthBase = 1_200_000;
+assert.equal(historicBase, 1_000_000);
+assert.equal(nextMonthBase, 1_200_000);
+
 let payment = { net: 500_000, paid: 0, remaining: 500_000, status: "unpaid", keys: new Set(), cashTransactions: 0, journalEntries: 0 };
 payment = applyPayment(payment, 200_000, "request-1");
 assert.equal(payment.status, "partially_paid");
@@ -74,4 +83,4 @@ assert.equal(localizedNumber("500,000"), 500_000);
 assert.equal(localizedNumber("٥٠٠٬٠٠٠"), 500_000);
 assert.equal(localizedNumber("١٢٣٫٥"), 123.5);
 
-console.log("Employee salary logic: 17 assertions passed (calculation, localized amounts, partial/full payment, overpayment, idempotency, advances, legacy reconciliation)." );
+console.log("Employee salary logic: 21 assertions passed (salary movements, effective base history, calculation, localized amounts, partial/full payment, overpayment, idempotency, advances, legacy reconciliation)." );

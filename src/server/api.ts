@@ -361,6 +361,8 @@ import { normalizeAttendancePolicy } from "@/server/attendance-payroll";
 import {
   addEmployeeSalaryAdjustment,
   addEmployeeSalaryAttachment,
+  addEmployeeSalaryMovement,
+  cancelEmployeeSalaryMovement,
   correctPaidEmployeeSalary,
   getEmployeeSalaryManagementDetail,
   linkHistoricalSalaryPayment,
@@ -27245,6 +27247,77 @@ async function handleHrAdmin(
         });
         if (employeeLine) void createNotification({ audienceType: "staff", staffId: Number(employeeLine.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم تسجيل دفعة راتب بقيمة ${formatCurrency(result.payment?.amount ?? payload?.amount)}.`, entityType: "payroll_line", entityId: lineId, href: "/staff?tab=salary" });
         return json(result, 201);
+      }
+      if (
+        method === "POST" &&
+        id &&
+        parts[4] === "lines" &&
+        parts[5] &&
+        parts[6] === "movements" &&
+        !parts[7]
+      ) {
+        const payload = await body(req);
+        const movementType = String(payload?.movementType || "");
+        const permission = movementType === "deduction"
+          ? "employee_salaries_reduce_amount"
+          : movementType === "base_salary_adjustment"
+            ? "employee_salaries_edit"
+            : "employee_salaries_add_amount";
+        const denied = requirePayroll(
+          permission,
+          "لا تملك صلاحية إضافة حركة راتب",
+        );
+        if (denied) return denied;
+        if (movementType === "base_salary_adjustment" && !["admin", "manager"].includes(auth.role)) {
+          return error("تعديل الراتب الأساسي يتطلب صلاحية المدير", 403);
+        }
+        const lineId = int(parts[5])!;
+        const result = await addEmployeeSalaryMovement(id, lineId, payload, actor);
+        const action = movementType === "bonus"
+          ? "salary_bonus_created"
+          : movementType === "deduction"
+            ? "salary_deduction_created"
+            : "salary_base_adjusted";
+        void logAdminActivity(req, action, "payroll_line", lineId, {
+          oldValues: result.before,
+          newValues: result.after,
+          reason: payload?.reason,
+          ip: ip(req),
+          device: req.headers.get("user-agent") || "",
+        });
+        void addEntityTimeline({
+          entityType: "payroll_line",
+          entityId: lineId,
+          type: action,
+          title: movementType === "bonus" ? "إضافة مكافأة راتب" : movementType === "deduction" ? "إضافة استقطاع راتب" : "تعديل الراتب الأساسي",
+          body: payload?.reason || null,
+          actor: erpActorFromAdmin(auth),
+          metadata: result,
+        });
+        return json(result, 201);
+      }
+      if (
+        method === "POST" &&
+        id &&
+        parts[4] === "lines" &&
+        parts[5] &&
+        parts[6] === "movements" &&
+        parts[7] &&
+        parts[8] === "cancel"
+      ) {
+        const denied = requirePayroll("employee_salaries_edit", "لا تملك صلاحية إلغاء حركة راتب");
+        if (denied) return denied;
+        const lineId = int(parts[5])!;
+        const movementId = int(parts[7]);
+        if (!movementId) return error("معرف حركة الراتب غير صحيح", 400);
+        const payload = await body(req);
+        const result = await cancelEmployeeSalaryMovement(id, lineId, movementId, payload, actor);
+        void logAdminActivity(req, "salary_movement_cancelled", "payroll_line", lineId, {
+          newValues: result,
+          reason: payload?.reason,
+          ip: ip(req),
+        });
+        return json(result, 200);
       }
       if (
         method === "POST" &&
@@ -62323,31 +62396,50 @@ async function handleUnifiedStaffPortal(
     }
   }
 
-  // Simple salary data is intentionally isolated from the historical payroll
-  // cycle UI.  The authenticated session is the only source of staff identity;
-  // this endpoint never accepts an employee id from the client.
+  // The authenticated session is the only source of staff identity; this
+  // endpoint never accepts an employee id from the client.  It intentionally
+  // merges legacy simple rows with the current payroll rows without exposing
+  // another employee's salary or movement history.
   if (resource === "salary") {
     if (method !== "GET") return error("إجراء الراتب غير مدعوم", 405);
     const requestedLineId = int(parts[3] ?? "");
     try {
       const salaryResult: any = await db.execute(sql`
         select l.id,r.period as month,l.base_salary::float as "baseSalary",
-               l.bonus_amount::float as bonus,l.penalty_amount::float as deduction,
+               l.bonus_amount::float as bonus,(l.penalty_amount+l.manual_deduction)::float as deduction,
                l.net_salary::float as "netSalary",l.payment_status as "paymentStatus",
                l.amount_paid::float as "amountPaid",r.paid_at as "paidAt"
         from payroll_lines l
         join payroll_runs r on r.id=l.payroll_run_id
-        where l.staff_id=${auth.id} and r.run_kind='simple' and r.deleted_at is null
+        where l.staff_id=${auth.id} and r.deleted_at is null
         order by r.period desc,l.id desc
         limit 60
       `);
       const lines = (salaryResult?.rows ?? []) as any[];
+      const lineIds = lines.map((line: any) => Number(line.id)).filter(Number.isInteger);
+      const movementResult: any = lineIds.length ? await db.execute(sql`
+        select id,payroll_line_id,adjustment_type,amount,reason,effective_date,status,created_by_name,created_at
+        from employee_salary_adjustments
+        where staff_id=${auth.id} and payroll_line_id in (${sql.join(lineIds.map((id) => sql`${id}`), sql`,`)})
+        order by created_at desc,id desc
+      `) : { rows: [] };
+      const movementsByLine = new Map<number, any[]>();
+      for (const movement of movementResult?.rows ?? []) {
+        const key = Number(movement.payroll_line_id);
+        movementsByLine.set(key, [...(movementsByLine.get(key) ?? []), {
+          id: Number(movement.id), type: String(movement.adjustment_type), amount: Number(movement.amount ?? 0),
+          reason: String(movement.reason ?? ""), effectiveDate: String(movement.effective_date ?? ""),
+          status: String(movement.status ?? "applied"), createdBy: String(movement.created_by_name ?? ""),
+          createdAt: movement.created_at ? new Date(movement.created_at).toISOString() : null,
+        }]);
+      }
       const safeLines = lines.map((line: any) => ({
         id: Number(line.id), month: String(line.month ?? ""),
         baseSalary: Number(line.baseSalary ?? 0), bonus: Number(line.bonus ?? 0),
         deduction: Number(line.deduction ?? 0), netSalary: Number(line.netSalary ?? 0),
         paymentStatus: String(line.paymentStatus ?? "unpaid"), amountPaid: Number(line.amountPaid ?? 0),
         paidAt: line.paidAt ? new Date(line.paidAt).toISOString() : null,
+        movements: movementsByLine.get(Number(line.id)) ?? [],
       }));
       if (requestedLineId) {
         const detail = safeLines.find((line: { id: number }) => line.id === requestedLineId);
