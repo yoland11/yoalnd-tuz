@@ -27,6 +27,7 @@ check("canonical state keeps zero paid documents unpaid", engine.includes("appro
 check("canonical state maps partial approved money to partial", engine.includes("ELSE 'partial'"));
 check("canonical state maps full approved money to paid", engine.includes("approved_paid >= computed.total_amount THEN 'paid'"));
 check("reconciliation locks the source row inside the caller transaction", engine.includes("FOR UPDATE"));
+check("legacy service orders reconcile without writing a missing updated_at column", engine.includes("service_order: { table: \"service_orders\"") && engine.includes("touchesUpdatedAt: false") && engine.includes("config.touchesUpdatedAt !== false"));
 check("approval execution invokes the canonical engine", cashBox.includes("await reconcilePaymentState(tx, { sourceType: transaction.sourceType, sourceId })"));
 check("receipt posting invokes the canonical engine", cashBox.includes("for (const source of sourcesToReconcile.values())\n    await reconcilePaymentState(tx, source);"));
 check("receipt reversal invokes the canonical engine", cashBox.includes("async function reverseReceiptVoucherAllocations") && cashBox.includes("sourcesToReconcile"));

@@ -167,6 +167,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   payment_voucher: "سند صرف",
   payroll_run: "دورة رواتب",
   expense: "مصروف",
+  vehicle_expense: "مصروف سيارة",
 };
 const sourceTypeLabel = (sourceType: string | null | undefined) =>
   (sourceType && SOURCE_TYPE_LABELS[sourceType]) || "طلب مالي";
@@ -200,23 +201,29 @@ function sourceBucket(sourceType: string | null | undefined): ApprovalBucket {
   }
 }
 
-/** Route to the original booking / invoice / financial request for "View Source". */
-function sourceHref(sourceType: string | null | undefined, sourceId: string | null | undefined): string {
-  const id = sourceId ? encodeURIComponent(sourceId) : "";
+/** Route to the exact originating document for "View Source". */
+function sourceHref(
+  sourceType: string | null | undefined,
+  sourceId: string | number | null | undefined,
+): string | null {
+  if (sourceId === null || sourceId === undefined || String(sourceId).trim() === "") {
+    return null;
+  }
+  const id = encodeURIComponent(String(sourceId));
   switch (sourceType) {
     case "photography_order":
       return `/staff/photography/orders/${id}`; // exact per-record page
     case "kosha_booking":
-      return `/admin/kosha-bookings?focus=${id}`;
+      return `/admin/invoice/${id}?type=kosha`;
     case "order":
     case "rental_order":
-      return `/admin/orders?focus=${id}`;
+      return `/admin/invoice/${id}`;
     case "service_order":
-      return `/admin/services?focus=${id}`;
+      return `/admin/invoice/${id}?type=booking`;
     case "sales_invoice":
-      return `/admin/sales?focus=${id}`;
+      return `/admin/sales?invoice=${id}`;
     case "purchase_invoice":
-      return `/admin/purchases?focus=${id}`;
+      return `/admin/purchases?invoice=${id}`;
     case "receipt_voucher":
       return `/admin/accounting?tab=receipts&focus=${id}`;
     case "payment_voucher":
@@ -225,9 +232,31 @@ function sourceHref(sourceType: string | null | undefined, sourceId: string | nu
       return `/admin/hr?tab=payroll&focus=${id}`;
     case "expense":
       return `/admin/finance/expenses?focus=${id}`;
+    case "vehicle_expense":
+      return "/admin/command-center?tab=vehicle-profitability";
     default:
-      return `/admin/finance/request`;
+      return null;
   }
+}
+
+function SourceLink({
+  sourceType,
+  sourceId,
+  label,
+  compact = false,
+}: {
+  sourceType: string | null | undefined;
+  sourceId: string | number | null | undefined;
+  label: "عرض المصدر" | "فتح المصدر";
+  compact?: boolean;
+}) {
+  const href = sourceHref(sourceType, sourceId);
+  if (!href) {
+    return <span className="inline-flex items-center rounded-lg border border-border/30 px-2.5 py-1.5 text-xs text-muted-foreground" title="لا يتوفر سجل مصدر قابل للفتح لهذه الحركة">لا يوجد مصدر</span>;
+  }
+  return <a href={href} className={compact ? "inline-flex items-center gap-1 rounded-lg border border-border/40 px-2 py-1 text-xs text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40" : "inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"}>
+    <ExternalLink className="h-3.5 w-3.5" /> {label}
+  </a>;
 }
 
 const STATUS_CLASSES: Record<string, string> = {
@@ -618,9 +647,7 @@ function ApprovalsPanel({
                   <td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td>
                   <td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td>
                   <td className="px-3 py-3 text-center">
-                    <a href={sourceHref(row.sourceType, row.sourceId)} className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2 py-1 text-xs text-primary hover:border-primary/50">
-                      <ExternalLink className="h-3.5 w-3.5" /> عرض المصدر
-                    </a>
+                    <SourceLink sourceType={row.sourceType} sourceId={row.sourceId} label="عرض المصدر" compact />
                   </td>
                   {isManager && (
                     <td className="px-3 py-3">
@@ -659,7 +686,7 @@ function TransactionDetailView({ data, isManager, canEdit, canDelete, busy, onUp
   return <div className="space-y-4">
     {(canEdit || canCancel) && <div className="flex flex-wrap gap-2 rounded-lg border border-border/30 bg-background/55 p-3"><>{canEdit && ["draft", "rejected"].includes(data.approvalStatus) && <Button type="button" size="sm" variant="outline" onClick={() => setEditing((value) => !value)} disabled={busy} className="gap-1.5"><Pencil className="h-3.5 w-3.5" /> تعديل السند</Button>}{canCancel && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { const reason = window.prompt("سبب إلغاء السند (3 أحرف على الأقل):"); if (reason && reason.trim().length >= 3) onCancel(reason.trim()); }} className="gap-1.5 text-destructive hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /> إلغاء السند</Button>}</></div>}
     {editing && <VoucherEditor data={data} busy={busy} onClose={() => setEditing(false)} onSave={(values) => { onUpdate(values); setEditing(false); }} />}
-    <div className="flex flex-wrap gap-2 text-xs"><a href="/admin/finance/master-cash" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary hover:border-primary/50"><ExternalLink className="h-3.5 w-3.5" /> حركة الصندوق</a>{data.customerId && <a href={`/admin/customers?focus=${data.customerId}`} className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary hover:border-primary/50"><ExternalLink className="h-3.5 w-3.5" /> فتح العميل</a>}{data.sourceId && <a href={sourceHref(data.sourceType, data.sourceId)} className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary hover:border-primary/50"><ExternalLink className="h-3.5 w-3.5" /> فتح المصدر</a>}{data.entries.length > 0 && <a href="#journal-entry" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary hover:border-primary/50"><ExternalLink className="h-3.5 w-3.5" /> القيد المحاسبي</a>}</div>
+    <div className="flex flex-wrap gap-2 text-xs"><a href="/admin/finance/master-cash" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"><ExternalLink className="h-3.5 w-3.5" /> حركة الصندوق</a>{data.customerId && <a href={`/admin/customers?focus=${data.customerId}`} className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"><ExternalLink className="h-3.5 w-3.5" /> فتح العميل</a>}{data.sourceId && <SourceLink sourceType={data.sourceType} sourceId={data.sourceId} label="فتح المصدر" />}{data.entries.length > 0 && <a href="#journal-entry" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"><ExternalLink className="h-3.5 w-3.5" /> القيد المحاسبي</a>}</div>
     <div className="grid gap-2 rounded-lg border border-border/30 bg-background/40 p-3 text-sm sm:grid-cols-2"><p><span className="text-muted-foreground">نوع السند: </span><b>{voucherTypeLabel(data.transactionType)}</b></p><p><span className="text-muted-foreground">رقم المرجع: </span>{data.referenceNo || "—"}</p><p><span className="text-muted-foreground">طريقة الدفع: </span>{data.paymentMethod}</p><p><span className="text-muted-foreground">الطرف: </span>{data.customerName || "—"}</p><p><span className="text-muted-foreground">المصدر: </span>{sourceTypeLabel(data.sourceType)}{data.sourceId ? ` #${data.sourceId}` : ""}</p><p><span className="text-muted-foreground">المرفقات: </span>{data.attachments?.length ?? 0}</p></div>
     {isReversed && <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">تم عكس هذه الحركة{data.reversedByName ? ` بواسطة ${data.reversedByName}` : ""}{data.reversalReason ? ` · السبب: ${data.reversalReason}` : ""}.</div>}
     {isReversalEntry && <div className="rounded-lg border border-status-warning/40 bg-status-warning/10 p-3 text-sm text-status-warning">هذه حركة عكسية (تصحيح){data.reversedTransactionId ? ` للحركة رقم ${data.reversedTransactionId}` : ""}.</div>}

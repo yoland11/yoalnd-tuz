@@ -25,6 +25,8 @@ type SourceConfig = {
   paid: string;
   remaining: string;
   status: string;
+  /** Some legacy source tables deliberately do not carry an updated_at field. */
+  touchesUpdatedAt?: boolean;
   direction: "revenue" | "expense";
   receiptAllocations: boolean;
 };
@@ -36,7 +38,10 @@ const SOURCES: Record<PaymentStateSourceType, SourceConfig> = {
   purchase_invoice: { table: "purchase_invoices", total: "total", paid: "paid_amount", remaining: "remaining_amount", status: "payment_status", direction: "expense", receiptAllocations: false },
   kosha_booking: { table: "kosha_bookings", total: "total_amount", paid: "paid_amount", remaining: "remaining_amount", status: "payment_status", direction: "revenue", receiptAllocations: true },
   order: { table: "orders", total: "total", paid: "deposit_amount", remaining: "remaining_amount", status: "payment_status", direction: "revenue", receiptAllocations: true },
-  service_order: { table: "service_orders", total: "total_amount", paid: "deposit_amount", remaining: "remaining_amount", status: "payment_status", direction: "revenue", receiptAllocations: true },
+  // service_orders is a legacy table without updated_at. Reconciliation must
+  // remain compatible with existing records instead of failing the entire
+  // approval transaction after cash-box posting has begun.
+  service_order: { table: "service_orders", total: "total_amount", paid: "deposit_amount", remaining: "remaining_amount", status: "payment_status", touchesUpdatedAt: false, direction: "revenue", receiptAllocations: true },
   graduation_order: { table: "graduation_orders", total: "total_amount", paid: "paid_amount", remaining: "remaining_amount", status: "payment_status", direction: "revenue", receiptAllocations: true },
   photography_order: { table: "photography_orders", total: "total_amount", paid: "paid_amount", remaining: "remaining_amount", status: "payment_status", direction: "revenue", receiptAllocations: true },
   rental_order: { table: "rental_orders", total: "total_amount", paid: "paid_amount", remaining: "remaining_amount", status: "payment_status", direction: "revenue", receiptAllocations: true },
@@ -75,6 +80,8 @@ export async function reconcilePaymentState(
   const paid = sql.raw(config.paid);
   const remaining = sql.raw(config.remaining);
   const status = sql.raw(config.status);
+  const updatedAt =
+    config.touchesUpdatedAt !== false ? sql`, updated_at = now()` : sql``;
   const allocations = config.receiptAllocations
     ? sql`, allocations AS (
         SELECT coalesce(sum(greatest(a.amount::numeric - coalesce(a.reversed_amount::numeric, 0), 0)), 0)::numeric AS value
@@ -115,8 +122,7 @@ export async function reconcilePaymentState(
           WHEN computed.total_amount <= 0 OR computed.approved_paid <= 0 THEN 'unpaid'
           WHEN computed.approved_paid >= computed.total_amount THEN 'paid'
           ELSE 'partial'
-        END,
-        updated_at = now()
+        END${updatedAt}
     FROM computed
     WHERE document.id = computed.id
     RETURNING document.id,

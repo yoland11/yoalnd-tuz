@@ -65327,41 +65327,61 @@ async function handleMasterCash(
         if (!canApproveFinancialTransactions(financeUser))
           return error("اعتماد المعاملات المالية متاح للمدير الرئيسي فقط", 403);
         const payload = await body(req);
-        const row = await approveAndExecuteFinancialTransaction(
-          id,
-          financeUser,
-          nullableText(payload?.note),
-        );
-        await finalizePhotographyPaymentRequest(
-          row,
-          true,
-          financeUser,
-          nullableText(payload?.note),
-        );
-        void logAdminActivity(
-          req,
-          "financial_transaction_executed",
-          "financial_transaction",
-          id,
-          {
-            transactionNo: row.transactionNo,
-            balanceBefore: row.balanceBefore,
-            balanceAfter: row.balanceAfter,
-          },
-        );
-        if (row.direction === "revenue") {
-          void notifyTelegramPayment({
-            event: "managerApproval",
-            reference: row.transactionNo,
-            customerName: row.customerName || row.description,
-            amount: row.amount,
-            paymentMethod: row.paymentMethod,
-            createdByName: financeUser.name,
-            status: row.approvalStatus,
-            entityPath: "/admin/finance/master-cash",
+        try {
+          const row = await approveAndExecuteFinancialTransaction(
+            id,
+            financeUser,
+            nullableText(payload?.note),
+          );
+          await finalizePhotographyPaymentRequest(
+            row,
+            true,
+            financeUser,
+            nullableText(payload?.note),
+          );
+          void logAdminActivity(
+            req,
+            "financial_transaction_executed",
+            "financial_transaction",
+            id,
+            {
+              transactionNo: row.transactionNo,
+              balanceBefore: row.balanceBefore,
+              balanceAfter: row.balanceAfter,
+            },
+          );
+          if (row.direction === "revenue") {
+            void notifyTelegramPayment({
+              event: "managerApproval",
+              reference: row.transactionNo,
+              customerName: row.customerName || row.description,
+              amount: row.amount,
+              paymentMethod: row.paymentMethod,
+              createdByName: financeUser.name,
+              status: row.approvalStatus,
+              entityPath: "/admin/finance/master-cash",
+            });
+          }
+          return json(row);
+        } catch (approvalError) {
+          const requestId = makeRequestId(req.headers.get("x-request-id"));
+          console.error("Master cash approval failed", {
+            requestId,
+            transactionId: id,
+            actorId: financeUser.id,
+            code: (approvalError as { code?: unknown } | null)?.code ?? null,
+            error: safeServerError(approvalError),
           });
+          return error(
+            "تعذر إكمال طلب الاعتماد. لم نعرض تفاصيل تقنية؛ حدّث حالة الحركة قبل إعادة المحاولة ثم راجع سجل الخادم باستخدام رقم الطلب.",
+            500,
+            {
+              code: "DATABASE_ERROR",
+              requestId,
+              retryable: false,
+            },
+          );
         }
-        return json(row);
       }
 
       if (method === "POST" && action === "reject") {
