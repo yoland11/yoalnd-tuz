@@ -612,11 +612,29 @@ export function createPurchaseInvoicePrintElement(
   return wrapper;
 }
 
+/**
+ * Opens the print surface during the original click. Fetching invoice details
+ * first causes browsers to block the popup and leave the user with a blank tab.
+ */
+export function preparePurchaseInvoicePrintWindow(): Window {
+  const popup = window.open("", "_blank", "width=980,height=860");
+  if (!popup) {
+    throw new Error("تعذر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم حاول مرة أخرى.");
+  }
+  popup.opener = null;
+  popup.document.open();
+  popup.document.write('<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>AJN</title></head><body style="font-family:Tahoma,Arial,sans-serif;padding:24px">جارٍ تجهيز الفاتورة للطباعة…</body></html>');
+  popup.document.close();
+  return popup;
+}
+
 export function openPurchaseInvoicePrintWindow(
   input: PurchaseInvoiceStatementInput,
+  existingWindow?: Window | null,
 ) {
-  const popup = window.open("", "_blank", "noopener,noreferrer,width=980,height=860");
-  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  const popup = existingWindow && !existingWindow.closed
+    ? existingWindow
+    : preparePurchaseInvoicePrintWindow();
   popup.document.open();
   popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${escapePrintHtml(input.invoiceNo)}</title><style>${purchaseInvoiceStatementCss()}</style></head><body>${purchaseInvoiceStatementMarkup(input)}${printWhenImagesReadyScript()}</body></html>`);
   popup.document.close();

@@ -45,6 +45,7 @@ import { downloadElementPdf } from "@/lib/pdf";
 import {
   createPurchaseInvoicePrintElement,
   openPurchaseInvoicePrintWindow,
+  preparePurchaseInvoicePrintWindow,
   type PurchaseInvoiceStatementInput,
 } from "./print-helpers";
 import {
@@ -588,10 +589,13 @@ export default function PurchasesPage() {
   }
 
   async function printInvoice(inv: PurchaseInvoice) {
+    let popup: Window | null = null;
     try {
+      popup = preparePurchaseInvoicePrintWindow();
       const full = await adminFetch<PurchaseInvoiceDetails>(`/admin/purchase-invoices/${inv.id}`);
-      printPurchaseInvoiceStatement(full, settings);
+      printPurchaseInvoiceStatement(full, settings, popup);
     } catch (error) {
+      if (popup && !popup.closed) popup.close();
       toast({
         title: "تعذر فتح نافذة الطباعة",
         description:
@@ -1371,49 +1375,6 @@ const paymentApprovalLabel: Record<string, string> = {
   reversed: "معكوسة",
 };
 
-function escapePurchasePrint(value: unknown) {
-  return String(value ?? "—")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function legacyPurchaseInvoiceStatementPrint(invoice: PurchaseInvoiceDetails, settings: any) {
-  const popup = window.open("", "_blank", "noopener,noreferrer,width=920,height=900");
-  if (!popup) throw new Error("يرجى السماح بالنوافذ المنبثقة للطباعة");
-  const summary = invoice.paymentSummary ?? {
-    total: Number(invoice.total ?? 0),
-    paidAmount: Number(invoice.paidAmount ?? 0),
-    remainingAmount: Number(invoice.remainingAmount ?? 0),
-    paymentStatus: invoice.paymentStatus ?? "unpaid",
-    percentage: 0,
-  };
-  const payments = Array.isArray(invoice.payments) ? invoice.payments : [];
-  const items = Array.isArray((invoice as any).items) ? (invoice as any).items : [];
-  const rows = payments.length
-    ? payments.map((payment, index) => `<tr>
-        <td>${index + 1}</td><td>${escapePurchasePrint(payment.executedAt || payment.transactionDate)}</td>
-        <td>${escapePurchasePrint(formatCurrency(payment.amount))}</td>
-        <td>${escapePurchasePrint(paymentMethodLabel[payment.paymentMethod ?? ""] ?? payment.paymentMethod)}</td>
-        <td>الصندوق الرئيسي</td><td>${escapePurchasePrint(payment.executedByName || payment.requestedByName)}</td>
-        <td>${escapePurchasePrint(payment.notes)}</td><td>${escapePurchasePrint(paymentApprovalLabel[payment.approvalStatus] ?? payment.approvalStatus)}</td>
-      </tr>`).join("")
-    : '<tr><td colspan="8" class="empty">لا توجد دفعات مسجلة</td></tr>';
-  const itemRows = items.map((item: any, index: number) => `<tr><td>${index + 1}</td><td>${escapePurchasePrint(item.productName || item.name)}</td><td>${escapePurchasePrint(item.quantity)}</td><td>${escapePurchasePrint(formatCurrency(item.costPrice || item.unitPrice || 0))}</td><td>${escapePurchasePrint(formatCurrency(item.total || 0))}</td></tr>`).join("");
-  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"/><title>كشف فاتورة شراء ${escapePurchasePrint(invoice.invoiceNo)}</title><style>
-    @page { size: A4; margin: 13mm; } * { box-sizing: border-box; } body { font-family: Tahoma, Arial, sans-serif; color:#172033; font-size:12px; } h1,h2,p { margin:0; } .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #e25f52; padding-bottom:14px; margin-bottom:16px; } .brand { color:#c9463b; font-weight:700; font-size:18px; } .muted { color:#667085; margin-top:5px; } .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; margin:14px 0; } .card { border:1px solid #e4e7ec; border-radius:8px; padding:10px; } .card strong { display:block; margin-top:5px; font-size:14px; } .remaining { background:#fff6e8; border-color:#f6c56b; } table { width:100%; border-collapse:collapse; margin-top:10px; } th,td { border:1px solid #e4e7ec; padding:7px; text-align:right; vertical-align:top; } th { background:#f8fafc; } .empty { text-align:center; color:#667085; padding:15px; } .section { margin-top:20px; } .footer { margin-top:24px; border-top:1px solid #e4e7ec; padding-top:9px; color:#667085; font-size:11px; }
-  </style></head><body><header class="head"><div><h1>كشف فاتورة شراء</h1><p class="muted">${escapePurchasePrint(settings?.site_name || "AJN ERP")}</p></div><div><p><b>رقم الفاتورة:</b> ${escapePurchasePrint(invoice.invoiceNo)}</p><p class="muted">تاريخ الفاتورة: ${escapePurchasePrint(invoice.date)}</p></div></header>
-  <section class="grid"><div class="card"><span>المورد</span><strong>${escapePurchasePrint(invoice.supplierName)}</strong></div><div class="card"><span>حالة الدفع</span><strong>${escapePurchasePrint(invoicePaymentLabel(summary.paymentStatus))}</strong></div><div class="card"><span>طريقة الدفع</span><strong>${escapePurchasePrint(paymentMethodLabel[invoice.paymentMethod ?? ""] ?? invoice.paymentMethod)}</strong></div></section>
-  <section class="grid"><div class="card"><span>إجمالي الفاتورة</span><strong>${escapePurchasePrint(formatCurrency(summary.total))}</strong></div><div class="card"><span>إجمالي المدفوع المنفذ</span><strong>${escapePurchasePrint(formatCurrency(summary.paidAmount))}</strong></div><div class="card remaining"><span>المبلغ المتبقي</span><strong>${escapePurchasePrint(formatCurrency(summary.remainingAmount))}</strong></div></section>
-  <section class="section"><h2>الأصناف المشتراة</h2><table><thead><tr><th>#</th><th>الصنف</th><th>الكمية</th><th>سعر الشراء</th><th>الإجمالي</th></tr></thead><tbody>${itemRows || '<tr><td colspan="5" class="empty">لا توجد أصناف</td></tr>'}</tbody></table></section>
-  <section class="section"><h2>سجل الدفعات</h2><table><thead><tr><th>#</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>الصندوق</th><th>الموظف</th><th>الملاحظة</th><th>الحالة</th></tr></thead><tbody>${rows}</tbody></table></section><footer class="footer">تمت الطباعة في ${escapePurchasePrint(new Date().toLocaleString("en-CA"))}</footer></body></html>`);
-  popup.document.close();
-  popup.focus();
-  window.setTimeout(() => popup.print(), 250);
-}
-
 function purchaseInvoicePrintInput(
   invoice: PurchaseInvoiceDetails,
   settings: any,
@@ -1462,8 +1423,9 @@ function purchaseInvoicePrintInput(
 function printPurchaseInvoiceStatement(
   invoice: PurchaseInvoiceDetails,
   settings: any,
+  existingWindow?: Window | null,
 ) {
-  openPurchaseInvoicePrintWindow(purchaseInvoicePrintInput(invoice, settings));
+  openPurchaseInvoicePrintWindow(purchaseInvoicePrintInput(invoice, settings), existingWindow);
 }
 
 async function downloadPurchaseInvoicePdf(
