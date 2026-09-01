@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   useListGallery, useCreateGalleryItem, useDeleteGalleryItem,
   getListGalleryQueryKey,
 } from "@workspace/api-client-react";
-import { Plus, Trash2, X, Eye, FolderOpen, ImageIcon, RotateCcw } from "lucide-react";
+import { Plus, Trash2, X, Eye, FolderOpen, ImageIcon, RotateCcw, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./_layout";
@@ -12,6 +12,7 @@ import { usePublicSettings } from "@/lib/public-settings";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
 import { useToast } from "@/hooks/use-toast";
+import { adminFetch } from "./_lib";
 
 const DEFAULT_GALLERY_SECTIONS = ["عام", "كوشات", "تصوير", "تخرج", "ورود", "تجهيزات", "ديكور", "دعوات"];
 const normalizedCategory = (category?: string | null) => {
@@ -29,7 +30,23 @@ export default function GalleryPage() {
   const [showForm, setShowForm] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState("all");
+  const [editingCategory, setEditingCategory] = useState<string | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState("");
   const { data: publicSettings } = usePublicSettings();
+
+  const renameCategory = useMutation({
+    mutationFn: ({ from, to }: { from: string; to: string }) => adminFetch("/gallery/categories", {
+      method: "PATCH",
+      body: JSON.stringify({ from, to }),
+    }),
+    onSuccess: (result: any, variables) => {
+      invalidate();
+      setActiveCategory(variables.to);
+      setEditingCategory(null);
+      toast({ title: "تم تعديل القسم", description: `تم تحديث ${Number(result?.updatedCount ?? 0)} صورة.` });
+    },
+    onError: (err: any) => toast({ title: "تعذر تعديل القسم", description: err?.message, variant: "destructive" }),
+  });
 
   const sections = useMemo(() => {
     const counts = new Map<string, number>();
@@ -46,6 +63,22 @@ export default function GalleryPage() {
   );
 
   function invalidate() { qc.invalidateQueries({ queryKey: getListGalleryQueryKey() }); }
+
+  function openCategoryEdit(value: string) {
+    setEditingCategory(value);
+    setCategoryDraft(value);
+  }
+
+  function submitCategoryEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingCategory) return;
+    const to = normalizedCategory(categoryDraft);
+    if (to === editingCategory) {
+      toast({ title: "لم يتغير اسم القسم" });
+      return;
+    }
+    renameCategory.mutate({ from: editingCategory, to });
+  }
 
   function handleFileResult(results: ImageEditResult[]) {
     const result = results[0];
@@ -92,18 +125,28 @@ export default function GalleryPage() {
             <ImageIcon className="h-3.5 w-3.5" /> كل الصور <span className="text-xs opacity-80">{items?.length ?? 0}</span>
           </Button>
           {sections.map((section) => (
-            <Button
-              key={section.value}
-              type="button"
-              size="sm"
-              variant={activeCategory === section.value ? "default" : "outline"}
-              className="shrink-0 gap-1.5"
-              role="tab"
-              aria-selected={activeCategory === section.value}
-              onClick={() => setActiveCategory(section.value)}
-            >
-              {section.label} <span className="text-xs opacity-80">{section.count}</span>
-            </Button>
+            <div key={section.value} className="flex shrink-0 items-center gap-0.5 rounded-lg border border-border/50 bg-background p-0.5">
+              <Button
+                type="button"
+                size="sm"
+                variant={activeCategory === section.value ? "default" : "ghost"}
+                className="gap-1.5 border-0 shadow-none"
+                role="tab"
+                aria-selected={activeCategory === section.value}
+                onClick={() => setActiveCategory(section.value)}
+              >
+                {section.label} <span className="text-xs opacity-80">{section.count}</span>
+              </Button>
+              <button
+                type="button"
+                aria-label={`تعديل قسم ${section.label}`}
+                title={`تعديل قسم ${section.label}`}
+                onClick={() => openCategoryEdit(section.value)}
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            </div>
           ))}
         </div>
       </section>
@@ -130,10 +173,10 @@ export default function GalleryPage() {
                 ? <video src={item.mediaUrl} className="w-full aspect-square object-cover" />
                 : <img src={item.mediaUrl} alt={item.titleAr ?? ""} className="w-full aspect-square" style={{ objectFit: (item as any).imageMetadata?.objectFit ?? "cover" }} />}
               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                <button onClick={() => setPreview(item.mediaUrl)} className="p-2 rounded-full bg-primary/20 text-primary hover:bg-primary/30">
+                <button type="button" aria-label={`معاينة ${item.titleAr ?? "الصورة"}`} onClick={() => setPreview(item.mediaUrl)} className="p-2 rounded-full bg-primary/20 text-primary hover:bg-primary/30">
                   <Eye className="w-4 h-4" />
                 </button>
-                <button onClick={() => confirm("حذف؟") && del.mutateAsync({ id: item.id }).then(invalidate).catch((err: any) => toast({ title: "تعذر الحذف", description: err?.message, variant: "destructive" }))}
+                <button type="button" aria-label={`حذف ${item.titleAr ?? "الصورة"}`} onClick={() => confirm("حذف؟") && del.mutateAsync({ id: item.id }).then(invalidate).catch((err: any) => toast({ title: "تعذر الحذف", description: err?.message, variant: "destructive" }))}
                   className="p-2 rounded-full bg-status-danger/20 text-status-danger hover:bg-status-danger/30">
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -194,6 +237,26 @@ export default function GalleryPage() {
             <Button type="submit" disabled={!form.mediaUrl || create.isPending} className="w-full">
               {create.isPending ? "جاري الحفظ..." : "إضافة"}
             </Button>
+          </form>
+        </div>
+      )}
+
+      {editingCategory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" dir="rtl" onClick={() => setEditingCategory(null)}>
+          <form onSubmit={submitCategoryEdit} onClick={e => e.stopPropagation()} className="w-full max-w-sm space-y-4 rounded-2xl border border-border/40 bg-card p-6 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-foreground">تعديل القسم</h3>
+              <button type="button" aria-label="إغلاق" onClick={() => setEditingCategory(null)} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <div>
+              <label htmlFor="gallery-category-edit" className="mb-1 block text-xs text-muted-foreground">اسم القسم</label>
+              <input id="gallery-category-edit" autoFocus value={categoryDraft} onChange={e => setCategoryDraft(e.target.value)} maxLength={50} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+              <p className="mt-1 text-[11px] text-muted-foreground">سيتم تحديث الصور التابعة لهذا القسم فقط.</p>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setEditingCategory(null)}>إلغاء</Button>
+              <Button type="submit" disabled={!categoryDraft.trim() || renameCategory.isPending}>{renameCategory.isPending ? "جاري الحفظ..." : "حفظ التعديل"}</Button>
+            </div>
           </form>
         </div>
       )}

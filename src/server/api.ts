@@ -17086,6 +17086,35 @@ async function handleUnifiedTracking(req: NextRequest, parts: string[]) {
 async function handleGallery(req: NextRequest, parts: string[]) {
   const method = req.method;
 
+  if (method === "PATCH" && parts[1] === "categories") {
+    const auth = await requirePermission(req, "gallery");
+    if (isResponse(auth)) return auth;
+    const payload = await body(req);
+    const from = typeof payload?.from === "string" ? payload.from.trim() : "";
+    const to = typeof payload?.to === "string" ? payload.to.trim() : "";
+    if (!from || !to || from.length > 50 || to.length > 50) {
+      return error("اسم القسم غير صالح", 400);
+    }
+    if (from === to) return error("اسم القسم لم يتغير", 400);
+
+    // Legacy records used `general`; keep them in sync with the visible Arabic
+    // section label when the default section is renamed.
+    const source = from === "عام"
+      ? or(eq(galleryItemsTable.category, "عام"), eq(galleryItemsTable.category, "general"))
+      : eq(galleryItemsTable.category, from);
+    const updated = await db
+      .update(galleryItemsTable)
+      .set({ category: to, updatedAt: new Date() })
+      .where(source)
+      .returning({ id: galleryItemsTable.id });
+    void logAdminActivity(req, "gallery_category_renamed", "gallery", 0, {
+      from,
+      to,
+      updatedCount: updated.length,
+    });
+    return json({ message: "تم تعديل القسم", from, to, updatedCount: updated.length });
+  }
+
   if (method === "GET" && parts[1] === "categories") {
     const result = await db
       .select({
