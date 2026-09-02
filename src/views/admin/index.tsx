@@ -99,6 +99,7 @@ const FinanceReportsPage = lazy(() =>
 );
 const MasterCashBoxPage = lazy(() => import("./master-cash"));
 const EmployeePerformancePage = lazy(() => import("./employee-performance"));
+const EmployeeSalariesPage = lazy(() => import("./employee-salaries"));
 const SimpleSalariesPage = lazy(() => import("./simple-salaries"));
 const ExecutivePage = lazy(() => import("./executive"));
 const EventBrainPage = lazy(() => import("./event-brain"));
@@ -863,6 +864,9 @@ export default function Admin() {
             {() => <Redirect to="/admin/hr/salaries" />}
           </Route>
           <Route path="/admin/hr/salaries">
+            {() => (<Guard me={me} anyPerm={["hr", "payroll_view", "employee_salaries_view"]}><EmployeeSalariesPage /></Guard>)}
+          </Route>
+          <Route path="/admin/hr/salaries/simple">
             {() => (<Guard me={me} anyPerm={["hr", "payroll_view", "employee_salaries_view"]}><SimpleSalariesPage /></Guard>)}
           </Route>
           <Route path="/admin/employee-salaries">
