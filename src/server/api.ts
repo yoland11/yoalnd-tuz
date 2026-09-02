@@ -64950,16 +64950,23 @@ const companyLoanCreateSchema = z.object({
   lenderPhone: z.string().trim().max(30).optional().nullable(),
   amount: z.coerce.number().positive().max(999_999_999_999),
   receivedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  agreementDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
   paymentMethod: z.enum(["cash", "transfer", "card", "pos", "other"]).default("cash"),
   referenceNo: z.string().trim().max(120).optional().nullable(),
   notes: z.string().trim().max(2000).optional().nullable(),
+  attachments: z.array(z.string().trim().max(2000)).max(20).optional().default([]),
 });
 const companyLoanRepaymentSchema = companyLoanCreateSchema.pick({
   amount: true,
   paymentMethod: true,
   referenceNo: true,
   notes: true,
-}).extend({ paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+}).extend({
+  paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  attachments: z.array(z.string().trim().max(2000)).max(20).optional().default([]),
+  idempotencyKey: z.string().trim().min(12).max(180),
+});
 const companyLoanCancelSchema = z.object({
   reason: z.string().trim().min(3).max(500),
 });
@@ -65008,7 +65015,8 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
         lenderPhone: data.lenderPhone || null, originalAmount: String(data.amount),
         totalRepaid: "0", remainingAmount: String(data.amount), receivedDate: data.receivedDate,
         paymentMethod: data.paymentMethod, referenceNo: data.referenceNo || null,
-        notes: data.notes || null, status: "pending", createdBy: actor.id, createdByName: actor.name,
+        agreementDate: data.agreementDate || data.receivedDate, dueDate: data.dueDate || null,
+        attachments: data.attachments, notes: data.notes || null, status: "pending", createdBy: actor.id, createdByName: actor.name,
       }).returning();
       const request = await createAndExecuteSourceFinancialTransaction(tx, {
         transactionDate: data.receivedDate, direction: "revenue", amount: data.amount,
@@ -65017,7 +65025,7 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
         paymentMethod: data.paymentMethod, sourceType: "company_loan", sourceId: created.id,
         sourceEvent: "loan_received", idempotencyKey: `company_loan:${created.id}:received`,
         customerName: data.lenderName, customerPhone: data.lenderPhone || null,
-        notes: data.notes || null,
+        dueDate: data.dueDate || null, attachments: data.attachments, notes: data.notes || null,
       }, actor);
       const [saved] = await tx.update(companyLoansTable).set({ receiptTransactionId: request.id, updatedAt: new Date() }).where(eq(companyLoansTable.id, created.id)).returning();
       return saved;
@@ -65040,8 +65048,23 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
           sql`SELECT * FROM company_loans WHERE id = ${id} FOR UPDATE`,
         )).rows[0] as any;
         if (!lockedLoan) throw new Error("القرض غير موجود");
-        if (lockedLoan.status !== "pending" || Number(lockedLoan.total_repaid) > 0) {
-          throw new Error("لا يمكن تعديل القرض بعد اعتماده أو بدء السداد");
+        const isPendingRequest = lockedLoan.status === "pending" && Number(lockedLoan.total_repaid) <= 0;
+        if (!isPendingRequest) {
+          if (Number(data.amount) !== Number(lockedLoan.original_amount) || data.receivedDate !== String(lockedLoan.received_date))
+            throw new Error("لا يمكن تغيير أصل القرض أو تاريخ الاستلام بعد الاعتماد؛ استخدم تصحيحاً مالياً مستقلاً");
+          const [saved] = await tx.update(companyLoansTable).set({
+            lenderName: data.lenderName, lenderPhone: data.lenderPhone || null,
+            agreementDate: data.agreementDate || lockedLoan.agreement_date || null,
+            dueDate: data.dueDate || null, referenceNo: data.referenceNo || null,
+            notes: data.notes || null, attachments: data.attachments, updatedAt: new Date(),
+          }).where(eq(companyLoansTable.id, id)).returning();
+          await tx.insert(financialAuditLogsTable).values({
+            transactionId: Number(lockedLoan.receipt_transaction_id) || null,
+            action: "company_loan_metadata_updated", actorId: actor.id, actorName: actor.name,
+            oldValues: { lenderName: lockedLoan.lender_name, dueDate: lockedLoan.due_date, notes: lockedLoan.notes },
+            newValues: { lenderName: data.lenderName, dueDate: data.dueDate, notes: data.notes },
+          });
+          return saved;
         }
         const transactionId = Number(lockedLoan.receipt_transaction_id);
         if (!Number.isInteger(transactionId) || transactionId <= 0) {
@@ -65076,9 +65099,11 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
           originalAmount: String(data.amount),
           remainingAmount: String(data.amount),
           receivedDate: data.receivedDate,
+          agreementDate: data.agreementDate || data.receivedDate,
+          dueDate: data.dueDate || null,
           paymentMethod: data.paymentMethod,
           referenceNo: data.referenceNo || null,
-          notes: data.notes || null,
+          attachments: data.attachments, notes: data.notes || null,
           updatedAt: new Date(),
         }).where(eq(companyLoansTable.id, id)).returning();
         await tx.insert(financialAuditLogsTable).values({
@@ -65180,35 +65205,72 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
     }
   }
 
-  if (req.method === "POST" && id && parts[3] === "repayments") {
+  if (req.method === "POST" && id && parts[3] === "repayments" && !parts[4]) {
     const parsed = companyLoanRepaymentSchema.safeParse(await body(req));
     if (!parsed.success) return validationError("company-loans.repayment", parsed);
     const data = parsed.data;
     const actor = financialActor(auth);
-    const repayment = await db.transaction(async (tx) => {
-      const [loan] = await tx.select().from(companyLoansTable).where(eq(companyLoansTable.id, id)).limit(1);
+    let repayment: any;
+    try { repayment = await db.transaction(async (tx) => {
+      const duplicate = (await tx.execute(sql`SELECT * FROM company_loan_repayments WHERE idempotency_key = ${data.idempotencyKey} LIMIT 1`)).rows[0] as any;
+      if (duplicate) return { ...duplicate, alreadySubmitted: true };
+      const loan = (await tx.execute(sql`SELECT * FROM company_loans WHERE id = ${id} FOR UPDATE`)).rows[0] as any;
       if (!loan) throw new Error("القرض غير موجود");
-      if (Number(loan.remainingAmount) <= 0) throw new Error("تم سداد القرض بالكامل");
-      if (data.amount > Number(loan.remainingAmount)) throw new Error("مبلغ السداد أكبر من المتبقي");
+      if (Number(loan.remaining_amount) <= 0) throw new Error("تم سداد القرض بالكامل");
+      if (data.amount > Number(loan.remaining_amount)) throw new Error("مبلغ السداد أكبر من المتبقي");
       const [created] = await tx.insert(companyLoanRepaymentsTable).values({
         loanId: id, repaymentNo: companyLoanNumber("REPAY"), paymentDate: data.paymentDate,
-        amount: String(data.amount), paymentMethod: data.paymentMethod,
+        amount: String(data.amount),
+        // AJN currently executes all cash movements through the single
+        // authoritative Main Cash Box. Keep the source record aligned with
+        // that operational account; `1000` is the linked GL account, not a
+        // selectable cash-box identifier.
+        cashAccountCode: "MASTER", attachments: data.attachments, idempotencyKey: data.idempotencyKey,
+        paymentMethod: data.paymentMethod,
         referenceNo: data.referenceNo || null, notes: data.notes || null,
         status: "pending", createdBy: actor.id, createdByName: actor.name,
       }).returning();
       const request = await createAndExecuteSourceFinancialTransaction(tx, {
         transactionDate: data.paymentDate, direction: "expense", amount: data.amount,
         department: "general", transactionType: "company_loan_repayment",
-        referenceNo: created.repaymentNo, description: `سداد قرض إلى ${loan.lenderName}`,
+        referenceNo: created.repaymentNo, description: `سداد قرض إلى ${loan.lender_name}`,
         paymentMethod: data.paymentMethod, sourceType: "company_loan_repayment", sourceId: created.id,
         sourceEvent: "loan_repayment", idempotencyKey: `company_loan_repayment:${created.id}`,
-        customerName: loan.lenderName, customerPhone: loan.lenderPhone || null, notes: data.notes || null,
+        customerName: loan.lender_name, customerPhone: loan.lender_phone || null, attachments: data.attachments, notes: data.notes || null,
       }, actor);
       const [saved] = await tx.update(companyLoanRepaymentsTable).set({ financialTransactionId: request.id, updatedAt: new Date() }).where(eq(companyLoanRepaymentsTable.id, created.id)).returning();
       return saved;
-    });
+    }); } catch (cause: any) {
+      // A retry can race after the row lock; the durable unique key remains
+      // authoritative and returns the already-created approval request.
+      if (cause?.code === "23505") {
+        const [existing] = await db.select().from(companyLoanRepaymentsTable)
+          .where(eq(companyLoanRepaymentsTable.idempotencyKey, data.idempotencyKey)).limit(1);
+        if (existing) return json({ ...existing, alreadySubmitted: true });
+      }
+      throw cause;
+    }
     void logAdminActivity(req, "company_loan_repayment_created", "company_loan_repayment", repayment.id, { loanId: id, amount: data.amount });
     return json(repayment, 201);
+  }
+
+  if (req.method === "POST" && id && parts[3] === "printed") {
+    const [loan] = await db.select({ id: companyLoansTable.id, loanNo: companyLoansTable.loanNo })
+      .from(companyLoansTable).where(eq(companyLoansTable.id, id)).limit(1);
+    if (!loan) return error("القرض غير موجود", 404);
+    void logAdminActivity(req, "company_loan_statement_printed", "company_loan", loan.id, { loanNo: loan.loanNo });
+    return json({ ok: true });
+  }
+
+  if (req.method === "POST" && id && parts[3] === "repayments" && parts[4] && parts[5] === "printed") {
+    const repaymentId = int(parts[4]);
+    if (!repaymentId) return error("رقم دفعة السداد غير صالح", 400);
+    const [repayment] = await db.select({ id: companyLoanRepaymentsTable.id, repaymentNo: companyLoanRepaymentsTable.repaymentNo })
+      .from(companyLoanRepaymentsTable)
+      .where(and(eq(companyLoanRepaymentsTable.id, repaymentId), eq(companyLoanRepaymentsTable.loanId, id))).limit(1);
+    if (!repayment) return error("دفعة السداد غير موجودة", 404);
+    void logAdminActivity(req, "company_loan_repayment_receipt_printed", "company_loan_repayment", repayment.id, { loanId: id, repaymentNo: repayment.repaymentNo });
+    return json({ ok: true });
   }
 
   return error("مسار القروض غير مدعوم", 404);
