@@ -1,16 +1,26 @@
 #!/usr/bin/env node
 
 /** Controlled production DDL runner for reviewed additive migrations only. */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import pg from "pg";
 
 const migrationPath = process.env.AJN_MIGRATION_FILE;
-// A reviewed DDL operation must never reuse the read-only audit credential.
-const connectionString = process.env.AJN_MIGRATION_DATABASE_URL;
+// Reviewed DDL uses the authoritative production owner connection. It must
+// never reuse the read-only audit credential or a test connection.
+const connectionString = process.env.DATABASE_URL;
 if (!migrationPath || !connectionString)
-  throw new Error("AJN_MIGRATION_FILE and AJN_MIGRATION_DATABASE_URL are required");
-const absoluteMigrationPath = resolve(migrationPath);
+  throw new Error("AJN_MIGRATION_FILE and DATABASE_URL are required");
+// `pnpm --filter @workspace/db` runs this script from `lib/db`, while the
+// approved command normally receives a repository-root path. Accept either
+// the package-local path or the repository-root path without guessing a file.
+const migrationCandidates = [
+  resolve(migrationPath),
+  resolve(process.cwd(), "..", "..", migrationPath),
+];
+const absoluteMigrationPath = migrationCandidates.find(existsSync);
+if (!absoluteMigrationPath)
+  throw new Error("The reviewed migration file was not found");
 const migrationSql = readFileSync(absoluteMigrationPath, "utf8");
 if (/\b(?:DROP\s+(?:TABLE|COLUMN|INDEX|TYPE|SCHEMA)|TRUNCATE|DELETE\s+FROM|UPDATE\b|ALTER\s+TABLE[\s\S]*?\b(?:DROP\s+COLUMN|ALTER\s+COLUMN|RENAME\s+(?:COLUMN|TO)))\b/i.test(migrationSql))
   throw new Error("Only additive DDL migrations are accepted by this production runner");
