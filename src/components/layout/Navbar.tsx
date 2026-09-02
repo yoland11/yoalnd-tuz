@@ -1,23 +1,10 @@
 import { Link, useLocation } from "wouter";
-import {
-  Facebook,
-  Heart,
-  Instagram,
-  Lock,
-  MapPin,
-  MessageCircle,
-  Moon,
-  Phone,
-  ShoppingBag,
-  Sun,
-  User,
-} from "lucide-react";
+import { Heart, Lock, Moon, ShoppingBag, Sun, User } from "lucide-react";
 import { desktopNavItems } from "./nav-items";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
 import { handleDefaultLogoError, logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { buildWhatsAppLink } from "@/lib/order-stages";
 import { deriveAlternateAppearance, hexToHsl } from "@/lib/appearance";
 import { useThemeMode } from "@/lib/theme-mode";
 import { useWishlist } from "@/lib/wishlist";
@@ -44,114 +31,45 @@ export function Navbar() {
   const { count: wishlistCount } = useWishlist();
   const t = useT();
   const baseAppearance = settings?.appearance_settings;
-  const effectiveAppearance =
-    mode === "alt" && baseAppearance
-      ? deriveAlternateAppearance(baseAppearance)
-      : baseAppearance;
+  const effectiveAppearance = mode === "alt" && baseAppearance
+    ? deriveAlternateAppearance(baseAppearance)
+    : baseAppearance;
   const isDarkTheme = effectiveAppearance
     ? hexToHsl(effectiveAppearance.background).l < 55
     : true;
-
   const cartItemCount = cart?.itemCount || 0;
-  const waLink = settings?.whatsapp
-    ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار")
-    : "";
 
   return (
     <header
-      className={`ajn-site-header sticky top-0 z-50 w-full bg-background/95 pt-safe backdrop-blur supports-[backdrop-filter]:bg-background/60 md:pt-0 ${isFlowerStudio ? "flower-design-navbar" : ""}`}
-      style={isFlowerStudio ? undefined : { backgroundColor: "hsl(var(--ajn-header) / 0.95)" }}
+      className={`ajn-site-header sticky top-0 z-50 w-full border-b border-border/50 bg-background/95 pt-safe backdrop-blur-md md:pt-0 ${isFlowerStudio ? "flower-design-navbar" : ""}`}
     >
-      <div
-        className={`hidden border-b border-border/30 bg-card/80 md:block ${isFlowerStudio ? "flower-design-navbar__top" : ""}`}
-        dir="rtl"
-        style={isFlowerStudio ? undefined : { backgroundColor: "hsl(var(--ajn-header) / 0.82)" }}
-      >
-        <div className="container mx-auto flex h-9 items-center justify-between gap-4 px-4 text-xs text-muted-foreground">
-          <div className="flex items-center gap-4">
-            {settings?.phone && (
-              <a
-                href={`tel:${settings.phone}`}
-                className="inline-flex items-center gap-1.5 hover:text-primary transition-colors"
-              >
-                <Phone className="h-3.5 w-3.5" /> {settings.phone}
-              </a>
-            )}
-            {waLink && (
-              <a
-                href={waLink}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 hover:text-primary transition-colors"
-              >
-                <MessageCircle className="h-3.5 w-3.5" /> {t("واتساب")}
-              </a>
-            )}
-            {settings?.map_url && (
-              <a
-                href={settings.map_url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 hover:text-primary transition-colors"
-              >
-                <MapPin className="h-3.5 w-3.5" /> {t("موقع المحل")}
-              </a>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            {settings?.social_links.instagram && (
-              <a
-                href={settings.social_links.instagram}
-                target="_blank"
-                rel="noreferrer"
-                aria-label="Instagram"
-                className="hover:text-primary transition-colors"
-              >
-                <Instagram className="h-4 w-4" />
-              </a>
-            )}
-            {settings?.social_links.facebook && (
-              <a
-                href={settings.social_links.facebook}
-                target="_blank"
-                rel="noreferrer"
-                aria-label="Facebook"
-                className="hover:text-primary transition-colors"
-              >
-                <Facebook className="h-4 w-4" />
-              </a>
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="container mx-auto flex h-16 min-w-0 items-center justify-between gap-2 px-3 md:h-20 md:px-4">
-        {/* Logo */}
-        <Link href="/" className="flex min-w-0 shrink items-center gap-2" aria-label={settings?.site_name ?? "AJN"}>
-          <span className="h-10 w-10 rounded-lg border border-primary/20 bg-primary/5 p-1.5 flex items-center justify-center overflow-hidden">
-            <img
-              src={logoSrc(settings)}
-              alt={settings?.site_name ?? "AJN"}
-              width={40}
-              height={40}
-              fetchPriority="high"
-              decoding="async"
-              onError={handleDefaultLogoError}
-              className="h-full w-full object-contain"
-            />
-          </span>
-          <div className="h-6 w-[1px] bg-border mx-2 hidden sm:block" />
-          <span className="font-semibold text-lg hidden sm:block">
+      <div className="container mx-auto flex h-16 min-w-0 items-center justify-between gap-3 px-4 md:h-[72px]">
+        <Link href="/" className="flex min-w-0 items-center gap-3" aria-label={settings?.site_name ?? "AJN"}>
+          <img
+            src={logoSrc(settings)}
+            alt={settings?.site_name ?? "AJN"}
+            width={92}
+            height={44}
+            fetchPriority="high"
+            decoding="async"
+            onError={handleDefaultLogoError}
+            className="h-9 w-[84px] object-contain object-right md:h-10 md:w-24"
+          />
+          <span className="hidden border-r border-border pr-3 text-sm font-medium text-muted-foreground lg:block">
             {settings?.site_name ?? "مجموعة علي جان"}
           </span>
         </Link>
 
-        {/* Desktop Navigation — driven by the shared navigationItems source. */}
-        <nav className="hidden md:flex items-center gap-8">
+        <nav className="hidden items-center gap-7 md:flex" aria-label="التنقل الرئيسي">
           {desktopNavItems.map((item) => (
             <Link
               key={item.key}
               href={item.href}
-              className={`ajn-nav-link ${item.desktopIcon ? "inline-flex items-center gap-1.5 " : ""}text-sm font-medium ${item.match(location) ? "is-active" : ""}`}
+              className={`relative inline-flex min-h-11 items-center gap-1.5 text-sm transition-colors ${
+                item.match(location)
+                  ? "font-medium text-foreground after:absolute after:bottom-0 after:right-0 after:h-px after:w-full after:bg-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
             >
               {item.desktopIcon ? <item.Icon className="h-3.5 w-3.5 shrink-0" /> : null}
               {item.translate ? t(item.label) : item.label}
@@ -159,80 +77,55 @@ export function Navbar() {
           ))}
         </nav>
 
-        {/* Actions */}
-        <div className="ajn-mobile-header-actions flex shrink-0 items-center gap-1 md:gap-4">
+        <div className="ajn-mobile-header-actions flex shrink-0 items-center gap-0.5 md:gap-1">
           <Button
             variant="ghost"
             size="icon"
             onClick={toggle}
             aria-label="تبديل الوضع الليلي/النهاري"
-            title={
-              isDarkTheme
-                ? "التبديل إلى الوضع النهاري"
-                : "التبديل إلى الوضع الليلي"
-            }
-            className="ajn-nav-icon"
+            title={isDarkTheme ? "التبديل إلى الوضع النهاري" : "التبديل إلى الوضع الليلي"}
+            className="h-10 w-10 rounded-xl text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            {isDarkTheme ? (
-              <Sun className="h-5 w-5" />
-            ) : (
-              <Moon className="h-5 w-5" />
-            )}
+            {isDarkTheme ? <Sun className="h-[18px] w-[18px]" /> : <Moon className="h-[18px] w-[18px]" />}
           </Button>
+
           <LanguageSwitcher />
-          <Link href="/profile" className="hidden md:block">
-            <Button variant="ghost" size="icon" className="ajn-nav-icon">
+
+          <Link href="/profile" className="hidden md:block" aria-label="الحساب">
+            <Button variant="ghost" size="icon" className="h-10 w-10 rounded-xl text-muted-foreground hover:bg-muted hover:text-foreground">
               {customer?.avatarUrl ? (
-                <img
-                  src={customer.avatarUrl}
-                  alt=""
-                  className="h-7 w-7 rounded-full object-cover border border-primary/20"
-                />
+                <img src={customer.avatarUrl} alt="" className="h-7 w-7 rounded-full object-cover" />
               ) : (
-                <User className="h-5 w-5" />
+                <User className="h-[18px] w-[18px]" />
               )}
             </Button>
           </Link>
+
           <Link href="/favorites" aria-label="المفضّلة" className="hidden md:block">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="relative ajn-nav-icon"
-            >
-              <Heart className="h-5 w-5" />
+            <Button variant="ghost" size="icon" className="relative h-10 w-10 rounded-xl text-muted-foreground hover:bg-muted hover:text-foreground">
+              <Heart className="h-[18px] w-[18px]" />
               {wishlistCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
+                <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-foreground px-1 text-[10px] font-medium text-background">
                   {wishlistCount}
                 </span>
               )}
             </Button>
           </Link>
-          <Link href="/cart" className="hidden md:block">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="relative ajn-nav-icon"
-            >
-              <ShoppingBag className="h-5 w-5" />
+
+          <Link href="/cart" className="hidden md:block" aria-label="السلة">
+            <Button variant="ghost" size="icon" className="relative h-10 w-10 rounded-xl text-muted-foreground hover:bg-muted hover:text-foreground">
+              <ShoppingBag className="h-[18px] w-[18px]" />
               {cartItemCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
+                <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-foreground px-1 text-[10px] font-medium text-background">
                   {cartItemCount}
                 </span>
               )}
             </Button>
           </Link>
-          <Link
-            href="/admin/login"
-            aria-label="دخول الإدارة"
-            title="دخول الإدارة"
-            className="hidden md:block"
-          >
-            <Button
-              variant="ghost"
-              size="icon"
-              className={`ajn-nav-icon ${location.startsWith("/admin") ? "is-active" : ""}`}
-            >
-              <Lock className="h-5 w-5" />
+
+          <Link href="/admin/login" aria-label="دخول الإدارة" title="دخول الإدارة" className="hidden md:block">
+            <Button variant="ghost" size="icon" className="h-10 w-10 rounded-xl text-muted-foreground hover:bg-muted hover:text-foreground">
+              <Lock className="h-[17px] w-[17px]" />
             </Button>
           </Link>
         </div>
