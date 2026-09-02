@@ -621,7 +621,9 @@ export function preparePurchaseInvoicePrintWindow(): Window {
   if (!popup) {
     throw new Error("تعذر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم حاول مرة أخرى.");
   }
-  popup.opener = null;
+  // Keep the returned window accessible until the invoice has been loaded.
+  // Assigning to `opener` can throw in Chromium and leaves the new tab at
+  // about:blank before the loading markup below is written.
   popup.document.open();
   popup.document.write('<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>AJN</title></head><body style="font-family:Tahoma,Arial,sans-serif;padding:24px">جارٍ تجهيز الفاتورة للطباعة…</body></html>');
   popup.document.close();
