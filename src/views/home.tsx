@@ -1,11 +1,8 @@
 import { Link } from "wouter";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { useGetFeaturedProducts, useListServices } from "@workspace/api-client-react";
-import { ChevronLeft, MapPin, MessageCircle, Phone } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { handleDefaultLogoError, logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { buildWhatsAppLink } from "@/lib/order-stages";
 import { ProductColorDots } from "@/components/product-colors";
 import { useT } from "@/lib/i18n";
 import { useContentLocalizer } from "@/lib/content-i18n";
@@ -19,212 +16,147 @@ export default function Home() {
   const t = useT();
   const cl = useContentLocalizer();
   const siteName = settings?.site_name ?? "مجموعة علي جان";
-  const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار عن خدمات AJN") : "";
+  const products = Array.isArray(featuredProducts)
+    ? featuredProducts
+    : (featuredProducts as any)?.items || (featuredProducts as any)?.data || [];
 
   return (
-    <div className="flex flex-col w-full">
-      {/* Hero Section */}
-      <section className="relative h-[80dvh] min-h-[600px] w-full flex items-center justify-center overflow-hidden">
-        <div className="absolute inset-0 z-0">
-          <img
-            src="/images/hero.png"
-            alt="مجموعة علي جان"
-            width={1600}
-            height={1000}
-            fetchPriority="high"
-            className="w-full h-full object-cover object-center"
-          />
-          {/* Fixed dark scrim (independent of light/dark theme) so the white hero text & buttons always read on any photo. */}
-          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/55 to-black/45" />
-        </div>
-
-        <div className="relative z-10 container mx-auto px-4 text-center">
-          <img src={logoSrc(settings)} alt={siteName} width={160} height={96} fetchPriority="high" decoding="async" onError={handleDefaultLogoError} className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg animate-fade-up" />
-          <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-4 tracking-tight drop-shadow-lg text-balance animate-fade-up [animation-delay:80ms]">
-            {siteName}
-          </h1>
-          <p className="text-xl md:text-2xl text-primary font-medium mb-10 max-w-2xl mx-auto drop-shadow animate-fade-up [animation-delay:160ms]">
-            {t("للمناسبات والتجهيزات")}
-          </p>
-          <div className="flex flex-wrap justify-center gap-3 mb-8 text-sm text-white/85 animate-fade-up [animation-delay:220ms]">
-            {settings?.phone && (
-              <a href={`tel:${settings.phone}`} className="inline-flex items-center gap-2 hover:text-primary transition-colors">
-                <Phone className="w-4 h-4" /> {settings.phone}
-              </a>
-            )}
-            {waLink && (
-              <a href={waLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-primary transition-colors">
-                <MessageCircle className="w-4 h-4" /> {t("واتساب")}
-              </a>
-            )}
-            {settings?.map_url && (
-              <a href={settings.map_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-primary transition-colors">
-                <MapPin className="w-4 h-4" /> {t("موقع المحل")}
-              </a>
-            )}
-          </div>
-
-          <div className="flex flex-wrap justify-center gap-4 max-w-3xl mx-auto animate-fade-up [animation-delay:280ms]">
-            <Link href="/services">
-              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
-                {t("الخدمات")}
-              </Button>
-            </Link>
-            <Link href="/store">
-              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
-                {t("المتجر")}
-              </Button>
-            </Link>
-            <Link href="/track">
-              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
-                {t("تتبع الطلب")}
-              </Button>
-            </Link>
-            <Link href="/gallery">
-              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
-                {t("أعمالنا")}
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Services Overview */}
-      <section className="py-20 bg-card border-y border-border">
-        <div className="container mx-auto px-4">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-foreground mb-4 text-balance">{t("خدماتنا المتميزة")}</h2>
-            <div className="h-1 w-20 bg-primary mx-auto rounded-full" />
-            <p className="text-muted-foreground mt-4 max-w-2xl mx-auto">
-              {t("نقدم مجموعة متكاملة من خدمات تنسيق وتجهيز المناسبات بأعلى مستويات الجودة والفخامة")}
+    <div className="w-full bg-background text-foreground">
+      <section className="container mx-auto px-4 pb-8 pt-6 md:pb-14 md:pt-10">
+        <div className="grid overflow-hidden rounded-[28px] border border-border/60 bg-card md:grid-cols-[0.92fr_1.08fr]">
+          <div className="order-2 flex min-h-[360px] flex-col justify-center px-6 py-10 sm:px-10 md:order-1 md:min-h-[520px] md:px-14">
+            <img
+              src={logoSrc(settings)}
+              alt={siteName}
+              width={120}
+              height={72}
+              fetchPriority="high"
+              decoding="async"
+              onError={handleDefaultLogoError}
+              className="mb-8 h-14 w-28 object-contain object-right"
+            />
+            <p className="mb-3 text-xs font-medium tracking-[0.16em] text-muted-foreground">AJN COLLECTION</p>
+            <h1 className="max-w-xl text-4xl font-semibold leading-[1.25] tracking-tight text-balance md:text-6xl">
+              {t("كل تفاصيل مناسبتك بمكان واحد")}
+            </h1>
+            <p className="mt-5 max-w-lg text-sm leading-7 text-muted-foreground md:text-base">
+              {t("اختار الكوشة، الخدمات والتجهيزات والمنتجات بسهولة وبواجهة مرتبة وواضحة.")}
             </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {loadingServices ? (
-              Array(3).fill(0).map((_, i) => (
-                <Skeleton key={i} className="h-64 rounded-lg" />
-              ))
-            ) : services.slice(0, 3).map((service: any, i: number) => (
-              <Link key={service.id} href={`/services/${service.id}`}>
-                <div className="group relative h-64 overflow-hidden rounded-lg cursor-pointer border border-border animate-fade-up" style={{ animationDelay: `${i * 80}ms` }}>
-                  <img
-                    src={service.image || serviceImageFor(service.type)}
-                    alt={cl.name(service) || service.name}
-                    width={640}
-                    height={420}
-                    loading="lazy"
-                    decoding="async"
-                    className="w-full h-full transition-transform duration-700 group-hover:scale-105"
-                    style={{ objectFit: (service as any).imageMetadata?.objectFit ?? "cover" }}
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent flex items-end p-6">
-                    <h3 className="text-xl font-bold text-white">{cl.name(service) || service.name}</h3>
-                  </div>
-                </div>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link href="/koshas" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-foreground px-6 text-sm font-medium text-background transition-opacity hover:opacity-90">
+                {t("تصفح الكوشات")}
               </Link>
-            ))}
-          </div>
-
-          <div className="mt-10 text-center">
-            <Link href="/services">
-              <Button variant="ghost" className="text-primary hover:text-primary hover:bg-primary/10">
-                {t("عرض جميع الخدمات")}
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </section>
-
-      <FeaturedKoshasSection />
-
-      {/* Featured Products */}
-      <section className="py-20 bg-background">
-        <div className="container mx-auto px-4">
-          <div className="flex justify-between items-end mb-10">
-            <div>
-              <h2 className="text-3xl font-bold text-foreground mb-4 text-balance">{t("وصل حديثاً")}</h2>
-              <div className="h-1 w-20 bg-primary rounded-full" />
+              <Link href="/store" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-border bg-background px-6 text-sm font-medium transition-colors hover:bg-muted/60">
+                {t("المتجر")}
+              </Link>
             </div>
-            <Link href="/store">
-              <Button variant="link" className="text-primary hidden sm:flex">
-                {t("تسوق الآن")}
-              </Button>
-            </Link>
           </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
-            {isLoading ? (
-              Array(4).fill(0).map((_, i) => (
-                <Card key={i} className="bg-card border-border overflow-hidden">
-                  <Skeleton className="h-48 w-full rounded-none" />
-                  <CardContent className="p-4">
-                    <Skeleton className="h-4 w-2/3 mb-2" />
-                    <Skeleton className="h-4 w-1/3" />
-                  </CardContent>
-                </Card>
-              ))
-            ) : (
-              (Array.isArray(featuredProducts)
-                ? featuredProducts
-                : (featuredProducts as any)?.items || (featuredProducts as any)?.data || []
-              )
-                .slice(0, 4)
-                .map((product: any, i: number) => (
-                  <Link key={product.id} href={`/store/${product.id}`} className="animate-fade-up" style={{ animationDelay: `${i * 60}ms` }}>
-                    <Card className="bg-card border-border overflow-hidden group cursor-pointer hover:border-primary/50 transition-colors h-full flex flex-col">
-                      <div className="relative aspect-square overflow-hidden bg-muted">
-                        <img
-                          src={
-                            (Array.isArray(product.images) ? product.images[0] : null) ||
-                            product.imageUrl ||
-                            product.image_url ||
-                            "/images/hero.png"
-                          }
-                          alt={cl.name(product) || product.name || "منتج"}
-                          width={400}
-                          height={400}
-                          loading="lazy"
-                          decoding="async"
-                          className="w-full h-full transition-transform duration-500 group-hover:scale-110"
-                          style={{ objectFit: product.imageMetadata?.[0]?.objectFit ?? "cover" }}
-                        />
-                      </div>
-                      <CardContent className="p-4 flex flex-col flex-1">
-                        <h3 className="font-medium text-sm md:text-base line-clamp-2 mb-2 text-foreground group-hover:text-primary transition-colors">
-                          {cl.name(product) || product.name || "منتج"}
-                        </h3>
-                        <ProductColorDots colors={product.colors} />
-                        <div className="mt-auto flex items-center justify-between">
-                          <span className="font-bold text-primary">
-                            {formatCurrency(product.price)}
-                          </span>
-                          <ChevronLeft className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </Link>
-                ))
-            )}
+          <div className="order-1 min-h-[300px] overflow-hidden bg-muted md:order-2 md:min-h-[520px]">
+            <img
+              src="/images/hero.png"
+              alt={siteName}
+              width={1200}
+              height={900}
+              fetchPriority="high"
+              className="h-full w-full object-cover"
+            />
           </div>
         </div>
       </section>
 
-      {/* About snippet */}
-      <section className="py-24 bg-card border-t border-border relative overflow-hidden">
-        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '32px 32px' }} />
-        <div className="container mx-auto px-4 text-center relative z-10 max-w-3xl">
-          <h2 className="text-3xl font-bold text-primary mb-6 text-balance">{t("قصتنا")}</h2>
-          <p className="text-lg text-muted-foreground leading-relaxed mb-8 [text-wrap:pretty] max-w-prose mx-auto">
-            {t("تأسست {name} في {city} لترتقي بمفهوم المناسبات والتجهيزات. نجمع بين أصالة الثقافة العراقية في الاحتفالات ولمسات الفخامة العصرية، لنصنع ذكريات لا تُنسى في أهم لحظات حياتكم.")
-              .replace("{name}", siteName)
-              .replace("{city}", settings?.city || "طوزخورماتو")}
-          </p>
-          <div className="flex justify-center gap-4">
-            <div className="w-16 h-[1px] bg-primary/40 mt-4" />
-            <div className="w-2 h-2 rounded-full bg-primary mt-3" />
-            <div className="w-16 h-[1px] bg-primary/40 mt-4" />
+      <section className="container mx-auto px-4 py-12 md:py-16">
+        <div className="mb-7 flex items-end justify-between gap-4">
+          <div>
+            <p className="mb-2 text-xs text-muted-foreground">{t("تصفح بسهولة")}</p>
+            <h2 className="text-2xl font-semibold md:text-3xl">{t("الخدمات")}</h2>
           </div>
+          <Link href="/services" className="hidden items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground sm:flex">
+            {t("عرض الكل")} <ArrowLeft className="h-4 w-4" />
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 md:gap-5">
+          {loadingServices
+            ? Array(3).fill(0).map((_, i) => <Skeleton key={i} className="aspect-[4/5] rounded-2xl" />)
+            : services.slice(0, 3).map((service: any) => (
+                <Link key={service.id} href={`/services/${service.id}`} className="group block">
+                  <div className="overflow-hidden rounded-2xl bg-muted">
+                    <div className="aspect-[4/5] overflow-hidden">
+                      <img
+                        src={service.image || serviceImageFor(service.type)}
+                        alt={cl.name(service) || service.name}
+                        width={640}
+                        height={800}
+                        loading="lazy"
+                        decoding="async"
+                        className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.02]"
+                        style={{ objectFit: (service as any).imageMetadata?.objectFit ?? "cover" }}
+                      />
+                    </div>
+                  </div>
+                  <h3 className="mt-3 text-sm font-medium md:text-base">{cl.name(service) || service.name}</h3>
+                </Link>
+              ))}
+        </div>
+      </section>
+
+      <div className="border-y border-border/50 bg-muted/20">
+        <FeaturedKoshasSection />
+      </div>
+
+      <section className="container mx-auto px-4 py-12 md:py-16">
+        <div className="mb-7 flex items-end justify-between gap-4">
+          <div>
+            <p className="mb-2 text-xs text-muted-foreground">{t("اختيارات جديدة")}</p>
+            <h2 className="text-2xl font-semibold md:text-3xl">{t("وصل حديثاً")}</h2>
+          </div>
+          <Link href="/store" className="hidden items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground sm:flex">
+            {t("تسوق الآن")} <ArrowLeft className="h-4 w-4" />
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-2 gap-x-3 gap-y-8 md:grid-cols-4 md:gap-x-5">
+          {isLoading
+            ? Array(4).fill(0).map((_, i) => (
+                <div key={i}>
+                  <Skeleton className="aspect-[4/5] rounded-2xl" />
+                  <Skeleton className="mt-3 h-4 w-2/3" />
+                  <Skeleton className="mt-2 h-4 w-1/3" />
+                </div>
+              ))
+            : products.slice(0, 4).map((product: any) => (
+                <Link key={product.id} href={`/store/${product.id}`} className="group block min-w-0">
+                  <div className="aspect-[4/5] overflow-hidden rounded-2xl bg-muted">
+                    <img
+                      src={(Array.isArray(product.images) ? product.images[0] : null) || product.imageUrl || product.image_url || "/images/hero.png"}
+                      alt={cl.name(product) || product.name || "منتج"}
+                      width={500}
+                      height={625}
+                      loading="lazy"
+                      decoding="async"
+                      className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.02]"
+                      style={{ objectFit: product.imageMetadata?.[0]?.objectFit ?? "cover" }}
+                    />
+                  </div>
+                  <div className="pt-3">
+                    <h3 className="line-clamp-2 text-sm font-medium md:text-base">{cl.name(product) || product.name || "منتج"}</h3>
+                    <ProductColorDots colors={product.colors} />
+                    <p className="mt-1 text-sm text-muted-foreground">{formatCurrency(product.price)}</p>
+                  </div>
+                </Link>
+              ))}
+        </div>
+      </section>
+
+      <section className="border-t border-border/50 bg-card">
+        <div className="container mx-auto grid gap-8 px-4 py-14 md:grid-cols-[0.8fr_1.2fr] md:items-center md:py-20">
+          <div>
+            <p className="mb-2 text-xs text-muted-foreground">{t("عن AJN")}</p>
+            <h2 className="text-2xl font-semibold md:text-3xl">{t("اختيارات مرتبة. تجربة أبسط.")}</h2>
+          </div>
+          <p className="max-w-2xl text-sm leading-7 text-muted-foreground md:text-base">
+            {t("نرتب الكوشات والخدمات والتجهيزات والمنتجات بطريقة واضحة حتى توصل للي تحتاجه بسرعة وبدون زحمة.")}
+          </p>
         </div>
       </section>
     </div>
