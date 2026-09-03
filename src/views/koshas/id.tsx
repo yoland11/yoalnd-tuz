@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useParams } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, CalendarDays, CheckCircle2, ChevronRight, Clock, MapPin, Phone, User, X } from "lucide-react";
+import { ArrowLeft, CalendarDays, CheckCircle2, ChevronRight, Clock, MapPin, Phone, Truck, User, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,8 @@ type BookingForm = {
   eventTime: string;
   cityArea: string;
   hallLocation: string;
+  transportationMode: "ajn" | "customer";
+  transportationNotes: string;
   notes: string;
 };
 
@@ -85,6 +87,8 @@ export default function KoshaDetailsPage() {
     eventTime: "",
     cityArea: "",
     hallLocation: "",
+    transportationMode: "customer",
+    transportationNotes: "",
     notes: "",
   });
 
@@ -112,7 +116,7 @@ export default function KoshaDetailsPage() {
     },
     onSuccess: () => {
       toast({ title: "تم إرسال طلب الحجز", description: "سنتواصل معك قريباً لتأكيد التفاصيل." });
-      setForm({ customerName: "", phone: "", eventDate: "", eventTime: "", cityArea: "", hallLocation: "", notes: "" });
+      setForm({ customerName: "", phone: "", eventDate: "", eventTime: "", cityArea: "", hallLocation: "", transportationMode: "customer", transportationNotes: "", notes: "" });
     },
     onError: (err: any) => toast({ title: "تعذر إرسال الحجز", description: err?.message, variant: "destructive" }),
   });
@@ -230,6 +234,15 @@ export default function KoshaDetailsPage() {
                   <FormInput label="المدينة / المنطقة" icon={<MapPin className="h-4 w-4" />} value={form.cityArea} onChange={(value) => setForm((f) => ({ ...f, cityArea: value }))} />
                   <FormInput label="القاعة / الموقع" icon={<MapPin className="h-4 w-4" />} value={form.hallLocation} onChange={(value) => setForm((f) => ({ ...f, hallLocation: value }))} />
                 </div>
+                <fieldset className="rounded-xl border border-border/50 bg-muted/20 p-4">
+                  <legend className="px-1 text-sm font-semibold text-foreground">خدمة النقل</legend>
+                  <p className="mb-3 flex items-center gap-2 text-xs leading-5 text-muted-foreground"><Truck className="h-4 w-4 shrink-0" />يمكنك طلب نقل AJN، وسنؤكد السيارة والأجرة قبل اعتماد الحجز.</p>
+                  <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="خدمة النقل">
+                    <button type="button" role="radio" aria-checked={form.transportationMode === "ajn"} onClick={() => setForm((current) => ({ ...current, transportationMode: "ajn" }))} className={`min-h-16 rounded-lg border px-3 py-2 text-right text-sm transition-colors ${form.transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/50 bg-background text-foreground hover:border-primary/50"}`}>النقل بواسطة AJN</button>
+                    <button type="button" role="radio" aria-checked={form.transportationMode === "customer"} onClick={() => setForm((current) => ({ ...current, transportationMode: "customer", transportationNotes: "" }))} className={`min-h-16 rounded-lg border px-3 py-2 text-right text-sm transition-colors ${form.transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/50 bg-background text-foreground hover:border-primary/50"}`}>النقل من مسؤولية الزبون</button>
+                  </div>
+                  {form.transportationMode === "ajn" ? <div className="mt-3"><label className="mb-1 block text-xs text-muted-foreground">ملاحظات النقل (اختياري)</label><Textarea value={form.transportationNotes} onChange={(event) => setForm((current) => ({ ...current, transportationNotes: event.target.value }))} className="bg-background" rows={3} /></div> : null}
+                </fieldset>
                 <div>
                   <label className="mb-1 block text-xs text-muted-foreground">ملاحظات</label>
                   <Textarea value={form.notes} onChange={(event) => setForm((f) => ({ ...f, notes: event.target.value }))} className="bg-background" rows={4} />

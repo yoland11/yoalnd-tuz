@@ -1492,7 +1492,9 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
 
         <KoshaDetailSection title="خدمة النقل">
           {booking.transportationMode === "ajn" ? (
-            <KoshaDetailGrid items={[
+            Number(booking.transportationFee ?? 0) <= 0 && !booking.transportationVehicleId ? (
+              <div className="rounded-lg border border-primary/25 bg-primary/5 px-3 py-2.5 text-sm text-muted-foreground">طلب الزبون النقل بواسطة AJN. بانتظار تحديد السيارة وأجرة النقل قبل اعتماد أي حركة مالية.</div>
+            ) : <KoshaDetailGrid items={[
               ["طريقة النقل", "النقل بواسطة AJN"],
               ["أجرة النقل", formatCurrency(Number(booking.transportationFee ?? 0))],
               ["السيارة", [booking.transportationVehicleName, booking.transportationVehiclePlate].filter(Boolean).join(" · ") || "—"],

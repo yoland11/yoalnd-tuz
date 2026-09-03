@@ -14519,32 +14519,39 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
     let transportationVehicleId: number | null = null;
     let transportationDriverId: number | null = null;
     if (transportationMode === "ajn") {
-      if (transportationFee <= 0)
+      // A public request can ask AJN for transportation before the team has
+      // selected a vehicle or agreed the fee. This is a request only: it does
+      // not post revenue, affect the booking total, or create a cash movement.
+      const transportationAwaitingConfirmation = transportationFee <= 0 && !data.transportationVehicleId;
+      if (!transportationAwaitingConfirmation && transportationFee <= 0)
         return error("أجرة النقل مطلوبة عندما يكون النقل بواسطة AJN", 400);
-      if (!data.transportationVehicleId)
+      if (!transportationAwaitingConfirmation && !data.transportationVehicleId)
         return error("اختر سيارة للنقل بواسطة AJN", 400);
-      const vehicle = await db.query.fleetVehiclesTable.findFirst({
-        where: and(eq(fleetVehiclesTable.id, data.transportationVehicleId), eq(fleetVehiclesTable.isActive, true)),
-      });
-      if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
-      const conflictingBooking = data.eventDate ? await db.query.koshaBookingsTable.findFirst({
-        where: and(
-          eq(koshaBookingsTable.transportationVehicleId, vehicle.id),
-          eq(koshaBookingsTable.transportationMode, "ajn"),
-          eq(koshaBookingsTable.eventDate, data.eventDate),
-          sql`${koshaBookingsTable.archivedAt} is null`,
-          sql`${koshaBookingsTable.status} <> 'cancelled'`,
-        ),
-      }) : null;
-      if (conflictingBooking)
-        return error("هذه السيارة مرتبطة بحجز آخر في نفس الوقت.", 409);
-      transportationVehicleId = vehicle.id;
-      if (data.transportationDriverId) {
-        const driver = await db.query.staffTable.findFirst({
-          where: eq(staffTable.id, data.transportationDriverId),
+      if (!transportationAwaitingConfirmation) {
+        const vehicleId = data.transportationVehicleId!;
+        const vehicle = await db.query.fleetVehiclesTable.findFirst({
+          where: and(eq(fleetVehiclesTable.id, vehicleId), eq(fleetVehiclesTable.isActive, true)),
         });
-        if (!driver) return error("السائق المختار غير موجود", 404);
-        transportationDriverId = driver.id;
+        if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
+        const conflictingBooking = data.eventDate ? await db.query.koshaBookingsTable.findFirst({
+          where: and(
+            eq(koshaBookingsTable.transportationVehicleId, vehicle.id),
+            eq(koshaBookingsTable.transportationMode, "ajn"),
+            eq(koshaBookingsTable.eventDate, data.eventDate),
+            sql`${koshaBookingsTable.archivedAt} is null`,
+            sql`${koshaBookingsTable.status} <> 'cancelled'`,
+          ),
+        }) : null;
+        if (conflictingBooking)
+          return error("هذه السيارة مرتبطة بحجز آخر في نفس الوقت.", 409);
+        transportationVehicleId = vehicle.id;
+        if (data.transportationDriverId) {
+          const driver = await db.query.staffTable.findFirst({
+            where: eq(staffTable.id, data.transportationDriverId),
+          });
+          if (!driver) return error("السائق المختار غير موجود", 404);
+          transportationDriverId = driver.id;
+        }
       }
     }
     const venueImages = await persistMediaList(
@@ -14657,6 +14664,7 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
             fee: transportationFee,
             vehicleId: transportationVehicleId,
             driverId: transportationDriverId,
+            awaitingConfirmation: transportationFee <= 0 && !transportationVehicleId,
           } : transportationMode === "customer" ? { mode: "customer" } : null,
         },
         // Customer books with no price — the admin sets it later ("حسب الاتفاق").

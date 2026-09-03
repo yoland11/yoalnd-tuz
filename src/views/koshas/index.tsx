@@ -1,7 +1,7 @@
 import { Link } from "wouter";
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, CheckCircle2, ChevronRight, CircleCheck, ClipboardList, DoorOpen, Flower2, Gem, Grid3X3, ImagePlus, Layers3, SlidersHorizontal, Star, TrendingUp } from "lucide-react";
+import { ArrowLeft, Check, CheckCircle2, ChevronRight, CircleCheck, ClipboardList, DoorOpen, Flower2, Gem, Grid3X3, ImagePlus, Layers3, SlidersHorizontal, Star, TrendingUp, Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -126,6 +126,8 @@ type BookingForm = {
   bridePhone: string;
   groomPhone: string;
   alternatePhone: string;
+  transportationMode: "ajn" | "customer";
+  transportationNotes: string;
   notes: string;
 };
 
@@ -152,6 +154,8 @@ const EMPTY_BOOKING_FORM: BookingForm = {
   bridePhone: "",
   groomPhone: "",
   alternatePhone: "",
+  transportationMode: "customer",
+  transportationNotes: "",
   notes: "",
 };
 
@@ -745,6 +749,47 @@ export default function KoshasPage() {
                         <WizardInput label="اسم العريس"><Input value={form.groomName} onChange={(e) => setForm((f) => ({ ...f, groomName: e.target.value }))} /></WizardInput>
                       </CardContent>
                     </Card>
+                    <Card className="border-border/40 bg-background/45 lg:col-span-2">
+                      <CardContent className="p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="flex items-start gap-3">
+                            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Truck className="h-4 w-4" /></span>
+                            <div>
+                              <h3 className="font-bold text-foreground">خدمة النقل</h3>
+                              <p className="mt-1 text-sm leading-6 text-muted-foreground">اختر مسؤولية النقل، وسنؤكد تفاصيل نقل AJN معك قبل اعتماد الحجز.</p>
+                            </div>
+                          </div>
+                          {form.transportationMode === "customer" ? <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">النقل من مسؤولية الزبون</span> : null}
+                        </div>
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="خدمة النقل">
+                          <button
+                            type="button"
+                            role="radio"
+                            aria-checked={form.transportationMode === "ajn"}
+                            onClick={() => setForm((current) => ({ ...current, transportationMode: "ajn" }))}
+                            className={`min-h-20 rounded-xl border p-4 text-right transition-colors ${form.transportationMode === "ajn" ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-card text-foreground hover:border-primary/50"}`}
+                          >
+                            <span className="block text-sm font-semibold">النقل بواسطة AJN</span>
+                            <span className="mt-1 block text-xs leading-5 text-muted-foreground">اطلب النقل وسيتواصل الفريق لتأكيد السيارة والأجرة.</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="radio"
+                            aria-checked={form.transportationMode === "customer"}
+                            onClick={() => setForm((current) => ({ ...current, transportationMode: "customer", transportationNotes: "" }))}
+                            className={`min-h-20 rounded-xl border p-4 text-right transition-colors ${form.transportationMode === "customer" ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-card text-foreground hover:border-primary/50"}`}
+                          >
+                            <span className="block text-sm font-semibold">النقل من مسؤولية الزبون</span>
+                            <span className="mt-1 block text-xs leading-5 text-muted-foreground">لن تُضاف خدمة نقل إلى هذا الطلب.</span>
+                          </button>
+                        </div>
+                        {form.transportationMode === "ajn" ? (
+                          <div className="mt-3">
+                            <WizardInput label="ملاحظات النقل (اختياري)"><Textarea rows={3} value={form.transportationNotes} onChange={(event) => setForm((current) => ({ ...current, transportationNotes: event.target.value }))} placeholder="مثال: موقع الاستلام أو وقت الوصول المطلوب" /></WizardInput>
+                          </div>
+                        ) : null}
+                      </CardContent>
+                    </Card>
                     <Card className="border-border/40 bg-background/45">
                       <CardContent className="space-y-3 p-4">
                         <h3 className="font-bold text-foreground">تفاصيل الحفلة</h3>
@@ -851,6 +896,8 @@ export default function KoshasPage() {
                           <SummaryRow label="المكان والثيم" value={[form.venueType, form.themeColor].filter(Boolean).join(" - ")} />
                           <SummaryRow label="العنوان" value={[form.province, form.area, form.mahalla, form.nearestPoint].filter(Boolean).join(" - ")} />
                           <SummaryRow label="التواصل" value={[form.bridePhone, form.groomPhone, form.alternatePhone].filter(Boolean).join(" / ")} />
+                          <SummaryRow label="خدمة النقل" value={form.transportationMode === "ajn" ? "النقل بواسطة AJN — بانتظار تأكيد السيارة والأجرة" : "النقل من مسؤولية الزبون"} />
+                          {form.transportationMode === "ajn" ? <SummaryRow label="ملاحظات النقل" value={form.transportationNotes} /> : null}
                           <SummaryRow label="ملاحظات" value={form.notes} />
                         </div>
                       </div>
