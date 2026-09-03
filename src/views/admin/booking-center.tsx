@@ -33,10 +33,12 @@ import {
   ReceiptText,
   Search,
   Send,
+  ShoppingBag,
   Sparkles,
   Speaker,
   Users,
   Warehouse,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -73,6 +75,16 @@ type ServiceKey =
   | "led"
   | "transportation"
   | "decorations";
+
+type SoundItemSource = "store" | "asset";
+type SoundBookingItem = {
+  productId: number;
+  name: string;
+  quantity: number;
+  barcode?: string | null;
+  isAsset: boolean;
+  source: SoundItemSource;
+};
 
 type ServiceStatus =
   | "waiting"
@@ -276,6 +288,20 @@ function dateOnly(value: unknown) {
 function serviceKey(value: unknown): ServiceKey {
   const normalized = String(value ?? "").toLowerCase();
   return SERVICE_META.find((item) => item.aliases.some((alias) => normalized.includes(alias)))?.key ?? "decorations";
+}
+
+const SOUND_CATALOG_HINTS = [
+  "sound", "audio", "speaker", "mixer", "microphone", "mic", "dj", "amplifier", "subwoofer", "rcf",
+  "صوت", "سماع", "سبيكر", "مكسر", "ميكسر", "ميكرفون", "مايك", "دي جي", "مضخم",
+];
+
+function soundCatalogProduct(product: any, categories: any[]) {
+  const category = categories.find((item) => Number(item.id) === Number(product?.categoryId ?? product?.category_id));
+  const value = [product?.nameAr, product?.name, product?.category, product?.categoryName, category?.nameAr, category?.name]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return SOUND_CATALOG_HINTS.some((hint) => value.includes(hint));
 }
 
 function bookingServices(order: ServiceOrder): BookingService[] {
@@ -702,7 +728,21 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   const [photographyDelivery, setPhotographyDelivery] = useState<"album" | "shots">("shots");
   const [photographyShotsCount, setPhotographyShotsCount] = useState("");
   const [photographyReelsRequested, setPhotographyReelsRequested] = useState(false);
+  const [soundItems, setSoundItems] = useState<SoundBookingItem[]>([]);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const soundSelected = selected.includes("sound");
+  const soundProductsQuery = useQuery<any[]>({
+    queryKey: ["admin", "products-all", "booking-sound-picker"],
+    queryFn: () => adminFetch("/admin/products?limit=2000"),
+    enabled: soundSelected,
+    staleTime: 30_000,
+  });
+  const categoriesQuery = useQuery<any[]>({
+    queryKey: ["admin", "categories", "booking-sound-picker"],
+    queryFn: () => adminFetch("/admin/categories"),
+    enabled: soundSelected,
+    staleTime: 5 * 60_000,
+  });
   const focusField = (field: string) => {
     const fieldId: Record<string, string> = {
       customer: "booking-customer-search",
@@ -761,6 +801,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             ...fieldsWithBookingPhotos({}, bookingPhotos),
             departments: selected,
             bookingCenterServices: selected.map((type) => ({ type, status: "waiting", amount: 0 })),
+            ...(selected.includes("sound") && soundItems.length ? { soundItems } : {}),
             ...(selected.includes("photography")
               ? {
                   photographyServiceKind: photographyType,
@@ -856,11 +897,47 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             </> : null}
             <label className="flex cursor-pointer items-center justify-between rounded-lg border border-border/45 bg-background/80 px-3 py-2 text-sm"><span>هل تريد ريلز معها؟</span><input type="checkbox" checked={photographyReelsRequested} onChange={(event) => setPhotographyReelsRequested(event.target.checked)} className="h-4 w-4 accent-rose-600" /><span className="sr-only">طلب ريلز</span></label>
           </section> : null}
+          {soundSelected ? <SoundItemsSelector products={soundProductsQuery.data ?? []} categories={categoriesQuery.data ?? []} loading={soundProductsQuery.isLoading || categoriesQuery.isLoading} items={soundItems} onChange={setSoundItems} /> : null}
           <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending || imageUploading || depositTooHigh} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : "حفظ الحجز"}</Button></div>
         </div>
       </div>
     </section>
   );
+}
+
+function SoundItemsSelector({ products, categories, loading, items, onChange }: { products: any[]; categories: any[]; loading: boolean; items: SoundBookingItem[]; onChange: (items: SoundBookingItem[]) => void }) {
+  const [source, setSource] = useState<SoundItemSource>("store");
+  const [search, setSearch] = useState("");
+  const selectedIds = useMemo(() => new Set(items.map((item) => item.productId)), [items]);
+  const candidates = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return products
+      .filter((product) => product?.isActive !== false && !product?.archivedAt)
+      .filter((product) => Boolean(product?.isAsset) === (source === "asset"))
+      .filter((product) => soundCatalogProduct(product, categories))
+      .filter((product) => !selectedIds.has(Number(product.id)))
+      .filter((product) => !query || [product.nameAr, product.name, product.barcode].some((value) => String(value ?? "").toLowerCase().includes(query)))
+      .slice(0, 8);
+  }, [categories, products, search, selectedIds, source]);
+  const add = (product: any) => onChange([...items, {
+    productId: Number(product.id),
+    name: product.nameAr || product.name || `#${product.id}`,
+    quantity: 1,
+    barcode: product.barcode ?? null,
+    isAsset: Boolean(product.isAsset),
+    source,
+  }]);
+  const updateQuantity = (productId: number, quantity: number) => onChange(items.map((item) => item.productId === productId ? { ...item, quantity: Math.max(1, Math.floor(quantity) || 1) } : item));
+  return <section className="mt-4 space-y-3 rounded-xl border border-amber-200/70 bg-amber-50/45 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
+    <div><h3 className="flex items-center gap-2 font-semibold text-foreground"><Speaker className="h-4 w-4 text-amber-700" />تجهيزات الصوت</h3><p className="mt-1 text-xs leading-5 text-muted-foreground">اختر معدات الصوت من المتجر أو من الأصول. لا يتم إخراج الأصل أو حجز المخزون من هذه الخطوة؛ يتم ذلك لاحقاً من مساحة تنفيذ الحجز.</p></div>
+    <div className="grid grid-cols-2 gap-2" role="group" aria-label="مصدر تجهيزات الصوت">
+      <Button type="button" size="sm" variant={source === "store" ? "default" : "outline"} className="justify-start" onClick={() => setSource("store")}><ShoppingBag className="h-4 w-4" />إضافة من المتجر</Button>
+      <Button type="button" size="sm" variant={source === "asset" ? "default" : "outline"} className="justify-start" onClick={() => setSource("asset")}><Boxes className="h-4 w-4" />إضافة من الأصول</Button>
+    </div>
+    <div className="relative"><Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} className="pr-9" placeholder={source === "store" ? "ابحث في منتجات الصوت…" : "ابحث في أصول الصوت…"} /></div>
+    {loading ? <div className="rounded-lg border border-dashed border-border/40 px-3 py-4 text-center text-xs text-muted-foreground">جارٍ تحميل عناصر الصوت…</div> : candidates.length ? <div className="max-h-44 overflow-y-auto rounded-lg border border-border/40 bg-background/70">{candidates.map((product) => <button key={product.id} type="button" className="flex w-full items-center justify-between gap-3 border-b border-border/30 px-3 py-2.5 text-right text-sm last:border-b-0 hover:bg-primary/5" onClick={() => add(product)}><span className="min-w-0 truncate font-medium">{product.nameAr || product.name}</span><span className="shrink-0 text-xs text-primary">إضافة</span></button>)}</div> : <p className="rounded-lg border border-dashed border-border/40 px-3 py-3 text-center text-xs text-muted-foreground">لا توجد عناصر صوتيات مطابقة في {source === "store" ? "المتجر" : "الأصول"}.</p>}
+    {items.length ? <div className="space-y-2 rounded-lg border border-border/40 bg-background/70 p-2"><div className="flex items-center justify-between px-1"><b className="text-xs">العناصر المختارة</b><span className="text-xs text-muted-foreground">{items.length} عناصر</span></div>{items.map((item) => <div key={item.productId} className="grid grid-cols-[minmax(0,1fr)_5rem_auto] items-center gap-2 rounded-md bg-muted/35 px-2 py-2"><div className="min-w-0"><p className="truncate text-sm font-medium">{item.name}</p><p className="text-[11px] text-muted-foreground">{item.source === "asset" ? "من الأصول" : "من المتجر"}{item.barcode ? ` · ${item.barcode}` : ""}</p></div><Input type="number" min="1" value={item.quantity} aria-label={`كمية ${item.name}`} onChange={(event) => updateQuantity(item.productId, Number(event.target.value))} /><Button type="button" size="icon" variant="ghost" className="text-destructive" aria-label={`إزالة ${item.name}`} onClick={() => onChange(items.filter((candidate) => candidate.productId !== item.productId))}><X className="h-4 w-4" /></Button></div>)}</div> : null}
+  </section>;
 }
 
 function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: number }) {
