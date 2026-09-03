@@ -2088,6 +2088,14 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     queryFn: () => adminFetch("/admin/suppliers"),
     staleTime: 5 * 60 * 1000,
   });
+  // The invoice editor is mounted independently from the sales composer, so
+  // it needs its own catalogue query. Without it, "إضافة منتج" created a
+  // blank row with no way to select a real stock product.
+  const { data: detailProducts = [], isLoading: detailProductsLoading, isError: detailProductsError } = useQuery<Product[]>({
+    queryKey: ["admin", "products-all", "sales-invoice-editor"],
+    queryFn: () => adminFetch("/admin/products?limit=2000"),
+    staleTime: 3 * 60 * 1000,
+  });
 
   const { data: invoice, isLoading, error } = useQuery<SalesInvoice>({
     queryKey: ["admin", "sales-invoice", invoiceId],
@@ -2188,6 +2196,26 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
       total: 0,
       costPrice: 0,
     }]);
+  }
+
+  function selectDetailProduct(idx: number, rawProductId: string) {
+    const productId = Number(rawProductId);
+    const product = detailProducts.find((candidate) => candidate.id === productId);
+    if (!product) return;
+    setItems((current) => current.map((item, itemIndex) => {
+      if (itemIndex !== idx) return item;
+      const unitPrice = finiteNumber(product.price);
+      const discount = Math.max(0, item.discount);
+      return {
+        ...item,
+        productId: product.id,
+        productName: product.nameAr || product.name,
+        barcode: product.barcode || "",
+        unitPrice,
+        costPrice: finiteNumber(product.costPrice),
+        total: +(Math.max(0, item.quantity * unitPrice - discount)).toFixed(2),
+      };
+    }));
   }
 
   const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
@@ -2710,11 +2738,26 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                     {items.map((item, idx) => (
                       <tr key={idx} className="hover:bg-muted/10">
                         <td className="px-3 py-2 min-w-[180px]">
-                          <input
-                            value={item.productName}
-                            onChange={(e) => updateDetailItem(idx, "productName", e.target.value)}
-                            className="bg-transparent w-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded px-1"
-                          />
+                          <div className="space-y-1.5">
+                            <select
+                              aria-label={`اختيار منتج للسطر ${idx + 1}`}
+                              value={item.productId > 0 ? String(item.productId) : ""}
+                              disabled={detailProductsLoading}
+                              onChange={(event) => selectDetailProduct(idx, event.target.value)}
+                              className="h-9 w-full rounded border border-border/40 bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-wait"
+                            >
+                              <option value="">{detailProductsLoading ? "جارٍ تحميل المنتجات..." : "اختر منتجاً من المخزون"}</option>
+                              {item.productId > 0 && !detailProducts.some((product) => product.id === item.productId) ? <option value={item.productId}>{item.productName || `منتج #${item.productId}`}</option> : null}
+                              {detailProducts.map((product) => <option key={product.id} value={product.id}>{product.nameAr || product.name}{product.barcode ? ` · ${product.barcode}` : ""}</option>)}
+                            </select>
+                            {item.productId === 0 ? <input
+                              value={item.productName}
+                              onChange={(event) => updateDetailItem(idx, "productName", event.target.value)}
+                              placeholder="أو اكتب اسم بند يدوي"
+                              className="w-full rounded border border-border/30 bg-transparent px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            /> : <p className="truncate px-1 text-xs text-muted-foreground">{item.productName}</p>}
+                            {detailProductsError ? <p className="px-1 text-xs text-destructive">تعذر تحميل قائمة المنتجات. أعد فتح الفاتورة أو حدّث الصفحة.</p> : null}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <input
