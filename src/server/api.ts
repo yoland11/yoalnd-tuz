@@ -33708,6 +33708,9 @@ type AssetCategoryInput = {
   description: string | null;
   color: string | null;
   icon: string | null;
+  parentId: number | null;
+  sortOrder: number;
+  isActive: boolean;
 };
 
 function parseAssetCategoryInput(value: unknown): AssetCategoryInput | null {
@@ -33722,6 +33725,9 @@ function parseAssetCategoryInput(value: unknown): AssetCategoryInput | null {
         .optional()
         .nullable(),
       icon: z.string().trim().max(80).optional().nullable(),
+      parentId: z.coerce.number().int().positive().optional().nullable(),
+      sortOrder: z.coerce.number().int().min(0).max(100_000).optional(),
+      isActive: z.boolean().optional(),
     })
     .safeParse(value);
   if (!parsed.success) return null;
@@ -33730,6 +33736,9 @@ function parseAssetCategoryInput(value: unknown): AssetCategoryInput | null {
     description: nullableText(parsed.data.description),
     color: nullableText(parsed.data.color),
     icon: nullableText(parsed.data.icon),
+    parentId: parsed.data.parentId ?? null,
+    sortOrder: parsed.data.sortOrder ?? 0,
+    isActive: parsed.data.isActive ?? true,
   };
 }
 
@@ -33755,9 +33764,11 @@ async function handleAssetCategories(req: NextRequest, parts: string[]) {
   const id = parts[2] ? int(parts[2]) : null;
 
   if (method === "GET" && !id) {
+    const activeOnly = req.nextUrl.searchParams.get("active") === "1";
     const [rows, assets] = await Promise.all([
       db.query.assetCategoriesTable.findMany({
-        orderBy: (category, { asc }) => [asc(category.name), asc(category.id)],
+        where: activeOnly ? eq(assetCategoriesTable.isActive, true) : undefined,
+        orderBy: (category, { asc }) => [asc(category.sortOrder), asc(category.name), asc(category.id)],
       }),
       db
         .select({ assetCategoryId: productsTable.assetCategoryId })
@@ -33787,6 +33798,10 @@ async function handleAssetCategories(req: NextRequest, parts: string[]) {
       where: sql`lower(${assetCategoriesTable.name}) = lower(${input.name})`,
     });
     if (duplicate) return error("اسم الفئة مستخدم مسبقاً", 409);
+    if (input.parentId) {
+      const parent = await db.query.assetCategoriesTable.findFirst({ where: eq(assetCategoriesTable.id, input.parentId) });
+      if (!parent) return error("القسم الرئيسي غير موجود", 404);
+    }
     const [created] = await db
       .insert(assetCategoriesTable)
       .values(input)
@@ -33820,6 +33835,11 @@ async function handleAssetCategories(req: NextRequest, parts: string[]) {
       ),
     });
     if (duplicate) return error("اسم الفئة مستخدم مسبقاً", 409);
+    if (input.parentId === id) return error("لا يمكن أن يكون القسم تابعاً لنفسه", 400);
+    if (input.parentId) {
+      const parent = await db.query.assetCategoriesTable.findFirst({ where: eq(assetCategoriesTable.id, input.parentId) });
+      if (!parent) return error("القسم الرئيسي غير موجود", 404);
+    }
     const [updated] = await db
       .update(assetCategoriesTable)
       .set({ ...input, updatedAt: new Date() })
@@ -40143,6 +40163,23 @@ async function handleAdmin(
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
 
+    if (method === "POST" && parts[2] === "bulk-category") {
+      const payload = await body(req);
+      const rawProductIds: unknown[] = Array.isArray(payload?.productIds) ? payload.productIds : [];
+      const productIds: number[] = [...new Set(rawProductIds.map((value) => optionalPositiveId(value)).filter((value): value is number => value !== null))].slice(0, 2_000);
+      const rawCategoryId = payload?.categoryId;
+      const categoryId = rawCategoryId === null || rawCategoryId === "" ? null : optionalPositiveId(rawCategoryId);
+      if (!productIds.length) return error("اختر أصلاً واحداً على الأقل", 400);
+      if (rawCategoryId !== null && rawCategoryId !== "" && !categoryId) return error("قسم الأصل غير صالح", 400);
+      const category = categoryId ? await db.query.assetCategoriesTable.findFirst({ where: eq(assetCategoriesTable.id, categoryId) }) : null;
+      if (categoryId && (!category || !category.isActive)) return error("قسم الأصل غير موجود أو غير نشط", 404);
+      const assets = await db.query.productsTable.findMany({ columns: { id: true }, where: and(inArray(productsTable.id, productIds), eq(productsTable.isAsset, true)) });
+      if (assets.length !== productIds.length) return error("بعض العناصر ليست أصولاً صالحة", 409);
+      await db.transaction(async (tx) => { await tx.update(productsTable).set({ assetCategoryId: categoryId, category: category?.name ?? "غير مصنف", updatedAt: new Date() }).where(inArray(productsTable.id, productIds)); });
+      void logAdminActivity(req, "asset_category_bulk_updated", "asset", 0, { productIds, categoryId, category: category?.name ?? "غير مصنف" });
+      return json({ ok: true, updatedCount: productIds.length, categoryId, category: category?.name ?? "غير مصنف" });
+    }
+
     if (categoryRoute) {
       await ensureDepreciationCategoryTables();
       const categoryId = int(parts[3]);
@@ -41775,6 +41812,8 @@ async function handleAdmin(
     const assetSearch = req.nextUrl.searchParams.get("q")?.trim().slice(0, 160) ?? "";
     const assetStatusFilter = req.nextUrl.searchParams.get("status")?.trim().slice(0, 40) ?? "";
     const assetCategoryFilter = req.nextUrl.searchParams.get("category")?.trim().slice(0, 120) ?? "";
+    const assetCategoryIdFilter = optionalPositiveId(req.nextUrl.searchParams.get("categoryId"));
+    const assetAvailableOnly = req.nextUrl.searchParams.get("availableOnly") === "1";
     const assetBrandFilter = req.nextUrl.searchParams.get("brand")?.trim().slice(0, 120) ?? "";
     const assetModelFilter = req.nextUrl.searchParams.get("model")?.trim().slice(0, 120) ?? "";
     const assetResponsibleFilter = req.nextUrl.searchParams.get("responsible")?.trim().slice(0, 120) ?? "";
@@ -41815,7 +41854,7 @@ async function handleAdmin(
     const uniqueText = (values: Array<string | null | undefined>) =>
       [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
 
-    const [products, profiles, passports, custodyRows, staffRows, warehouseRows, timelineRows, assetLinkResult] = await Promise.all([
+    const [products, profiles, passports, custodyRows, staffRows, warehouseRows, timelineRows, assetLinkResult, assetCategories] = await Promise.all([
       db.query.productsTable.findMany({
         where: eq(productsTable.isAsset, true),
         orderBy: [asc(productsTable.id)],
@@ -41838,6 +41877,7 @@ async function handleAdmin(
         limit: 10000,
       }),
       db.execute(sql`select product_id, entity_type, entity_id from asset_links order by id desc limit 10000`),
+      db.query.assetCategoriesTable.findMany(),
     ]);
     const profileByProduct = new Map(
       profiles
@@ -41854,6 +41894,7 @@ async function handleAdmin(
     );
     const staffById = new Map(staffRows.map((row) => [row.id, row]));
     const warehouseById = new Map(warehouseRows.map((row) => [row.id, row.name]));
+    const assetCategoryById = new Map(assetCategories.map((row) => [row.id, row]));
     const custodyByProduct = new Map<number, typeof custodyRows>();
     for (const row of custodyRows)
       custodyByProduct.set(row.productId, [
@@ -41952,7 +41993,8 @@ async function handleAdmin(
         currentValue,
         serialNumber,
         dna: assetDigitalDna(product.id, serialNumber, profile?.purchaseDate, purchasePrice),
-        category: product.category ?? product.subcategory ?? null,
+        categoryId: product.assetCategoryId ?? null,
+        category: product.assetCategoryId ? (assetCategoryById.get(product.assetCategoryId)?.name ?? product.category ?? "غير مصنف") : (product.category ?? "غير مصنف"),
         brand: nullableText(metadata.brand),
         model: nullableText(metadata.model),
         responsibleNames,
@@ -42004,6 +42046,8 @@ async function handleAdmin(
           (!assetSearchTerms.length ||
             assetSearchTerms.some((term) => searchText.includes(term))) &&
           (!assetStatusFilter || row.availabilityStatus === assetStatusFilter || row.status === assetStatusFilter) &&
+          (!assetCategoryIdFilter || row.categoryId === assetCategoryIdFilter) &&
+          (!assetAvailableOnly || row.availabilityStatus === "available") &&
           valueIncludes(row.category, assetCategoryFilter) &&
           valueIncludes(row.brand, assetBrandFilter) &&
           valueIncludes(row.model, assetModelFilter) &&
@@ -42042,6 +42086,14 @@ async function handleAdmin(
       },
       filters: {
         categories: uniqueText(allRows.map((row) => row.category)).sort((a, b) => a.localeCompare(b, "ar")),
+        assetCategories: assetCategories.map((category) => ({
+          id: category.id,
+          name: category.name,
+          parentId: category.parentId,
+          icon: category.icon,
+          isActive: category.isActive,
+          count: allRows.filter((row) => row.categoryId === category.id).length,
+        })),
         brands: uniqueText(allRows.map((row) => row.brand)).sort((a, b) => a.localeCompare(b, "ar")),
         models: uniqueText(allRows.map((row) => row.model)).sort((a, b) => a.localeCompare(b, "ar")),
         employees: uniqueText(allRows.flatMap((row) => row.responsibleNames)).sort((a, b) => a.localeCompare(b, "ar")),

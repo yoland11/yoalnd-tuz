@@ -132,6 +132,7 @@ type AssetRow = {
   serialNumber?: string | null;
   dna?: string | null;
   category?: string | null;
+  categoryId?: number | null;
   assetCode?: string;
   qrToken?: string | null;
   barcode?: string | null;
@@ -168,6 +169,7 @@ type AssetSearchResponse = {
     employees: string[];
     warehouses: string[];
     locations: string[];
+    assetCategories?: Array<{ id: number; name: string; parentId?: number | null; icon?: string | null; isActive?: boolean; count: number }>;
   };
 };
 
@@ -778,6 +780,7 @@ export function AssetsPage() {
   const [order, setOrder] = useState<"asc" | "desc">("desc");
   const [showFilters, setShowFilters] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<number[]>([]);
   const [assetFilters, setAssetFilters] = useState({
     status: "",
     category: "",
@@ -786,6 +789,7 @@ export function AssetsPage() {
     responsible: "",
     warehouse: "",
     location: "",
+    categoryId: "",
   });
   const assetParams = useMemo(() => {
     const params = new URLSearchParams({ page: String(page), limit: "25", quick: quickFilter, sort, order });
@@ -810,6 +814,11 @@ export function AssetsPage() {
   const summary = data?.summary;
   const pagination = data?.pagination;
   const [removeTarget, setRemoveTarget] = useState<AssetRow | null>(null);
+  const bulkCategory = useMutation({
+    mutationFn: (categoryId: number | null) => adminFetch("/admin/assets/bulk-category", { method: "POST", body: JSON.stringify({ productIds: selectedAssetIds, categoryId }) }),
+    onSuccess: () => { setSelectedAssetIds([]); queryClient.invalidateQueries({ queryKey: ["admin", "assets"] }); toast({ title: "تم تغيير قسم الأصول المحددة" }); },
+    onError: (error) => toast({ title: "تعذر تغيير القسم", description: apiErrorMessage(error), variant: "destructive" }),
+  });
   const depreciationRows = [...rows]
     .filter((row) => row.hasDepreciationRecord && row.purchasePrice > 0)
     .sort(
@@ -839,7 +848,7 @@ export function AssetsPage() {
   const clearSearchFilters = () => {
     setSearch("");
     setQuickFilter("all");
-    setAssetFilters({ status: "", category: "", brand: "", model: "", responsible: "", warehouse: "", location: "" });
+    setAssetFilters({ status: "", category: "", brand: "", model: "", responsible: "", warehouse: "", location: "", categoryId: "" });
     setPage(1);
   };
   const toggleDepreciation = useMutation({
@@ -944,6 +953,16 @@ export function AssetsPage() {
             </button>
           ))}
         </div>
+        <div className="flex gap-2 overflow-x-auto border-t border-border/30 pt-3" aria-label="أقسام الأصول">
+          <button type="button" onClick={() => setFilter("categoryId", "")} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition ${!assetFilters.categoryId ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}>الكل</button>
+          {(data?.filters.assetCategories ?? []).filter((category) => category.isActive !== false).map((category) => (
+            <button key={category.id} type="button" onClick={() => setFilter("categoryId", String(category.id))} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition ${assetFilters.categoryId === String(category.id) ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}>
+              {category.name} <span className="mr-1 opacity-70">{category.count}</span>
+            </button>
+          ))}
+          <span className="shrink-0 px-2 py-1.5 text-xs text-muted-foreground">غير مصنف: {(data?.filters.categories ?? []).includes("غير مصنف") ? "موجود" : "0"}</span>
+        </div>
+        {selectedAssetIds.length > 0 ? <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/25 bg-primary/5 px-3 py-2 text-sm"><strong>تم تحديد {selectedAssetIds.length} أصل</strong><select defaultValue="" disabled={bulkCategory.isPending} onChange={(event) => { if (event.target.value) bulkCategory.mutate(Number(event.target.value)); }} className="h-9 rounded-lg border border-border/40 bg-background px-3 text-sm"><option value="">تغيير القسم…</option>{(data?.filters.assetCategories ?? []).filter((category) => category.isActive !== false).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><Button size="sm" variant="ghost" onClick={() => setSelectedAssetIds([])}>إلغاء التحديد</Button></div> : null}
         {showFilters ? (
           <div className="grid gap-2 border-t border-border/30 pt-3 sm:grid-cols-2 lg:grid-cols-4">
             <select value={assetFilters.status} onChange={(event) => setFilter("status", event.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
@@ -1008,6 +1027,7 @@ export function AssetsPage() {
             <table className="min-w-[1100px] w-full text-sm">
               <thead className="bg-background/50 text-muted-foreground">
                 <tr>
+                  <th className="w-10 p-3"><input type="checkbox" aria-label="تحديد كل الأصول الظاهرة" checked={rows.length > 0 && rows.every((row) => selectedAssetIds.includes(row.productId))} onChange={(event) => setSelectedAssetIds(event.target.checked ? [...new Set([...selectedAssetIds, ...rows.map((row) => row.productId)])] : selectedAssetIds.filter((id) => !rows.some((row) => row.productId === id)))} /></th>
                   <th className="p-3 text-right">الأصل</th>
                   <th className="p-3 text-right">التعريف</th>
                   <th className="p-3 text-right">الفئة / العلامة</th>
@@ -1023,6 +1043,7 @@ export function AssetsPage() {
               <tbody className="divide-y divide-border/20">
                 {rows.map((row) => (
                   <tr key={row.productId} className="hover:bg-background/40">
+                    <td className="p-3"><input type="checkbox" aria-label={`تحديد ${row.name}`} checked={selectedAssetIds.includes(row.productId)} onChange={() => setSelectedAssetIds((current) => current.includes(row.productId) ? current.filter((id) => id !== row.productId) : [...current, row.productId])} /></td>
                     <td className="p-3">
                       <div className="font-medium text-foreground">{highlightAssetMatch(row.name, deferredSearch)}</div>
                       <div dir="ltr" className="mt-1 font-mono text-[11px] text-muted-foreground">{highlightAssetMatch(row.assetCode, deferredSearch)}</div>

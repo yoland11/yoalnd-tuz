@@ -104,8 +104,11 @@ type AssetCategory = {
   color: string | null;
   icon: string | null;
   linkedAssetsCount: number;
+  parentId?: number | null;
+  sortOrder?: number;
+  isActive?: boolean;
 };
-type AssetCategoryEditor = Pick<AssetCategory, "name" | "description" | "color" | "icon"> & { id?: number };
+type AssetCategoryEditor = Pick<AssetCategory, "name" | "description" | "color" | "icon" | "parentId" | "sortOrder" | "isActive"> & { id?: number };
 type AssetCategoriesResponse = { data: AssetCategory[] };
 type StaffOption = { id: number; fullName?: string | null; username?: string | null };
 type AssetDocument = { id: number; title: string; fileUrl: string; fileName?: string | null; documentType?: string | null };
@@ -340,8 +343,11 @@ export default function AssetNewPage() {
             description: category.description,
             color: category.color,
             icon: category.icon,
+            parentId: category.parentId ?? null,
+            sortOrder: category.sortOrder ?? 0,
+            isActive: category.isActive ?? true,
           }
-        : { name: "", description: "", color: "", icon: "" },
+        : { name: "", description: "", color: "", icon: "", parentId: null, sortOrder: 0, isActive: true },
     );
     setCategoryDialogOpen(true);
   }
@@ -357,6 +363,9 @@ export default function AssetNewPage() {
       description: categoryEditor.description?.trim() || null,
       color: categoryEditor.color || null,
       icon: categoryEditor.icon?.trim() || null,
+      parentId: categoryEditor.parentId ?? null,
+      sortOrder: Number(categoryEditor.sortOrder ?? 0),
+      isActive: categoryEditor.isActive ?? true,
     };
     try {
       const category = await adminFetch<AssetCategory>(
@@ -1241,6 +1250,23 @@ export default function AssetNewPage() {
                 />
               </label>
             </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="grid gap-1.5 text-sm">
+                <span className="font-medium">القسم الرئيسي <span className="font-normal text-muted-foreground">(اختياري)</span></span>
+                <select value={String(categoryEditor?.parentId ?? "")} onChange={(event) => setCategoryEditor((current) => current && { ...current, parentId: Number(event.target.value) || null })} className="h-9 rounded-md border border-input bg-background px-3 text-sm" disabled={!categoryEditor}>
+                  <option value="">قسم رئيسي</option>
+                  {assetCategories.filter((category) => category.id !== categoryEditor?.id && !category.parentId).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1.5 text-sm">
+                <span className="font-medium">ترتيب العرض</span>
+                <input type="number" min="0" value={categoryEditor?.sortOrder ?? 0} onChange={(event) => setCategoryEditor((current) => current && { ...current, sortOrder: Math.max(0, Number(event.target.value) || 0) })} className="h-9 rounded-md border border-input bg-background px-3 text-sm" />
+              </label>
+            </div>
+            <label className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2 text-sm">
+              <span><span className="font-medium">قسم نشط</span><span className="mr-1 text-xs text-muted-foreground">يظهر في اختيار الأصول</span></span>
+              <input type="checkbox" checked={categoryEditor?.isActive ?? true} onChange={(event) => setCategoryEditor((current) => current && { ...current, isActive: event.target.checked })} className="h-4 w-4" />
+            </label>
           </div>
           <DialogFooter className="gap-2 sm:space-x-0">
             <Button variant="outline" onClick={() => setCategoryDialogOpen(false)} disabled={savingCategory}>
