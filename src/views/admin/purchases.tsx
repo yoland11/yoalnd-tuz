@@ -540,6 +540,14 @@ export default function PurchasesPage() {
       const full = await adminFetch<PurchaseInvoice & { items: any[] }>(
         `/admin/purchase-invoices/${inv.id}`,
       );
+      if (!full.items?.length) {
+        toast({
+          title: "لا يمكن تعديل هذه الفاتورة بأمان",
+          description: "لا توجد بنود محفوظة في سجل الفاتورة؛ لن يتم فتح نموذج فارغ حتى لا يتأثر المخزون.",
+          variant: "destructive",
+        });
+        return;
+      }
       const sub = (full.items ?? []).reduce(
         (s: number, it: any) => s + (Number(it.total) || 0),
         0,
