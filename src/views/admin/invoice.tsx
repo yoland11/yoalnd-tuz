@@ -69,6 +69,7 @@ export default function Invoice() {
   }, [settings?.website]);
 
   const model = useMemo(() => data ? invoiceModel(data) : null, [data]);
+  const pdfSheet = () => sheetRef.current?.querySelector<HTMLElement>(".wedding-invoice-bleed") ?? sheetRef.current;
 
   useEffect(() => {
     if (!autoPrint || !data || !model || !sheetRef.current || autoPrintStarted.current) return;
@@ -85,9 +86,10 @@ export default function Invoice() {
   }, [autoDownload, data, model]);
 
   async function downloadPdf() {
-    if (!sheetRef.current || !data) return;
+    const sheet = pdfSheet();
+    if (!sheet || !data) return;
     setDownloading(true);
-    try { await downloadElementPdf(sheetRef.current, `ajn-event-invoice-${data.trackingCode ?? data.id}.pdf`, { format: [216, 303], margin: 0, scale: 3.125, pagebreakMode: ["css", "legacy"] }); toast.success("تم حفظ ملف PDF كاملاً"); }
+    try { await downloadElementPdf(sheet, `ajn-event-invoice-${data.trackingCode ?? data.id}.pdf`, { format: [216, 303], margin: 0, scale: 3.125, pagebreakMode: ["css", "legacy"] }); toast.success("تم حفظ ملف PDF كاملاً"); }
     catch (cause) { toast.error(cause instanceof Error ? cause.message : "تعذر إنشاء ملف PDF"); }
     finally { setDownloading(false); }
   }
