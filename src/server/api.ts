@@ -17232,6 +17232,23 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     }
     if (from === to) return error("اسم القسم لم يتغير", 400);
 
+    const categoryId = Number.isInteger(payload?.id) ? payload.id : null;
+    if (categoryId) {
+      const category = await db.query.galleryCategoriesTable.findFirst({
+        where: eq(galleryCategoriesTable.id, categoryId),
+      });
+      if (!category) return error("القسم غير موجود", 404);
+      if (category.name !== from) return error("تم تحديث القسم، أعد تحميل القائمة ثم حاول مرة أخرى", 409);
+      const duplicate = await db.query.galleryCategoriesTable.findFirst({
+        where: eq(galleryCategoriesTable.name, to),
+      });
+      if (duplicate && duplicate.id !== categoryId) return error("اسم القسم موجود مسبقاً", 409);
+      await db.transaction(async (tx) => {
+        await tx.update(galleryCategoriesTable).set({ name: to, updatedAt: new Date() }).where(eq(galleryCategoriesTable.id, categoryId));
+        await tx.update(galleryItemsTable).set({ category: to, updatedAt: new Date() }).where(eq(galleryItemsTable.categoryId, categoryId));
+      });
+    }
+
     // Legacy records used `general`; keep them in sync with the visible Arabic
     // section label when the default section is renamed.
     const source = from === "عام"
@@ -17240,7 +17257,7 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     const updated = await db
       .update(galleryItemsTable)
       .set({ category: to, updatedAt: new Date() })
-      .where(source)
+      .where(categoryId ? and(source, ne(galleryItemsTable.categoryId, categoryId)) : source)
       .returning({ id: galleryItemsTable.id });
     void logAdminActivity(req, "gallery_category_renamed", "gallery", 0, {
       from,
@@ -17248,6 +17265,36 @@ async function handleGallery(req: NextRequest, parts: string[]) {
       updatedCount: updated.length,
     });
     return json({ message: "تم تعديل القسم", from, to, updatedCount: updated.length });
+  }
+
+  if (method === "DELETE" && parts[1] === "categories" && parts[2]) {
+    const auth = await requirePermission(req, "gallery");
+    if (isResponse(auth)) return auth;
+    const categoryId = int(parts[2]);
+    if (!categoryId || categoryId < 1) return error("تعذر حذف هذا القسم", 400);
+
+    const category = await db.query.galleryCategoriesTable.findFirst({
+      where: eq(galleryCategoriesTable.id, categoryId),
+    });
+    if (!category) return error("القسم غير موجود", 404);
+
+    const [children, media] = await Promise.all([
+      db.select({ count: sql<number>`count(*)::int` }).from(galleryCategoriesTable).where(eq(galleryCategoriesTable.parentId, categoryId)),
+      db.select({ count: sql<number>`count(*)::int` }).from(galleryItemsTable).where(or(
+        eq(galleryItemsTable.categoryId, categoryId),
+        eq(galleryItemsTable.category, category.name),
+      )),
+    ]);
+    if ((children[0]?.count ?? 0) > 0) {
+      return error("لا يمكن حذف قسم يحتوي أقساماً فرعية. انقلها أو احذفها أولاً.", 409);
+    }
+    if ((media[0]?.count ?? 0) > 0) {
+      return error("لا يمكن حذف قسم يحتوي على وسائط. انقل الوسائط أو أرشفها أولاً.", 409);
+    }
+
+    await db.delete(galleryCategoriesTable).where(eq(galleryCategoriesTable.id, categoryId));
+    void logAdminActivity(req, "gallery_category_deleted", "gallery", categoryId, { name: category.name });
+    return json({ message: "تم حذف القسم", id: categoryId });
   }
 
   if (method === "GET" && parts[1] === "categories") {
