@@ -316,11 +316,11 @@ const salaryMovementLabel: Record<string, string> = { bonus: "مكافأة", ded
 const salaryPaymentMethodLabel: Record<string, string> = { cash: "نقد", main_cash_box: "الصندوق الرئيسي", bank: "بنك", transfer: "تحويل", card: "بطاقة" };
 
 function StaffSalary() {
-  const [rows, setRows] = useState<Awaited<ReturnType<typeof staffApi.salary>> | null>(null);
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof staffApi.salary>>["data"] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
-    staffApi.salary().then((data) => { if (active) setRows(asRows<Awaited<ReturnType<typeof staffApi.salary>>[number]>(data)); })
+    staffApi.salary().then((data) => { if (active) setRows(asRows<Awaited<ReturnType<typeof staffApi.salary>>["data"][number]>(data.data)); })
       .catch((requestError) => { if (active) { setRows([]); setError(apiErrorMessage(requestError, "تعذر تحميل بيانات الراتب")); } });
     return () => { active = false; };
   }, []);
