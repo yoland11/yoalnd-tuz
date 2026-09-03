@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Edit2, Trash2, X, UserCog } from "lucide-react";
+import { Plus, Edit2, Archive, X, UserCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, ALL_PERMISSIONS, PERMISSION_LABELS } from "./_lib";
@@ -259,13 +259,20 @@ export default function StaffPage() {
       }),
   });
 
-  const del = useMutation({
+  const archiveEmployee = useMutation({
     mutationFn: (id: number) =>
       adminFetch(`/admin/staff/${id}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "staff"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "staff"] });
+      toast({
+        title: "تم إيقاف الموظف",
+        description:
+          "تم حفظ الرواتب والحجوزات والسجل التاريخي. يمكنك إعادة تفعيل الحساب عند الحاجة.",
+      });
+    },
     onError: (err: any) =>
       toast({
-        title: "تعذر حذف الموظف",
+        title: "تعذر إيقاف الموظف",
         description: cleanErrorMessage(err),
         variant: "destructive",
       }),
@@ -413,10 +420,16 @@ export default function StaffPage() {
                 </button>
                 {s.role !== "admin" && (
                   <button
-                    onClick={() => confirm("حذف الموظف؟") && del.mutate(s.id)}
+                    onClick={() =>
+                      confirm(
+                        "إيقاف حساب الموظف؟ سيُمنع من الدخول مع الاحتفاظ بالرواتب والحجوزات والسجل التاريخي. يمكنك إعادة تفعيله لاحقاً.",
+                      ) && archiveEmployee.mutate(s.id)
+                    }
                     className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20"
+                    title="إيقاف الموظف مع حفظ سجله"
+                    aria-label="إيقاف الموظف مع حفظ سجله"
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
+                    <Archive className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>

@@ -46811,14 +46811,24 @@ async function handleAdmin(
         if (existing.role === "admin")
           return error("لا يمكن حذف المدير الرئيسي", 403);
         try {
-          await db.delete(staffTable).where(eq(staffTable.id, id));
-          void logAdminActivity(req, "staff_deleted", "staff", id, {
+          // Staff rows are referenced by payroll, bookings, audit activity, and
+          // operational records.  Deleting the identity either violates those
+          // foreign keys or, worse, would erase the historical attribution.
+          // Keep the record and disable sign-in; a manager can re-enable it from
+          // the same staff screen when the employee returns.
+          const [row] = await db
+            .update(staffTable)
+            .set({ isActive: false })
+            .where(eq(staffTable.id, id))
+            .returning();
+          void logAdminActivity(req, "staff_archived", "staff", id, {
             username: existing.username,
+            previousIsActive: existing.isActive,
           });
-          return json({ message: "تم الحذف" });
+          return json({ message: "تم إيقاف الموظف مع حفظ سجله", staff: formatStaff(row) });
         } catch (err) {
-          logStaffApiFailure("delete", err, { id });
-          return error("فشل الاتصال بالخادم أثناء حذف الموظف", 500);
+          logStaffApiFailure("archive", err, { id });
+          return error("فشل الاتصال بالخادم أثناء إيقاف الموظف", 500);
         }
       }
       const b = await body(req);
