@@ -1552,12 +1552,15 @@ function PurchaseInvoicePaymentDialog({
     }
   };
   return <Dialog open={Boolean(invoice)} onOpenChange={(open) => !open && close()}>
-    <DialogContent dir="rtl" className="max-h-[92vh] max-w-5xl overflow-y-auto">
-      <DialogHeader>
+    <DialogContent
+      dir="rtl"
+      className="max-h-[92dvh] !w-[min(calc(100vw-2rem),72rem)] max-w-none overflow-x-hidden overflow-y-auto p-4 sm:p-6"
+    >
+      <DialogHeader className="min-w-0">
         <DialogTitle>تفاصيل فاتورة الشراء والدفع</DialogTitle>
       </DialogHeader>
-      {detailsQuery.isLoading ? <p className="py-10 text-center text-muted-foreground">جارٍ تحميل تفاصيل الفاتورة...</p> : details ? <div className="space-y-5">
-        <div className="flex flex-wrap justify-end gap-2">
+      {detailsQuery.isLoading ? <p className="py-10 text-center text-muted-foreground">جارٍ تحميل تفاصيل الفاتورة...</p> : details ? <div className="min-w-0 space-y-5">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Button type="button" variant="outline" size="sm" onClick={printCurrentInvoice}>
             <Printer className="h-4 w-4" />طباعة الفاتورة
           </Button>
@@ -1565,14 +1568,14 @@ function PurchaseInvoicePaymentDialog({
             <FileDown className="h-4 w-4" />{exportingPdf ? "جارٍ إنشاء PDF..." : "حفظ PDF"}
           </Button>
         </div>
-        <div className="grid gap-3 rounded-xl border bg-muted/20 p-4 sm:grid-cols-3">
-          <div><p className="text-xs text-muted-foreground">رقم الفاتورة</p><b>{details.invoiceNo}</b></div>
-          <div><p className="text-xs text-muted-foreground">المورد</p><b>{details.supplierName || "—"}</b></div>
-          <div><p className="text-xs text-muted-foreground">تاريخ الفاتورة</p><b>{details.date}</b></div>
+        <div className="grid min-w-0 gap-3 rounded-xl border bg-muted/20 p-4 sm:grid-cols-3">
+          <div className="min-w-0"><p className="text-xs text-muted-foreground">رقم الفاتورة</p><b className="block break-words">{details.invoiceNo}</b></div>
+          <div className="min-w-0"><p className="text-xs text-muted-foreground">المورد</p><b className="block break-words">{details.supplierName || "—"}</b></div>
+          <div className="min-w-0"><p className="text-xs text-muted-foreground">تاريخ الفاتورة</p><b className="block break-words">{details.date}</b></div>
         </div>
         <section className="rounded-xl border bg-card p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">ملخص حالة الدفع</h3><InvoicePaymentStatusBadge status={summary.paymentStatus} /></div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <PaymentMetric title="إجمالي الفاتورة" value={formatCurrency(summary.total)} />
             <PaymentMetric title="إجمالي المدفوع" value={formatCurrency(summary.paidAmount)} />
             <PaymentMetric title="المبلغ المتبقي" value={formatCurrency(summary.remainingAmount)} emphasis />
@@ -1583,16 +1586,16 @@ function PurchaseInvoicePaymentDialog({
         </section>
         <section className="rounded-xl border bg-card p-4">
           <div className="mb-3 flex items-center gap-2"><Wallet className="h-4 w-4 text-primary" /><h3 className="font-semibold">تسجيل دفعة</h3></div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <PaymentMetric title="المتبقي قبل الدفع" value={formatCurrency(summary.remainingAmount)} />
-            <label className="grid gap-1 text-sm"><span>مبلغ الدفع *</span><input type="number" min="0" max={summary.remainingAmount} value={amount} onChange={(event) => setAmount(event.target.value)} className="rounded-lg border bg-background px-3 py-2" /></label>
+            <label className="grid min-w-0 gap-1 text-sm"><span>مبلغ الدفع *</span><input type="number" min="0" max={summary.remainingAmount} value={amount} onChange={(event) => setAmount(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2" /></label>
             <PaymentMetric title="المتبقي بعد الدفع" value={formatCurrency(remainingAfter)} emphasis />
-            <label className="grid gap-1 text-sm"><span>تاريخ الدفع *</span><input type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} className="rounded-lg border bg-background px-3 py-2" /></label>
-            <label className="grid gap-1 text-sm"><span>طريقة الدفع *</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className="rounded-lg border bg-background px-3 py-2">{PAYMENT_METHODS.filter((method) => method.value !== "credit").map((method) => <option key={method.value} value={method.value}>{method.label}</option>)}</select></label>
-            <div className="grid gap-1 text-sm"><span>الصندوق / الحساب</span><div className="rounded-lg border bg-muted px-3 py-2">الصندوق الرئيسي</div></div>
-            <label className="grid gap-1 text-sm"><span>رقم المرجع</span><input value={referenceNo} onChange={(event) => setReferenceNo(event.target.value)} className="rounded-lg border bg-background px-3 py-2" /></label>
-            <label className="grid gap-1 text-sm"><span>رابط الوصل أو المرفق (اختياري)</span><input value={attachmentUrl} onChange={(event) => setAttachmentUrl(event.target.value)} className="rounded-lg border bg-background px-3 py-2" /></label>
-            <label className="grid gap-1 text-sm sm:col-span-2 lg:col-span-3"><span>ملاحظة</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} className="min-h-20 rounded-lg border bg-background p-3" /></label>
+            <label className="grid min-w-0 gap-1 text-sm"><span>تاريخ الدفع *</span><input type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2" /></label>
+            <label className="grid min-w-0 gap-1 text-sm"><span>طريقة الدفع *</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2">{PAYMENT_METHODS.filter((method) => method.value !== "credit").map((method) => <option key={method.value} value={method.value}>{method.label}</option>)}</select></label>
+            <div className="grid min-w-0 gap-1 text-sm"><span>الصندوق / الحساب</span><div className="truncate rounded-lg border bg-muted px-3 py-2">الصندوق الرئيسي</div></div>
+            <label className="grid min-w-0 gap-1 text-sm"><span>رقم المرجع</span><input value={referenceNo} onChange={(event) => setReferenceNo(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2" /></label>
+            <label className="grid min-w-0 gap-1 text-sm"><span>رابط الوصل أو المرفق (اختياري)</span><input value={attachmentUrl} onChange={(event) => setAttachmentUrl(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2" /></label>
+            <label className="grid min-w-0 gap-1 text-sm sm:col-span-2 lg:col-span-3"><span>ملاحظة</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} className="min-h-20 min-w-0 rounded-lg border bg-background p-3" /></label>
           </div>
           <p className="mt-2 text-xs text-muted-foreground">يُسجل وقت التنفيذ الفعلي تلقائياً عند اعتماد الدفعة. لا يتغير رصيد المورد أو الصندوق قبل الاعتماد والتنفيذ.</p>
           <div className="mt-3 flex justify-end"><Button onClick={() => submitPayment.mutate()} disabled={!canSubmit || submitPayment.isPending || summary.remainingAmount <= 0}>{submitPayment.isPending ? "جارٍ الإرسال..." : "تسجيل دفعة جديدة"}</Button></div>
@@ -1608,7 +1611,7 @@ function PurchaseInvoicePaymentDialog({
 }
 
 function PaymentMetric({ title, value, emphasis = false }: { title: string; value: string; emphasis?: boolean }) {
-  return <div className={`rounded-lg border p-3 ${emphasis ? "border-amber-400/50 bg-amber-50/40 dark:bg-amber-950/10" : "bg-muted/20"}`}><p className="text-xs text-muted-foreground">{title}</p><p className="mt-1 font-bold">{value}</p></div>;
+  return <div className={`min-w-0 rounded-lg border p-3 ${emphasis ? "border-amber-400/50 bg-amber-50/40 dark:bg-amber-950/10" : "bg-muted/20"}`}><p className="text-xs text-muted-foreground">{title}</p><p className="mt-1 break-words font-bold">{value}</p></div>;
 }
 
 // ── Purchase List Sub-View ─────────────────────────────────────────────────
