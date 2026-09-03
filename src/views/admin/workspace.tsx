@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { Check, GripVertical, Maximize2, Pin, Plus, Settings2, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Check, GripVertical, Maximize2, Pin, Plus, Settings2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, type AdminMe } from "./_lib";
@@ -13,7 +13,7 @@ type WorkspaceItem = { key: string; size: CardSize };
 const SIZE_LABEL: Record<CardSize, string> = { sm: "صغير", md: "متوسط", lg: "كبير" };
 const SIZE_SPAN: Record<CardSize, string> = {
   sm: "col-span-1",
-  md: "col-span-2",
+  md: "col-span-1",
   lg: "col-span-2 md:col-span-3 lg:col-span-4",
 };
 const nextSize = (s: CardSize): CardSize => (s === "sm" ? "md" : s === "md" ? "lg" : "sm");
@@ -23,6 +23,17 @@ const SEED_HREFS = [
   "/admin/dashboard", "/admin/command-center", "/admin/notifications", "/admin/kosha-bookings",
   "/admin/orders", "/admin/finance/master-cash", "/admin/products", "/admin/reports",
 ];
+
+const WORKSPACE_TONES: Record<string, { halo: string; icon: string; arrow: string }> = {
+  "/admin/kosha-bookings": { halo: "bg-orange-50", icon: "bg-orange-100 text-orange-600", arrow: "border-orange-100 bg-orange-50 text-orange-600" },
+  "/admin/finance/master-cash": { halo: "bg-emerald-50", icon: "bg-emerald-100 text-emerald-700", arrow: "border-emerald-100 bg-emerald-50 text-emerald-700" },
+  "/admin/sales": { halo: "bg-violet-50", icon: "bg-violet-100 text-violet-700", arrow: "border-violet-100 bg-violet-50 text-violet-700" },
+  "/admin/expenses": { halo: "bg-rose-50", icon: "bg-rose-100 text-rose-600", arrow: "border-rose-100 bg-rose-50 text-rose-600" },
+  "/admin/products": { halo: "bg-blue-50", icon: "bg-blue-100 text-blue-700", arrow: "border-blue-100 bg-blue-50 text-blue-700" },
+  "/admin/tasks": { halo: "bg-cyan-50", icon: "bg-cyan-100 text-cyan-700", arrow: "border-cyan-100 bg-cyan-50 text-cyan-700" },
+};
+
+const workspaceTone = (href: string) => WORKSPACE_TONES[href] ?? { halo: "bg-slate-50", icon: "bg-slate-100 text-slate-700", arrow: "border-slate-100 bg-slate-50 text-slate-700" };
 
 export default function WorkspacePage({ me }: { me: AdminMe }) {
   const { toast } = useToast();
@@ -93,19 +104,19 @@ export default function WorkspacePage({ me }: { me: AdminMe }) {
   }
 
   return (
-    <div className="space-y-5" dir="rtl">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold text-foreground"><Sparkles className="h-6 w-6 text-amber-500" /> مساحة العمل</h1>
-          <p className="mt-1 text-sm text-muted-foreground">اختر الأقسام التي تريدها في صفحتك الرئيسية. تُحفظ تلقائياً لك وحدك.</p>
+    <div className="mx-auto max-w-[1440px] space-y-7 pb-8" dir="rtl">
+      <header className="flex flex-col gap-5 border-b border-border/55 pb-6 sm:flex-row sm:items-start sm:justify-between">
+        <div className="order-2 text-right sm:order-1">
+          <h1 className="flex items-center justify-end gap-2 text-3xl font-bold tracking-tight text-foreground"><Sparkles className="h-7 w-7 text-amber-500" /> مساحة العمل</h1>
+          <p className="mt-2 text-sm text-muted-foreground">اختر الأقسام التي ترتبط بعملك اليومي. تُحفظ اختياراتك تلقائياً لك وحدك.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {isManager && <Button size="sm" variant="outline" onClick={saveAsDefault} className="gap-1.5"><Pin className="h-4 w-4" /> حفظ كافتراضي</Button>}
-          <Button size="sm" onClick={() => setCustomizing((c) => !c)} className="gap-1.5"><Settings2 className="h-4 w-4" /> تخصيص الواجهة</Button>
+        <div className="order-1 flex flex-wrap gap-2 sm:order-2">
+          {isManager && <Button size="sm" variant="outline" onClick={saveAsDefault} className="h-11 rounded-xl border-border/60 bg-background px-4 shadow-sm"><Pin className="h-4 w-4" /> حفظ كافتراضي</Button>}
+          <Button size="sm" onClick={() => setCustomizing((current) => !current)} className="h-11 rounded-xl px-4 shadow-sm"><Settings2 className="h-4 w-4" /> {customizing ? "إنهاء التخصيص" : "تخصيص الواجهة"}</Button>
         </div>
-      </div>
+      </header>
 
-      <div className={`grid gap-4 ${customizing ? "lg:grid-cols-[1fr_320px]" : "grid-cols-1"}`}>
+      <div className={`grid gap-5 ${customizing ? "xl:grid-cols-[minmax(0,1fr)_300px]" : "grid-cols-1"}`}>
         {/* Pinned modules grid */}
         <div>
           {items.length === 0 ? (
@@ -113,31 +124,34 @@ export default function WorkspacePage({ me }: { me: AdminMe }) {
               لا توجد أقسام مثبّتة بعد. اضغط «تخصيص الواجهة» لإضافة أقسامك المفضّلة.
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
               {items.map((it) => {
                 const mod = byHref.get(it.key);
                 if (!mod) return null;
                 const Icon = mod.icon;
                 const big = it.size === "lg";
+                const tone = workspaceTone(it.key);
                 return (
                   <div
                     key={it.key}
-                    draggable
+                    draggable={customizing}
                     onDragStart={() => setDragKey(it.key)}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={() => { if (dragKey) reorder(dragKey, it.key); setDragKey(null); }}
-                    className={`group relative rounded-xl border border-border/30 bg-card p-4 transition-colors hover:border-primary/40 ${SIZE_SPAN[it.size]} ${dragKey === it.key ? "opacity-50" : ""}`}
+                    className={`group relative min-h-[290px] overflow-hidden rounded-2xl border border-border/60 bg-card p-5 shadow-[0_4px_14px_rgba(16,24,40,0.04)] transition-[border-color,transform] duration-200 hover:-translate-y-0.5 hover:border-primary/35 ${SIZE_SPAN[it.size]} ${dragKey === it.key ? "opacity-50" : ""} ${big ? "sm:min-h-[330px]" : ""}`}
                   >
-                    <div className="absolute left-2 top-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                      <button type="button" onClick={() => cycleSize(it.key)} title={`الحجم: ${SIZE_LABEL[it.size]}`} className="grid h-6 w-6 place-items-center rounded border border-border/40 text-muted-foreground hover:text-foreground"><Maximize2 className="h-3 w-3" /></button>
-                      <button type="button" onClick={() => unpin(it.key)} title="إلغاء التثبيت" className="grid h-6 w-6 place-items-center rounded border border-destructive/30 text-destructive"><X className="h-3 w-3" /></button>
-                      <span className="grid h-6 w-6 cursor-grab place-items-center rounded border border-border/40 text-muted-foreground" title="اسحب لإعادة الترتيب"><GripVertical className="h-3 w-3" /></span>
-                    </div>
-                    <Link href={mod.href} className="flex flex-col items-center gap-2 text-center">
-                      <span className={`grid place-items-center rounded-xl bg-primary/10 text-primary ${big ? "h-16 w-16" : "h-12 w-12"}`}>
-                        <Icon className={big ? "h-8 w-8" : "h-6 w-6"} />
+                    {customizing ? <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-lg border border-border/50 bg-background/95 p-1 shadow-sm">
+                      <button type="button" onClick={() => cycleSize(it.key)} title={`الحجم: ${SIZE_LABEL[it.size]}`} className="grid h-7 w-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"><Maximize2 className="h-3.5 w-3.5" /></button>
+                      <button type="button" onClick={() => unpin(it.key)} title="إلغاء التثبيت" className="grid h-7 w-7 place-items-center rounded-md text-destructive hover:bg-destructive/10"><X className="h-3.5 w-3.5" /></button>
+                      <span className="grid h-7 w-7 cursor-grab place-items-center rounded-md text-muted-foreground" title="اسحب لإعادة الترتيب"><GripVertical className="h-3.5 w-3.5" /></span>
+                    </div> : null}
+                    <Link href={mod.href} className="flex h-full flex-col items-center text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                      <span className={`grid place-items-center rounded-full ${tone.halo} ${big ? "h-40 w-40" : "h-32 w-32"}`}>
+                        <span className={`grid place-items-center rounded-[1.35rem] shadow-sm ${tone.icon} ${big ? "h-20 w-20" : "h-16 w-16"}`}><Icon className={big ? "h-10 w-10" : "h-8 w-8"} /></span>
                       </span>
-                      <span className={`font-semibold text-foreground ${big ? "text-base" : "text-sm"}`}>{mod.label}</span>
+                      <span className={`mt-5 font-bold text-foreground ${big ? "text-xl" : "text-lg"}`}>{mod.label}</span>
+                      <span className="mt-2 max-w-[22ch] text-sm leading-6 text-muted-foreground">افتح إدارة {mod.label} وتابع العمليات المرتبطة بها.</span>
+                      <span className={`mt-auto grid h-10 w-10 place-items-center rounded-full border ${tone.arrow}`}><ArrowLeft className="h-4 w-4" /></span>
                     </Link>
                   </div>
                 );
@@ -148,7 +162,7 @@ export default function WorkspacePage({ me }: { me: AdminMe }) {
 
         {/* Customize panel */}
         {customizing && (
-          <div className="rounded-xl border border-border/30 bg-card p-4 lg:sticky lg:top-4 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
+          <aside className="rounded-2xl border border-border/60 bg-card p-4 shadow-[0_4px_14px_rgba(16,24,40,0.04)] xl:sticky xl:top-4 xl:max-h-[calc(100vh-6rem)] xl:overflow-y-auto">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-bold text-foreground">الأقسام المتاحة</h2>
               <button type="button" onClick={() => setCustomizing(false)} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
@@ -163,7 +177,7 @@ export default function WorkspacePage({ me }: { me: AdminMe }) {
                     key={m.href}
                     type="button"
                     onClick={() => (pinned ? unpin(m.href) : pin(m.href))}
-                    className={`flex w-full items-center gap-2.5 rounded-lg border p-2.5 text-right transition-colors ${pinned ? "border-primary/40 bg-primary/5" : "border-border/30 hover:border-primary/30"}`}
+                    className={`flex w-full items-center gap-2.5 rounded-xl border p-2.5 text-right transition-colors ${pinned ? "border-primary/40 bg-primary/5" : "border-border/40 hover:border-primary/30"}`}
                   >
                     <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Icon className="h-4 w-4" /></span>
                     <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{m.label}</span>
@@ -174,7 +188,7 @@ export default function WorkspacePage({ me }: { me: AdminMe }) {
                 );
               })}
             </div>
-          </div>
+          </aside>
         )}
       </div>
     </div>
