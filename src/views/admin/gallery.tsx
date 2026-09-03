@@ -1,274 +1,40 @@
-import { useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  useListGallery, useCreateGalleryItem, useDeleteGalleryItem,
-  getListGalleryQueryKey,
-} from "@workspace/api-client-react";
-import { Plus, Trash2, X, Eye, FolderOpen, ImageIcon, RotateCcw, Pencil } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Archive, CheckSquare, Eye, FolderPlus, Heart, ImageIcon, Layers3, Plus, Search, Star, Tag, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./_layout";
-import { usePublicSettings } from "@/lib/public-settings";
-import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
-import type { ImageMetadata } from "@/lib/image-tools";
+import { adminFetch, fileToDataUrl } from "./_lib";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch } from "./_lib";
 
-const DEFAULT_GALLERY_SECTIONS = ["عام", "كوشات", "تصوير", "تخرج", "ورود", "تجهيزات", "ديكور", "دعوات"];
-const normalizedCategory = (category?: string | null) => {
-  const value = category?.trim();
-  return !value || value === "general" ? "عام" : value;
-};
+type Category={id:number;name:string;parentId:number|null;count:number};
+type Media={id:number;mediaUrl:string;thumbnailUrl:string|null;mediaType:string;titleAr:string|null;category:string;categoryId:number|null;status:"draft"|"published"|"archived";isFavorite:boolean;visibility:string[];tags:string[];imageMetadata:Record<string,unknown>};
+type Result={items:Media[];hasMore:boolean};
+const visibilityOptions=["الموقع","مصمم الباقات","معرض الكوشات","تجهيزات التخرج","الدعوات","داخلي فقط"];
+const statusLabel:Record<string,string>={draft:"مسودة",published:"منشور",archived:"مؤرشف"};
 
-export default function GalleryPage() {
-  const qc = useQueryClient();
-  const { toast } = useToast();
-  const { data: items, isLoading, isError, refetch } = useListGallery({});
-  const create = useCreateGalleryItem();
-  const del = useDeleteGalleryItem();
-  const [form, setForm] = useState<{ mediaUrl: string; mediaType: string; titleAr: string; category: string; imageMetadata?: ImageMetadata }>({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام", imageMetadata: {} });
-  const [showForm, setShowForm] = useState(false);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [activeCategory, setActiveCategory] = useState("all");
-  const [editingCategory, setEditingCategory] = useState<string | null>(null);
-  const [categoryDraft, setCategoryDraft] = useState("");
-  const { data: publicSettings } = usePublicSettings();
-
-  const renameCategory = useMutation({
-    mutationFn: ({ from, to }: { from: string; to: string }) => adminFetch("/gallery/categories", {
-      method: "PATCH",
-      body: JSON.stringify({ from, to }),
-    }),
-    onSuccess: (result: any, variables) => {
-      invalidate();
-      setActiveCategory(variables.to);
-      setEditingCategory(null);
-      toast({ title: "تم تعديل القسم", description: `تم تحديث ${Number(result?.updatedCount ?? 0)} صورة.` });
-    },
-    onError: (err: any) => toast({ title: "تعذر تعديل القسم", description: err?.message, variant: "destructive" }),
-  });
-
-  const sections = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const item of items ?? []) {
-      const category = normalizedCategory(item.category);
-      counts.set(category, (counts.get(category) ?? 0) + 1);
-    }
-    const values = [...new Set([...DEFAULT_GALLERY_SECTIONS, ...counts.keys()])];
-    return values.map((value) => ({ value, label: value, count: counts.get(value) ?? 0 }));
-  }, [items]);
-  const visibleItems = useMemo(
-    () => activeCategory === "all" ? (items ?? []) : (items ?? []).filter((item) => normalizedCategory(item.category) === activeCategory),
-    [activeCategory, items],
-  );
-
-  function invalidate() { qc.invalidateQueries({ queryKey: getListGalleryQueryKey() }); }
-
-  function openCategoryEdit(value: string) {
-    setEditingCategory(value);
-    setCategoryDraft(value);
-  }
-
-  function submitCategoryEdit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editingCategory) return;
-    const to = normalizedCategory(categoryDraft);
-    if (to === editingCategory) {
-      toast({ title: "لم يتغير اسم القسم" });
-      return;
-    }
-    renameCategory.mutate({ from: editingCategory, to });
-  }
-
-  function handleFileResult(results: ImageEditResult[]) {
-    const result = results[0];
-    if (!result) return;
-    setForm(f => ({
-      ...f,
-      mediaUrl: result.dataUrl,
-      mediaType: result.dataUrl.startsWith("data:video") ? "video" : "image",
-      imageMetadata: result.metadata,
-    }));
-  }
-
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
-    const category = normalizedCategory(form.category);
-    create.mutate({ data: { ...form, category } }, {
-      onSuccess: () => { invalidate(); setActiveCategory(category); setShowForm(false); setForm({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام", imageMetadata: {} }); toast({ title: "تمت إضافة الوسائط" }); },
-      onError: (err: any) => toast({ title: "تعذر إضافة الوسائط", description: err?.message, variant: "destructive" }),
-    });
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">الصور والملفات</h1>
-          <p className="mt-1 text-sm text-muted-foreground">رتّب الصور ضمن أقسام ليسهل العثور عليها وعرضها.</p>
-        </div>
-        <Button onClick={() => setShowForm(true)} size="sm" className="gap-2"><Plus className="w-4 h-4" /> إضافة</Button>
-      </div>
-
-      <section className="rounded-2xl border border-border/45 bg-card p-3" aria-label="أقسام معرض الصور">
-        <div className="flex items-center gap-2 text-sm font-semibold text-foreground"><FolderOpen className="h-4 w-4 text-primary" /> الأقسام</div>
-        <div className="mt-3 flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="تصفية صور المعرض حسب القسم">
-          <Button
-            type="button"
-            size="sm"
-            variant={activeCategory === "all" ? "default" : "outline"}
-            className="shrink-0 gap-1.5"
-            role="tab"
-            aria-selected={activeCategory === "all"}
-            onClick={() => setActiveCategory("all")}
-          >
-            <ImageIcon className="h-3.5 w-3.5" /> كل الصور <span className="text-xs opacity-80">{items?.length ?? 0}</span>
-          </Button>
-          {sections.map((section) => (
-            <div key={section.value} className="flex shrink-0 items-center gap-0.5 rounded-lg border border-border/50 bg-background p-0.5">
-              <Button
-                type="button"
-                size="sm"
-                variant={activeCategory === section.value ? "default" : "ghost"}
-                className="gap-1.5 border-0 shadow-none"
-                role="tab"
-                aria-selected={activeCategory === section.value}
-                onClick={() => setActiveCategory(section.value)}
-              >
-                {section.label} <span className="text-xs opacity-80">{section.count}</span>
-              </Button>
-              <button
-                type="button"
-                aria-label={`تعديل قسم ${section.label}`}
-                title={`تعديل قسم ${section.label}`}
-                onClick={() => openCategoryEdit(section.value)}
-                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {isLoading ? <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">{[1,2,3,4,5,6].map(i => <Skeleton key={i} className="aspect-square rounded-xl" />)}</div>
-      : isError ? (
-        <div className="rounded-2xl border border-destructive/30 bg-destructive/5 px-5 py-8 text-center">
-          <p className="font-semibold text-foreground">تعذر تحميل معرض الصور</p>
-          <p className="mt-1 text-sm text-muted-foreground">لم يتم عرض حالة فارغة بدلاً من الخطأ.</p>
-          <Button type="button" variant="outline" size="sm" className="mt-4 gap-2" onClick={() => refetch()}><RotateCcw className="h-4 w-4" /> إعادة المحاولة</Button>
-        </div>
-      ) : !items || items.length === 0 ? <EmptyState /> : visibleItems.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-border/60 px-5 py-10 text-center">
-          <FolderOpen className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-3 font-semibold text-foreground">لا توجد صور في قسم {activeCategory}</p>
-          <p className="mt-1 text-sm text-muted-foreground">أضف صورة جديدة واختر هذا القسم لتظهر هنا.</p>
-          <Button type="button" variant="outline" size="sm" className="mt-4" onClick={() => setActiveCategory("all")}>عرض كل الصور</Button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {visibleItems.map(item => (
-            <div key={item.id} className="relative group bg-card rounded-xl overflow-hidden border border-border/30">
-              {item.mediaType === "video"
-                ? <video src={item.mediaUrl} className="w-full aspect-square object-cover" />
-                : <img src={item.mediaUrl} alt={item.titleAr ?? ""} className="w-full aspect-square" style={{ objectFit: (item as any).imageMetadata?.objectFit ?? "cover" }} />}
-              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                <button type="button" aria-label={`معاينة ${item.titleAr ?? "الصورة"}`} onClick={() => setPreview(item.mediaUrl)} className="p-2 rounded-full bg-primary/20 text-primary hover:bg-primary/30">
-                  <Eye className="w-4 h-4" />
-                </button>
-                <button type="button" aria-label={`حذف ${item.titleAr ?? "الصورة"}`} onClick={() => confirm("حذف؟") && del.mutateAsync({ id: item.id }).then(invalidate).catch((err: any) => toast({ title: "تعذر الحذف", description: err?.message, variant: "destructive" }))}
-                  className="p-2 rounded-full bg-status-danger/20 text-status-danger hover:bg-status-danger/30">
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-              <span className="absolute right-2 top-2 rounded-full bg-black/60 px-2 py-1 text-[11px] font-medium text-white backdrop-blur-sm">{normalizedCategory(item.category)}</span>
-              {item.titleAr && <p className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent text-white text-xs p-2 truncate">{item.titleAr}</p>}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {showForm && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={() => setShowForm(false)}>
-          <form onSubmit={submit} onClick={e => e.stopPropagation()} className="bg-card border border-border/40 rounded-2xl max-w-md w-full p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-foreground">إضافة وسائط</h3>
-              <button type="button" onClick={() => setShowForm(false)}><X className="w-5 h-5 text-muted-foreground" /></button>
-            </div>
-            <ImageUploadEditor
-              kind="gallery"
-              label="اختر صورة أو فيديو"
-              accept="image/*,video/*"
-              allowVideo
-              currentImage={form.mediaType === "image" ? form.mediaUrl : null}
-              currentMetadata={form.imageMetadata}
-              settings={publicSettings?.image_settings}
-              watermarkText={publicSettings?.site_name}
-              onComplete={handleFileResult}
-              onRemove={() => setForm(f => ({ ...f, mediaUrl: "", imageMetadata: {} }))}
-            />
-            {form.mediaUrl && (
-              form.mediaType === "video"
-                ? <video src={form.mediaUrl} className="w-full h-40 object-cover rounded-lg" controls />
-                : <img src={form.mediaUrl} className="w-full h-40 rounded-lg" style={{ objectFit: form.imageMetadata?.objectFit ?? "cover" }} alt="" />
-            )}
-            <div>
-              <label className="block text-xs text-muted-foreground mb-1">أو الصق رابط URL</label>
-              <input value={form.mediaUrl.startsWith("data:") ? "" : form.mediaUrl}
-                onChange={e => setForm(f => ({ ...f, mediaUrl: e.target.value }))}
-                placeholder="https://..."
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-muted-foreground mb-1">العنوان</label>
-                <input value={form.titleAr} onChange={e => setForm(f => ({ ...f, titleAr: e.target.value }))}
-                  className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
-              </div>
-              <div>
-                <label htmlFor="gallery-category" className="block text-xs text-muted-foreground mb-1">القسم</label>
-                <input id="gallery-category" list="gallery-category-options" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-                  placeholder="مثال: كوشات"
-                  className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
-                <datalist id="gallery-category-options">{sections.map(section => <option key={section.value} value={section.label} />)}</datalist>
-                <p className="mt-1 text-[11px] text-muted-foreground">اختر قسماً موجوداً أو اكتب اسماً جديداً.</p>
-              </div>
-            </div>
-            <Button type="submit" disabled={!form.mediaUrl || create.isPending} className="w-full">
-              {create.isPending ? "جاري الحفظ..." : "إضافة"}
-            </Button>
-          </form>
-        </div>
-      )}
-
-      {editingCategory && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" dir="rtl" onClick={() => setEditingCategory(null)}>
-          <form onSubmit={submitCategoryEdit} onClick={e => e.stopPropagation()} className="w-full max-w-sm space-y-4 rounded-2xl border border-border/40 bg-card p-6 shadow-xl">
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-foreground">تعديل القسم</h3>
-              <button type="button" aria-label="إغلاق" onClick={() => setEditingCategory(null)} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><X className="h-5 w-5" /></button>
-            </div>
-            <div>
-              <label htmlFor="gallery-category-edit" className="mb-1 block text-xs text-muted-foreground">اسم القسم</label>
-              <input id="gallery-category-edit" autoFocus value={categoryDraft} onChange={e => setCategoryDraft(e.target.value)} maxLength={50} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
-              <p className="mt-1 text-[11px] text-muted-foreground">سيتم تحديث الصور التابعة لهذا القسم فقط.</p>
-            </div>
-            <div className="flex items-center justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setEditingCategory(null)}>إلغاء</Button>
-              <Button type="submit" disabled={!categoryDraft.trim() || renameCategory.isPending}>{renameCategory.isPending ? "جاري الحفظ..." : "حفظ التعديل"}</Button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {preview && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setPreview(null)}>
-          <button onClick={() => setPreview(null)} className="absolute top-4 right-4 text-white"><X className="w-6 h-6" /></button>
-          {preview.match(/\.(mp4|webm|mov)$/i) || preview.startsWith("data:video")
-            ? <video src={preview} className="max-w-full max-h-full" controls autoPlay />
-            : <img src={preview} className="max-w-full max-h-full object-contain" alt="" />}
-        </div>
-      )}
-    </div>
-  );
+export default function GalleryPage(){
+ const qc=useQueryClient();const {toast}=useToast();const[categoryId,setCategoryId]=useState<number|null>(null),[favorite,setFavorite]=useState(false),[search,setSearch]=useState(""),[tag,setTag]=useState(""),[status,setStatus]=useState("published"),[selected,setSelected]=useState<number[]>([]),[add,setAdd]=useState(false),[manage,setManage]=useState(false);
+ const query=useMemo(()=>{const p=new URLSearchParams({detailed:"1",pageSize:"24"});if(categoryId)p.set("categoryId",String(categoryId));if(favorite)p.set("favorite","1");if(search.trim())p.set("search",search.trim());if(tag)p.set("tag",tag);if(status)p.set("status",status);return p;},[categoryId,favorite,search,tag,status]);
+ const media=useQuery({queryKey:["ajn-gallery",query.toString()],queryFn:()=>adminFetch<Result>(`/gallery?${query}`)});
+ const categories=useQuery({queryKey:["ajn-gallery-categories"],queryFn:()=>adminFetch<Category[]>("/gallery/categories")});
+ const tags=useQuery({queryKey:["ajn-gallery-tags"],queryFn:()=>adminFetch<{id:number;name:string}[]>("/gallery/tags")});
+ const refresh=()=>{qc.invalidateQueries({queryKey:["ajn-gallery"]});qc.invalidateQueries({queryKey:["ajn-gallery-categories"]});qc.invalidateQueries({queryKey:["ajn-gallery-tags"]});};
+ const patch=useMutation({mutationFn:({id,body}:{id:number;body:unknown})=>adminFetch(`/gallery/${id}`,{method:"PATCH",body:JSON.stringify(body)}),onSuccess:refresh,onError:(e:any)=>toast({title:"تعذر تحديث الوسائط",description:e.message,variant:"destructive"})});
+ const bulk=useMutation({mutationFn:(body:unknown)=>adminFetch("/gallery/bulk",{method:"POST",body:JSON.stringify(body)}),onSuccess:()=>{setSelected([]);refresh();toast({title:"تم تحديث الوسائط"})},onError:(e:any)=>toast({title:"تعذر تنفيذ الإجراء",description:e.message,variant:"destructive"})});
+ const list=categories.data??[],roots=list.filter(c=>!c.parentId),items=media.data?.items??[]; const choose=(id:number)=>setSelected(x=>x.includes(id)?x.filter(v=>v!==id):[...x,id]);
+ return <div className="space-y-5" dir="rtl"><header className="flex flex-wrap items-end justify-between gap-3 border-b border-border/60 pb-4"><div><h1 className="text-2xl font-bold">مكتبة وسائط AJN</h1><p className="mt-1 text-sm text-muted-foreground">ارفع الصورة مرة واحدة، ثم نظّمها وأعد استخدامها من مكان واحد.</p></div><div className="flex gap-2"><Button variant="outline" onClick={()=>setManage(true)} className="gap-2"><Layers3 className="h-4 w-4"/>إدارة الأقسام</Button><Button onClick={()=>setAdd(true)} className="gap-2"><Plus className="h-4 w-4"/>إضافة وسائط</Button></div></header>
+ <nav className="flex gap-2 overflow-x-auto pb-1"><Button size="sm" variant={!categoryId&&!favorite?"default":"outline"} onClick={()=>{setCategoryId(null);setFavorite(false)}}>الكل</Button><Button size="sm" variant={favorite?"default":"outline"} onClick={()=>{setFavorite(true);setCategoryId(null)}} className="gap-1"><Star className="h-3.5 w-3.5"/>المفضلة</Button>{roots.map(c=><Button key={c.id} size="sm" variant={categoryId===c.id?"default":"outline"} className="shrink-0" onClick={()=>{setCategoryId(c.id);setFavorite(false)}}>{c.name}<span className="mr-1 opacity-60">{c.count}</span></Button>)}</nav>
+ <section className="grid gap-2 rounded-xl border border-border/60 bg-card p-3 sm:grid-cols-[1fr_auto_auto]"><label className="relative"><Search className="absolute right-3 top-2.5 h-4 w-4 text-muted-foreground"/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="ابحث بالعنوان أو القسم" className="h-9 w-full rounded-lg border border-border bg-background pr-9 pl-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"/></label><select value={tag} onChange={e=>setTag(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-sm"><option value="">كل الوسوم</option>{(tags.data??[]).map(t=><option key={t.id} value={t.name}>{t.name}</option>)}</select><select value={status} onChange={e=>setStatus(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-sm"><option value="">كل الحالات</option><option value="published">منشور</option><option value="draft">مسودة</option><option value="archived">مؤرشف</option></select></section>
+ {selected.length>0&&<Bulk count={selected.length} categories={list} loading={bulk.isPending} action={(action,p={})=>bulk.mutate({ids:selected,action,...p})}/>}
+ {media.isLoading?<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">{Array.from({length:8},(_,i)=><Skeleton key={i} className="aspect-square rounded-xl"/>)}</div>:media.isError?<div className="rounded-xl border border-destructive/30 p-8 text-center"><p>تعذر تحميل مكتبة الوسائط</p><Button className="mt-3" variant="outline" onClick={()=>media.refetch()}>إعادة المحاولة</Button></div>:!items.length?<EmptyState/>:<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{items.map(m=><Card key={m.id} item={m} selected={selected.includes(m.id)} select={()=>choose(m.id)} favorite={()=>patch.mutate({id:m.id,body:{isFavorite:!m.isFavorite}})} archive={()=>patch.mutate({id:m.id,body:{status:"archived"}})}/>)}</div>}
+ {add&&<AddDialog categories={list} tags={(tags.data??[]).map(t=>t.name)} close={()=>setAdd(false)} done={()=>{setAdd(false);refresh()}}/>}{manage&&<CategoryDialog categories={list} close={()=>setManage(false)} done={refresh}/>}</div>;
 }
+
+function Card({item,selected,select,favorite,archive}:{item:Media;selected:boolean;select:()=>void;favorite:()=>void;archive:()=>void}){const[preview,setPreview]=useState(false);return <article className={`group relative overflow-hidden rounded-xl border bg-card ${selected?"border-primary ring-2 ring-primary/20":"border-border/55"}`}><button onClick={select} aria-label="تحديد" className="absolute right-2 top-2 z-10 grid h-8 w-8 place-items-center rounded-full bg-background/95"><CheckSquare className={`h-4 w-4 ${selected?"text-primary":"text-muted-foreground"}`}/></button><button onClick={favorite} aria-label="المفضلة" className="absolute left-2 top-2 z-10 grid h-8 w-8 place-items-center rounded-full bg-background/95"><Heart className={`h-4 w-4 ${item.isFavorite?"fill-amber-400 text-amber-500":""}`}/></button><button onClick={()=>setPreview(true)} className="block w-full bg-muted"><img src={item.thumbnailUrl??item.mediaUrl} loading="lazy" alt={item.titleAr??"وسائط AJN"} className="aspect-square w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]" style={{objectFit:(item.imageMetadata.objectFit as React.CSSProperties["objectFit"])??"cover"}}/></button><div className="space-y-1 p-2.5"><p className="truncate text-sm font-medium">{item.titleAr||"من دون عنوان"}</p><p className="truncate text-xs text-muted-foreground">{item.category||"عام"}{item.tags.length?` · ${item.tags.join("، ")}`:""}</p><div className="flex justify-between text-[11px] text-muted-foreground"><span>{statusLabel[item.status]}</span><button onClick={archive} className="hover:text-destructive">أرشفة</button></div></div>{preview&&<div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4" onClick={()=>setPreview(false)}><button className="absolute left-5 top-5 text-white" aria-label="إغلاق"><X/></button><img src={item.mediaUrl} alt={item.titleAr??""} className="max-h-full max-w-full object-contain"/></div>}</article>}
+
+function Bulk({count,categories,loading,action}:{count:number;categories:Category[];loading:boolean;action:(action:string,p?:any)=>void}){const[t,setT]=useState("");return <section className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-3"><strong className="text-sm">تم تحديد {count} وسائط</strong><select defaultValue="" onChange={e=>{const c=categories.find(x=>x.id===Number(e.target.value));if(c)action("move",{categoryId:c.id,category:c.name})}} className="h-9 rounded-lg border border-border bg-background px-2 text-sm"><option value="">نقل إلى قسم…</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><input value={t} onChange={e=>setT(e.target.value)} placeholder="وسم" className="h-9 w-28 rounded-lg border border-border bg-background px-2 text-sm"/><Button size="sm" variant="outline" disabled={!t.trim()||loading} onClick={()=>action("add-tags",{tags:[t]})}><Tag className="ml-1 h-3.5 w-3.5"/>إضافة وسم</Button><select defaultValue="" onChange={e=>e.target.value&&action("visibility",{visibility:[e.target.value]})} className="h-9 rounded-lg border border-border bg-background px-2 text-sm"><option value="">إظهار في…</option>{visibilityOptions.map(v=><option key={v} value={v}>{v}</option>)}</select><Button size="sm" variant="outline" disabled={loading} onClick={()=>action("archive")}><Archive className="ml-1 h-3.5 w-3.5"/>أرشفة</Button></section>}
+
+function AddDialog({categories,tags,close,done}:{categories:Category[];tags:string[];close:()=>void;done:()=>void}){const{toast}=useToast();const input=useRef<HTMLInputElement>(null);const[step,setStep]=useState(1),[files,setFiles]=useState<File[]>([]),[categoryId,setCategoryId]=useState<number|null>(null),[title,setTitle]=useState(""),[tagText,setTagText]=useState(""),[status,setStatus]=useState("published"),[visibility,setVisibility]=useState<string[]>([]),[progress,setProgress]=useState(0),[busy,setBusy]=useState(false);const category=categories.find(c=>c.id===categoryId),roots=categories.filter(c=>!c.parentId);async function save(){if(!files.length||!category)return;setBusy(true);let ok=0,fail=0;for(let i=0;i<files.length;i++){try{const f=files[i],data=await fileToDataUrl(f);await adminFetch("/gallery",{method:"POST",body:JSON.stringify({mediaUrl:data,mediaType:f.type.startsWith("video/")?"video":"image",titleAr:title||f.name.replace(/\.[^.]+$/, ""),category:category.name,categoryId:category.id>0?category.id:undefined,tags:tagText.split(/[،,]/).map(x=>x.trim()).filter(Boolean),status,visibility})});ok++}catch{fail++}finally{setProgress(i+1)}}setBusy(false);toast({title:`تم حفظ ${ok} ملفاً`,description:fail?`تعذر رفع ${fail} ملفاً` : undefined,variant:fail?"destructive":"default"});done()}return <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4" dir="rtl"><section className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-card shadow-xl"><header className="sticky top-0 z-10 flex items-start justify-between border-b bg-card p-5"><div><h2 className="font-bold">إضافة وسائط</h2><p className="mt-1 text-sm text-muted-foreground">اختر القسم ثم الملفات؛ التفاصيل المتقدمة اختيارية.</p></div><button onClick={close} aria-label="إغلاق"><X/></button></header><div className="space-y-5 p-5"><div className="text-sm text-muted-foreground">{step}. {step===1?"أين تريد حفظ الوسائط؟":step===2?"رفع الملفات":"تفاصيل اختيارية"}</div>{step===1&&<><div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{roots.map(c=><button key={c.id} onClick={()=>setCategoryId(c.id)} className={`rounded-xl border p-4 text-right ${categoryId===c.id?"border-primary bg-primary/5":"border-border"}`}><FolderPlus className="mb-3 h-5 w-5 text-primary"/><strong className="block">{c.name}</strong><span className="text-xs text-muted-foreground">{c.count} وسائط</span></button>)}</div><Button disabled={!categoryId} onClick={()=>setStep(2)}>التالي</Button></>}{step===2&&<><label className="flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 p-5 text-center"><ImageIcon className="mb-2 h-7 w-7 text-primary"/><strong>اختر عدة ملفات</strong><span className="mt-1 text-sm text-muted-foreground">صور أو فيديوهات</span><input ref={input} type="file" accept="image/*,video/*" multiple className="sr-only" onChange={e=>setFiles(Array.from(e.target.files??[]))}/></label>{files.length>0&&<p className="rounded-lg bg-muted px-3 py-2 text-sm">عدد الملفات: {files.length}</p>}<div className="flex justify-between"><Button variant="outline" onClick={()=>setStep(1)}>السابق</Button><Button disabled={!files.length} onClick={()=>setStep(3)}>التالي</Button></div></>}{step===3&&<><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm">العنوان<input value={title} onChange={e=>setTitle(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-border bg-background px-3"/></label><label className="text-sm">القسم الفرعي<select onChange={e=>setCategoryId(Number(e.target.value)||categoryId)} className="mt-1 h-10 w-full rounded-lg border border-border bg-background px-3"><option value="">غير محدد</option>{categories.filter(c=>c.parentId===categoryId).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label><label className="text-sm sm:col-span-2">الوسوم<input value={tagText} onChange={e=>setTagText(e.target.value)} placeholder={`وردي، عروس${tags.length?` · ${tags.slice(0,3).join("، ")}`:""}`} className="mt-1 h-10 w-full rounded-lg border border-border bg-background px-3"/></label><label className="text-sm">الحالة<select value={status} onChange={e=>setStatus(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-border bg-background px-3"><option value="published">منشور</option><option value="draft">مسودة</option></select></label></div><fieldset><legend className="text-sm font-medium">أماكن الظهور</legend><div className="mt-2 flex flex-wrap gap-2">{visibilityOptions.map(v=><label key={v} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-sm"><input type="checkbox" checked={visibility.includes(v)} onChange={()=>setVisibility(a=>a.includes(v)?a.filter(x=>x!==v):[...a,v])}/>{v}</label>)}</div></fieldset>{busy&&<p className="text-sm text-muted-foreground">جاري الرفع: {progress} / {files.length}</p>}<div className="flex justify-between"><Button variant="outline" onClick={()=>setStep(2)}>السابق</Button><Button disabled={busy} onClick={save}>{busy?"جاري الرفع…":"حفظ الوسائط"}</Button></div></>}</div></section></div>}
+
+function CategoryDialog({categories,close,done}:{categories:Category[];close:()=>void;done:()=>void}){const{toast}=useToast();const[name,setName]=useState(""),[parent,setParent]=useState(""),[busy,setBusy]=useState(false);async function save(){if(!name.trim())return;setBusy(true);try{await adminFetch("/gallery/categories",{method:"POST",body:JSON.stringify({name:name.trim(),parentId:parent?Number(parent):null})});setName("");done();toast({title:"تم إنشاء القسم"})}catch(e:any){toast({title:"تعذر إنشاء القسم",description:e.message,variant:"destructive"})}finally{setBusy(false)}}return <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4" dir="rtl"><section className="w-full max-w-lg rounded-2xl bg-card p-5 shadow-xl"><div className="flex justify-between"><h2 className="font-bold">إدارة الأقسام</h2><button onClick={close}><X/></button></div><div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]"><input value={name} onChange={e=>setName(e.target.value)} placeholder="اسم القسم أو القسم الفرعي" className="h-10 rounded-lg border border-border bg-background px-3"/><select value={parent} onChange={e=>setParent(e.target.value)} className="h-10 rounded-lg border border-border bg-background px-3"><option value="">قسم رئيسي</option>{categories.filter(c=>!c.parentId).map(c=><option key={c.id} value={c.id}>فرعي لـ {c.name}</option>)}</select></div><Button className="mt-3" disabled={busy||!name.trim()} onClick={save}>+ قسم جديد</Button><div className="mt-5 max-h-64 space-y-2 overflow-y-auto">{categories.map(c=><div key={c.id} className="flex justify-between rounded-lg border border-border px-3 py-2 text-sm"><span>{c.parentId?"↳ ":""}{c.name}</span><span className="text-muted-foreground">{c.count} وسائط</span></div>)}</div></section></div>}

@@ -117,7 +117,12 @@ import {
   entityTimelineTable,
   expenseCategoriesTable,
   expensesTable,
+  galleryAlbumsTable,
+  galleryAlbumMediaTable,
+  galleryCategoriesTable,
   galleryItemsTable,
+  galleryMediaTagsTable,
+  galleryTagsTable,
   graduationOrdersTable,
   koshaAddonsTable,
   koshaAccessoriesTable,
@@ -17108,6 +17113,113 @@ async function handleUnifiedTracking(req: NextRequest, parts: string[]) {
 
 async function handleGallery(req: NextRequest, parts: string[]) {
   const method = req.method;
+  const url = new URL(req.url);
+  const detailed = url.searchParams.get("detailed") === "1";
+
+  const galleryItemPayload = async (items: any[]) => {
+    const ids = items.map((item) => item.id);
+    const tagRows = ids.length
+      ? await db.select({ mediaId: galleryMediaTagsTable.mediaId, name: galleryTagsTable.name })
+        .from(galleryMediaTagsTable)
+        .innerJoin(galleryTagsTable, eq(galleryMediaTagsTable.tagId, galleryTagsTable.id))
+        .where(inArray(galleryMediaTagsTable.mediaId, ids))
+      : [];
+    const tagsByMedia = new Map<number, string[]>();
+    for (const row of tagRows) tagsByMedia.set(row.mediaId, [...(tagsByMedia.get(row.mediaId) ?? []), row.name]);
+    return items.map((i) => ({
+      id: i.id,
+      mediaUrl: publicMediaValue("gallery", i, i.mediaUrl),
+      thumbnailUrl: i.thumbnailUrl ? publicMediaValue("gallery", i, i.thumbnailUrl) : null,
+      mediaType: i.mediaType,
+      imageMetadata: i.imageMetadata ?? {},
+      title: i.title ?? null,
+      titleAr: i.titleAr ?? null,
+      category: i.category,
+      categoryId: i.categoryId ?? null,
+      status: i.status ?? (i.archivedAt ? "archived" : "published"),
+      isFavorite: i.isFavorite === true,
+      visibility: Array.isArray(i.visibility) ? i.visibility : [],
+      tags: tagsByMedia.get(i.id) ?? [],
+      createdAt: i.createdAt.toISOString(),
+    }));
+  };
+
+  const saveTags = async (client: any, mediaIds: number[], rawTags: unknown) => {
+    const tags = Array.isArray(rawTags)
+      ? [...new Set(rawTags.map((tag) => String(tag).trim()).filter((tag) => tag.length > 0 && tag.length <= 80))]
+      : [];
+    if (!mediaIds.length || !tags.length) return;
+    for (const name of tags) {
+      const [tag] = await client.insert(galleryTagsTable).values({ name }).onConflictDoNothing().returning();
+      const tagRow = tag ?? await client.query.galleryTagsTable.findFirst({ where: eq(galleryTagsTable.name, name) });
+      if (!tagRow) continue;
+      await client.insert(galleryMediaTagsTable).values(mediaIds.map((mediaId) => ({ mediaId, tagId: tagRow.id }))).onConflictDoNothing();
+    }
+  };
+
+  if (method === "GET" && parts[1] === "tags") {
+    const tags = await db.select({ id: galleryTagsTable.id, name: galleryTagsTable.name }).from(galleryTagsTable).orderBy(asc(galleryTagsTable.name));
+    return json(tags);
+  }
+
+  if (method === "POST" && parts[1] === "tags") {
+    const auth = await requirePermission(req, "gallery");
+    if (isResponse(auth)) return auth;
+    const name = String((await body(req))?.name ?? "").trim();
+    if (!name || name.length > 80) return error("الوسم غير صالح", 400);
+    const [created] = await db.insert(galleryTagsTable).values({ name }).onConflictDoNothing().returning();
+    const tag = created ?? await db.query.galleryTagsTable.findFirst({ where: eq(galleryTagsTable.name, name) });
+    return json(tag, created ? 201 : 200);
+  }
+
+  if (method === "GET" && parts[1] === "albums" && parts.length === 2) {
+    const albums = await db.select().from(galleryAlbumsTable).orderBy(desc(galleryAlbumsTable.createdAt));
+    return json(albums);
+  }
+
+  if (method === "POST" && parts[1] === "albums" && parts.length === 2) {
+    const auth = await requirePermission(req, "gallery");
+    if (isResponse(auth)) return auth;
+    const payload = await body(req);
+    const name = String(payload?.name ?? "").trim();
+    if (!name || name.length > 140) return error("اسم الألبوم غير صالح", 400);
+    const [album] = await db.insert(galleryAlbumsTable).values({
+      name,
+      description: typeof payload?.description === "string" ? payload.description.trim() || null : null,
+      status: ["draft", "published", "archived"].includes(payload?.status) ? payload.status : "published",
+    }).returning();
+    return json(album, 201);
+  }
+
+  if (method === "POST" && parts[1] === "albums" && parts[2] && parts[3] === "items") {
+    const auth = await requirePermission(req, "gallery");
+    if (isResponse(auth)) return auth;
+    const albumId = int(parts[2]);
+    const payload = await body(req);
+    const rawIds: unknown[] = Array.isArray(payload?.mediaIds) ? payload.mediaIds : [];
+    const mediaIds = [...new Set(rawIds.filter((id): id is number => Number.isInteger(id)))];
+    if (!albumId || !mediaIds.length) return error("اختر الألبوم والوسائط", 400);
+    const album = await db.query.galleryAlbumsTable.findFirst({ where: eq(galleryAlbumsTable.id, albumId) });
+    if (!album) return error("الألبوم غير موجود", 404);
+    await db.insert(galleryAlbumMediaTable).values(mediaIds.map((mediaId, index) => ({ albumId, mediaId, displayOrder: index }))).onConflictDoNothing();
+    return json({ message: "تمت إضافة الوسائط إلى الألبوم", count: mediaIds.length });
+  }
+
+  if (method === "POST" && parts[1] === "categories") {
+    const auth = await requirePermission(req, "gallery");
+    if (isResponse(auth)) return auth;
+    const payload = await body(req);
+    const name = String(payload?.name ?? "").trim();
+    if (!name || name.length > 100) return error("اسم القسم غير صالح", 400);
+    const slug = name.toLocaleLowerCase("ar").replace(/[^\p{L}\p{N}]+/gu, "-").replace(/(^-|-$)/g, "") || `category-${Date.now()}`;
+    const [category] = await db.insert(galleryCategoriesTable).values({
+      name, slug: `${slug}-${Date.now().toString(36)}`,
+      parentId: Number.isInteger(payload?.parentId) ? payload.parentId : null,
+      icon: typeof payload?.icon === "string" ? payload.icon.slice(0, 60) : null,
+      description: typeof payload?.description === "string" ? payload.description.trim() || null : null,
+    }).returning();
+    return json(category, 201);
+  }
 
   if (method === "PATCH" && parts[1] === "categories") {
     const auth = await requirePermission(req, "gallery");
@@ -17139,41 +17251,61 @@ async function handleGallery(req: NextRequest, parts: string[]) {
   }
 
   if (method === "GET" && parts[1] === "categories") {
-    const result = await db
-      .select({
-        category: galleryItemsTable.category,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(galleryItemsTable)
-      .groupBy(galleryItemsTable.category);
-    return json(result.map((r) => ({ name: r.category, count: r.count })));
+    const [categories, legacyCounts] = await Promise.all([
+      db.select().from(galleryCategoriesTable).orderBy(asc(galleryCategoriesTable.displayOrder), asc(galleryCategoriesTable.name)),
+      db.select({ category: galleryItemsTable.category, count: sql<number>`count(*)::int` }).from(galleryItemsTable).groupBy(galleryItemsTable.category),
+    ]);
+    const countByName = new Map(legacyCounts.map((row) => [row.category === "general" ? "عام" : row.category, row.count]));
+    const known = new Set(categories.map((category) => category.name));
+    const legacy = [...countByName.entries()]
+      .filter(([name]) => !known.has(name))
+      .map(([name, count], index) => ({
+        id: -(index + 1), name, slug: `legacy-${index + 1}`, parentId: null,
+        coverMediaId: null, icon: null, description: null, displayOrder: 0,
+        isActive: true, createdAt: null, updatedAt: null, count,
+      }));
+    return json([
+      ...categories.map((category) => ({ ...category, count: countByName.get(category.name) ?? 0 })),
+      ...legacy,
+    ]);
   }
 
   if (method === "GET" && parts.length === 1) {
     const params = ListGalleryQueryParams.safeParse(query(req));
     const { category } = params.success ? params.data : {};
+    const categoryId = Number(url.searchParams.get("categoryId"));
+    const status = url.searchParams.get("status");
+    const tag = url.searchParams.get("tag")?.trim();
+    const search = url.searchParams.get("search")?.trim();
+    const favorite = url.searchParams.get("favorite") === "1";
+    const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+    const pageSize = Math.min(60, Math.max(1, Number(url.searchParams.get("pageSize")) || 24));
+    const filters = [
+      category ? eq(galleryItemsTable.category, category) : undefined,
+      Number.isInteger(categoryId) && categoryId > 0 ? eq(galleryItemsTable.categoryId, categoryId) : undefined,
+      status && ["draft", "published", "archived"].includes(status) ? eq(galleryItemsTable.status, status) : undefined,
+      favorite ? eq(galleryItemsTable.isFavorite, true) : undefined,
+      search ? or(ilike(galleryItemsTable.titleAr, `%${search}%`), ilike(galleryItemsTable.title, `%${search}%`), ilike(galleryItemsTable.category, `%${search}%`)) : undefined,
+    ].filter(Boolean) as any[];
+    if (!status) filters.push(ne(galleryItemsTable.status, "archived"));
+    if (tag) {
+      const tagged = await db.select({ mediaId: galleryMediaTagsTable.mediaId }).from(galleryMediaTagsTable).innerJoin(galleryTagsTable, eq(galleryMediaTagsTable.tagId, galleryTagsTable.id)).where(ilike(galleryTagsTable.name, `%${tag}%`));
+      filters.push(inArray(galleryItemsTable.id, tagged.map((row) => row.mediaId)));
+    }
     const items = await db.query.galleryItemsTable.findMany({
-      where: category ? eq(galleryItemsTable.category, category) : undefined,
+      where: filters.length ? and(...filters) : undefined,
       orderBy: (g, { desc }) => [desc(g.createdAt)],
+      ...(detailed ? { limit: pageSize, offset: (page - 1) * pageSize } : {}),
     });
-    return json(
-      items.map((i) => ({
-        id: i.id,
-        mediaUrl: publicMediaValue("gallery", i, i.mediaUrl),
-        mediaType: i.mediaType,
-        imageMetadata: i.imageMetadata ?? {},
-        title: i.title ?? null,
-        titleAr: i.titleAr ?? null,
-        category: i.category,
-        createdAt: i.createdAt.toISOString(),
-      })),
-    );
+    const data = await galleryItemPayload(items);
+    return json(detailed ? { items: data, page, pageSize, hasMore: data.length === pageSize } : data);
   }
 
   if (method === "POST" && parts.length === 1) {
     const auth = await requirePermission(req, "gallery");
     if (isResponse(auth)) return auth;
-    const parsed = CreateGalleryItemBody.safeParse(await body(req));
+    const raw = await body(req);
+    const parsed = CreateGalleryItemBody.safeParse(raw);
     if (!parsed.success) return validationError("gallery.create", parsed);
     const values: any = { ...parsed.data };
     if (
@@ -17187,26 +17319,60 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     } else if (values.mediaUrl !== undefined) {
       values.mediaUrl = await persistMediaValue(values.mediaUrl, "gallery");
     }
-    const [item] = await db
-      .insert(galleryItemsTable)
-      .values(values)
-      .returning();
+    const [item] = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(galleryItemsTable).values({
+        ...values,
+        categoryId: Number.isInteger(raw?.categoryId) && raw.categoryId > 0 ? raw.categoryId : null,
+        status: ["draft", "published", "archived"].includes(raw?.status) ? raw.status : "published",
+        isFavorite: raw?.isFavorite === true,
+        visibility: Array.isArray(raw?.visibility) ? raw.visibility.filter((entry: unknown) => typeof entry === "string") : [],
+      }).returning();
+      await saveTags(tx, [created.id], raw?.tags);
+      return [created];
+    });
     void logAdminActivity(req, "gallery_created", "gallery", item.id, {
       mediaType: item.mediaType,
     });
-    return json(
-      {
-        id: item.id,
-        mediaUrl: publicMediaValue("gallery", item, item.mediaUrl),
-        mediaType: item.mediaType,
-        imageMetadata: item.imageMetadata ?? {},
-        title: item.title ?? null,
-        titleAr: item.titleAr ?? null,
-        category: item.category,
-        createdAt: item.createdAt.toISOString(),
-      },
-      201,
-    );
+    return json((await galleryItemPayload([item]))[0], 201);
+  }
+
+  if (method === "POST" && parts[1] === "bulk") {
+    const auth = await requirePermission(req, "gallery");
+    if (isResponse(auth)) return auth;
+    const payload = await body(req);
+    const rawIds: unknown[] = Array.isArray(payload?.ids) ? payload.ids : [];
+    const ids = [...new Set(rawIds.filter((id): id is number => Number.isInteger(id)))];
+    if (!ids.length) return error("اختر وسائط أولاً", 400);
+    const action = payload?.action;
+    if (action === "add-tags") await saveTags(db, ids, payload?.tags);
+    else if (action === "move") await db.update(galleryItemsTable).set({ categoryId: Number.isInteger(payload?.categoryId) && payload.categoryId > 0 ? payload.categoryId : null, category: typeof payload?.category === "string" ? payload.category.slice(0, 50) : "عام", updatedAt: new Date() }).where(inArray(galleryItemsTable.id, ids));
+    else if (action === "visibility") await db.update(galleryItemsTable).set({ visibility: Array.isArray(payload?.visibility) ? payload.visibility.filter((value: unknown) => typeof value === "string") : [], updatedAt: new Date() }).where(inArray(galleryItemsTable.id, ids));
+    else if (action === "archive") await db.update(galleryItemsTable).set({ status: "archived", archivedAt: new Date(), updatedAt: new Date() }).where(inArray(galleryItemsTable.id, ids));
+    else return error("إجراء المعرض غير صالح", 400);
+    void logAdminActivity(req, "gallery_bulk_updated", "gallery", 0, { action, count: ids.length });
+    return json({ message: "تم تحديث الوسائط", count: ids.length });
+  }
+
+  if (method === "PATCH" && parts[1] && parts[1] !== "categories") {
+    const auth = await requirePermission(req, "gallery");
+    if (isResponse(auth)) return auth;
+    const id = int(parts[1]);
+    if (!id) return error("معرف غير صحيح", 400);
+    const payload = await body(req);
+    const values: any = { updatedAt: new Date() };
+    if (typeof payload?.titleAr === "string") values.titleAr = payload.titleAr.slice(0, 400);
+    if (typeof payload?.category === "string") values.category = payload.category.slice(0, 50);
+    if (Number.isInteger(payload?.categoryId)) values.categoryId = payload.categoryId > 0 ? payload.categoryId : null;
+    if (["draft", "published", "archived"].includes(payload?.status)) { values.status = payload.status; if (payload.status === "archived") values.archivedAt = new Date(); }
+    if (typeof payload?.isFavorite === "boolean") values.isFavorite = payload.isFavorite;
+    if (Array.isArray(payload?.visibility)) values.visibility = payload.visibility.filter((entry: unknown) => typeof entry === "string");
+    const [updated] = await db.update(galleryItemsTable).set(values).where(eq(galleryItemsTable.id, id)).returning();
+    if (!updated) return error("الوسائط غير موجودة", 404);
+    if (Array.isArray(payload?.tags)) {
+      await db.delete(galleryMediaTagsTable).where(eq(galleryMediaTagsTable.mediaId, id));
+      await saveTags(db, [id], payload.tags);
+    }
+    return json((await galleryItemPayload([updated]))[0]);
   }
 
   if (method === "DELETE" && parts[1]) {
@@ -17214,9 +17380,10 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     const id = int(parts[1]);
     if (!id) return error("معرف غير صحيح", 400);
-    await db.delete(galleryItemsTable).where(eq(galleryItemsTable.id, id));
-    void logAdminActivity(req, "gallery_deleted", "gallery", id);
-    return json({ message: "تم حذف الصورة" });
+    const [archived] = await db.update(galleryItemsTable).set({ status: "archived", archivedAt: new Date(), updatedAt: new Date() }).where(eq(galleryItemsTable.id, id)).returning({ id: galleryItemsTable.id });
+    if (!archived) return error("الوسائط غير موجودة", 404);
+    void logAdminActivity(req, "gallery_archived", "gallery", id);
+    return json({ message: "تمت أرشفة الصورة للحفاظ على المراجع التاريخية" });
   }
 
   return null;
