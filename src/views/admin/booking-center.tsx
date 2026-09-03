@@ -842,7 +842,29 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       : remainingValue <= 0 && totalValue > 0
         ? "مدفوع بالكامل"
         : "مدفوع جزئياً";
-  const toggle = (type: ServiceKey) => setSelected((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type]);
+  const removeService = (type: ServiceKey) => {
+    if (selected.length <= 1) {
+      toast({ title: "يلزم اختيار خدمة واحدة على الأقل", description: "لا يمكن إزالة آخر خدمة من الحجز.", variant: "destructive" });
+      return;
+    }
+    setSelected((current) => current.filter((item) => item !== type));
+    if (type === "sound") setSoundItems([]);
+  };
+  const toggle = (type: ServiceKey) => {
+    if (selected.includes(type)) {
+      removeService(type);
+      return;
+    }
+    setSelected((current) => [...current, type]);
+  };
+  const editService = (type: ServiceKey) => {
+    const targetId = type === "photography"
+      ? "booking-photography-settings"
+      : type === "sound"
+        ? "booking-sound-items"
+        : "booking-service-picker";
+    window.requestAnimationFrame(() => document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  };
   const photographySelected = selected.includes("photography");
   return (
     <section id="booking-create-form" className="ajn-unified-form" tabIndex={-1}>
@@ -888,7 +910,23 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
           <div><span>الخدمات المطلوبة</span><strong>{selected.length} خدمات محددة</strong></div>
           <div className="grid grid-cols-2 gap-2">{SERVICE_META.map((meta) => { const Icon = meta.icon; const checked = selected.includes(meta.key); return <button type="button" key={meta.key} className={checked ? "is-selected" : ""} onClick={() => toggle(meta.key)} aria-pressed={checked}><Icon /><span>{meta.short}</span>{checked && <CheckCircle2 />}</button>; })}</div>
           {fieldErrors.serviceId ? <p className="text-xs text-destructive">{fieldErrors.serviceId}</p> : null}
-          {photographySelected ? <section className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
+          {selected.length ? <section className="mt-4 space-y-2 rounded-xl border border-border/60 bg-background/70 p-3" aria-label="الخدمات المختارة">
+            <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold text-foreground">الخدمات المختارة</h3><span className="text-xs text-muted-foreground">يمكنك تعديل الإعدادات أو إزالة الخدمة من هذا الحجز</span></div>
+            <div className="space-y-1.5">{selected.map((type) => {
+              const meta = SERVICE_META.find((item) => item.key === type);
+              if (!meta) return null;
+              const Icon = meta.icon;
+              const hasSettings = type === "photography" || type === "sound";
+              return <div key={type} className="flex min-h-11 items-center justify-between gap-2 rounded-lg border border-border/45 bg-muted/20 px-2.5 py-1.5">
+                <span className="flex min-w-0 items-center gap-2 text-sm font-medium"><Icon className="h-4 w-4 shrink-0 text-primary" /><span className="truncate">{meta.short}</span></span>
+                <span className="flex shrink-0 items-center gap-1">
+                  {hasSettings ? <Button type="button" variant="ghost" size="sm" className="h-8 px-2" onClick={() => editService(type)}><Pencil className="h-3.5 w-3.5" />تعديل</Button> : null}
+                  <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-destructive hover:text-destructive" disabled={selected.length <= 1} title={selected.length <= 1 ? "يلزم اختيار خدمة واحدة على الأقل" : `إزالة ${meta.short} من الحجز`} onClick={() => removeService(type)}><X className="h-3.5 w-3.5" />إزالة</Button>
+                </span>
+              </div>;
+            })}</div>
+          </section> : null}
+          {photographySelected ? <section id="booking-photography-settings" className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
             <div><h3 className="font-semibold text-foreground">تفاصيل التصوير</h3><p className="mt-1 text-xs text-muted-foreground">تُحفظ هذه التفاصيل مع الحجز لتظهر لفريق التصوير.</p></div>
             <div className="space-y-1.5"><Label htmlFor="booking-photography-type">نوع التصوير</Label><select id="booking-photography-type" value={photographyType} onChange={(event) => setPhotographyType(event.target.value as "video" | "photo_session")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="video">تصوير فيديو</option><option value="photo_session">جلسة تصوير</option></select></div>
             {photographyType === "photo_session" ? <>
@@ -928,7 +966,7 @@ function SoundItemsSelector({ products, categories, loading, items, onChange }: 
     source,
   }]);
   const updateQuantity = (productId: number, quantity: number) => onChange(items.map((item) => item.productId === productId ? { ...item, quantity: Math.max(1, Math.floor(quantity) || 1) } : item));
-  return <section className="mt-4 space-y-3 rounded-xl border border-amber-200/70 bg-amber-50/45 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
+  return <section id="booking-sound-items" className="mt-4 space-y-3 rounded-xl border border-amber-200/70 bg-amber-50/45 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
     <div><h3 className="flex items-center gap-2 font-semibold text-foreground"><Speaker className="h-4 w-4 text-amber-700" />تجهيزات الصوت</h3><p className="mt-1 text-xs leading-5 text-muted-foreground">اختر معدات الصوت من المتجر أو من الأصول. لا يتم إخراج الأصل أو حجز المخزون من هذه الخطوة؛ يتم ذلك لاحقاً من مساحة تنفيذ الحجز.</p></div>
     <div className="grid grid-cols-2 gap-2" role="group" aria-label="مصدر تجهيزات الصوت">
       <Button type="button" size="sm" variant={source === "store" ? "default" : "outline"} className="justify-start" onClick={() => setSource("store")}><ShoppingBag className="h-4 w-4" />إضافة من المتجر</Button>
