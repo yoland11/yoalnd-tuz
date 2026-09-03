@@ -53,6 +53,7 @@ import { BookingOperationsWorkspace } from "./booking-operations-workspace";
 import { EditServiceOrderModal } from "./orders";
 import { EditKoshaBookingModal } from "./koshas";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import { BookingThermalPrintAction } from "@/components/booking-thermal-print";
 import {
   bookingPhotoKey,
   bookingPhotoPreview,
@@ -591,6 +592,7 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
           <Button size="sm" variant="outline" asChild>
             <Link href={pdfHref} target="_blank" rel="noopener noreferrer" aria-label={`حفظ PDF للحجز ${booking.number || booking.customerName}`}><FileDown className="h-3.5 w-3.5" /> حفظ PDF</Link>
           </Button>
+          <BookingThermalPrintAction booking={booking} />
           <Button size="sm" variant="ghost" asChild>
             <Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`} aria-label={`فتح مساحة عمل الحجز ${booking.number || booking.customerName}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link>
           </Button>
@@ -942,7 +944,7 @@ function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; i
           <div><div className="flex flex-wrap items-center gap-2"><h1>{data.number}</h1><StatusBadge status={data.status} /></div><p>{data.customerName} · {data.phone}</p></div>
         </div>
         <div className="ajn-workspace-facts"><span><CalendarDays /> <b>{data.eventDate || "غير محدد"}</b><small>{data.eventTime}</small></span><span><MapPin /> <b>{data.hall || "الموقع غير محدد"}</b></span><span><CircleDollarSign /> <b className="text-rose-600 dark:text-rose-300"><Money value={data.remaining} /></b><small>المبلغ المتبقي</small></span></div>
-        <div className="flex flex-wrap gap-2"><Button variant="outline" asChild><a href={whatsapp} target="_blank" rel="noreferrer"><MessageCircle className="h-4 w-4" /> واتساب</a></Button>{data.mapUrl && <Button variant="outline" asChild><a href={data.mapUrl} target="_blank" rel="noreferrer"><MapPin className="h-4 w-4" /> الخريطة</a></Button>}<Button variant="outline" asChild><Link href={`${invoiceUrl}&pdf=1`}><FileDown className="h-4 w-4" /> حفظ الحجز PDF</Link></Button><Button className="ajn-rose-button" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : `/admin/orders?serviceOrder=${id}`}><Banknote className="h-4 w-4" /> استلام دفعة</Link></Button></div>
+        <div className="flex flex-wrap gap-2"><Button variant="outline" asChild><a href={whatsapp} target="_blank" rel="noreferrer"><MessageCircle className="h-4 w-4" /> واتساب</a></Button>{data.mapUrl && <Button variant="outline" asChild><a href={data.mapUrl} target="_blank" rel="noreferrer"><MapPin className="h-4 w-4" /> الخريطة</a></Button>}<Button variant="outline" asChild><Link href={`${invoiceUrl}&pdf=1`}><FileDown className="h-4 w-4" /> حفظ الحجز PDF</Link></Button><BookingThermalPrintAction booking={data} /><Button className="ajn-rose-button" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : `/admin/orders?serviceOrder=${id}`}><Banknote className="h-4 w-4" /> استلام دفعة</Link></Button></div>
       </header>
 
       <div className="ajn-workspace-layout">
@@ -974,7 +976,7 @@ function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; i
         </main>
         <aside className="ajn-workspace-aside">
           <section className="ajn-finance-card"><div><span>الملخص المالي</span><Badge variant="outline">{data.paymentStatus === "paid" ? "مدفوع بالكامل" : data.paymentStatus === "partial" ? "مدفوع جزئياً" : "غير مدفوع"}</Badge></div><dl><dt>المبلغ الكلي <dd><Money value={data.total} /></dd></dt><dt>العربون <dd><Money value={data.paid} /></dd></dt><dt className="is-remaining">المتبقي <dd><Money value={data.remaining} /></dd></dt></dl><Button className="ajn-rose-button w-full" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : `/admin/orders?serviceOrder=${id}`}><Banknote className="h-4 w-4" /> استلام دفعة</Link></Button></section>
-          <section className="ajn-side-panel"><h3>إجراءات سريعة</h3><div className="ajn-quick-actions"><Button variant="ghost" asChild><Link href={invoiceUrl}><Printer /> طباعة الفاتورة</Link></Button><Button variant="ghost" asChild><Link href="/admin/documents"><ReceiptText /> طباعة العقد</Link></Button><Button variant="ghost" asChild><Link href="/admin/qr-orders"><QrCode /> إنشاء QR</Link></Button><Button variant="ghost" asChild><Link href="/admin/tasks"><Users /> إسناد موظفين</Link></Button><Button variant="ghost" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : "/admin/reserved-stock"}><Warehouse /> حجز مستودع</Link></Button><Button variant="ghost" asChild><Link href="/admin/invitations"><Send /> دعوة إلكترونية</Link></Button><Button variant="ghost" asChild><Link href={data.customerId ? `/admin/customers?customer=${data.customerId}` : `/admin/customers?search=${encodeURIComponent(data.phone)}`}><ExternalLink /> فتح العميل</Link></Button></div></section>
+          <section className="ajn-side-panel"><h3>إجراءات سريعة</h3><div className="ajn-quick-actions"><Button variant="ghost" asChild><Link href={invoiceUrl}><Printer /> طباعة الفاتورة</Link></Button><BookingThermalPrintAction booking={data} variant="ghost" className="w-full justify-start" /><Button variant="ghost" asChild><Link href="/admin/documents"><ReceiptText /> طباعة العقد</Link></Button><Button variant="ghost" asChild><Link href="/admin/qr-orders"><QrCode /> إنشاء QR</Link></Button><Button variant="ghost" asChild><Link href="/admin/tasks"><Users /> إسناد موظفين</Link></Button><Button variant="ghost" asChild><Link href={source === "kosha" ? `/admin/kosha-bookings?booking=${id}` : "/admin/reserved-stock"}><Warehouse /> حجز مستودع</Link></Button><Button variant="ghost" asChild><Link href="/admin/invitations"><Send /> دعوة إلكترونية</Link></Button><Button variant="ghost" asChild><Link href={data.customerId ? `/admin/customers?customer=${data.customerId}` : `/admin/customers?search=${encodeURIComponent(data.phone)}`}><ExternalLink /> فتح العميل</Link></Button></div></section>
           <section className="ajn-ai-panel"><div><Sparkles /><span><small>مساعد العمليات</small><h3>توصيات ذكية</h3></span></div>{recommendations.length ? <ul>{recommendations.map((item) => <li key={item}><AlertTriangle />{item}</li>)}</ul> : <p><CheckCircle2 /> لا توجد مخاطر مباشرة مسجلة لهذا الحجز.</p>}</section>
         </aside>
       </div>

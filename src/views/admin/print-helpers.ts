@@ -169,6 +169,22 @@ export function thermalReceiptCss(size: "58mm" | "80mm") {
   `;
 }
 
+/**
+ * Compact identification label for a booking. It deliberately excludes every
+ * financial field so staff can attach it to equipment or paperwork safely.
+ */
+export function bookingThermalLabelCss(size: "58mm" | "80mm") {
+  return `${thermalReceiptCss(size)}
+    .booking-label .r-company { letter-spacing: .08em; }
+    .booking-label .label-title { text-align:center; font-weight:900; font-size:1em; }
+    .booking-label .kv { display:block; margin:6px 0; }
+    .booking-label .kv > span:first-child { display:block; margin-bottom:1px; font-size:.88em; }
+    .booking-label .kv .v { display:block; text-align:right; overflow-wrap:anywhere; }
+    .booking-label .couple { font-size:1.35em; line-height:1.35; font-weight:900; }
+    .booking-label .booking-no, .booking-label .event-date, .booking-label .phone { direction:ltr; text-align:right; font-weight:900; }
+  `;
+}
+
 export type SalesInvoicePrintSize = "58mm" | "80mm" | "a4";
 
 export type SalesInvoiceReceiptInput = {
