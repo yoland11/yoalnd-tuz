@@ -26248,7 +26248,7 @@ async function handleHrAdmin(
           body: `تم صرف راتب شهر ${row.period} · ${formatCurrency(amount)}.`,
           entityType: "payroll_line",
           entityId: lineId,
-          href: "/staff?tab=salary",
+          href: "/staff/salary",
         }).catch((notificationError) => console.error("[SIMPLE_SALARY_NOTIFICATION_FAILED]", {
           requestId: makeRequestId(req.headers.get("x-request-id")), lineId,
           message: notificationError instanceof Error ? notificationError.message : "unknown",
@@ -26471,7 +26471,7 @@ async function handleHrAdmin(
           body: `تم تعديل ${String((result as any).title || "بند الراتب")}. يمكنك مراجعة التفاصيل.`,
           entityType: "hr_incentive",
           entityId: id,
-          href: "/staff?tab=salary",
+          href: "/staff/salary",
         }).catch((notificationError) => console.warn("Staff salary notification failed", { incentiveId: id, notificationError }));
         return json(result);
       }
@@ -26564,7 +26564,7 @@ async function handleHrAdmin(
           body: `تم اعتماد ${String((result as any).title || "مكافأة/جزاء")} بقيمة ${formatCurrency((result as any).amount ?? 0)}.`,
           entityType: "hr_incentive",
           entityId: id,
-          href: "/staff?tab=salary",
+          href: "/staff/salary",
         }).catch((notificationError) => console.warn("Staff salary notification failed", { incentiveId: id, notificationError }));
         return json(result);
       }
@@ -26712,7 +26712,7 @@ async function handleHrAdmin(
           body: `${String((event as any).title || "بند راتب")} · ${formatCurrency((event as any).amount ?? 0)}`,
           entityType: "hr_incentive",
           entityId: event.id,
-          href: "/staff?tab=salary",
+          href: "/staff/salary",
         }).catch((notificationError) => console.warn("Staff salary notification failed", { incentiveId: event.id, notificationError }));
         return json(event, 201);
       }
@@ -27245,7 +27245,7 @@ async function handleHrAdmin(
           actor: erpActorFromAdmin(auth),
           metadata: result,
         });
-        if (employeeLine) void createNotification({ audienceType: "staff", staffId: Number(employeeLine.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم تسجيل دفعة راتب بقيمة ${formatCurrency(result.payment?.amount ?? payload?.amount)}.`, entityType: "payroll_line", entityId: lineId, href: "/staff?tab=salary" });
+        if (employeeLine) void createNotification({ audienceType: "staff", staffId: Number(employeeLine.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم تسجيل دفعة راتب بقيمة ${formatCurrency(result.payment?.amount ?? payload?.amount)}.`, entityType: "payroll_line", entityId: lineId, href: "/staff/salary" });
         return json(result, 201);
       }
       if (
@@ -27294,6 +27294,27 @@ async function handleHrAdmin(
           actor: erpActorFromAdmin(auth),
           metadata: result,
         });
+        const movementLabel = movementType === "bonus"
+          ? "مكافأة"
+          : movementType === "deduction"
+            ? "استقطاع"
+            : "تعديل الراتب الأساسي";
+        const movementAmount = movementType === "base_salary_adjustment"
+          ? payload?.baseSalary
+          : payload?.amount;
+        const movementStaffId = Number(result.adjustment?.staff_id);
+        if (Number.isInteger(movementStaffId) && movementStaffId > 0) {
+          void createNotification({
+            audienceType: "staff",
+            staffId: movementStaffId,
+            type: "salary_movement_created",
+            title: `تم تسجيل ${movementLabel} على راتبك`,
+            body: `${movementLabel}: ${formatCurrency(movementAmount)}. يمكنك مراجعة التفاصيل وسجل الراتب.`,
+            entityType: "payroll_line",
+            entityId: lineId,
+            href: "/staff/salary",
+          });
+        }
         return json(result, 201);
       }
       if (
@@ -27317,6 +27338,19 @@ async function handleHrAdmin(
           reason: payload?.reason,
           ip: ip(req),
         });
+        const cancelledMovementStaffId = Number(result.staffId);
+        if (Number.isInteger(cancelledMovementStaffId) && cancelledMovementStaffId > 0) {
+          void createNotification({
+            audienceType: "staff",
+            staffId: cancelledMovementStaffId,
+            type: "salary_movement_cancelled",
+            title: "تم إلغاء حركة من راتبك",
+            body: "تم إلغاء حركة راتب مع حفظ السجل السابق. يمكنك مراجعة تفاصيل راتبك.",
+            entityType: "payroll_line",
+            entityId: lineId,
+            href: "/staff/salary",
+          });
+        }
         return json(result, 200);
       }
       if (
@@ -27358,6 +27392,20 @@ async function handleHrAdmin(
             device: req.headers.get("user-agent") || "",
           },
         );
+        const adjustmentStaffId = Number(result.adjustment?.staff_id);
+        if (Number.isInteger(adjustmentStaffId) && adjustmentStaffId > 0) {
+          const adjustmentLabel = payload?.direction === "deduction" ? "استقطاع" : "إضافة";
+          void createNotification({
+            audienceType: "staff",
+            staffId: adjustmentStaffId,
+            type: "salary_adjustment_created",
+            title: `تم تسجيل ${adjustmentLabel} على راتبك`,
+            body: `قيمة الحركة: ${formatCurrency(payload?.amount)}. يمكنك مراجعة تفاصيل راتبك.`,
+            entityType: "payroll_line",
+            entityId: lineId,
+            href: "/staff/salary",
+          });
+        }
         return json(result, 201);
       }
       if (
@@ -27606,7 +27654,7 @@ async function handleHrAdmin(
           ip: ip(req),
           device: req.headers.get("user-agent") || "",
         });
-        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_approved", title: "تم اعتماد الراتب", body: `تم اعتماد راتب ${run.period}. يمكنك مراجعة تفاصيل احتساب الراتب.`, entityType: "payroll_run", entityId: id, href: "/staff?tab=salary" });
+        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_approved", title: "تم اعتماد الراتب", body: `تم اعتماد راتب ${run.period}. يمكنك مراجعة تفاصيل احتساب الراتب.`, entityType: "payroll_run", entityId: id, href: "/staff/salary" });
         return json(run);
       }
       if (method === "POST" && id && parts[4] === "pay") {
@@ -27631,7 +27679,7 @@ async function handleHrAdmin(
         } catch {
           /* non-blocking */
         }
-        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم دفع راتب ${run.period} بقيمة ${formatCurrency(line.netSalary)}.`, entityType: "payroll_run", entityId: id, href: "/staff?tab=salary" });
+        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم دفع راتب ${run.period} بقيمة ${formatCurrency(line.netSalary)}.`, entityType: "payroll_run", entityId: id, href: "/staff/salary" });
         return json(run);
       }
       if (method === "POST" && id && parts[4] === "close") {
@@ -62145,7 +62193,7 @@ async function handleUnifiedStaffPortal(
     });
   const canAccessPortal =
     ["admin", "manager"].includes(auth.role) ||
-    (["dashboard", "tasks", "koshas", "photography"] as Permission[]).some((permission) =>
+    (["dashboard", "tasks", "koshas", "photography", "payroll_view", "employee_salaries_view"] as Permission[]).some((permission) =>
       hasPermission(auth, permission),
     );
   if (!canAccessPortal) {
@@ -62423,6 +62471,12 @@ async function handleUnifiedStaffPortal(
         where staff_id=${auth.id} and payroll_line_id in (${sql.join(lineIds.map((id) => sql`${id}`), sql`,`)})
         order by created_at desc,id desc
       `) : { rows: [] };
+      const paymentResult: any = lineIds.length ? await db.execute(sql`
+        select id,payroll_line_id,amount::float as amount,payment_date,payment_method,status,reference_no,notes
+        from employee_salary_payments
+        where staff_id=${auth.id} and payroll_line_id in (${sql.join(lineIds.map((id) => sql`${id}`), sql`,`)})
+        order by payment_date desc,id desc
+      `) : { rows: [] };
       const movementsByLine = new Map<number, any[]>();
       for (const movement of movementResult?.rows ?? []) {
         const key = Number(movement.payroll_line_id);
@@ -62433,13 +62487,25 @@ async function handleUnifiedStaffPortal(
           createdAt: movement.created_at ? new Date(movement.created_at).toISOString() : null,
         }]);
       }
+      const paymentsByLine = new Map<number, any[]>();
+      for (const payment of paymentResult?.rows ?? []) {
+        const key = Number(payment.payroll_line_id);
+        paymentsByLine.set(key, [...(paymentsByLine.get(key) ?? []), {
+          id: Number(payment.id), amount: Number(payment.amount ?? 0), paymentDate: String(payment.payment_date ?? ""),
+          paymentMethod: String(payment.payment_method ?? "cash"), status: String(payment.status ?? "pending"),
+          referenceNo: payment.reference_no ? String(payment.reference_no) : null,
+          notes: payment.notes ? String(payment.notes) : null,
+        }]);
+      }
       const safeLines = lines.map((line: any) => ({
         id: Number(line.id), month: String(line.month ?? ""),
         baseSalary: Number(line.baseSalary ?? 0), bonus: Number(line.bonus ?? 0),
         deduction: Number(line.deduction ?? 0), netSalary: Number(line.netSalary ?? 0),
         paymentStatus: String(line.paymentStatus ?? "unpaid"), amountPaid: Number(line.amountPaid ?? 0),
+        remaining: Math.max(0, Number(line.netSalary ?? 0) - Number(line.amountPaid ?? 0)),
         paidAt: line.paidAt ? new Date(line.paidAt).toISOString() : null,
         movements: movementsByLine.get(Number(line.id)) ?? [],
+        payments: paymentsByLine.get(Number(line.id)) ?? [],
       }));
       if (requestedLineId) {
         const detail = safeLines.find((line: { id: number }) => line.id === requestedLineId);

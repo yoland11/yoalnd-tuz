@@ -294,7 +294,7 @@ export async function cancelEmployeeSalaryMovement(runId: number, lineId: number
     }
     await tx.execute(sql`update employee_salary_adjustments set status='cancelled',notes=concat_ws(E'\n',notes,${`ألغيت بواسطة ${actor.name}: ${data.reason}`}) where id=${adjustmentId}`);
     await addEvent(tx, line, actor, "salary_movement_cancelled", data.reason, before, { ...salaryNumbers(next), adjustmentId, affectsCurrentLine });
-    return { adjustmentId, cancelled: true, before, after: salaryNumbers(next) };
+    return { adjustmentId, staffId: Number(line.staff_id), cancelled: true, before, after: salaryNumbers(next) };
   });
 }
 

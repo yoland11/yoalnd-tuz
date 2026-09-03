@@ -1,6 +1,6 @@
 import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
-import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff, User } from "lucide-react";
+import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff, User, WalletCards } from "lucide-react";
 import { apiErrorMessage, fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, isSessionDecision, type AdminMe } from "@/views/admin/_lib";
 import { SessionDevicesPanel } from "@/components/session-devices";
 import { BUCKET_LABEL, STAGE_LABEL, isKoshaPendingPricing, money, staffApi, type Bucket, type CrewBooking } from "./lib";
@@ -311,6 +311,30 @@ function Notifications() {
   );
 }
 
+const salaryStatusLabel: Record<string, string> = { unpaid: "غير مدفوع", partially_paid: "مدفوع جزئياً", paid: "مدفوع بالكامل", reversed: "معكوس" };
+const salaryMovementLabel: Record<string, string> = { bonus: "مكافأة", deduction: "استقطاع", base_salary_adjustment: "تعديل الراتب الأساسي" };
+const salaryPaymentMethodLabel: Record<string, string> = { cash: "نقد", main_cash_box: "الصندوق الرئيسي", bank: "بنك", transfer: "تحويل", card: "بطاقة" };
+
+function StaffSalary() {
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof staffApi.salary>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    staffApi.salary().then((data) => { if (active) setRows(asRows<Awaited<ReturnType<typeof staffApi.salary>>[number]>(data)); })
+      .catch((requestError) => { if (active) { setRows([]); setError(apiErrorMessage(requestError, "تعذر تحميل بيانات الراتب")); } });
+    return () => { active = false; };
+  }, []);
+  return <div className="space-y-4 p-4" dir="rtl">
+    <header><h1 className="text-lg font-bold">راتبي</h1><p className="mt-1 text-xs text-muted-foreground">يعرض هذا القسم رواتبك وحركاتك ودفعاتك فقط.</p></header>
+    {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
+    {!rows ? <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div> : !rows.length ? <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">لا توجد سجلات راتب لك حتى الآن.</div> : <div className="space-y-3">{rows.map((salary) => <section key={salary.id} className="rounded-xl border border-border bg-card p-4"><div className="flex items-start justify-between gap-3"><div><h2 className="font-bold">{new Date(`${salary.month}-01T00:00:00Z`).toLocaleDateString("ar-IQ-u-nu-latn", { month: "long", year: "numeric", timeZone: "UTC" })}</h2><p className="mt-1 text-xs text-muted-foreground">{salaryStatusLabel[salary.paymentStatus] ?? salary.paymentStatus}</p></div><span className={`rounded-full px-2 py-1 text-xs font-bold ${salary.remaining > 0 ? "bg-status-warning/15 text-status-warning" : "bg-status-success/15 text-status-success"}`}>{salary.remaining > 0 ? `متبقي ${money(salary.remaining)} د.ع` : "مكتمل السداد"}</span></div><div className="mt-4 grid grid-cols-2 gap-2 text-sm"><SalaryMetric label="الراتب الأساسي" value={salary.baseSalary} /><SalaryMetric label="المكافآت" value={salary.bonus} tone="positive" /><SalaryMetric label="الاستقطاعات" value={salary.deduction} tone="negative" /><SalaryMetric label="صافي الراتب" value={salary.netSalary} strong /><SalaryMetric label="المسدد" value={salary.amountPaid} tone="positive" /><SalaryMetric label="المتبقي" value={salary.remaining} strong /></div>{salary.movements.length > 0 && <div className="mt-4 border-t pt-3"><h3 className="text-sm font-bold">حركات الراتب</h3><div className="mt-2 space-y-2">{salary.movements.map((movement) => <div key={movement.id} className="rounded-lg bg-muted/45 p-2 text-xs"><div className="flex justify-between gap-2"><b>{salaryMovementLabel[movement.type] ?? movement.type}</b><b className={movement.type === "deduction" ? "text-destructive" : "text-status-success"}>{money(movement.amount)} د.ع</b></div><p className="mt-1 text-muted-foreground">{movement.reason} · {movement.effectiveDate}</p></div>)}</div></div>}{salary.payments.length > 0 && <div className="mt-4 border-t pt-3"><h3 className="text-sm font-bold">سجل دفعات الراتب</h3><div className="mt-2 space-y-2">{salary.payments.map((payment) => <div key={payment.id} className="flex items-center justify-between gap-3 rounded-lg bg-muted/45 p-2 text-xs"><div><b>{money(payment.amount)} د.ع</b><p className="mt-1 text-muted-foreground">{payment.paymentDate} · {salaryPaymentMethodLabel[payment.paymentMethod] ?? payment.paymentMethod}</p></div><span className="text-muted-foreground">{payment.status === "paid" ? "منفذة" : payment.status}</span></div>)}</div></div>}</section>)}</div>}
+  </div>;
+}
+
+function SalaryMetric({ label, value, tone, strong = false }: { label: string; value: number; tone?: "positive" | "negative"; strong?: boolean }) {
+  return <div className="rounded-lg bg-muted/50 p-2"><span className="text-xs text-muted-foreground">{label}</span><b className={`mt-1 block tabular-nums ${strong ? "text-base" : "text-sm"} ${tone === "positive" ? "text-status-success" : tone === "negative" ? "text-destructive" : ""}`}>{money(value)} د.ع</b></div>;
+}
+
 function Reports() {
   const [r, setR] = useState<Awaited<ReturnType<typeof staffApi.reportMe>> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -423,7 +447,7 @@ function StaffPortalContent() {
   }, []);
   useEffect(() => { refreshMe(); }, [refreshMe]);
 
-  const canStaff = !!me && hasPerm(me, "koshas");
+  const canStaff = !!me && (hasPerm(me, "koshas") || hasPerm(me, "payroll_view") || hasPerm(me, "employee_salaries_view"));
   const isManager = !!me && (hasPerm(me, "accounting") || hasPerm(me, "bookings") || me.role === "admin");
   const canSeeAllOperations = me?.role === "admin" || me?.role === "manager";
   const allowed = canStaff || isManager;
@@ -483,7 +507,7 @@ function StaffPortalContent() {
     canStaff && { href: "/staff/koshas", label: "الرئيسية", icon: Home, match: location === "/staff/koshas" },
     canStaff && { href: "/staff/koshas/list/all", label: "الحجوزات", icon: ClipboardList, match: location.startsWith("/staff/koshas/list") },
     canStaff && { href: "/staff/koshas/reports", label: "تقاريري", icon: BarChart3, match: location === "/staff/koshas/reports" },
-    { href: "/staff?tab=salary", label: "راتبي", icon: User, match: false },
+    { href: "/staff/salary", label: "راتبي", icon: WalletCards, match: location === "/staff/salary" },
     { href: "/staff/koshas/notifications", label: "الإشعارات", icon: Bell, match: location === "/staff/koshas/notifications", badge: unread },
   ].filter(Boolean) as Array<{ href: string; label: string; icon: any; match: boolean; badge?: number }>;
 
@@ -517,6 +541,7 @@ function StaffPortalContent() {
           <Route path="/staff/koshas/ops-board"><KoshaOpsBoardPage /></Route>
           <Route path="/staff/koshas/ops-reports"><KoshaOpsReportsPage /></Route>
           <Route path="/staff/koshas/reports"><Reports /></Route>
+          <Route path="/staff/salary"><StaffSalary /></Route>
           <Route path="/staff/koshas/account"><div className="p-4"><div className="mb-4"><div className="text-sm font-bold text-foreground">{me.fullName || me.username}</div><div className="text-[11px] text-muted-foreground">كادر الكوشات</div></div><SessionDevicesPanel portal="kosha" onSwitched={refreshMe} /></div></Route>
           <Route path="/staff/koshas"><Dashboard /></Route>
           <Route><Dashboard /></Route>

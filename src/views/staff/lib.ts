@@ -179,6 +179,12 @@ function sourceQuery(source: "kosha" | "service" = "kosha") {
   return `?source=${source}`;
 }
 export const staffApi = {
+  salary: () => adminFetch<Array<{
+    id: number; month: string; baseSalary: number; bonus: number; deduction: number;
+    netSalary: number; amountPaid: number; remaining: number; paymentStatus: string;
+    movements: Array<{ id: number; type: string; amount: number; reason: string; effectiveDate: string; status: string; createdBy: string; createdAt: string | null }>;
+    payments: Array<{ id: number; amount: number; paymentDate: string; paymentMethod: string; status: string; referenceNo: string | null; notes: string | null }>;
+  }>>("/staff/salary"),
   dashboard: () => adminFetch<{ today: string; counts: Record<Bucket, number>; todayBookings: CrewBooking[]; tomorrowBookings: CrewBooking[] }>(`${base}/dashboard`),
   bookings: (bucket: Bucket | "all", search = "") =>
     adminFetch<CrewBooking[]>(`${base}/bookings?bucket=${bucket}&search=${encodeURIComponent(search)}`),
