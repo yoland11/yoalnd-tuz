@@ -240,6 +240,8 @@ import {
   companyLoansTable,
   companyLoanRepaymentsTable,
   vehicleExpensesTable,
+  vehicleMaintenanceRecordsTable,
+  vehicleOdometerHistoryTable,
 } from "@workspace/db";
 import {
   dailyCashListQuerySchema,
@@ -14525,6 +14527,17 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
         where: and(eq(fleetVehiclesTable.id, data.transportationVehicleId), eq(fleetVehiclesTable.isActive, true)),
       });
       if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
+      const conflictingBooking = data.eventDate ? await db.query.koshaBookingsTable.findFirst({
+        where: and(
+          eq(koshaBookingsTable.transportationVehicleId, vehicle.id),
+          eq(koshaBookingsTable.transportationMode, "ajn"),
+          eq(koshaBookingsTable.eventDate, data.eventDate),
+          sql`${koshaBookingsTable.archivedAt} is null`,
+          sql`${koshaBookingsTable.status} <> 'cancelled'`,
+        ),
+      }) : null;
+      if (conflictingBooking)
+        return error("هذه السيارة مرتبطة بحجز آخر في نفس الوقت.", 409);
       transportationVehicleId = vehicle.id;
       if (data.transportationDriverId) {
         const driver = await db.query.staffTable.findFirst({
@@ -21065,6 +21078,19 @@ async function handleAdminKoshas(
               where: and(eq(fleetVehiclesTable.id, requestedVehicleId), eq(fleetVehiclesTable.isActive, true)),
             });
             if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
+            const eventDateForConflict = String((update as any).eventDate ?? (existing as any).eventDate ?? "");
+            const conflictingBooking = eventDateForConflict ? await db.query.koshaBookingsTable.findFirst({
+              where: and(
+                eq(koshaBookingsTable.transportationVehicleId, vehicle.id),
+                eq(koshaBookingsTable.transportationMode, "ajn"),
+                eq(koshaBookingsTable.eventDate, eventDateForConflict),
+                ne(koshaBookingsTable.id, id),
+                sql`${koshaBookingsTable.archivedAt} is null`,
+                sql`${koshaBookingsTable.status} <> 'cancelled'`,
+              ),
+            }) : null;
+            if (conflictingBooking)
+              return error("هذه السيارة مرتبطة بحجز آخر في نفس الوقت.", 409);
             if (requestedDriverId) {
               const driver = await db.query.staffTable.findFirst({ where: eq(staffTable.id, requestedDriverId) });
               if (!driver) return error("السائق المختار غير موجود", 404);
@@ -21608,6 +21634,17 @@ const EnterpriseVehicleSchema = z.object({
   branchId: z.coerce.number().int().positive().optional().nullable(),
   name: z.string().trim().min(1).max(160),
   plateNumber: z.string().trim().min(1).max(40),
+  manufacturer: z.string().trim().max(100).optional().nullable(),
+  model: z.string().trim().max(100).optional().nullable(),
+  manufactureYear: z.coerce.number().int().min(1900).max(new Date().getFullYear() + 1).optional().nullable(),
+  color: z.string().trim().max(60).optional().nullable(),
+  vehicleType: z.enum(["car", "pickup", "van", "truck", "transport", "other"]).optional().nullable(),
+  vin: z.string().trim().max(80).optional().nullable(),
+  defaultDriverId: z.coerce.number().int().positive().optional().nullable(),
+  odometerKm: z.coerce.number().int().min(0).max(9_999_999).optional().default(0),
+  purchaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  purchasePrice: z.coerce.number().min(0).max(999_999_999_999).optional().default(0),
+  imageUrl: z.string().trim().max(2000).url().optional().nullable(),
   status: z
     .enum(["available", "outside", "maintenance", "inactive"])
     .optional()
@@ -21627,11 +21664,15 @@ const VEHICLE_EXPENSE_TYPES = [
   "fees_parking",
   "repair",
   "spare_parts",
+  "insurance",
+  "registration",
   "other",
 ] as const;
 
 const VehicleExpenseSchema = z.object({
   bookingId: z.coerce.number().int().positive().optional().nullable(),
+  driverId: z.coerce.number().int().positive().optional().nullable(),
+  odometerKm: z.coerce.number().int().min(0).max(9_999_999).optional().nullable(),
   expenseType: z.enum(VEHICLE_EXPENSE_TYPES),
   amount: z.coerce.number().positive().max(999_999_999_999),
   expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -21639,6 +21680,23 @@ const VehicleExpenseSchema = z.object({
   description: z.string().trim().max(2000).optional().nullable(),
   attachments: z.array(z.string().max(2000)).max(20).optional().default([]),
   idempotencyKey: z.string().trim().min(12).max(180),
+});
+
+const VehicleMaintenanceSchema = z.object({
+  maintenanceType: z.enum(["oil_change", "filters", "tires", "brakes", "battery", "general", "other"]),
+  maintenanceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  odometerKm: z.coerce.number().int().min(0).max(9_999_999).optional().nullable(),
+  cost: z.coerce.number().min(0).max(999_999_999_999).default(0),
+  workshopVendor: z.string().trim().max(500).optional().nullable(),
+  description: z.string().trim().max(2000).optional().nullable(),
+  attachments: z.array(z.string().max(2000)).max(20).optional().default([]),
+  nextMaintenanceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  nextMaintenanceOdometer: z.coerce.number().int().min(0).max(9_999_999).optional().nullable(),
+});
+
+const VehicleOdometerSchema = z.object({
+  newKm: z.coerce.number().int().min(0).max(9_999_999),
+  note: z.string().trim().max(1000).optional().nullable(),
 });
 
 const VEHICLE_EXPENSE_LABELS: Record<(typeof VEHICLE_EXPENSE_TYPES)[number], string> = {
@@ -21651,6 +21709,8 @@ const VEHICLE_EXPENSE_LABELS: Record<(typeof VEHICLE_EXPENSE_TYPES)[number], str
   fees_parking: "رسوم / مواقف",
   repair: "تصليح",
   spare_parts: "قطع غيار",
+  insurance: "تأمين",
+  registration: "تسجيل / ترخيص",
   other: "مصروف آخر",
 };
 
@@ -22176,6 +22236,8 @@ async function handleEnterpriseAdmin(
       const [expense] = await tx.insert(vehicleExpensesTable).values({
         vehicleId,
         bookingId: data.bookingId ?? null,
+        driverId: data.driverId ?? null,
+        odometerKm: data.odometerKm ?? null,
         expenseType: data.expenseType,
         amount: String(money(data.amount)),
         expenseDate: new Date(`${data.expenseDate}T12:00:00`),
@@ -22210,6 +22272,72 @@ async function handleEnterpriseAdmin(
     if (!result.duplicate)
       await recordEnterpriseMutation(req, financeAuth, "vehicle_expense_created", "vehicle_expense", result.expense.id, "تم إنشاء طلب مصروف سيارة بانتظار الاعتماد", { vehicleId, bookingId: result.expense.bookingId, amount: Number(result.expense.amount), expenseType: result.expense.expenseType });
     return json({ ...result.expense, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
+  }
+
+  if (section === "vehicles" && parts[1] && parts[2] === "details" && method === "GET") {
+    const vehicleId = int(parts[1]);
+    if (!vehicleId) return error("معرف السيارة غير صحيح", 400);
+    const vehicle = await db.query.fleetVehiclesTable.findFirst({ where: eq(fleetVehiclesTable.id, vehicleId) });
+    if (!vehicle) return error("السيارة غير موجودة", 404);
+    const [driver, maintenance, odometerHistory] = await Promise.all([
+      vehicle.defaultDriverId ? db.query.staffTable.findFirst({ where: eq(staffTable.id, vehicle.defaultDriverId) }) : null,
+      db.query.vehicleMaintenanceRecordsTable.findMany({ where: eq(vehicleMaintenanceRecordsTable.vehicleId, vehicleId), orderBy: [desc(vehicleMaintenanceRecordsTable.maintenanceDate), desc(vehicleMaintenanceRecordsTable.id)], limit: 200 }),
+      db.query.vehicleOdometerHistoryTable.findMany({ where: eq(vehicleOdometerHistoryTable.vehicleId, vehicleId), orderBy: [desc(vehicleOdometerHistoryTable.createdAt), desc(vehicleOdometerHistoryTable.id)], limit: 200 }),
+    ]);
+    return json({
+      vehicle: { ...vehicle, purchasePrice: money(vehicle.purchasePrice), defaultDriverName: driver?.fullName || driver?.username || null },
+      maintenance: maintenance.map((row) => ({ ...row, cost: money(row.cost) })),
+      odometerHistory,
+    });
+  }
+
+  if (section === "vehicles" && parts[1] && parts[2] === "maintenance" && method === "POST") {
+    const vehicleId = int(parts[1]);
+    if (!vehicleId) return error("معرف السيارة غير صحيح", 400);
+    const parsed = VehicleMaintenanceSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("enterprise.vehicle-maintenance.create", parsed);
+    const vehicle = await db.query.fleetVehiclesTable.findFirst({ where: eq(fleetVehiclesTable.id, vehicleId) });
+    if (!vehicle) return error("السيارة غير موجودة", 404);
+    const data = parsed.data;
+    const record = await db.transaction(async (tx) => {
+      if (data.odometerKm != null && data.odometerKm < vehicle.odometerKm)
+        throw new Error("ODOMETER_CANNOT_DECREASE");
+      const [created] = await tx.insert(vehicleMaintenanceRecordsTable).values({
+        vehicleId, maintenanceType: data.maintenanceType, maintenanceDate: data.maintenanceDate,
+        odometerKm: data.odometerKm ?? null, cost: String(money(data.cost)), workshopVendor: data.workshopVendor || null,
+        description: data.description || null, attachments: data.attachments,
+        nextMaintenanceDate: data.nextMaintenanceDate || null, nextMaintenanceOdometer: data.nextMaintenanceOdometer ?? null,
+        createdBy: auth.id, createdByName: auth.fullName || auth.username,
+      }).returning();
+      if (data.odometerKm != null && data.odometerKm > vehicle.odometerKm) {
+        await tx.update(fleetVehiclesTable).set({ odometerKm: data.odometerKm, updatedAt: new Date() }).where(eq(fleetVehiclesTable.id, vehicleId));
+        await tx.insert(vehicleOdometerHistoryTable).values({ vehicleId, previousKm: vehicle.odometerKm, newKm: data.odometerKm, source: "maintenance", note: data.description || null, createdBy: auth.id, createdByName: auth.fullName || auth.username });
+      }
+      return created;
+    }).catch((cause) => {
+      if (cause instanceof Error && cause.message === "ODOMETER_CANNOT_DECREASE") return null;
+      throw cause;
+    });
+    if (!record) return error("لا يمكن تقليل قراءة العداد الحالية", 409);
+    await recordEnterpriseMutation(req, auth, "vehicle_maintenance_created", "vehicle_maintenance", record.id, "تم تسجيل صيانة السيارة", { vehicleId, maintenanceType: record.maintenanceType, odometerKm: record.odometerKm });
+    return json(record, 201);
+  }
+
+  if (section === "vehicles" && parts[1] && parts[2] === "odometer" && method === "POST") {
+    const vehicleId = int(parts[1]);
+    if (!vehicleId) return error("معرف السيارة غير صحيح", 400);
+    const parsed = VehicleOdometerSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("enterprise.vehicle-odometer.update", parsed);
+    const vehicle = await db.query.fleetVehiclesTable.findFirst({ where: eq(fleetVehiclesTable.id, vehicleId) });
+    if (!vehicle) return error("السيارة غير موجودة", 404);
+    if (parsed.data.newKm < vehicle.odometerKm) return error("لا يمكن تقليل قراءة العداد الحالية", 409);
+    if (parsed.data.newKm === vehicle.odometerKm) return json({ ok: true, unchanged: true });
+    await db.transaction(async (tx) => {
+      await tx.update(fleetVehiclesTable).set({ odometerKm: parsed.data.newKm, updatedAt: new Date() }).where(eq(fleetVehiclesTable.id, vehicleId));
+      await tx.insert(vehicleOdometerHistoryTable).values({ vehicleId, previousKm: vehicle.odometerKm, newKm: parsed.data.newKm, source: "manual", note: parsed.data.note || null, createdBy: auth.id, createdByName: auth.fullName || auth.username });
+    });
+    await recordEnterpriseMutation(req, auth, "vehicle_odometer_updated", "fleet_vehicle", vehicleId, "تم تحديث عداد السيارة", { previousKm: vehicle.odometerKm, newKm: parsed.data.newKm });
+    return json({ ok: true, previousKm: vehicle.odometerKm, newKm: parsed.data.newKm });
   }
 
   if (section === "vehicles" && parts[1] && parts[2] === "expenses" && parts[3] && parts[4] === "reverse" && method === "POST") {
@@ -22353,12 +22481,20 @@ async function handleEnterpriseAdmin(
 
   if (section === "vehicles") {
     if (method === "GET") {
-      const rows = await db.query.fleetVehiclesTable.findMany({
-        orderBy: [asc(fleetVehiclesTable.name)],
-      });
+      const rows = await db.query.fleetVehiclesTable.findMany({ orderBy: [asc(fleetVehiclesTable.name)] });
+      const statsResult: any = await db.execute(sql`
+        select v.id,
+          (select count(*)::int from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled') as trip_count,
+          (select coalesce(sum(case when k.total_amount::numeric > 0 then k.transportation_fee::numeric * least(1, greatest(0, k.paid_amount::numeric / k.total_amount::numeric)) else 0 end),0)::float from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled') as transportation_revenue,
+          (select coalesce(sum(e.amount::numeric),0)::float from vehicle_expenses e where e.vehicle_id=v.id and e.status='executed') as vehicle_expenses
+        from fleet_vehicles v
+      `);
+      const statsById = new Map<number, { tripCount: number; transportationRevenue: number; vehicleExpenses: number }>((statsResult?.rows ?? []).map((row: any) => [Number(row.id), { tripCount: Number(row.trip_count ?? 0), transportationRevenue: money(row.transportation_revenue), vehicleExpenses: money(row.vehicle_expenses) }]));
       return json({
         data: rows.map((row) => ({
           ...row,
+          purchasePrice: money(row.purchasePrice),
+          stats: (() => { const stats: { tripCount: number; transportationRevenue: number; vehicleExpenses: number } = statsById.get(row.id) ?? { tripCount: 0, transportationRevenue: 0, vehicleExpenses: 0 }; return { ...stats, netProfit: money(stats.transportationRevenue - stats.vehicleExpenses) }; })(),
           latitude: row.latitude ? Number(row.latitude) : null,
           longitude: row.longitude ? Number(row.longitude) : null,
           lastLocationAt: enterpriseDate(row.lastLocationAt),
@@ -22370,9 +22506,13 @@ async function handleEnterpriseAdmin(
       if (!parsed.success)
         return validationError("enterprise.vehicle.create", parsed);
       try {
+        if (parsed.data.defaultDriverId) {
+          const driver = await db.query.staffTable.findFirst({ where: eq(staffTable.id, parsed.data.defaultDriverId) });
+          if (!driver) return error("السائق الافتراضي غير موجود", 404);
+        }
         const [row] = await db
           .insert(fleetVehiclesTable)
-          .values(parsed.data)
+          .values({ ...parsed.data, purchasePrice: String(parsed.data.purchasePrice) })
           .returning();
         await recordEnterpriseMutation(
           req,
@@ -22398,11 +22538,20 @@ async function handleEnterpriseAdmin(
       );
       if (!parsed.success)
         return validationError("enterprise.vehicle.update", parsed);
-      const [row] = await db
-        .update(fleetVehiclesTable)
-        .set({ ...parsed.data, updatedAt: new Date() })
-        .where(eq(fleetVehiclesTable.id, id))
-        .returning();
+      const current = await db.query.fleetVehiclesTable.findFirst({ where: eq(fleetVehiclesTable.id, id) });
+      if (!current) return error("السيارة غير موجودة", 404);
+      if (parsed.data.defaultDriverId) {
+        const driver = await db.query.staffTable.findFirst({ where: eq(staffTable.id, parsed.data.defaultDriverId) });
+        if (!driver) return error("السائق الافتراضي غير موجود", 404);
+      }
+      if (parsed.data.odometerKm != null && parsed.data.odometerKm < current.odometerKm)
+        return error("لا يمكن تقليل قراءة العداد الحالية", 409);
+      const [row] = await db.transaction(async (tx) => {
+        const [updated] = await tx.update(fleetVehiclesTable).set({ ...parsed.data, purchasePrice: parsed.data.purchasePrice == null ? undefined : String(parsed.data.purchasePrice), updatedAt: new Date() }).where(eq(fleetVehiclesTable.id, id)).returning();
+        if (parsed.data.odometerKm != null && parsed.data.odometerKm > current.odometerKm)
+          await tx.insert(vehicleOdometerHistoryTable).values({ vehicleId: id, previousKm: current.odometerKm, newKm: parsed.data.odometerKm, source: "vehicle_edit", note: "تحديث من بيانات السيارة", createdBy: auth.id, createdByName: auth.fullName || auth.username });
+        return [updated];
+      });
       if (!row) return error("السيارة غير موجودة", 404);
       await recordEnterpriseMutation(
         req,
@@ -22411,7 +22560,7 @@ async function handleEnterpriseAdmin(
         "fleet_vehicle",
         id,
         "تم تحديث السيارة",
-        { status: row.status },
+        { oldValues: { plateNumber: current.plateNumber, status: current.status, defaultDriverId: current.defaultDriverId }, newValues: { plateNumber: row.plateNumber, status: row.status, defaultDriverId: row.defaultDriverId } },
       );
       return json(row);
     }

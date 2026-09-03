@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import {
   AlertTriangle,
   BarChart3,
@@ -1670,6 +1670,8 @@ const VEHICLE_EXPENSE_OPTIONS = [
   ["fees_parking", "رسوم / مواقف"],
   ["repair", "تصليح"],
   ["spare_parts", "قطع غيار"],
+  ["insurance", "تأمين"],
+  ["registration", "تسجيل / ترخيص"],
   ["other", "مصروف آخر"],
 ] as const;
 
@@ -1683,6 +1685,7 @@ function newVehicleExpenseKey() {
 function VehicleProfitabilityTab({ active }: { active: boolean }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [location] = useLocation();
   const [vehicleId, setVehicleId] = useState<number | null>(null);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -1695,6 +1698,8 @@ function VehicleProfitabilityTab({ active }: { active: boolean }) {
     expenseDate: new Date().toISOString().slice(0, 10),
     paymentMethod: "cash",
     bookingId: "",
+    driverId: "",
+    odometerKm: "",
     description: "",
     attachmentUrl: "",
     idempotencyKey: newVehicleExpenseKey(),
@@ -1707,9 +1712,14 @@ function VehicleProfitabilityTab({ active }: { active: boolean }) {
   });
   const activeVehicles = (vehicles.data?.data ?? []).filter((vehicle) => vehicle.isActive && vehicle.status !== "inactive");
   useEffect(() => {
-    if (!active || vehicleId || !activeVehicles.length) return;
-    setVehicleId(activeVehicles[0].id);
-  }, [active, vehicleId, activeVehicles]);
+    if (!active || !activeVehicles.length) return;
+    const requestedVehicleId = Number(new URLSearchParams(location.split("?")[1] ?? "").get("vehicle"));
+    if (requestedVehicleId && activeVehicles.some((vehicle) => vehicle.id === requestedVehicleId)) {
+      setVehicleId(requestedVehicleId);
+      return;
+    }
+    if (!vehicleId) setVehicleId(activeVehicles[0].id);
+  }, [active, vehicleId, activeVehicles, location]);
   const financials = useQuery<VehicleFinancials>({
     queryKey: ["admin", "enterprise", "vehicle-financial", vehicleId, from, to],
     queryFn: () => adminFetch(`/admin/enterprise/vehicles/${vehicleId}/financial?${new URLSearchParams({ ...(from ? { from } : {}), ...(to ? { to } : {}) }).toString()}`),
@@ -1726,6 +1736,8 @@ function VehicleProfitabilityTab({ active }: { active: boolean }) {
         expenseDate: expense.expenseDate,
         paymentMethod: expense.paymentMethod,
         bookingId: expense.bookingId ? Number(expense.bookingId) : null,
+        driverId: expense.driverId ? Number(expense.driverId) : null,
+        odometerKm: expense.odometerKm ? Number(expense.odometerKm) : null,
         description: expense.description.trim() || null,
         attachments: expense.attachmentUrl.trim() ? [expense.attachmentUrl.trim()] : [],
         idempotencyKey: expense.idempotencyKey,
@@ -1733,7 +1745,7 @@ function VehicleProfitabilityTab({ active }: { active: boolean }) {
     }),
     onSuccess: () => {
       setExpenseOpen(false);
-      setExpense((current) => ({ ...current, amount: "", bookingId: "", description: "", attachmentUrl: "", idempotencyKey: newVehicleExpenseKey() }));
+      setExpense((current) => ({ ...current, amount: "", bookingId: "", driverId: "", odometerKm: "", description: "", attachmentUrl: "", idempotencyKey: newVehicleExpenseKey() }));
       refresh();
       toast({ title: "تم إنشاء طلب مصروف السيارة", description: "سيُخصم من الصندوق الرئيسي بعد الاعتماد فقط." });
     },

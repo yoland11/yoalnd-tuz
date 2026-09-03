@@ -319,6 +319,12 @@ export const NAV: NavItem[] = [
     perm: "services",
   },
   {
+    href: "/admin/vehicles",
+    label: "المركبات",
+    icon: Truck,
+    perm: "dashboard",
+  },
+  {
     href: "/admin/kosha-bookings",
     label: "حجوزات الكوشات",
     icon: CalendarDays,
@@ -903,6 +909,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/assets/depreciation-categories"),
       navItem("/admin/asset-movements"),
       navItem("/admin/maintenance-scheduler"),
+      navItem("/admin/vehicles"),
     ],
   },
   {

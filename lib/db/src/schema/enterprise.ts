@@ -51,6 +51,17 @@ export const fleetVehiclesTable = pgTable("fleet_vehicles", {
   branchId: integer("branch_id").references(() => enterpriseBranchesTable.id, { onDelete: "set null" }),
   name: text("name").notNull(),
   plateNumber: varchar("plate_number", { length: 40 }).notNull(),
+  manufacturer: varchar("manufacturer", { length: 100 }),
+  model: varchar("model", { length: 100 }),
+  manufactureYear: integer("manufacture_year"),
+  color: varchar("color", { length: 60 }),
+  vehicleType: varchar("vehicle_type", { length: 40 }),
+  vin: varchar("vin", { length: 80 }),
+  defaultDriverId: integer("default_driver_id").references(() => staffTable.id, { onDelete: "set null" }),
+  odometerKm: integer("odometer_km").notNull().default(0),
+  purchaseDate: date("purchase_date"),
+  purchasePrice: numeric("purchase_price", { precision: 16, scale: 2 }).notNull().default("0"),
+  imageUrl: text("image_url"),
   status: varchar("status", { length: 24 }).notNull().default("available"),
   capacity: integer("capacity").notNull().default(1),
   latitude: numeric("latitude", { precision: 10, scale: 7 }),
@@ -64,6 +75,42 @@ export const fleetVehiclesTable = pgTable("fleet_vehicles", {
   plateIdx: uniqueIndex("fleet_vehicles_plate_idx").on(table.plateNumber),
   statusIdx: index("fleet_vehicles_status_idx").on(table.status, table.isActive),
   branchIdx: index("fleet_vehicles_branch_idx").on(table.branchId),
+  driverIdx: index("fleet_vehicles_default_driver_idx").on(table.defaultDriverId),
+}));
+
+export const vehicleMaintenanceRecordsTable = pgTable("vehicle_maintenance_records", {
+  id: serial("id").primaryKey(),
+  vehicleId: integer("vehicle_id").notNull().references(() => fleetVehiclesTable.id, { onDelete: "restrict" }),
+  maintenanceType: varchar("maintenance_type", { length: 50 }).notNull(),
+  maintenanceDate: date("maintenance_date").notNull(),
+  odometerKm: integer("odometer_km"),
+  cost: numeric("cost", { precision: 16, scale: 2 }).notNull().default("0"),
+  workshopVendor: text("workshop_vendor"),
+  description: text("description"),
+  attachments: jsonb("attachments").$type<string[]>().notNull().default([]),
+  nextMaintenanceDate: date("next_maintenance_date"),
+  nextMaintenanceOdometer: integer("next_maintenance_odometer"),
+  createdBy: integer("created_by").references(() => staffTable.id, { onDelete: "set null" }),
+  createdByName: text("created_by_name").notNull().default(""),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  vehicleDateIdx: index("vehicle_maintenance_vehicle_date_idx").on(table.vehicleId, table.maintenanceDate),
+  nextDateIdx: index("vehicle_maintenance_next_date_idx").on(table.nextMaintenanceDate),
+}));
+
+export const vehicleOdometerHistoryTable = pgTable("vehicle_odometer_history", {
+  id: serial("id").primaryKey(),
+  vehicleId: integer("vehicle_id").notNull().references(() => fleetVehiclesTable.id, { onDelete: "restrict" }),
+  previousKm: integer("previous_km").notNull(),
+  newKm: integer("new_km").notNull(),
+  source: varchar("source", { length: 40 }).notNull(),
+  note: text("note"),
+  createdBy: integer("created_by").references(() => staffTable.id, { onDelete: "set null" }),
+  createdByName: text("created_by_name").notNull().default(""),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  vehicleDateIdx: index("vehicle_odometer_vehicle_date_idx").on(table.vehicleId, table.createdAt),
 }));
 
 export const fieldLocationsTable = pgTable("field_locations", {

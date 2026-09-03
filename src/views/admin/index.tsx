@@ -180,6 +180,7 @@ const TimelinesPage = lazy(() =>
   import("./operations").then((module) => ({ default: module.TimelinesPage })),
 );
 const EnterpriseCommandCenterPage = lazy(() => import("./enterprise"));
+const VehiclesPage = lazy(() => import("./vehicles"));
 const ReportDesignerPage = lazy(() =>
   import("./report-designer").then((module) => ({
     default: module.ReportDesignerPage,
@@ -358,6 +359,12 @@ export default function Admin() {
                 <EnterpriseCommandCenterPage />
               </Guard>
             )}
+          </Route>
+          <Route path="/admin/vehicles/:id">
+            {() => <Guard me={me} perm="dashboard"><VehiclesPage /></Guard>}
+          </Route>
+          <Route path="/admin/vehicles">
+            {() => <Guard me={me} perm="dashboard"><VehiclesPage /></Guard>}
           </Route>
           <Route path="/admin/notifications">
             {() => (

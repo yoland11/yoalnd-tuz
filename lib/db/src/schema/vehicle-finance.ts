@@ -12,6 +12,8 @@ export const vehicleExpensesTable = pgTable("vehicle_expenses", {
   id: serial("id").primaryKey(),
   vehicleId: integer("vehicle_id").notNull().references(() => fleetVehiclesTable.id, { onDelete: "restrict" }),
   bookingId: integer("booking_id").references(() => koshaBookingsTable.id, { onDelete: "restrict" }),
+  driverId: integer("driver_id").references(() => staffTable.id, { onDelete: "set null" }),
+  odometerKm: integer("odometer_km"),
   expenseType: varchar("expense_type", { length: 40 }).notNull(),
   amount: numeric("amount", { precision: 16, scale: 2 }).notNull(),
   expenseDate: timestamp("expense_date").notNull().defaultNow(),
