@@ -8,6 +8,7 @@ import {
   MessageCircle,
   Moon,
   Phone,
+  Search,
   ShoppingBag,
   Sun,
   User,
@@ -59,15 +60,13 @@ export function Navbar() {
 
   return (
     <header
-      className={`ajn-site-header sticky top-0 z-50 w-full bg-background/95 pt-safe backdrop-blur supports-[backdrop-filter]:bg-background/60 md:pt-0 ${isFlowerStudio ? "flower-design-navbar" : ""}`}
-      style={isFlowerStudio ? undefined : { backgroundColor: "hsl(var(--ajn-header) / 0.95)" }}
+      className={`ajn-site-header sticky top-0 z-50 w-full border-b border-[#eeeae5] bg-white pt-safe md:pt-0 ${isFlowerStudio ? "flower-design-navbar" : ""}`}
     >
       <div
-        className={`hidden border-b border-border/30 bg-card/80 md:block ${isFlowerStudio ? "flower-design-navbar__top" : ""}`}
+        className={`hidden border-b border-[#eeeae5] bg-[#faf9f7] md:block ${isFlowerStudio ? "flower-design-navbar__top" : ""}`}
         dir="rtl"
-        style={isFlowerStudio ? undefined : { backgroundColor: "hsl(var(--ajn-header) / 0.82)" }}
       >
-        <div className="container mx-auto flex h-9 items-center justify-between gap-4 px-4 text-xs text-muted-foreground">
+        <div className="mx-auto flex h-9 w-[min(1420px,calc(100%-112px))] items-center justify-between gap-4 text-xs text-[#77716a]">
           <div className="flex items-center gap-4">
             {settings?.phone && (
               <a
@@ -124,25 +123,19 @@ export function Navbar() {
           </div>
         </div>
       </div>
-      <div className="container mx-auto flex h-16 min-w-0 items-center justify-between gap-2 px-3 md:h-20 md:px-4">
+      <div className="mx-auto flex h-16 min-w-0 w-full items-center justify-between gap-2 px-4 md:h-[86px] md:w-[min(1420px,calc(100%-112px))] md:px-0">
         {/* Logo */}
-        <Link href="/" className="flex min-w-0 shrink items-center gap-2" aria-label={settings?.site_name ?? "AJN"}>
-          <span className="h-10 w-10 rounded-lg border border-primary/20 bg-primary/5 p-1.5 flex items-center justify-center overflow-hidden">
-            <img
-              src={logoSrc(settings)}
-              alt={settings?.site_name ?? "AJN"}
-              width={40}
-              height={40}
-              fetchPriority="high"
-              decoding="async"
-              onError={handleDefaultLogoError}
-              className="h-full w-full object-contain"
-            />
-          </span>
-          <div className="h-6 w-[1px] bg-border mx-2 hidden sm:block" />
-          <span className="font-semibold text-lg hidden sm:block">
-            {settings?.site_name ?? "مجموعة علي جان"}
-          </span>
+        <Link href="/" className="flex min-w-0 shrink items-center" aria-label={settings?.site_name ?? "AJN"}>
+          <img
+            src={logoSrc(settings)}
+            alt={settings?.site_name ?? "AJN"}
+            width={120}
+            height={48}
+            fetchPriority="high"
+            decoding="async"
+            onError={handleDefaultLogoError}
+            className="h-11 w-[116px] object-contain"
+          />
         </Link>
 
         {/* Desktop Navigation — driven by the shared navigationItems source. */}
@@ -160,7 +153,11 @@ export function Navbar() {
         </nav>
 
         {/* Actions */}
-        <div className="ajn-mobile-header-actions flex shrink-0 items-center gap-1 md:gap-4">
+        <div className="ajn-mobile-header-actions flex shrink-0 items-center gap-1 md:gap-3">
+          <Link href="/store" className="hidden lg:flex h-10 w-60 items-center gap-2 rounded-full bg-[#f7f5f2] px-4 text-sm text-[#9a948c] transition-colors hover:bg-[#f3efe9]">
+            <Search className="h-[18px] w-[18px] shrink-0 stroke-[1.5]" aria-hidden="true" />
+            <span>ابحث عن منتج…</span>
+          </Link>
           <Button
             variant="ghost"
             size="icon"

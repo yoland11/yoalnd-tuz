@@ -31,7 +31,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           target="_blank"
           rel="noreferrer"
           aria-label="تواصل واتساب"
-          className="fixed bottom-[calc(7rem+env(safe-area-inset-bottom))] left-3 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-status-success/30 bg-status-success text-white shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-28 md:left-4 lg:bottom-6"
+          className="fixed bottom-[calc(7rem+env(safe-area-inset-bottom))] left-3 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#ded8d1] bg-white text-[#24211e] shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-colors hover:bg-[#f7f5f1] md:bottom-28 md:left-4 lg:bottom-6"
         >
           <MessageCircle className="h-6 w-6" />
         </a>
@@ -39,8 +39,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <CustomerMessageWidget />
       <PwaInstallPrompt />
       <MobileNav />
-      <footer className="border-t border-border/40 pt-6 pb-[calc(7rem+env(safe-area-inset-bottom))] lg:pb-6 text-center text-sm text-muted-foreground mt-auto" style={{ backgroundColor: "hsl(var(--ajn-footer))" }}>
-        <div className="container mx-auto px-4 flex flex-col items-center gap-3">
+      <footer className="mt-auto border-t border-[#e8e4de] bg-[#faf9f7] pt-10 pb-[calc(7rem+env(safe-area-inset-bottom))] text-center text-sm text-[#77716a] lg:pb-10">
+        <div className="mx-auto flex w-[min(1420px,calc(100%-32px))] flex-col items-center gap-4">
           <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={40} loading="lazy" decoding="async" onError={handleDefaultLogoError} className="h-10 w-24 object-contain" />
           <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs md:text-sm">
             <span className="text-foreground font-medium">{settings?.site_name ?? "مجموعة علي جان"}</span>
