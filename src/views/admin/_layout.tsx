@@ -1143,55 +1143,26 @@ export function AdminLayout({
   return (
     <div className="admin-mobile-shell min-h-dvh min-w-0 bg-background flex overflow-x-hidden max-md:overflow-x-clip" dir="rtl">
       <aside
-        className={`${sidebarHidden ? "hidden" : "hidden md:flex"} w-60 shrink-0 bg-card border-l border-border/30 flex-col py-6 px-3 fixed right-0 top-0 h-full z-10`}
-        style={{ backgroundColor: "hsl(var(--sidebar))" }}
+        className={`admin-premium-sidebar hidden md:flex fixed right-3 top-3 bottom-3 z-20 shrink-0 flex-col overflow-hidden rounded-[22px] border border-[#e8e1da] bg-[#fffdfa] shadow-[0_14px_45px_rgba(47,35,26,0.08)] transition-[width] duration-200 ${sidebarHidden ? "w-[88px]" : "w-[344px]"}`}
       >
-        <div className="px-3 mb-6 min-w-0 overflow-hidden">
-          <div className="mb-3 flex h-14 w-full items-center overflow-hidden">
-            <img
-              src={logoSrc(settings)}
-              alt={settings?.site_name ?? "AJN"}
-              width={112}
-              height={48}
-              decoding="async"
-              className="h-12 w-28 max-w-full shrink-0 object-contain"
-            />
+        {sidebarHidden ? (
+          <div className="flex h-full flex-col items-center gap-4 px-3 py-4">
+            <button type="button" onClick={toggleDesktopSidebar} className="flex h-14 w-14 items-center justify-center rounded-2xl border border-[#eee5dc] bg-white p-2 shadow-sm" aria-label="توسيع القائمة">
+              <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={42} height={42} decoding="async" className="h-10 w-10 object-contain" />
+            </button>
+            <AdminSidebarNav groups={NAV_GROUPS} me={me} location={location} lowStockCount={lowStockCount} newMessageCount={newMessageCount} onLogout={onLogout} onExpand={toggleDesktopSidebar} collapsed className="flex-1 overflow-y-auto" />
+            <Link href="/admin/account" className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#fbf3ef] text-primary transition-colors hover:bg-[#f7e7df]" aria-label="الحساب والأجهزة" title={me.fullName || me.username}>
+              <UserRound className="h-5 w-5" />
+            </Link>
           </div>
-          <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
-          <h2 className="truncate text-lg font-bold text-foreground">
-            {settings?.site_name ?? "مجموعة علي جان"}
-          </h2>
-          <Link
-            href="/admin/account"
-            className="mt-2 block truncate text-[11px] text-primary hover:underline"
-            title="الحساب والأجهزة"
-          >
-            {me.fullName || me.username}
-            {me.role === "admin" && (
-              <span className="text-muted-foreground"> · مدير رئيسي</span>
-            )}
-          </Link>
-        </div>
-        <AdminSidebarNav
-          groups={NAV_GROUPS}
-          me={me}
-          location={location}
-          lowStockCount={lowStockCount}
-          newMessageCount={newMessageCount}
-          onLogout={onLogout}
-          className="flex-1 overflow-y-auto pr-0.5 pl-1"
-        />
+        ) : (
+          <>
+            <SidebarBrand settings={settings} me={me} onCollapse={toggleDesktopSidebar} />
+            <AdminSidebarNav groups={NAV_GROUPS} me={me} location={location} lowStockCount={lowStockCount} newMessageCount={newMessageCount} onLogout={onLogout} className="min-h-0 flex-1 overflow-y-auto px-3 pb-3" />
+            <SidebarProfile me={me} onLogout={onLogout} />
+          </>
+        )}
       </aside>
-      <button
-        type="button"
-        onClick={toggleDesktopSidebar}
-        className={`hidden md:inline-flex fixed top-5 z-30 h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-card border border-border/40 text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all ${
-          sidebarHidden ? "right-6" : "right-[calc(15rem+1rem)]"
-        }`}
-        aria-label={sidebarHidden ? "إظهار القائمة" : "إخفاء القائمة"}
-      >
-        <Menu className="w-4 h-4" />
-      </button>
       <div className="hidden md:flex fixed left-6 top-5 z-30 h-10 shrink-0 items-center gap-2">
         <AdminGlobalSearch />
         <AdminNotificationsBell />
@@ -1243,8 +1214,7 @@ export function AdminLayout({
             onClick={() => setMobileSidebarOpen(false)}
           />
           <aside
-            className="absolute right-0 top-0 flex h-[100dvh] w-72 max-w-[88vw] flex-col border-l border-border/30 bg-card px-3 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] shadow-2xl"
-            style={{ backgroundColor: "hsl(var(--sidebar))" }}
+            className="absolute right-0 top-0 flex h-[100dvh] w-[88vw] max-w-[390px] flex-col border-l border-[#e8e1da] bg-[#fffdfa] px-3 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] shadow-2xl"
           >
             <div className="px-3 mb-4 flex min-w-0 items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
@@ -1275,17 +1245,63 @@ export function AdminLayout({
               newMessageCount={newMessageCount}
               onLogout={onLogout}
               onNavigate={() => setMobileSidebarOpen(false)}
-              className="flex-1 overflow-y-auto pr-0.5 pl-1"
+              className="flex-1 overflow-y-auto px-1"
               compact
             />
           </aside>
         </div>
       )}
       <main
-        className={`flex-1 min-w-0 overflow-x-hidden px-3 pb-[calc(env(safe-area-inset-bottom)+2rem)] pt-[calc(4.75rem+env(safe-area-inset-top))] min-[390px]:px-4 max-md:overflow-x-clip md:p-6 md:pt-20 max-w-[1400px] w-full ${sidebarHidden ? "md:mr-0" : "md:mr-60"}`}
+        className={`flex-1 min-w-0 overflow-x-hidden px-3 pb-[calc(env(safe-area-inset-bottom)+2rem)] pt-[calc(4.75rem+env(safe-area-inset-top))] min-[390px]:px-4 max-md:overflow-x-clip md:p-6 md:pt-20 max-w-[1600px] w-full transition-[margin] duration-200 ${sidebarHidden ? "md:mr-[112px]" : "md:mr-[368px]"}`}
       >
         {children}
       </main>
+    </div>
+  );
+}
+
+function SidebarBrand({
+  settings,
+  me,
+  onCollapse,
+}: {
+  settings: ReturnType<typeof usePublicSettings>["data"];
+  me: AdminMe;
+  onCollapse: () => void;
+}) {
+  return (
+    <div className="relative overflow-hidden border-b border-[#eee5dc] px-5 pb-4 pt-5">
+      <div className="pointer-events-none absolute -right-8 top-0 h-28 w-28 rounded-full bg-[#f9e9e2]/70 blur-2xl" />
+      <div className="relative flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={118} height={48} decoding="async" className="h-12 w-28 object-contain object-right" />
+          <p className="mt-2 text-[11px] font-medium tracking-wide text-[#a47d56]">AJN GROUP</p>
+          <p className="truncate text-sm font-semibold text-[#1e293b]">{settings?.site_name ?? "مجموعة علي جان نهاد"}</p>
+        </div>
+        <button type="button" onClick={onCollapse} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#eee5dc] bg-white text-slate-600 shadow-sm transition-colors hover:bg-[#fbf3ef] hover:text-primary" aria-label="طي القائمة">
+          <ChevronDown className="h-4 w-4 -rotate-90" />
+        </button>
+      </div>
+      <Link href="/admin/account" className="relative mt-3 flex items-center gap-2 rounded-xl bg-[#fbf6f1] px-3 py-2 text-xs text-slate-600 transition-colors hover:bg-[#f7ece5]" title="الحساب والأجهزة">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-primary"><UserRound className="h-3.5 w-3.5" /></span>
+        <span className="truncate">{me.fullName || me.username}{me.role === "admin" ? " · مدير النظام" : ""}</span>
+      </Link>
+    </div>
+  );
+}
+
+function SidebarProfile({ me, onLogout }: { me: AdminMe; onLogout: () => void }) {
+  const initials = (me.fullName || me.username || "A").trim().slice(0, 2);
+  return (
+    <div className="border-t border-[#eee5dc] bg-[#fffaf6] p-3">
+      <div className="flex items-center gap-3 rounded-2xl border border-[#eee5dc] bg-white p-2.5 shadow-sm">
+        <Link href="/admin/account" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#f6e7df] text-sm font-bold text-primary" aria-label="الحساب والأجهزة">{initials}</Link>
+        <Link href="/admin/account" className="min-w-0 flex-1" title="الحساب والأجهزة">
+          <p className="truncate text-sm font-semibold text-[#1e293b]">{me.fullName || me.username}</p>
+          <p className="mt-0.5 text-[11px] text-slate-500">{me.role === "admin" ? "مدير النظام" : "موظف"} <span className="mr-1 text-emerald-600">● متصل</span></p>
+        </Link>
+        <button type="button" onClick={onLogout} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-red-50 hover:text-destructive" aria-label="تسجيل الخروج" title="تسجيل الخروج"><LogOut className="h-4 w-4" /></button>
+      </div>
     </div>
   );
 }
@@ -1300,6 +1316,8 @@ function AdminSidebarNav({
   onNavigate,
   className = "",
   compact = false,
+  collapsed = false,
+  onExpand,
 }: {
   groups: NavGroup[];
   me: AdminMe;
@@ -1310,6 +1328,8 @@ function AdminSidebarNav({
   onNavigate?: () => void;
   className?: string;
   compact?: boolean;
+  collapsed?: boolean;
+  onExpand?: () => void;
 }) {
   const visibleGroups = useMemo(() => {
     return groups
@@ -1325,6 +1345,7 @@ function AdminSidebarNav({
   const [openGroups, setOpenGroups] = useState<string[]>(() =>
     readOpenGroups(activeGroupId),
   );
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     setOpenGroups((current) => {
@@ -1361,24 +1382,54 @@ function AdminSidebarNav({
     });
   }
 
+  const filteredGroups = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase("ar-IQ");
+    if (!normalized) return visibleGroups;
+    return visibleGroups
+      .map((group) => {
+        const groupMatches = group.label.toLocaleLowerCase("ar-IQ").includes(normalized);
+        return {
+          ...group,
+          items: groupMatches
+            ? group.items
+            : group.items.filter((item) => item.label.toLocaleLowerCase("ar-IQ").includes(normalized)),
+        };
+      })
+      .filter((group) => group.items.length > 0);
+  }, [query, visibleGroups]);
+
+  if (collapsed) {
+    return (
+      <nav className={`flex flex-col items-center gap-2 ${className}`} aria-label="قائمة لوحة الإدارة المصغرة">
+        {visibleGroups.map((group) => {
+          const GroupIcon = group.icon;
+          const active = group.id === activeGroupId;
+          return <button key={group.id} type="button" onClick={onExpand} className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl transition-colors ${active ? "bg-[#f9e2e5] text-primary ring-1 ring-[#f3cdd3]" : "text-slate-500 hover:bg-[#fbf3ef] hover:text-primary"}`} aria-label={`توسيع القائمة للوصول إلى ${group.label}`} title={group.label}><GroupIcon className="h-5 w-5" /></button>;
+        })}
+      </nav>
+    );
+  }
+
   return (
-    <nav className={`space-y-1 ${className}`} aria-label="قائمة لوحة الإدارة">
-      {visibleGroups.map((group) => {
-        const isOpen = openGroups.includes(group.id);
+    <nav className={`space-y-2 ${className}`} aria-label="قائمة لوحة الإدارة">
+      <label className="relative mb-3 block">
+        <SearchIconCompat className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="البحث في النظام..." className="h-10 w-full rounded-xl border border-[#e9e1da] bg-[#fcfaf8] py-2 pr-9 text-sm text-[#1e293b] outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/10" aria-label="البحث في عناصر القائمة" />
+      </label>
+      {filteredGroups.map((group) => {
+        const isOpen = query.trim() ? true : openGroups.includes(group.id);
         const active = group.id === activeGroupId;
         const GroupIcon = group.icon;
         return (
-          <div key={group.id} className="rounded-xl">
+          <div key={group.id} className={`rounded-2xl border transition-colors ${active ? "border-[#f3d5d8] bg-[#fff9f8]" : "border-transparent hover:bg-[#fcf8f5]"}`}>
             <button
               type="button"
               onClick={() => toggleGroup(group.id)}
               aria-expanded={isOpen}
-              className={`w-full flex min-w-0 items-center gap-3 px-3 rounded-lg text-sm transition-colors ${
-                compact ? "py-2" : "py-2.5"
-              } ${active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+              className={`w-full flex min-w-0 items-center gap-3 rounded-2xl px-3 text-sm transition-colors ${compact ? "py-2.5" : "py-3"} ${active ? "text-primary" : "text-slate-700 hover:text-[#1e293b]"}`}
             >
-              <GroupIcon className="w-4 h-4 shrink-0" />
-              <span className="min-w-0 flex-1 truncate text-right font-medium">
+              <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${active ? "bg-[#f9e2e5]" : "bg-[#f8f3ef] text-[#a47d56]"}`}><GroupIcon className="h-4 w-4" /></span>
+              <span className="min-w-0 flex-1 truncate text-right font-semibold">
                 {group.label}
               </span>
               <ChevronDown
@@ -1389,7 +1440,7 @@ function AdminSidebarNav({
               className={`grid transition-all duration-200 ease-out ${isOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
             >
               <div className="overflow-hidden">
-                <div className="mt-1 space-y-1 border-r border-border/30 mr-5 pr-2">
+                <div className="mx-2 mb-2 space-y-1 rounded-xl border border-[#eee5dc] bg-white/80 p-1.5">
                   {group.items.map((item) => (
                     <AdminSidebarEntry
                       key={isNavItem(item) ? item.href : item.label}
@@ -1430,8 +1481,8 @@ function AdminSidebarEntry({
   compact: boolean;
 }) {
   const ItemIcon = item.icon;
-  const baseClass = `w-full flex min-w-0 items-center gap-2.5 rounded-lg text-sm transition-colors ${
-    compact ? "px-3 py-2" : "px-3 py-2.5"
+  const baseClass = `w-full flex min-w-0 items-center gap-2.5 rounded-xl text-sm transition-colors ${
+    compact ? "px-3 py-2.5" : "px-3 py-2.5"
   }`;
   if (!isNavItem(item)) {
     return (
@@ -1441,10 +1492,10 @@ function AdminSidebarEntry({
           onNavigate?.();
           onLogout();
         }}
-        className={`${baseClass} text-muted-foreground hover:text-destructive hover:bg-destructive/10`}
+        className={`${baseClass} text-slate-600 hover:bg-red-50 hover:text-destructive`}
       >
-        <ItemIcon className="w-4 h-4 shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-right">{item.label}</span>
+        <ItemIcon className="h-4 w-4 shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-right font-medium">{item.label}</span>
       </button>
     );
   }
@@ -1472,7 +1523,7 @@ function AdminSidebarEntry({
       <a
         href={item.href}
         onClick={onNavigate}
-        className={`${baseClass} text-muted-foreground hover:bg-muted hover:text-foreground`}
+        className={`${baseClass} text-slate-600 hover:bg-[#fbf3ef] hover:text-[#1e293b]`}
       >
         {content}
       </a>
@@ -1483,7 +1534,8 @@ function AdminSidebarEntry({
     <Link
       href={item.href}
       onClick={onNavigate}
-      className={`${baseClass} ${active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+      aria-current={active ? "page" : undefined}
+      className={`${baseClass} ${active ? "bg-[#f9e2e5] text-primary shadow-[inset_3px_0_0_hsl(var(--primary))]" : "text-slate-600 hover:bg-[#fbf3ef] hover:text-[#1e293b]"}`}
     >
       {content}
     </Link>
