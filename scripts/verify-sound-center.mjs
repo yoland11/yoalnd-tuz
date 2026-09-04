@@ -69,7 +69,12 @@ try {
     readFileSync("src/views/staff/lib.ts", "utf8"),
     readFileSync("src/views/staff/booking-detail.tsx", "utf8"),
   ].join("\n");
-  const sourceSafePortal = portalFiles.includes("?source=service") && portalFiles.includes("source={source}");
+  // Source is now built from the actual booking row instead of a hard-coded
+  // literal, so service and kosha rows with the same numeric id stay distinct.
+  const sourceSafePortal =
+    portalFiles.includes('b.source === "service" ? "service" : "kosha"') &&
+    portalFiles.includes("sourceQuery(source)") &&
+    portalFiles.includes("source={source}");
   console.table(summary);
   console.log(`duplicate SourceType + SourceID references: ${duplicates.length}`);
   console.log(`sound bookings missing source identity: ${malformed}`);

@@ -35,6 +35,7 @@
     "test:scanner-formats": "node ./scripts/verify-scanner-formats.mjs",
     "test:sound-detection": "node ./scripts/verify-sound-detection.mjs",
     "test:sound-center": "node ./scripts/verify-sound-center.mjs",
+    "test:sound-reservations": "node ./scripts/test-unified-sound-reservations.mjs",
     "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs",
     "test:graduation-center": "node ./scripts/verify-graduation-order-center.mjs",
     "test:graduation-enterprise": "node ./scripts/verify-graduation-enterprise.mjs",
