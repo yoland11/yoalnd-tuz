@@ -14,12 +14,6 @@ import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
 import webpush from "web-push";
 import { formatCurrency, formatMoney } from "@/lib/money";
-import {
-  getTaskWorkflow,
-  getTaskWorkflowStage,
-  nextTaskWorkflowStage,
-  taskDepartmentAllowsEmployee,
-} from "@/lib/task-workflows";
 import { settlePaymentAmounts } from "@/lib/payment-settlement";
 import {
   bookingPhotosFromFields,
@@ -1266,16 +1260,12 @@ function phoneLast4(value: string | null | undefined): string {
   return digits.length >= 4 ? digits.slice(-4) : "";
 }
 
-function trackingCodeForPhone(phone: string): string {
-  // Surface the familiar last four digits without turning a public tracking
-  // link into a guessable phone-number lookup. The random suffix remains the
-  // capability token and keeps codes unique even when customers share a tail.
-  const tail = phoneLast4(phone) || "0000";
-  return generateTrackingCode(`AJN-${tail}`);
+function trackingCodeForPhone(_phone: string): string {
+  return generateTrackingCode();
 }
 
 function isSecureTrackingCode(value: string): boolean {
-  return /^AJN-(?:\d{4}-)?[A-F0-9]{32}$/.test(value);
+  return /^AJN-[A-F0-9]{32}$/.test(value);
 }
 
 function normalizeTrackingCode(value: string): string {
@@ -1292,7 +1282,7 @@ function normalizeTrackingCode(value: string): string {
 
 function trackingCodeLast4(value: string): string {
   const code = normalizeTrackingCode(value);
-  const match = /^AJN-(\d{4})(?:-|$)/.exec(code);
+  const match = /^AJN-(\d{4})$/.exec(code);
   return match?.[1] ?? "";
 }
 
@@ -17253,7 +17243,7 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     }
     if (from === to) return error("اسم القسم لم يتغير", 400);
 
-    const categoryId = Number.isInteger(payload?.id) && payload.id > 0 ? payload.id : null;
+    const categoryId = Number.isInteger(payload?.id) ? payload.id : null;
     if (categoryId) {
       const category = await db.query.galleryCategoriesTable.findFirst({
         where: eq(galleryCategoriesTable.id, categoryId),
@@ -17292,19 +17282,7 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "gallery");
     if (isResponse(auth)) return auth;
     const categoryId = int(parts[2]);
-    if (!categoryId) return error("تعذر حذف هذا القسم", 400);
-    if (req.nextUrl.searchParams.get("reassign") !== "general") {
-      return error("لحذف القسم بأمان يجب نقل الوسائط إلى القسم العام", 409);
-    }
-
-    if (categoryId < 0) {
-      const legacyName = String(req.nextUrl.searchParams.get("legacyName") ?? "").trim().slice(0, 100);
-      if (!legacyName || legacyName === "عام" || legacyName === "general") return error("لا يمكن حذف القسم العام", 409);
-      const reassigned = await db.update(galleryItemsTable).set({ category: "عام", categoryId: null, updatedAt: new Date() })
-        .where(eq(galleryItemsTable.category, legacyName)).returning({ id: galleryItemsTable.id });
-      void logAdminActivity(req, "gallery_legacy_category_deleted", "gallery", categoryId, { legacyName, reassignedCount: reassigned.length, reassignedTo: "عام" });
-      return json({ message: "تم حذف القسم ونقل الوسائط إلى عام", reassignedCount: reassigned.length });
-    }
+    if (!categoryId || categoryId < 1) return error("تعذر حذف هذا القسم", 400);
 
     const category = await db.query.galleryCategoriesTable.findFirst({
       where: eq(galleryCategoriesTable.id, categoryId),
@@ -17318,16 +17296,16 @@ async function handleGallery(req: NextRequest, parts: string[]) {
         eq(galleryItemsTable.category, category.name),
       )),
     ]);
-    if (category.name === "عام" || category.name === "general") return error("لا يمكن حذف القسم العام", 409);
-    const reassigned = await db.transaction(async (tx) => {
-      const moved = await tx.update(galleryItemsTable).set({ category: "عام", categoryId: null, updatedAt: new Date() })
-        .where(or(eq(galleryItemsTable.categoryId, categoryId), eq(galleryItemsTable.category, category.name))).returning({ id: galleryItemsTable.id });
-      await tx.update(galleryCategoriesTable).set({ parentId: null, updatedAt: new Date() }).where(eq(galleryCategoriesTable.parentId, categoryId));
-      await tx.delete(galleryCategoriesTable).where(eq(galleryCategoriesTable.id, categoryId));
-      return moved;
-    });
-    void logAdminActivity(req, "gallery_category_deleted", "gallery", categoryId, { name: category.name, reassignedCount: reassigned.length, promotedChildren: children[0]?.count ?? 0, reassignedTo: "عام" });
-    return json({ message: "تم حذف القسم ونقل الوسائط إلى عام", id: categoryId, reassignedCount: reassigned.length });
+    if ((children[0]?.count ?? 0) > 0) {
+      return error("لا يمكن حذف قسم يحتوي أقساماً فرعية. انقلها أو احذفها أولاً.", 409);
+    }
+    if ((media[0]?.count ?? 0) > 0) {
+      return error("لا يمكن حذف قسم يحتوي على وسائط. انقل الوسائط أو أرشفها أولاً.", 409);
+    }
+
+    await db.delete(galleryCategoriesTable).where(eq(galleryCategoriesTable.id, categoryId));
+    void logAdminActivity(req, "gallery_category_deleted", "gallery", categoryId, { name: category.name });
+    return json({ message: "تم حذف القسم", id: categoryId });
   }
 
   if (method === "GET" && parts[1] === "categories") {
@@ -42489,19 +42467,12 @@ async function handleAdmin(
           retryable: true,
         });
       }
-      // An assigned employee must not receive work from another classified
-      // department. Legacy tasks without a department remain visible.
-      if (!canManageAll)
-        rows = rows.filter((row) =>
-          taskDepartmentAllowsEmployee((auth as any).department, row.department),
-        );
       const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
       const taskIds = rows.map((row) => row.id);
       let checklistRows: Array<typeof taskChecklistItemsTable.$inferSelect>;
       let progressByRelated: Map<string, ReturnType<typeof taskProgressFromRows>>;
-      let workflowTimelineRows: Array<{ entityId: number; metadata: unknown }>;
       try {
-        [checklistRows, progressByRelated, workflowTimelineRows] = await Promise.all([
+        [checklistRows, progressByRelated] = await Promise.all([
           taskIds.length && storageShape.tables.has("task_checklist_items")
             ? db.query.taskChecklistItemsTable.findMany({
                 where: inArray(taskChecklistItemsTable.taskId, taskIds),
@@ -42512,16 +42483,6 @@ async function handleAdmin(
               })
             : Promise.resolve([]),
           taskProgressForRelated(rows),
-          taskIds.length
-            ? db.query.entityTimelineTable.findMany({
-                columns: { entityId: true, metadata: true },
-                where: and(
-                  eq(entityTimelineTable.entityType, "task"),
-                  inArray(entityTimelineTable.entityId, taskIds),
-                ),
-                orderBy: (timeline, { desc }) => [desc(timeline.createdAt)],
-              })
-            : Promise.resolve([]),
         ]);
       } catch (loadError) {
         const requestId = makeRequestId(req.headers.get("x-request-id"));
@@ -42539,12 +42500,6 @@ async function handleAdmin(
         });
       }
       const itemsByTask = new Map<number, any[]>();
-      const workflowStageByTask = new Map<number, string>();
-      for (const entry of workflowTimelineRows) {
-        const stage = String((entry.metadata as any)?.workflowStage ?? "").trim();
-        if (stage && !workflowStageByTask.has(entry.entityId))
-          workflowStageByTask.set(entry.entityId, stage);
-      }
       for (const item of checklistRows) {
         const list = itemsByTask.get(item.taskId) ?? [];
         list.push({
@@ -42562,21 +42517,8 @@ async function handleAdmin(
             ? `${row.relatedType}:${row.relatedId}`
             : "";
         const checklistItems = itemsByTask.get(row.id) ?? [];
-        const workflow = getTaskWorkflow(row.department);
-        const workflowStage = getTaskWorkflowStage(
-          workflow,
-          workflowStageByTask.get(row.id) ?? "assigned",
-        );
         return {
           ...formatTask(row, staffById, progressByRelated.get(key) ?? null),
-          workflow: {
-            department: workflow.department,
-            label: workflow.label,
-            stage: workflowStage.id,
-            stageLabel: workflowStage.label,
-            nextActionLabel: workflowStage.actionLabel,
-            steps: workflow.steps.map((step) => ({ id: step.id, label: step.label })),
-          },
           checklistItems,
           progress: taskItemProgress(checklistItems),
         };
@@ -42783,11 +42725,6 @@ async function handleAdmin(
           : [];
       if (!canManageAll && !assignedIds.includes(auth.id))
         return error("ليس لديك صلاحية على هذه المهمة", 403);
-      if (
-        !canManageAll &&
-        !taskDepartmentAllowsEmployee((auth as any).department, task.department)
-      )
-        return error("هذه المهمة تابعة لقسم آخر", 403);
       const [staffRows, items, comments, taskPhotoResult] = await Promise.all([
         db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
         db.query.taskChecklistItemsTable.findMany({
@@ -42850,23 +42787,8 @@ async function handleAdmin(
         const value = Number((entry.metadata as any)?.progressPercent);
         return Number.isFinite(value) && value >= 0 && value <= 100;
       });
-      const workflow = getTaskWorkflow(task.department);
-      const workflowStage = getTaskWorkflowStage(
-        workflow,
-        timeline.find((entry) => String((entry.metadata as any)?.workflowStage ?? "").trim())
-          ? (timeline.find((entry) => String((entry.metadata as any)?.workflowStage ?? "").trim())?.metadata as any)?.workflowStage
-          : "assigned",
-      );
       return json({
         ...formatTask(task, staffById),
-        workflow: {
-          department: workflow.department,
-          label: workflow.label,
-          stage: workflowStage.id,
-          stageLabel: workflowStage.label,
-          nextActionLabel: workflowStage.actionLabel,
-          steps: workflow.steps.map((step) => ({ id: step.id, label: step.label })),
-        },
         managerPhotos: taskPhotos.filter((photo) => photo.category === "manager_photo" || photo.category === "attachment"),
         employeePhotos: visibleEmployeeMedia.filter((photo) => photo.category === "employee_photo" || String(photo.mediaType).startsWith("image/")),
         employeeFiles: visibleEmployeeMedia.filter((photo) => photo.category !== "employee_photo" && !String(photo.mediaType).startsWith("image/")),
@@ -42901,7 +42823,6 @@ async function handleAdmin(
           id: true,
           title: true,
           status: true,
-          department: true,
           assignedStaffIds: true,
           archivedAt: true,
         },
@@ -42913,46 +42834,16 @@ async function handleAdmin(
       if (!task) return error("المهمة غير موجودة", 404);
       if (!(task.assignedStaffIds ?? []).includes(auth.id))
         return error("يمكن للموظف المعيّن فقط تحديث التقدم", 403);
-      if (!taskDepartmentAllowsEmployee((auth as any).department, task.department))
-        return error("هذه المهمة تابعة لقسم آخر", 403);
       if (["review", "completed", "cancelled"].includes(task.status))
         return error("لا يمكن تعديل مهمة مرسلة أو معتمدة", 409);
       const b = await body(req);
       const statusAction = String(b?.statusAction ?? b?.action ?? "").trim();
-      const workflowAction = String(b?.workflowAction ?? "").trim();
       if (statusAction && !["accept", "start"].includes(statusAction))
         return error("إجراء حالة المهمة غير صالح", 422);
-      if (workflowAction && workflowAction !== "advance")
-        return error("إجراء مرحلة المهمة غير صالح", 422);
       if (statusAction === "accept" && task.status !== "new")
         return error("يمكن استلام المهمة الجديدة فقط", 409);
       if (statusAction === "start" && !["new", "accepted", "in_progress"].includes(task.status))
         return error("لا يمكن بدء العمل في الحالة الحالية", 409);
-      let workflowStage: ReturnType<typeof getTaskWorkflowStage> | null = null;
-      if (workflowAction) {
-        if (!["accepted", "in_progress"].includes(task.status))
-          return error("استلم المهمة أولاً قبل تنفيذ مراحلها", 409);
-        const timeline = await db.query.entityTimelineTable.findMany({
-          columns: { metadata: true },
-          where: and(
-            eq(entityTimelineTable.entityType, "task"),
-            eq(entityTimelineTable.entityId, id!),
-          ),
-          orderBy: (entry, { desc }) => [desc(entry.createdAt)],
-          limit: 50,
-        });
-        const workflow = getTaskWorkflow(task.department);
-        const latestEntry = timeline.find((entry) =>
-          String((entry.metadata as any)?.workflowStage ?? "").trim(),
-        );
-        const currentStage = getTaskWorkflowStage(
-          workflow,
-          (latestEntry?.metadata as any)?.workflowStage ?? "assigned",
-        );
-        if (currentStage.id === "executed")
-          return error("تم تنفيذ مراحل المهمة؛ أكّد الإنهاء لإرسالها للمراجعة", 409);
-        workflowStage = nextTaskWorkflowStage(workflow, currentStage.id);
-      }
       const progressPercent = b?.progressPercent === undefined || b?.progressPercent === null || b?.progressPercent === ""
         ? null
         : Number(b.progressPercent);
@@ -42978,7 +42869,7 @@ async function handleAdmin(
       }
       const nextStatus = statusAction === "accept"
         ? "accepted"
-        : statusAction === "start" || workflowAction || updates.length || progressPercent !== null
+        : statusAction === "start" || updates.length || progressPercent !== null
           ? "in_progress"
           : task.status;
       const updated = await db.transaction(async (tx) => {
@@ -43001,7 +42892,6 @@ async function handleAdmin(
       const timelineEvents = [
         statusAction === "accept" || (task.status === "new" && nextStatus === "in_progress") ? { type: "task_accepted", title: "تم استلام المهمة" } : null,
         statusAction === "start" || (task.status !== "in_progress" && nextStatus === "in_progress") ? { type: "task_work_started", title: "بدأ الموظف العمل" } : null,
-        workflowStage ? { type: "task_stage_changed", title: workflowStage.label } : null,
         updates.length ? { type: "task_checklist_updated", title: "تم تحديث قائمة التنفيذ" } : null,
         progressPercent !== null ? { type: "task_progress_updated", title: `تم تحديث نسبة الإنجاز إلى ${Math.round(progressPercent)}%` } : null,
       ].filter(Boolean) as Array<{ type: string; title: string }>;
@@ -43012,109 +42902,19 @@ async function handleAdmin(
           type: event.type,
           title: event.title,
           actor: erpActorFromAdmin(auth),
-          metadata: {
-            items: updates,
-            progressPercent,
-            status: nextStatus,
-            workflowStage: workflowStage?.id ?? null,
-            department: task.department ?? null,
-          },
+          metadata: { items: updates, progressPercent, status: nextStatus },
         });
       if (timelineEvents.length)
         await createNotification({
-          type: statusAction === "accept" ? "task_accepted" : workflowStage ? "task_stage_changed" : statusAction === "start" ? "task_work_started" : "task_progress_updated",
-          title: statusAction === "accept" ? "استلم الموظف المهمة" : workflowStage ? "انتقل إلى مرحلة: " + workflowStage.label : statusAction === "start" ? "بدأ الموظف العمل" : "تم تحديث تقدم مهمة",
+          type: statusAction === "accept" ? "task_accepted" : statusAction === "start" ? "task_work_started" : "task_progress_updated",
+          title: statusAction === "accept" ? "استلم الموظف المهمة" : statusAction === "start" ? "بدأ الموظف العمل" : "تم تحديث تقدم مهمة",
           body: updated.title,
           entityType: "task",
           entityId: id,
           href: "/admin/tasks",
-          metadata: { staffId: auth.id, progressPercent, status: nextStatus, workflowStage: workflowStage?.id ?? null, department: task.department ?? null },
+          metadata: { staffId: auth.id, progressPercent, status: nextStatus },
         });
       return json(formatTask(updated));
-    }
-
-    if (method === "POST" && parts[2] && parts[3] === "problem") {
-      const id = int(parts[2]);
-      const task = id
-        ? await db.query.tasksTable.findFirst({
-            columns: {
-              id: true,
-              title: true,
-              status: true,
-              department: true,
-              assignedStaffIds: true,
-              archivedAt: true,
-            },
-            where: and(
-              eq(tasksTable.id, id),
-              sql`${tasksTable.archivedAt} is null`,
-            ),
-          })
-        : null;
-      if (!task) return error("المهمة غير موجودة", 404);
-      if (!(task.assignedStaffIds ?? []).includes(auth.id))
-        return error("يمكن للموظف المعيّن فقط الإبلاغ عن مشكلة", 403);
-      if (!taskDepartmentAllowsEmployee((auth as any).department, task.department))
-        return error("هذه المهمة تابعة لقسم آخر", 403);
-      if (["review", "completed", "cancelled"].includes(task.status))
-        return error("لا يمكن الإبلاغ عن مشكلة في مهمة محمية", 409);
-      const b = await body(req);
-      const category = String(b?.category ?? "").trim();
-      const categories = new Set([
-        "missing_item",
-        "delay",
-        "customer_absent",
-        "location_problem",
-        "equipment_problem",
-        "need_help",
-        "other",
-      ]);
-      if (!categories.has(category)) return error("نوع المشكلة غير صالح", 422);
-      const note = nullableText(b?.note)?.slice(0, 2_000) ?? null;
-      const labels: Record<string, string> = {
-        missing_item: "عنصر ناقص",
-        delay: "تأخير",
-        customer_absent: "العميل غير موجود",
-        location_problem: "مشكلة بالموقع",
-        equipment_problem: "عطل بالمعدات",
-        need_help: "أحتاج مساعدة",
-        other: "أخرى",
-      };
-      await db.transaction(async (tx) => {
-        await tx.insert(taskCommentsTable).values({
-          taskId: id!,
-          staffId: auth.id,
-          body: `مشكلة: ${labels[category]}${note ? ` — ${note}` : ""}`,
-        });
-        await tx
-          .update(tasksTable)
-          .set({ updatedAt: new Date() })
-          .where(eq(tasksTable.id, id!));
-      });
-      void logAdminActivity(req, "task_problem_reported", "task", id!, {
-        category,
-        department: task.department ?? null,
-        note: Boolean(note),
-      });
-      void addEntityTimeline({
-        entityType: "task",
-        entityId: id!,
-        type: "task_problem_reported",
-        title: `أبلغ الموظف عن مشكلة: ${labels[category]}`,
-        body: note,
-        actor: erpActorFromAdmin(auth),
-        metadata: { category, department: task.department ?? null },
-      });
-      await createNotification({
-        type: "task_problem_reported",
-        title: `مشكلة في المهمة: ${labels[category]}`,
-        body: task.title,
-        entityType: "task",
-        entityId: id!,
-        href: "/admin/tasks",
-        metadata: { staffId: auth.id, category, department: task.department ?? null },
-      });
-      return json({ message: "تم إرسال المشكلة إلى المدير" });
     }
 
     if (method === "POST" && parts[2] && parts[3] === "photos") {
@@ -62853,8 +62653,6 @@ async function handleUnifiedStaffPortal(
             description: true,
             status: true,
             priority: true,
-            department: true,
-            taskType: true,
             startAt: true,
             dueAt: true,
             assignedStaffIds: true,
@@ -62880,44 +62678,7 @@ async function handleUnifiedStaffPortal(
           orderBy: [desc(attendanceRecordsTable.checkInAt)],
         }),
       ]);
-      const visibleTasks = tasks.filter((task) =>
-        taskDepartmentAllowsEmployee(employee.department, task.department),
-      );
-      const taskIds = visibleTasks.map((task) => task.id);
-      const workflowTimeline = taskIds.length
-        ? await db.query.entityTimelineTable.findMany({
-            columns: { entityId: true, metadata: true },
-            where: and(
-              eq(entityTimelineTable.entityType, "task"),
-              inArray(entityTimelineTable.entityId, taskIds),
-            ),
-            orderBy: (entry, { desc }) => [desc(entry.createdAt)],
-          })
-        : [];
-      const workflowStageByTask = new Map<number, string>();
-      for (const entry of workflowTimeline) {
-        const stage = String((entry.metadata as any)?.workflowStage ?? "").trim();
-        if (stage && !workflowStageByTask.has(entry.entityId))
-          workflowStageByTask.set(entry.entityId, stage);
-      }
-      const formattedTasks = visibleTasks.map((task) => {
-        const workflow = getTaskWorkflow(task.department);
-        const stage = getTaskWorkflowStage(
-          workflow,
-          workflowStageByTask.get(task.id) ?? "assigned",
-        );
-        return {
-          ...formatTask(task),
-          workflow: {
-            department: workflow.department,
-            label: workflow.label,
-            stage: stage.id,
-            stageLabel: stage.label,
-            nextActionLabel: stage.actionLabel,
-            steps: workflow.steps.map((step) => ({ id: step.id, label: step.label })),
-          },
-        };
-      });
+      const formattedTasks = tasks.map((task) => formatTask(task));
       const actionable = formattedTasks.filter((task) =>
         ["new", "accepted", "in_progress"].includes(task.status),
       );
