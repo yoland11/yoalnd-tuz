@@ -1,0 +1,12 @@
+import ts from "typescript";
+import { readFileSync } from "node:fs";
+const compile = path => ts.transpileModule(readFileSync(path,"utf8"), {compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const url = code => `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
+const library = url(compile("src/lib/kosha-manager.ts"));
+await import(url(compile("scripts/test-kosha-manager.ts").replace('"../src/lib/kosha-manager"', JSON.stringify(library))));
+const server=readFileSync("src/server/kosha-manager.ts","utf8");
+if(!server.includes("if(!execution)" )||!server.includes("bookingDetails:{}")||!server.includes("venueImages:[]"))throw new Error("Execution details must be redacted server-side");
+if(!server.includes("redactExecutionBooking")||!server.includes("primaryEmployeeId:null")||!server.includes("assignedEmployees:[]"))throw new Error("Execution assignments must be redacted from list and detail payloads");
+if(!server.includes("paid_amount")||!server.includes('paid>0&&remaining>0?"partial"'))throw new Error("Legacy payment state must distinguish partial from unpaid");
+if(server.includes('["open","pending_approval"].includes(found.status)'))throw new Error("Pending-approval problems cannot bypass approval during resolution");
+if(server.includes("archived_at is null or status='cancelled'"))throw new Error("Archived cancelled bookings must stay outside the active manager list");

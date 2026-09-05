@@ -1,10 +1,10 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
-import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX, CalendarDays, QrCode, RefreshCw, Copy } from "lucide-react";
+import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX, CalendarDays, QrCode, RefreshCw, Copy, FileDown, Loader2 } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,6 +19,8 @@ import { ProductColorPicker, ProductColorDots } from "@/components/product-color
 import { normalizeColors, type ProductColor } from "@/lib/colors";
 import { AutoTranslateButton } from "./auto-translate-button";
 import { generateQrDataUrl } from "./label-helpers";
+import { downloadElementPdf } from "@/lib/pdf";
+import { sheetReportCss } from "./print-helpers";
 
 type Category = { id: number; name: string; nameAr: string; slug: string; parentId: number | null; sortOrder: number; isActive: boolean };
 
@@ -136,6 +138,8 @@ export default function ProductsPage() {
   const [visFilter, setVisFilter] = useState<"all" | "visible" | "hidden" | "archived" | "rental" | "nocat">("all");
   const [view, setView] = useState<"list" | "stock">("list");
   const [stockDrafts, setStockDrafts] = useState<Record<number, string>>({});
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const productsPdfRef = useRef<HTMLDivElement>(null);
 
   const productRows = products ?? [];
   const allSubcategories = categories?.filter((category) => category.parentId) ?? [];
@@ -187,6 +191,33 @@ export default function ProductsPage() {
 
   const parentCats = categories?.filter(c => !c.parentId) ?? [];
   const subCats = categories?.filter(c => c.parentId) ?? [];
+  const pdfCategoryLabel = catFilter
+    ? parentCats.find((category) => category.slug === catFilter)?.nameAr || catFilter
+    : visFilter === "nocat" ? "بدون تصنيف" : "كل الأقسام";
+  const safePdfFilePart = pdfCategoryLabel.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "-");
+  const pdfMayBeTruncated = productRows.length >= 2000;
+
+  async function saveFilteredPdf() {
+    if (pdfMayBeTruncated) {
+      toast({ title: "لا يمكن إنشاء تقرير كامل", description: "عدد المنتجات بلغ حد التحميل (2000). استخدم تصفية أدق قبل حفظ PDF.", variant: "destructive" });
+      return;
+    }
+    if (!filtered.length) {
+      toast({ title: "لا توجد منتجات للحفظ", description: "غيّر القسم أو الفلاتر ثم حاول مرة أخرى.", variant: "destructive" });
+      return;
+    }
+    setIsExportingPdf(true);
+    try {
+      await downloadElementPdf(productsPdfRef.current, `products-${safePdfFilePart}-${new Date().toISOString().slice(0, 10)}.pdf`, {
+        format: "a4", orientation: "landscape", margin: [8, 8, 8, 8], pagebreakMode: ["css", "legacy"],
+      });
+      toast({ title: "تم حفظ ملف PDF", description: `${pdfCategoryLabel} · ${filtered.length} منتج` });
+    } catch (error) {
+      toast({ title: "تعذر حفظ ملف PDF", description: apiErrorMessage(error), variant: "destructive" });
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: getListProductsQueryKey() });
@@ -289,6 +320,10 @@ export default function ProductsPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-foreground">إدارة المتجر</h1>
         <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => void saveFilteredPdf()} disabled={isExportingPdf || isLoading} className="gap-2">
+            {isExportingPdf ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
+            {isExportingPdf ? "جارٍ حفظ PDF…" : "حفظ PDF"}
+          </Button>
           <Button variant="outline" asChild><Link href="/admin/product-bundles"><Boxes className="w-4 h-4 ml-2" />العروض والبكجات</Link></Button>
           <div className="flex bg-card rounded-lg border border-border/40 p-0.5">
             <button onClick={() => setView("list")}
@@ -301,6 +336,24 @@ export default function ProductsPage() {
           <Button onClick={() => setEditing({ ...blank })} size="sm" className="gap-2">
             <Plus className="w-4 h-4" /> إضافة منتج
           </Button>
+        </div>
+      </div>
+
+      <div className="fixed left-[-100000px] top-0 w-[1120px] bg-white text-black" aria-hidden="true">
+        <style>{`${sheetReportCss("a4")}
+          @page { size: A4 landscape; margin: 8mm; }
+          .products-pdf-sheet { width: 100%; padding: 18px; background: #fff; color: #000; font-family: Cairo,Tahoma,Arial,sans-serif; }
+          .products-pdf-sheet .report-table { font-size: 10px; }
+          .products-pdf-sheet .report-table thead { display: table-header-group; }
+          .products-pdf-sheet .report-table tr { break-inside: avoid; page-break-inside: avoid; }
+          .products-pdf-sheet .num { direction:ltr; white-space:nowrap; font-variant-numeric:tabular-nums; }
+        `}</style>
+        <div ref={productsPdfRef} className="report-sheet products-pdf-sheet" dir="rtl">
+          <header className="report-head"><div><div className="report-company">مجموعة علي جان نهاد</div><div className="report-title">كشف المنتجات حسب القسم</div></div><div className="report-meta">القسم: <b>{pdfCategoryLabel}</b><br/>تاريخ الحفظ: {new Date().toLocaleDateString("ar-IQ-u-nu-latn")}</div></header>
+          <section className="report-summary"><div className="report-stat"><span>عدد المنتجات</span><strong>{filtered.length}</strong></div><div className="report-stat"><span>إجمالي الكمية</span><strong>{filtered.reduce((sum:number,p:any)=>sum+stockQuantity(p),0)}</strong></div><div className="report-stat"><span>متوفر</span><strong>{filtered.filter((p:any)=>stockStatus(p)==="available").length}</strong></div><div className="report-stat"><span>نفد المخزون</span><strong>{filtered.filter((p:any)=>stockStatus(p)==="out").length}</strong></div></section>
+          <p className="mb-3 text-[10px]">يشمل هذا الملف نتائج القسم والبحث وحالة المخزون وحالة النشر المختارة حالياً.</p>
+          <table className="report-table"><thead><tr><th>#</th><th>المنتج</th><th>الباركود / الرمز</th><th>القسم</th><th>السعر</th><th>المخزون</th><th>حالة المخزون</th><th>حالة النشر</th></tr></thead><tbody>{filtered.map((p:any,index:number)=><tr key={p.id}><td className="num">{index+1}</td><td><b>{p.nameAr||p.name}</b>{p.nameAr&&p.name&&<><br/><small>{p.name}</small></>}</td><td className="num">{p.barcode||"—"}</td><td>{parentCats.find(c=>c.id===p.categoryId)?.nameAr||p.category||"بدون تصنيف"}</td><td className="num">{formatCurrency(Number(p.price||0))}</td><td className="num">{stockQuantity(p)}</td><td>{stockStatusMeta(stockStatus(p)).label}</td><td>{isArchived(p)?"مؤرشف":isHidden(p)?"مخفي":"ظاهر"}</td></tr>)}</tbody></table>
+          <footer className="report-footer">تقرير للقراءة والحفظ فقط — لا يغيّر المخزون أو بيانات المنتجات.</footer>
         </div>
       </div>
 

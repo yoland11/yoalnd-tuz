@@ -25,11 +25,7 @@ const ArchivePage = lazy(() => import("./archive"));
 const ServicesPage = lazy(() => import("./services"));
 const AdminKoshasPage = lazy(() => import("./koshas"));
 const KoshaPackagesPage = lazy(() => import("./kosha-packages"));
-const AdminKoshaBookingsPage = lazy(() =>
-  import("./koshas").then((module) => ({
-    default: module.AdminKoshaBookingsPage,
-  })),
-);
+const AdminKoshaBookingsPage = lazy(() => import("./kosha-bookings"));
 const KoshatTasksPage = lazy(() => import("./koshat-tasks"));
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
 const ProductsPage = lazy(() => import("./products"));

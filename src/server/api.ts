@@ -11,6 +11,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import bcrypt from "bcryptjs";
+import { koshaManagerList, koshaManagerDetail, resolveKoshaManagerProblem, mayResolveKoshaProblem, type KoshaLookups } from "./kosha-manager";
 import QRCode from "qrcode";
 import webpush from "web-push";
 import { formatCurrency, formatMoney } from "@/lib/money";
@@ -6654,19 +6655,19 @@ async function koshaValuesFromData(data: any, existingId?: number) {
   return values;
 }
 
-async function formatKoshaBooking(row: any) {
+async function formatKoshaBooking(row: any, lookups?: KoshaLookups) {
   const [kosha, transportationVehicle, transportationDriver] = await Promise.all([
-    row.koshaId
+    lookups ? Promise.resolve(lookups.koshas.get(Number(row.koshaId)) ?? null) : row.koshaId
     ? await db.query.koshasTable.findFirst({
         where: eq(koshasTable.id, row.koshaId),
       })
     : Promise.resolve(null),
-    row.transportationVehicleId ?? row.transportation_vehicle_id
+    lookups ? Promise.resolve(lookups.vehicles.get(Number(row.transportationVehicleId ?? row.transportation_vehicle_id)) ?? null) : row.transportationVehicleId ?? row.transportation_vehicle_id
       ? db.query.fleetVehiclesTable.findFirst({
           where: eq(fleetVehiclesTable.id, Number(row.transportationVehicleId ?? row.transportation_vehicle_id)),
         })
       : Promise.resolve(null),
-    row.transportationDriverId ?? row.transportation_driver_id
+    lookups ? Promise.resolve(lookups.staff.get(Number(row.transportationDriverId ?? row.transportation_driver_id)) ?? null) : row.transportationDriverId ?? row.transportation_driver_id
       ? db.query.staffTable.findFirst({
           where: eq(staffTable.id, Number(row.transportationDriverId ?? row.transportation_driver_id)),
         })
@@ -6967,6 +6968,7 @@ async function formatRoutedKoshaServiceBooking(
     name?: string | null;
     nameAr?: string | null;
   } | null,
+  lookups?: KoshaLookups,
 ) {
   const fields = (order.customFields ?? {}) as Record<string, any>;
   return formatKoshaBooking({
@@ -7002,7 +7004,7 @@ async function formatRoutedKoshaServiceBooking(
     paidAmount: order.depositAmount,
     internalNotes: order.internalNotes ?? "",
     updatedAt: order.createdAt,
-  }).then((formatted) => {
+  }, lookups).then((formatted) => {
     // Which departments this booking serves. A mixed job reports several and stays a
     // single booking under its original id — it is never split per department.
     const departments = detectBookingDepartments({
@@ -19997,6 +19999,30 @@ async function handleAdminKoshas(
     await ensureKoshaTables();
     const auth = await requirePermission(req, "orders");
     if (isResponse(auth)) return auth;
+
+    // Additive manager projection. Existing list/detail callers keep their contracts.
+    if (parts[2] === "manager-view" || parts[3] === "manager-view") {
+      const adapters = { native: formatKoshaBooking, service: formatRoutedKoshaServiceBooking, routed: isKoshaOrSoundBooking };
+      if (parts[2] === "manager-view" && parts.length === 3 && method === "GET")
+        return json(await koshaManagerList(req.nextUrl.searchParams, auth, adapters));
+      const bookingId = int(parts[2]);
+      const source = req.nextUrl.searchParams.get("source");
+      if (!bookingId || !["kosha", "service"].includes(source ?? "")) return error("حدد رقم الحجز ومصدره", 400);
+      if (parts.length === 4 && method === "GET") {
+        const detail = await koshaManagerDetail(bookingId, source as KoshaPortalSource, auth, adapters);
+        return detail ? json(detail) : error("الحجز غير موجود", 404);
+      }
+      if (parts[4] === "problems" && parts[6] === "resolve" && parts.length === 7 && method === "POST") {
+        if (!mayResolveKoshaProblem(auth)) return error("معالجة المشكلة متاحة للمدير فقط", 403);
+        const problemId = int(parts[5]);
+        const payload = await body(req);
+        const note = typeof payload?.note === "string" ? payload.note.trim() : "";
+        if (!problemId || !note || note.length > 2000) return error("أدخل وصف المعالجة (حتى 2000 حرف)", 422);
+        const result = await resolveKoshaManagerProblem(bookingId, source as KoshaPortalSource, problemId, note, auth);
+        return result.status === 200 ? json({message:result.message}) : error(result.message,result.status);
+      }
+      return error("الإجراء غير مدعوم", 405);
+    }
 
     if (method === "GET" && parts.length === 2) {
       const status = req.nextUrl.searchParams.get("status")?.trim();
@@ -65573,7 +65599,7 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
           sql`SELECT id, approval_status FROM financial_transactions WHERE id = ${transactionId} FOR UPDATE`,
         )).rows[0] as any;
         if (!lockedTransaction || lockedTransaction.approval_status !== "pending") {
-          throw new Error("لا يمكن تعديل القرض بعد اعتماد أو رفض الطلب المالي");
+          throw new Error("لا يمكن تعديل القرض بعد اعتماده أو بدء السداد");
         }
 
         const [updatedTransaction] = await tx.update(financialTransactionsTable).set({

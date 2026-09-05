@@ -1,0 +1,13 @@
+import { readFileSync } from "node:fs";
+let failures=0;
+const check=(label,value)=>value?console.log(`✓ ${label}`):(failures++,console.error(`✗ ${label}`));
+const view=readFileSync("src/views/admin/products.tsx","utf8");
+check("product PDF uses the shared AJN PDF exporter",view.includes('downloadElementPdf'));
+check("PDF rows come from the combined filtered product list",view.includes('filtered.map')&&view.includes('productsPdfRef'));
+check("selected category is named in the PDF",view.includes('pdfCategoryLabel'));
+check("PDF filename identifies the selected category",view.includes('products-')&&view.includes('safePdfFilePart'));
+check("PDF export has loading and controlled failure UI",view.includes('isExportingPdf')&&view.includes('تعذر حفظ ملف PDF'));
+check("PDF table includes inventory and publication fields",view.includes('حالة المخزون')&&view.includes('حالة النشر'));
+check("PDF refuses a potentially truncated 2000-product client result",view.includes('pdfMayBeTruncated')&&view.includes('لا يمكن إنشاء تقرير كامل'));
+if(failures)process.exit(1);
+console.log("PRODUCT PDF EXPORT CONTRACT PASSED");
