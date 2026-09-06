@@ -143,3 +143,37 @@ $ git diff --check
 ```
 
 `pnpm run test:save-smoke`: **SKIPPED**; no verified isolated `TEST_DATABASE_URL` is configured, and it was not run against Production.
+
+## Review round 2 — exact migration contract
+
+Covering test file: `scripts/test-kosha-manager-instructions-schema.cjs`.
+
+The migration assertion now strips line comments, rejects destructive statement starts (`ALTER`, `DELETE`, `DROP`, `TRUNCATE`, `UPDATE`), splits SQL into statements, and compares the complete normalized statement list to the reviewed contract. The contract contains exactly the two `CREATE TABLE` statements and three named index statements; it therefore detects omitted or nullable columns, altered defaults/checks/FKs, index drift, commented-out DDL, destructive DDL, and any unreviewed extra statement. Negative fixtures exercise nullable drift, `DROP TABLE`, an extra index, and a commented-out table declaration.
+
+Verification:
+
+```text
+$ pnpm run test:kosha-manager-schema
+PASS: Kosha manager instruction and channel read schema contracts
+
+$ pnpm run typecheck
+$ tsc --noEmit
+
+$ pnpm run build
+✓ Compiled successfully in 6.3s
+(command exit 0)
+
+$env:ESBUILD_BINARY_PATH='C:\project\yoalnd-tuz-main\tmp\esbuild-windows-0.27.3\package\esbuild.exe'; pnpm run verify:critical
+AJN DATABASE INTEGRATION TESTS SKIPPED — no valid isolated TEST_DATABASE_URL is configured.
+PASS  22 critical AJN database table contracts are backward-compatible
+PASS  Additive tables/columns and harmless indexes remain allowed
+PASS  AJN database write guard fails closed and rejects production aliases
+PASS  application server request code performs no DDL
+PASS  Critical-file change policy (standard)
+AJN FINANCIAL APPROVAL CONTRACT PASSED — cash-box posting remains approval-first.
+AJN PAYMENT STATE CONTRACT PASSED — approved payment snapshots reconcile centrally.
+✓ Compiled successfully in 6.2s
+(command exit 0)
+```
+
+`pnpm run test:save-smoke`: **SKIPPED**; no verified isolated `TEST_DATABASE_URL` is configured, and it was not run against Production.

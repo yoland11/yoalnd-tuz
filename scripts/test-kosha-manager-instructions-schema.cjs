@@ -159,23 +159,91 @@ assert.deepEqual(
   "reads must constrain booking source and channels",
 );
 
-const migrationSql = normalizeSql(fs.readFileSync(path.resolve(__dirname, "../lib/db/migrations/0110_kosha_manager_instructions.sql"), "utf8"));
-for (const fragment of [
-  'create table if not exists "kosha_manager_instructions"',
-  '"uploaded_by_staff_id" integer references "staff" ("id") on delete set null',
-  '"archived_by_staff_id" integer references "staff" ("id") on delete set null',
-  '"revision" integer not null default 1',
-  'constraint "kosha_manager_instructions_booking_source_check" check ("booking_source" in (\'kosha\', \'service\'))',
-  'constraint "kosha_manager_instructions_kind_check" check ("kind" in (\'note\', \'image\'))',
-  'constraint "kosha_manager_instructions_media_check" check (("kind" = \'image\' and "media_url" is not null and btrim("media_url") <> \'\') or ("kind" = \'note\' and "media_url" is null))',
-  'create index if not exists "kosha_manager_instructions_active_booking_idx" on "kosha_manager_instructions" ("booking_source", "booking_id", "archived_at", "created_at")',
-  'create table if not exists "kosha_booking_channel_reads"',
-  '"staff_id" integer not null references "staff" ("id") on delete restrict',
-  'constraint "kosha_booking_channel_reads_booking_source_check" check ("booking_source" in (\'kosha\', \'service\'))',
-  'constraint "kosha_booking_channel_reads_channel_check" check ("channel" in (\'manager_instruction\', \'staff_execution\'))',
-  'create unique index if not exists "kosha_booking_channel_reads_identity_idx" on "kosha_booking_channel_reads" ("booking_source", "booking_id", "staff_id", "channel")',
-  'create index if not exists "kosha_booking_channel_reads_booking_channel_idx" on "kosha_booking_channel_reads" ("booking_source", "booking_id", "channel")',
-]) assert.ok(migrationSql.includes(fragment), `migration must retain: ${fragment}`);
+const stripSqlComments = (source) => source.replace(/^\s*--.*$/gm, "");
+const migrationStatements = (source) => stripSqlComments(source)
+  .split(";")
+  .map(normalizeSql)
+  .filter(Boolean);
+const expectedMigrationStatements = [
+  `CREATE TABLE IF NOT EXISTS "kosha_manager_instructions" (
+    "id" serial PRIMARY KEY NOT NULL,
+    "booking_source" varchar(12) NOT NULL,
+    "booking_id" integer NOT NULL,
+    "kind" varchar(12) NOT NULL,
+    "media_url" text,
+    "caption" text,
+    "uploaded_by_staff_id" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
+    "uploaded_by_name" text,
+    "revision" integer NOT NULL DEFAULT 1,
+    "archived_at" timestamp,
+    "archived_by_staff_id" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
+    "created_at" timestamp NOT NULL DEFAULT now(),
+    "updated_at" timestamp NOT NULL DEFAULT now(),
+    CONSTRAINT "kosha_manager_instructions_booking_source_check"
+      CHECK ("booking_source" IN ('kosha', 'service')),
+    CONSTRAINT "kosha_manager_instructions_kind_check"
+      CHECK ("kind" IN ('note', 'image')),
+    CONSTRAINT "kosha_manager_instructions_media_check"
+      CHECK (("kind" = 'image' AND "media_url" IS NOT NULL AND btrim("media_url") <> '') OR ("kind" = 'note' AND "media_url" IS NULL))
+  )`,
+  `CREATE INDEX IF NOT EXISTS "kosha_manager_instructions_active_booking_idx"
+    ON "kosha_manager_instructions" ("booking_source", "booking_id", "archived_at", "created_at")`,
+  `CREATE TABLE IF NOT EXISTS "kosha_booking_channel_reads" (
+    "id" serial PRIMARY KEY NOT NULL,
+    "booking_source" varchar(12) NOT NULL,
+    "booking_id" integer NOT NULL,
+    "staff_id" integer NOT NULL REFERENCES "staff" ("id") ON DELETE RESTRICT,
+    "channel" varchar(24) NOT NULL,
+    "viewed_at" timestamp NOT NULL,
+    "created_at" timestamp NOT NULL DEFAULT now(),
+    "updated_at" timestamp NOT NULL DEFAULT now(),
+    CONSTRAINT "kosha_booking_channel_reads_booking_source_check"
+      CHECK ("booking_source" IN ('kosha', 'service')),
+    CONSTRAINT "kosha_booking_channel_reads_channel_check"
+      CHECK ("channel" IN ('manager_instruction', 'staff_execution'))
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "kosha_booking_channel_reads_identity_idx"
+    ON "kosha_booking_channel_reads" ("booking_source", "booking_id", "staff_id", "channel")`,
+  `CREATE INDEX IF NOT EXISTS "kosha_booking_channel_reads_booking_channel_idx"
+    ON "kosha_booking_channel_reads" ("booking_source", "booking_id", "channel")`,
+].map(normalizeSql);
+const assertMigrationContract = (source) => {
+  const uncommented = stripSqlComments(source);
+  assert.doesNotMatch(
+    uncommented,
+    /(?:^|;)\s*(?:alter|delete|drop|truncate|update)\b/i,
+    "migration must remain additive and non-destructive",
+  );
+  assert.deepEqual(
+    migrationStatements(uncommented),
+    expectedMigrationStatements,
+    "migration must contain exactly the reviewed table and index DDL",
+  );
+};
+
+const migrationPath = path.resolve(__dirname, "../lib/db/migrations/0110_kosha_manager_instructions.sql");
+const migrationSource = fs.readFileSync(migrationPath, "utf8");
+assertMigrationContract(migrationSource);
+assert.throws(
+  () => assertMigrationContract(migrationSource.replace('"booking_id" integer NOT NULL', '"booking_id" integer')),
+  /exactly the reviewed table and index DDL/,
+  "migration contract must reject nullable column drift",
+);
+assert.throws(
+  () => assertMigrationContract(`${migrationSource}\nDROP TABLE "staff";`),
+  /non-destructive/,
+  "migration contract must reject destructive statements",
+);
+assert.throws(
+  () => assertMigrationContract(`${migrationSource}\nCREATE INDEX "unreviewed_idx" ON "staff" ("id");`),
+  /exactly the reviewed table and index DDL/,
+  "migration contract must reject unreviewed extra statements",
+);
+assert.throws(
+  () => assertMigrationContract(migrationSource.replace('CREATE TABLE IF NOT EXISTS "kosha_manager_instructions"', '-- CREATE TABLE IF NOT EXISTS "kosha_manager_instructions"')),
+  /exactly the reviewed table and index DDL/,
+  "migration contract must not accept DDL hidden in a comment",
+);
 
 assert.ok("koshaManagerInstructionsRelations" in databaseSchema, "instruction staff relations must be exported");
 assert.ok("koshaBookingChannelReadsRelations" in databaseSchema, "channel-read staff relations must be exported");
