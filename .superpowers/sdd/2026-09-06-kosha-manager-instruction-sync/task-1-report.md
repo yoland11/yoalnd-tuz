@@ -144,6 +144,40 @@ $ git diff --check
 
 `pnpm run test:save-smoke`: **SKIPPED**; no verified isolated `TEST_DATABASE_URL` is configured, and it was not run against Production.
 
+## Review round 3 — quote-preserving SQL canonicalization
+
+Covering test file: `scripts/test-kosha-manager-instructions-schema.cjs`.
+
+The exact migration contract normalizer now lowercases and collapses whitespace only outside quoted SQL tokens. Single-quoted literals and double-quoted identifiers retain their original bytes, including escaped doubled quote characters. A negative fixture changes `'kosha'` to `'KOSHA'`; it failed under the old normalizer and now fails the exact migration contract as intended.
+
+Verification:
+
+```text
+$ pnpm run test:kosha-manager-schema
+PASS: Kosha manager instruction and channel read schema contracts
+
+$ pnpm run typecheck
+$ tsc --noEmit
+
+$ pnpm run build
+✓ Compiled successfully in 6.1s
+(command exit 0)
+
+$env:ESBUILD_BINARY_PATH='C:\project\yoalnd-tuz-main\tmp\esbuild-windows-0.27.3\package\esbuild.exe'; pnpm run verify:critical
+AJN DATABASE INTEGRATION TESTS SKIPPED — no valid isolated TEST_DATABASE_URL is configured.
+PASS  22 critical AJN database table contracts are backward-compatible
+PASS  Additive tables/columns and harmless indexes remain allowed
+PASS  AJN database write guard fails closed and rejects production aliases
+PASS  application server request code performs no DDL
+PASS  Critical-file change policy (standard)
+AJN FINANCIAL APPROVAL CONTRACT PASSED — cash-box posting remains approval-first.
+AJN PAYMENT STATE CONTRACT PASSED — approved payment snapshots reconcile centrally.
+✓ Compiled successfully in 6.6s
+(command exit 0)
+```
+
+`pnpm run test:save-smoke`: **SKIPPED**; no verified isolated `TEST_DATABASE_URL` is configured, and it was not run against Production.
+
 ## Review round 2 — exact migration contract
 
 Covering test file: `scripts/test-kosha-manager-instructions-schema.cjs`.

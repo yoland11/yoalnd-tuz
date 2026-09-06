@@ -20,7 +20,44 @@ const { getTableColumns, getTableName, is } = require("drizzle-orm");
 const { getTableConfig, PgDialect, PgTable } = require("drizzle-orm/pg-core");
 
 const dialect = new PgDialect();
-const normalizeSql = (source) => source.replace(/\s+/g, " ").trim().toLowerCase();
+const normalizeSql = (source) => {
+  let normalized = "";
+  let quote = null;
+  let pendingWhitespace = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      normalized += character;
+      if (character === quote) {
+        if (source[index + 1] === quote) {
+          normalized += source[index + 1];
+          index += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+
+    if (character === "'" || character === '"') {
+      if (pendingWhitespace && normalized) normalized += " ";
+      pendingWhitespace = false;
+      normalized += character;
+      quote = character;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      pendingWhitespace = true;
+      continue;
+    }
+    if (pendingWhitespace && normalized) normalized += " ";
+    pendingWhitespace = false;
+    normalized += character.toLowerCase();
+  }
+
+  return normalized.trim();
+};
 
 const expectedColumns = {
   kosha_manager_instructions: {
@@ -228,6 +265,11 @@ assert.throws(
   () => assertMigrationContract(migrationSource.replace('"booking_id" integer NOT NULL', '"booking_id" integer')),
   /exactly the reviewed table and index DDL/,
   "migration contract must reject nullable column drift",
+);
+assert.throws(
+  () => assertMigrationContract(migrationSource.replace("'kosha', 'service'", "'KOSHA', 'service'")),
+  /exactly the reviewed table and index DDL/,
+  "migration contract must reject quoted literal case drift",
 );
 assert.throws(
   () => assertMigrationContract(`${migrationSource}\nDROP TABLE "staff";`),
