@@ -150,7 +150,7 @@ export function RtlImageViewer({
                   </div>
                 ) : null}
               </div>
-              <figcaption className="whitespace-pre-wrap break-words rounded-xl bg-white p-3 text-sm text-slate-700">
+              <figcaption className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-white p-3 text-sm text-slate-700">
                 {active.caption?.trim() || "لا توجد تسمية للصورة."}
               </figcaption>
             </figure>

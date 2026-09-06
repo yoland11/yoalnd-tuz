@@ -30,7 +30,7 @@ import {
   uploadProgressLabel,
   type ImageUploadProgress,
 } from "@/lib/large-image-upload";
-import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
+import { adminFetch, apiErrorMessage, fetchAdminMe } from "@/views/admin/_lib";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
@@ -39,6 +39,7 @@ import { RtlImageViewer, type RtlViewerImage } from "./rtl-image-viewer";
 
 type UploadRow = {
   id: string;
+  batchId: number;
   name: string;
   status: "uploading" | "saved" | "failed";
   progress: ImageUploadProgress | null;
@@ -54,12 +55,25 @@ function displayDateTime(value?: string | null) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ar-IQ");
 }
 
-function latestMediaSnapshot(media: KoshaManagerMedia[]) {
-  return media
-    .map((item) => item.createdAt)
-    .filter((value): value is string => Boolean(value))
-    .sort()
-    .at(-1) ?? null;
+function latestTimestamp(values: Array<string | null | undefined>) {
+  return values.filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+}
+
+function isManagerInstructionEvent(type: string) {
+  return type.startsWith("instruction_");
+}
+
+function latestRenderedStaffActivity(detail: KoshaManagerDetail, employeeNotes: KoshaManagerDetail["timeline"]) {
+  const staffMedia = detail.media.filter(
+    (item) => (item.kind === "image" || item.kind === "video") && !["reference", "signature"].includes(item.purpose),
+  );
+  const stageEvents = detail.timeline.filter((event) => !isManagerInstructionEvent(event.type));
+  return latestTimestamp([
+    ...staffMedia.map((item) => item.createdAt),
+    ...employeeNotes.map((event) => event.createdAt),
+    ...stageEvents.map((event) => event.createdAt),
+    ...detail.damages.flatMap((damage) => [damage.createdAt, damage.resolvedAt]),
+  ]);
 }
 
 function toViewerImage(item: KoshaManagerMedia): RtlViewerImage {
@@ -138,11 +152,13 @@ function InstructionCard({
   onEdit,
   onArchive,
   busy,
+  canManage,
 }: {
   instruction: KoshaManagerInstruction;
   onEdit: (instruction: KoshaManagerInstruction) => void;
   onArchive: (instruction: KoshaManagerInstruction) => void;
   busy: boolean;
+  canManage: boolean;
 }) {
   return (
     <article className="rounded-2xl border border-[#efd8dd] bg-white p-3 shadow-sm">
@@ -155,29 +171,31 @@ function InstructionCard({
             {instruction.uploadedByName || "الإدارة"} · {displayDateTime(instruction.updatedAt || instruction.createdAt)}
           </p>
         </div>
-        <div className="flex gap-1">
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-11 w-11 rounded-xl"
-            onClick={() => onEdit(instruction)}
-            aria-label="تعديل الملاحظة أو التسمية"
-          >
-            <Pencil className="h-4 w-4" aria-hidden="true" />
-          </Button>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-11 w-11 rounded-xl text-[#8f4052]"
-            onClick={() => onArchive(instruction)}
-            disabled={busy}
-            aria-label="أرشفة التعليمات"
-          >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Archive className="h-4 w-4" aria-hidden="true" />}
-          </Button>
-        </div>
+        {canManage ? (
+          <div className="flex gap-1">
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-11 w-11 rounded-xl"
+              onClick={() => onEdit(instruction)}
+              aria-label="تعديل الملاحظة أو التسمية"
+            >
+              <Pencil className="h-4 w-4" aria-hidden="true" />
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-11 w-11 rounded-xl text-[#8f4052]"
+              onClick={() => onArchive(instruction)}
+              disabled={busy}
+              aria-label="أرشفة التعليمات"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Archive className="h-4 w-4" aria-hidden="true" />}
+            </Button>
+          </div>
+        ) : null}
       </div>
       {instruction.kind === "note" ? (
         <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-slate-700">
@@ -195,6 +213,7 @@ function InstructionCard({
 function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
   const client = useQueryClient();
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const uploadBatch = useRef(0);
   const [mode, setMode] = useState<"closed" | "note" | "image">("closed");
   const [caption, setCaption] = useState("");
   const [uploads, setUploads] = useState<UploadRow[]>([]);
@@ -203,6 +222,14 @@ function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
   const [archiveId, setArchiveId] = useState<number | null>(null);
 
   const instructions = useQuery(managerInstructionsQuery(detail.booking));
+  const session = useQuery({
+    queryKey: ["admin", "auth", "me", "kosha-manager-instructions"],
+    queryFn: () => fetchAdminMe({ force: true }),
+  });
+  const role = session.data?.role;
+  const canManage =
+    detail.permissions.manageInstructions === true ||
+    (detail.permissions.manageInstructions !== false && (role === "admin" || role === "manager"));
   const invalidateInstructions = () => {
     void client.invalidateQueries({ queryKey: ["admin", "kosha-manager", "instructions", bookingIdentity(detail.booking)] });
     void client.invalidateQueries({ queryKey: ["admin", "kosha-manager", "instruction-reads", bookingIdentity(detail.booking)] });
@@ -241,14 +268,18 @@ function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
   const uploadFiles = async (files: FileList | null) => {
     const selected = Array.from(files ?? []);
     if (!selected.length) return;
+    const batchId = uploadBatch.current + 1;
+    uploadBatch.current = batchId;
+    const batchCaption = caption.trim();
     const rows = selected.map((file, index) => ({
       id: `${Date.now()}-${index}-${file.name}`,
+      batchId,
       name: file.name,
       status: "uploading" as const,
       progress: null,
       error: null,
     }));
-    setUploads((current) => [...rows, ...current.filter((row) => row.status === "failed")]);
+    setUploads((current) => [...rows, ...current]);
     await Promise.all(
       selected.map(async (file, index) => {
         const rowId = rows[index].id;
@@ -263,7 +294,7 @@ function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
           await createManagerInstruction(detail.booking, {
             kind: "image",
             mediaUrl: uploaded.originalUrl,
-            caption: caption.trim() || null,
+            caption: batchCaption || null,
           });
           setUploads((current) =>
             current.map((row) => (row.id === rowId ? { ...row, status: "saved", progress: null } : row)),
@@ -279,8 +310,6 @@ function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
         }
       }),
     );
-    setCaption("");
-    setMode("closed");
     if (fileInput.current) fileInput.current.value = "";
     invalidateInstructions();
   };
@@ -299,35 +328,37 @@ function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
             الأرشفة تحفظ تاريخ التعليمات والتعديلات؛ لا يوجد حذف نهائي من هذه الواجهة.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            className={buttonBase}
-            onClick={() => {
-              setMode((current) => (current === "image" ? "closed" : "image"));
-              noteMutation.reset();
-            }}
-          >
-            <ImagePlus className="h-4 w-4" aria-hidden="true" />
-            إضافة صورة
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            className={buttonBase}
-            onClick={() => {
-              setMode((current) => (current === "note" ? "closed" : "note"));
-              noteMutation.reset();
-            }}
-          >
-            <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
-            إضافة ملاحظة
-          </Button>
-        </div>
+        {canManage ? (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className={buttonBase}
+              onClick={() => {
+                setMode((current) => (current === "image" ? "closed" : "image"));
+                noteMutation.reset();
+              }}
+            >
+              <ImagePlus className="h-4 w-4" aria-hidden="true" />
+              إضافة صورة
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className={buttonBase}
+              onClick={() => {
+                setMode((current) => (current === "note" ? "closed" : "note"));
+                noteMutation.reset();
+              }}
+            >
+              <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
+              إضافة ملاحظة
+            </Button>
+          </div>
+        ) : null}
       </div>
 
-      {mode !== "closed" ? (
+      {canManage && mode !== "closed" ? (
         <div className="space-y-3 rounded-2xl border border-[#efd8dd] bg-white p-3">
           <label className="block text-sm font-medium text-slate-800" htmlFor="manager-instruction-caption">
             {mode === "note" ? "نص الملاحظة" : "تسمية أو ملاحظة مشتركة للصور"}
@@ -424,6 +455,7 @@ function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
                   onEdit={startEdit}
                   onArchive={(item) => archiveMutation.mutate(item)}
                   busy={archiveId === instruction.id}
+                  canManage={canManage}
                 />
               ))
             ) : (
@@ -436,6 +468,7 @@ function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
                 onEdit={startEdit}
                 onArchive={(item) => archiveMutation.mutate(item)}
                 busy={archiveId === instruction.id}
+                canManage={canManage}
               />
             ))}
           </div>
@@ -448,7 +481,7 @@ function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
         </p>
       ) : null}
 
-      {editing ? (
+      {canManage && editing ? (
         <div className="space-y-3 rounded-2xl border border-[#d9c39e] bg-white p-3">
           <label className="block text-sm font-medium text-slate-800" htmlFor="manager-instruction-edit">
             تعديل الملاحظة أو تسمية الصورة
@@ -501,7 +534,12 @@ function ExecutionPhotos({ title, images }: { title: string; images: RtlViewerIm
 
 export function StaffExecutionPanel({ detail }: { detail: KoshaManagerDetail }) {
   const client = useQueryClient();
-  const acknowledgedBooking = useRef<string | null>(null);
+  const acknowledgedSnapshots = useRef(new Set<string>());
+  const [ack, setAck] = useState<{
+    snapshot: string | null;
+    status: "idle" | "pending" | "success" | "error";
+    message: string | null;
+  }>({ snapshot: null, status: "idle", message: null });
   const [resolving, setResolving] = useState<number | null>(null);
   const [note, setNote] = useState("");
   const mutation = useMutation({
@@ -525,22 +563,42 @@ export function StaffExecutionPanel({ detail }: { detail: KoshaManagerDetail }) 
       m.kind === "image" &&
       !["breakage", "loss", "damage", "problem", "signature", "reference"].includes(m.purpose),
   );
-  const employeeNotes = detail.timeline.filter((event) => event.note?.trim());
-  const renderedExecutionSnapshot = useMemo(() => latestMediaSnapshot(executionMedia), [executionMedia]);
+  const employeeNotes = detail.timeline.filter((event) => event.note?.trim() && !isManagerInstructionEvent(event.type));
+  const renderedExecutionSnapshot = useMemo(
+    () => latestRenderedStaffActivity(detail, employeeNotes),
+    [detail, employeeNotes],
+  );
   const bookingKey = bookingIdentity(detail.booking);
 
-  useEffect(() => {
-    if (!detail.permissions.execution || !renderedExecutionSnapshot) return;
-    if (acknowledgedBooking.current === bookingKey) return;
-    acknowledgedBooking.current = bookingKey;
-    void markManagerExecutionViewed(detail.booking, renderedExecutionSnapshot)
+  const sendExecutionAck = (snapshot: string) => {
+    const key = `${bookingKey}:${snapshot}`;
+    setAck({ snapshot, status: "pending", message: null });
+    void markManagerExecutionViewed(detail.booking, snapshot)
+      .then(() => {
+        acknowledgedSnapshots.current.add(key);
+        setAck({ snapshot, status: "success", message: "تم تسجيل قراءة تنفيذ الكادر" });
+      })
       .catch((error) => {
-        acknowledgedBooking.current = null;
+        const message = apiErrorMessage(error, "تعذر تسجيل القراءة");
+        setAck({
+          snapshot,
+          status: "error",
+          message: `تعذر تسجيل قراءة تنفيذ الكادر: ${message}`,
+        });
         console.warn("[KOSHA_MANAGER_EXECUTION_VIEW_ACK_FAILED]", {
           bookingKey,
+          snapshot,
           message: error instanceof Error ? error.message : "unknown",
         });
       });
+  };
+
+  useEffect(() => {
+    if (!detail.permissions.execution || !renderedExecutionSnapshot) return;
+    const key = `${bookingKey}:${renderedExecutionSnapshot}`;
+    if (acknowledgedSnapshots.current.has(key)) return;
+    if (ack.status === "pending" && ack.snapshot === renderedExecutionSnapshot) return;
+    sendExecutionAck(renderedExecutionSnapshot);
   }, [bookingKey, detail.booking, detail.permissions.execution, renderedExecutionSnapshot]);
 
   if (!detail.permissions.execution)
@@ -561,6 +619,24 @@ export function StaffExecutionPanel({ detail }: { detail: KoshaManagerDetail }) 
           </p>
         )}
       </div>
+      {ack.status === "error" ? (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-100 bg-rose-50 p-3 text-sm text-rose-800">
+          <span>{ack.message || "تعذر تسجيل قراءة تنفيذ الكادر"}</span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="min-h-11 bg-white"
+            onClick={() => ack.snapshot && sendExecutionAck(ack.snapshot)}
+          >
+            إعادة تسجيل القراءة
+          </Button>
+        </div>
+      ) : ack.status === "success" ? (
+        <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800">
+          {ack.message}
+        </p>
+      ) : null}
 
       <ManagerInstructions detail={detail} />
 
