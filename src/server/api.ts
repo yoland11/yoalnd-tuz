@@ -12,6 +12,14 @@ import {
 } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { koshaManagerList, koshaManagerDetail, resolveKoshaManagerProblem, mayResolveKoshaProblem, type KoshaLookups } from "./kosha-manager";
+import { createKoshaInstructionStore } from "./kosha-instruction-store";
+import {
+  createKoshaInstructionService,
+  dispatchKoshaInstructionRequest,
+  KoshaInstructionError,
+  mayReadKoshaInstructions,
+  type InstructionScope,
+} from "./kosha-instructions";
 import QRCode from "qrcode";
 import webpush from "web-push";
 import { formatCurrency, formatMoney } from "@/lib/money";
@@ -20008,6 +20016,44 @@ async function handleAdminKoshas(
       const bookingId = int(parts[2]);
       const source = req.nextUrl.searchParams.get("source");
       if (!bookingId || !["kosha", "service"].includes(source ?? "")) return error("حدد رقم الحجز ومصدره", 400);
+      const instructionTail = parts.slice(4);
+      if (
+        instructionTail[0] === "instructions" ||
+        instructionTail[0] === "instruction-reads" ||
+        instructionTail[0] === "execution-viewed"
+      ) {
+        if (!mayReadKoshaInstructions(auth))
+          return error("لا تملك صلاحية عرض تنفيذ حجوزات الكوشات", 403, {
+            requestId: makeRequestId(req.headers.get("x-request-id")),
+          });
+        const resolved = await resolveKoshaPortalBooking(
+          bookingId,
+          source as KoshaPortalSource,
+        );
+        if (
+          !resolved ||
+          resolved.kind === "ambiguous" ||
+          (resolved.kind === "kosha" && resolved.native.archivedAt)
+        ) {
+          logKoshaBookingLookupFailure({
+            auth,
+            bookingId,
+            source: source as KoshaPortalSource,
+            requestId: makeRequestId(req.headers.get("x-request-id")),
+            reason: "not_found",
+          });
+          return error("الحجز غير موجود", 404);
+        }
+        const scope = await instructionScopeForBooking(resolved);
+        const response = await runKoshaInstructionRequest({
+          req,
+          surface: "manager",
+          tail: instructionTail,
+          scope,
+          actor: auth,
+        });
+        return response ?? error("الإجراء غير مدعوم", 405);
+      }
       if (parts.length === 4 && method === "GET") {
         const detail = await koshaManagerDetail(bookingId, source as KoshaPortalSource, auth, adapters);
         return detail ? json(detail) : error("الحجز غير موجود", 404);
@@ -61953,6 +61999,105 @@ async function authorizeKoshaPortalBooking(
   return { resolved };
 }
 
+const koshaInstructionService = createKoshaInstructionService(
+  createKoshaInstructionStore(),
+  persistMediaValue,
+);
+
+function instructionScopeFromCrewBooking(row: any): InstructionScope {
+  const ids = Array.from(
+    new Set(
+      [
+        row?.primaryEmployeeId,
+        row?.assistantEmployeeId,
+        row?.assignedStaffId,
+        ...(Array.isArray(row?.assignedStaffIds) ? row.assignedStaffIds : []),
+      ]
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    ),
+  );
+  return {
+    id: Number(row.id),
+    source: row.source === "service" ? "service" : "kosha",
+    assignedStaff: ids.map((id) => ({ id, name: `#${id}` })),
+  };
+}
+
+async function instructionScopeForBooking(
+  resolved: AuthorizedKoshaPortalBooking,
+): Promise<InstructionScope> {
+  const crewBooking =
+    resolved.kind === "kosha"
+      ? await formatKoshaBookingForCrew(resolved.native)
+      : await formatRoutedKoshaServiceBookingForCrew(
+          resolved.routed.order,
+          resolved.routed.service,
+        );
+  const scope = instructionScopeFromCrewBooking(crewBooking);
+  if (!scope.assignedStaff.length) return scope;
+  const staff = await db
+    .select({
+      id: staffTable.id,
+      fullName: staffTable.fullName,
+      username: staffTable.username,
+    })
+    .from(staffTable)
+    .where(inArray(staffTable.id, scope.assignedStaff.map((row) => row.id)));
+  const names = new Map(
+    staff.map((row) => [row.id, row.fullName || row.username || `#${row.id}`]),
+  );
+  return {
+    ...scope,
+    assignedStaff: scope.assignedStaff.map((row) => ({
+      id: row.id,
+      name: names.get(row.id) ?? row.name,
+    })),
+  };
+}
+
+async function runKoshaInstructionRequest(input: {
+  req: NextRequest;
+  surface: "manager" | "staff";
+  tail: string[];
+  scope: InstructionScope;
+  actor: AdminUser;
+}): Promise<NextResponse | null> {
+  const { req, surface, tail, scope, actor } = input;
+  const needsPayload =
+    (surface === "manager" &&
+      ((req.method === "POST" && tail.length === 1 && tail[0] === "instructions") ||
+        (req.method === "PATCH" && tail[0] === "instructions"))) ||
+    (surface === "staff" &&
+      req.method === "POST" &&
+      tail[0] === "instructions" &&
+      tail[1] === "viewed");
+  try {
+    const result = await dispatchKoshaInstructionRequest({
+      service: koshaInstructionService,
+      surface,
+      method: req.method,
+      tail,
+      scope,
+      actor,
+      payload: needsPayload ? await body(req) : undefined,
+    });
+    return result === null ? null : json(result);
+  } catch (cause) {
+    if (!(cause instanceof KoshaInstructionError)) throw cause;
+    const requestId = makeRequestId(req.headers.get("x-request-id"));
+    console.warn("[KOSHA_INSTRUCTION_REQUEST_REJECTED]", {
+      requestId,
+      bookingId: scope.id,
+      bookingSource: scope.source,
+      staffId: actor.id,
+      surface,
+      status: cause.status,
+    });
+    return error(cause.message, cause.status, { requestId });
+  }
+}
+
 async function formatKoshaBookingForCrew(row: any) {
   const base = await formatKoshaBooking(row);
   const details = (row.bookingDetails ?? row.booking_details ?? {}) as Record<
@@ -64176,6 +64321,34 @@ async function handleStaffPortal(
   const auth = await requirePermission(req, "koshas");
   if (isResponse(auth)) return auth;
 
+  if (resource === "bookings" && id && action === "instructions") {
+    if (req.nextUrl.searchParams.has("source") && !koshaSourceHint(req))
+      return error("مصدر الحجز غير معروف", 400);
+    const sourceHint = koshaSourceHint(req);
+    // The established booking authorization runs first. Instruction access then
+    // applies its stricter exact-assignment rule (supervisors remain authorized).
+    const authorized = await authorizeKoshaPortalBooking(auth, id, sourceHint, {
+      req,
+    });
+    if ("response" in authorized) return authorized.response;
+    if (
+      authorized.resolved.kind === "kosha" &&
+      authorized.resolved.native.archivedAt
+    )
+      return error("الحجز غير موجود", 404, {
+        requestId: makeRequestId(req.headers.get("x-request-id")),
+      });
+    const scope = await instructionScopeForBooking(authorized.resolved);
+    const response = await runKoshaInstructionRequest({
+      req,
+      surface: "staff",
+      tail: parts.slice(4),
+      scope,
+      actor: auth,
+    });
+    return response ?? error("الإجراء غير مدعوم", 405);
+  }
+
   // ── Product/asset search for the crew "Products & Assets" picker ──
   if (resource === "products" && method === "GET") {
     const q = String(req.nextUrl.searchParams.get("search") ?? "").trim();
@@ -64397,7 +64570,15 @@ async function handleStaffPortal(
             .includes(q),
       );
     }
-    return json(crewRows);
+    const scopes = crewRows.map(instructionScopeFromCrewBooking);
+    const unread = await koshaInstructionService.unread(scopes, auth);
+    return json(
+      crewRows.map((row, index) => ({
+        ...row,
+        unreadInstructionCount:
+          unread.get(`${scopes[index].source}:${scopes[index].id}`) ?? 0,
+      })),
+    );
   }
 
   // ── Booking detail ──
@@ -64413,9 +64594,20 @@ async function handleStaffPortal(
       req,
     });
     if ("response" in authorized) return authorized.response;
+    const instructionScope = await instructionScopeForBooking(
+      authorized.resolved,
+    );
+    const unreadInstructions = await koshaInstructionService.unread(
+      [instructionScope],
+      auth,
+    );
+    const unreadInstructionCount =
+      unreadInstructions.get(
+        `${instructionScope.source}:${instructionScope.id}`,
+      ) ?? 0;
     if (authorized.resolved.kind === "kosha") {
       const detail = await loadKoshaBookingDetail(id);
-      if (detail) return json(detail);
+      if (detail) return json({ ...detail, unreadInstructionCount });
       logKoshaBookingLookupFailure({
         auth,
         bookingId: id,
@@ -64427,12 +64619,13 @@ async function handleStaffPortal(
       });
       return error("الحجز غير موجود", 404);
     }
-    return json(
-      await loadRoutedKoshaServiceBookingDetail(
+    return json({
+      ...(await loadRoutedKoshaServiceBookingDetail(
         authorized.resolved.routed.order,
         authorized.resolved.routed.service,
-      ),
-    );
+      )),
+      unreadInstructionCount,
+    });
   }
 
   // ── Change execution stage ──
