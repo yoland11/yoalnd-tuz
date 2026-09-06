@@ -59,6 +59,36 @@ export type KoshaManagerProblem = {
   resolvedAt: string | null;
   canResolve: boolean;
 };
+export type KoshaManagerInstruction = {
+  id: number;
+  bookingSource: KoshaManagerSource;
+  bookingId: number;
+  kind: "note" | "image";
+  mediaUrl: string | null;
+  caption: string | null;
+  uploadedByStaffId: number | null;
+  uploadedByName: string | null;
+  revision: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+  archivedAt: string | null;
+  archivedByStaffId: number | null;
+};
+export type KoshaManagerInstructionList = {
+  instructions: KoshaManagerInstruction[];
+  latestAt: string | null;
+  viewedAt: string | null;
+  unreadCount: number;
+};
+export type KoshaManagerInstructionReads = {
+  latestAt: string | null;
+  staff: Array<{
+    id: number;
+    name: string;
+    viewedAt: string | null;
+    hasViewedLatest: boolean;
+  }>;
+};
 export type KoshaManagerDetail = {
   booking: KoshaManagerBooking;
   media: KoshaManagerMedia[];
