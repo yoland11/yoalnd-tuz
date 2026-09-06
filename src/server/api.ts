@@ -12,7 +12,10 @@ import {
 } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { koshaManagerList, koshaManagerDetail, resolveKoshaManagerProblem, mayResolveKoshaProblem, type KoshaLookups } from "./kosha-manager";
-import { createKoshaInstructionStore } from "./kosha-instruction-store";
+import {
+  createKoshaInstructionStore,
+  routedKoshaCustomFieldsSql,
+} from "./kosha-instruction-store";
 import {
   createKoshaInstructionService,
   dispatchKoshaInstructionRequest,
@@ -62067,7 +62070,8 @@ async function runKoshaInstructionRequest(input: {
   const needsPayload =
     (surface === "manager" &&
       ((req.method === "POST" && tail.length === 1 && tail[0] === "instructions") ||
-        (req.method === "PATCH" && tail[0] === "instructions"))) ||
+        (req.method === "PATCH" && tail[0] === "instructions") ||
+        (req.method === "POST" && tail.length === 1 && tail[0] === "execution-viewed"))) ||
     (surface === "staff" &&
       req.method === "POST" &&
       tail[0] === "instructions" &&
@@ -62527,17 +62531,26 @@ async function loadRoutedKoshaServiceBookingDetail(
  * booking from the Kosha portal, since those are what the routing predicate
  * reads.
  *
- * Note: two writers appending to the SAME array key still race (last write
- * wins). Fixing that needs optimistic locking on the row.
+ * Timeline and media additions use the same current-row append expression as
+ * manager instruction audits, so concurrent writers cannot replace either
+ * array from a stale request snapshot.
  */
 async function saveRoutedKoshaServiceExecution(
   order: typeof serviceOrdersTable.$inferSelect,
-  fields: Record<string, any>,
+  fields: Record<string, unknown>,
+  append: {
+    timeline?: Array<Record<string, unknown>>;
+    media?: Array<Record<string, unknown>>;
+  } = {},
 ) {
   const [updated] = await db
     .update(serviceOrdersTable)
     .set({
-      customFields: sql`coalesce(${serviceOrdersTable.customFields}, '{}'::jsonb) || ${JSON.stringify(fields)}::jsonb`,
+      customFields: routedKoshaCustomFieldsSql(
+        serviceOrdersTable.customFields,
+        fields,
+        append,
+      ),
     } as any)
     .where(eq(serviceOrdersTable.id, order.id))
     .returning();
@@ -64731,16 +64744,7 @@ async function handleStaffPortal(
         bookingStage,
         bookingStageUpdatedAt: new Date().toISOString(),
       };
-      fields.koshaPortalMedia = [
-        ...(Array.isArray(fields.koshaPortalMedia)
-          ? fields.koshaPortalMedia
-          : []),
-        ...savedMedia,
-      ];
-      fields.koshaPortalTimeline = [
-        ...(Array.isArray(fields.koshaPortalTimeline)
-          ? fields.koshaPortalTimeline
-          : []),
+      const timelineEntries = [
         {
           id: `service-${routed.order.id}-${Date.now()}`,
           type: "stage",
@@ -64781,13 +64785,15 @@ async function handleStaffPortal(
         executionStage: fields.executionStage,
         trackingStatus: fields.trackingStatus,
         bookingOperations: fields.bookingOperations,
-        koshaPortalMedia: fields.koshaPortalMedia,
-        koshaPortalTimeline: fields.koshaPortalTimeline,
       };
       const [updated] = await db
         .update(serviceOrdersTable)
         .set({
-          customFields: sql`coalesce(${serviceOrdersTable.customFields}, '{}'::jsonb) || ${JSON.stringify(fieldsPatch)}::jsonb`,
+          customFields: routedKoshaCustomFieldsSql(
+            serviceOrdersTable.customFields,
+            fieldsPatch,
+            { timeline: timelineEntries, media: savedMedia },
+          ),
           status: serviceOrderStatusForKoshaStage(toStage),
         } as any)
         .where(
@@ -65016,30 +65022,20 @@ async function handleStaffPortal(
         String(data?.purpose ?? "execution"),
         fields.executionStage ?? "preparing",
       );
-      fields.koshaPortalMedia = [
-        ...(Array.isArray(fields.koshaPortalMedia)
-          ? fields.koshaPortalMedia
-          : []),
-        ...savedMedia,
-      ];
-      fields.koshaPortalTimeline = [
-        ...(Array.isArray(fields.koshaPortalTimeline)
-          ? fields.koshaPortalTimeline
-          : []),
-        {
-          id: `service-${routed.order.id}-${Date.now()}`,
-          type: "media",
-          staffName: auth.fullName || auth.username,
-          fromStage: null,
-          toStage: null,
-          note: data?.note ?? null,
-          meta: { count: savedMedia.length },
-          createdAt: new Date().toISOString(),
-        },
-      ];
+      const timelineEntry = {
+        id: `service-${routed.order.id}-${Date.now()}`,
+        type: "media",
+        staffName: auth.fullName || auth.username,
+        fromStage: null,
+        toStage: null,
+        note: data?.note ?? null,
+        meta: { count: savedMedia.length },
+        createdAt: new Date().toISOString(),
+      };
       const updated = await saveRoutedKoshaServiceExecution(
         routed.order,
-        fields,
+        {},
+        { timeline: [timelineEntry], media: savedMedia },
       );
       return json(
         await loadRoutedKoshaServiceBookingDetail(updated, routed.service),
@@ -65173,14 +65169,7 @@ async function handleStaffPortal(
         bookingStage: "completed",
         bookingStageUpdatedAt: new Date().toISOString(),
       };
-      fields.koshaPortalMedia = [
-        ...(Array.isArray(fields.koshaPortalMedia)
-          ? fields.koshaPortalMedia
-          : []),
-        ...savedMedia,
-        ...signatures,
-      ];
-      fields.koshaPortalDelivery = {
+      const deliveryReport = {
         id: `service-${routed.order.id}-delivery`,
         hasLoss,
         hasBreakage,
@@ -65189,25 +65178,32 @@ async function handleStaffPortal(
         signatureUrl: signatures[0]?.url ?? null,
         createdAt: new Date().toISOString(),
       };
-      fields.koshaPortalTimeline = [
-        ...(Array.isArray(fields.koshaPortalTimeline)
-          ? fields.koshaPortalTimeline
-          : []),
-        {
-          id: `service-${routed.order.id}-${Date.now()}`,
-          type: "delivery",
-          staffName: auth.fullName || auth.username,
-          fromStage,
-          toStage: "delivered",
-          note,
-          meta: { hasLoss, hasBreakage, compensation },
-          createdAt: new Date().toISOString(),
-        },
-      ];
+      const timelineEntry = {
+        id: `service-${routed.order.id}-${Date.now()}`,
+        type: "delivery",
+        staffName: auth.fullName || auth.username,
+        fromStage,
+        toStage: "delivered",
+        note,
+        meta: { hasLoss, hasBreakage, compensation },
+        createdAt: new Date().toISOString(),
+      };
       const [updated] = await db
         .update(serviceOrdersTable)
         .set({
-          customFields: fields,
+          customFields: routedKoshaCustomFieldsSql(
+            serviceOrdersTable.customFields,
+            {
+              executionStage: fields.executionStage,
+              trackingStatus: fields.trackingStatus,
+              bookingOperations: fields.bookingOperations,
+              koshaPortalDelivery: deliveryReport,
+            },
+            {
+              timeline: [timelineEntry],
+              media: [...savedMedia, ...signatures],
+            },
+          ),
           totalAmount: String(total),
           remainingAmount: String(remaining),
           paymentStatus:

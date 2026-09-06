@@ -92,9 +92,20 @@ const status = code => error => error.status === code;
   assert.equal(receipts.staff.length, 2);
   assert.equal(receipts.staff[0].hasViewedLatest, false);
   assert.equal(receipts.staff[1].viewedAt, null);
-  await app.markViewed(kosha, manager, 'manager');
+  const executionSnapshot = '2026-09-06T09:00:30.000Z';
+  await api.dispatchKoshaInstructionRequest({ service: app, surface: 'manager', method: 'POST', tail: ['execution-viewed'], scope: kosha, actor: manager, payload: { viewedThrough: executionSnapshot } });
   assert.equal(state.reads[1].channel, 'staff_execution');
+  assert.equal(state.reads[1].viewedAt.toISOString(), executionSnapshot, 'Manager review records the rendered snapshot, not request completion time');
+  assert.equal(new Date('2026-09-06T09:00:45.000Z') > state.reads[1].viewedAt, true, 'A concurrent staff upload after the snapshot remains unread');
   assert.equal(state.reads[0].channel, 'manager_instruction');
+  await assert.rejects(
+    () => api.dispatchKoshaInstructionRequest({ service: app, surface: 'manager', method: 'POST', tail: ['execution-viewed'], scope: kosha, actor: manager, payload: { viewedThrough: '2099-01-01T00:00:00.000Z' } }),
+    status(422),
+  );
+  await assert.rejects(
+    () => api.dispatchKoshaInstructionRequest({ service: app, surface: 'manager', method: 'POST', tail: ['execution-viewed'], scope: kosha, actor: manager, payload: {} }),
+    status(422),
+  );
   const batched = await app.unread([kosha, service], employee);
   assert.equal(batchCalls, 1);
   assert.equal(batched.get('kosha:4'), 1);
@@ -118,7 +129,7 @@ const status = code => error => error.status === code;
   assert.equal(patched.instruction.caption, 'Route edited');
   const receiptList = await api.dispatchKoshaInstructionRequest({ service: app, surface: 'manager', method: 'GET', tail: ['instruction-reads'], scope: routeScope, actor: manager });
   assert.equal(receiptList.staff.length, 2);
-  await api.dispatchKoshaInstructionRequest({ service: app, surface: 'manager', method: 'POST', tail: ['execution-viewed'], scope: routeScope, actor: manager });
+  await api.dispatchKoshaInstructionRequest({ service: app, surface: 'manager', method: 'POST', tail: ['execution-viewed'], scope: routeScope, actor: manager, payload: { viewedThrough: '2026-09-06T09:00:30.000Z' } });
   const staffView = await api.dispatchKoshaInstructionRequest({ service: app, surface: 'staff', method: 'GET', tail: ['instructions'], scope: routeScope, actor: employee });
   await api.dispatchKoshaInstructionRequest({ service: app, surface: 'staff', method: 'POST', tail: ['instructions', 'viewed'], scope: routeScope, actor: employee, payload: { viewedThrough: staffView.latestAt } });
   assert.equal((await app.list(routeScope, employee, 'staff')).unreadCount, 0);

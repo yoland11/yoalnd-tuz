@@ -1,10 +1,65 @@
-import { db, koshaManagerInstructionsTable as instructions, koshaBookingChannelReadsTable as reads, koshaBookingEventsTable, koshaStaffNotificationsTable, type KoshaManagerInstruction } from "@workspace/db";
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { db, koshaManagerInstructionsTable as instructions, koshaBookingChannelReadsTable as reads, koshaBookingEventsTable, koshaStaffNotificationsTable, serviceOrdersTable, type KoshaManagerInstruction } from "@workspace/db";
+import { and, desc, eq, isNull, sql, type SQLWrapper } from "drizzle-orm";
 import { instructionBookingHref, KoshaInstructionError, type InstructionScope, type InstructionStore } from "./kosha-instructions";
 
 type Connection = Pick<typeof db, "select" | "insert" | "update" | "execute">;
 const identity = (scope: InstructionScope) => and(eq(instructions.bookingSource, scope.source), eq(instructions.bookingId, scope.id), isNull(instructions.archivedAt));
 const snapshot = (instruction: KoshaManagerInstruction | null) => instruction ? { id: instruction.id, kind: instruction.kind, caption: instruction.caption, mediaUrl: instruction.mediaUrl, revision: instruction.revision, archivedAt: instruction.archivedAt } : null;
+
+type RoutedKoshaAppend = {
+  timeline?: Array<Record<string, unknown>>;
+  media?: Array<Record<string, unknown>>;
+};
+
+export function mergeRoutedKoshaCustomFields(
+  current: Record<string, unknown> | null | undefined,
+  patch: Record<string, unknown>,
+  append: RoutedKoshaAppend = {},
+) {
+  const {
+    koshaPortalTimeline: _staleTimeline,
+    koshaPortalMedia: _staleMedia,
+    ...safePatch
+  } = patch;
+  const timeline = Array.isArray(current?.koshaPortalTimeline)
+    ? current.koshaPortalTimeline
+    : [];
+  const media = Array.isArray(current?.koshaPortalMedia)
+    ? current.koshaPortalMedia
+    : [];
+  return {
+    ...(current ?? {}),
+    ...safePatch,
+    koshaPortalTimeline: [...timeline, ...(append.timeline ?? [])],
+    koshaPortalMedia: [...media, ...(append.media ?? [])],
+  };
+}
+
+export function routedKoshaCustomFieldsSql(
+  column: SQLWrapper,
+  patch: Record<string, unknown>,
+  append: RoutedKoshaAppend = {},
+) {
+  const normalized = mergeRoutedKoshaCustomFields({}, patch);
+  const {
+    koshaPortalTimeline: _timeline,
+    koshaPortalMedia: _media,
+    ...safePatch
+  } = normalized;
+  const timeline = JSON.stringify(append.timeline ?? []);
+  const media = JSON.stringify(append.media ?? []);
+  return sql`jsonb_set(
+    jsonb_set(
+      coalesce(${column}, '{}'::jsonb) || ${JSON.stringify(safePatch)}::jsonb,
+      '{koshaPortalMedia}',
+      (case when jsonb_typeof(${column}->'koshaPortalMedia')='array' then ${column}->'koshaPortalMedia' else '[]'::jsonb end) || ${media}::jsonb,
+      true
+    ),
+    '{koshaPortalTimeline}',
+    (case when jsonb_typeof(${column}->'koshaPortalTimeline')='array' then ${column}->'koshaPortalTimeline' else '[]'::jsonb end) || ${timeline}::jsonb,
+    true
+  )`;
+}
 
 export function createKoshaInstructionStore(connection: Connection = db): InstructionStore {
   return {
@@ -33,13 +88,13 @@ export function createKoshaInstructionStore(connection: Connection = db): Instru
       if (scope.source === "kosha") {
         await connection.insert(koshaBookingEventsTable).values({ ...event, bookingId: scope.id, createdAt: instruction.updatedAt });
       } else {
-        // Append against the locked/current JSON value, preserving every unrelated key
-        // and any concurrent execution-history appends; never replace custom_fields.
-        await connection.execute(sql`update service_orders set custom_fields = jsonb_set(
-          coalesce(custom_fields, '{}'::jsonb), '{koshaPortalTimeline}',
-          (case when jsonb_typeof(custom_fields->'koshaPortalTimeline')='array' then custom_fields->'koshaPortalTimeline' else '[]'::jsonb end)
-          || ${JSON.stringify([{ ...event, id: `instruction-${instruction.id}-${instruction.revision}`, createdAt: instruction.updatedAt.toISOString() }])}::jsonb),
-          updated_at = now() where id = ${scope.id} and archived_at is null`);
+        await connection.update(serviceOrdersTable).set({
+          customFields: routedKoshaCustomFieldsSql(
+            serviceOrdersTable.customFields,
+            {},
+            { timeline: [{ ...event, id: `instruction-${instruction.id}-${instruction.revision}`, createdAt: instruction.updatedAt.toISOString() }] },
+          ),
+        }).where(and(eq(serviceOrdersTable.id, scope.id), isNull(serviceOrdersTable.archivedAt)));
       }
     },
     async notify(scope, actor, action, instruction) {

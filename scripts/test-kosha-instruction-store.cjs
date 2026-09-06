@@ -26,11 +26,37 @@ if (fs.existsSync(filename)) {
   }, { filename });
 }
 assert.equal(typeof output.exports.createKoshaInstructionStore, 'function', 'Store must emit scoped instruction/read queries');
+assert.equal(typeof output.exports.mergeRoutedKoshaCustomFields, 'function', 'Routed execution writers must share an atomic merge contract');
+assert.equal(typeof output.exports.routedKoshaCustomFieldsSql, 'function', 'Routed execution writers must emit atomic JSONB updates');
 const store = output.exports.createKoshaInstructionStore(db);
 const scope = { id: 42, source: 'service', assignedStaff: [{ id: 2, name: 'Crew' }] };
 const actor = { id: 1, username: 'manager', role: 'admin', permissions: [] };
 const instruction = { id: 9, kind: 'note', revision: 2, caption: 'New note', mediaUrl: null, updatedAt: new Date('2026-09-06T10:00:00Z') };
 (async () => {
+  const instructionAudit = { id: 'instruction-9-2', type: 'instruction_edited', meta: { previous: { caption: 'Old note' }, current: { caption: 'New note' } } };
+  const stageAudit = { id: 'stage-42-1', type: 'stage', toStage: 'executed' };
+  const interleaved = output.exports.mergeRoutedKoshaCustomFields(
+    { bookingCenterServices: [{ type: 'kosha' }], koshaPortalTimeline: [instructionAudit], koshaPortalMedia: [{ id: 'existing-media' }] },
+    { executionStage: 'executed', koshaPortalTimeline: [], koshaPortalMedia: [] },
+    { timeline: [stageAudit], media: [{ id: 'new-media' }] },
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(interleaved.koshaPortalTimeline)), [instructionAudit, stageAudit], 'A stale staff stage write cannot erase an interleaved instruction audit');
+  assert.equal(interleaved.koshaPortalTimeline[0].meta.previous.caption, 'Old note', 'Instruction previous-caption audit survives the interleaving');
+  assert.deepEqual(JSON.parse(JSON.stringify(interleaved.koshaPortalMedia)), [{ id: 'existing-media' }, { id: 'new-media' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(interleaved.bookingCenterServices)), [{ type: 'kosha' }]);
+  await db.update(schema.serviceOrdersTable).set({
+    customFields: output.exports.routedKoshaCustomFieldsSql(
+      schema.serviceOrdersTable.customFields,
+      { executionStage: 'executed', koshaPortalTimeline: [], koshaPortalMedia: [] },
+      { timeline: [stageAudit], media: [{ id: 'new-media' }] },
+    ),
+  }).returning();
+  const atomic = queries.at(-1);
+  assert.match(atomic.sql, /custom_fields.*koshaPortalTimeline.*custom_fields.*koshaPortalTimeline/is, 'Timeline append reads the current database value');
+  assert.match(atomic.sql, /custom_fields.*koshaPortalMedia.*custom_fields.*koshaPortalMedia/is, 'Media append reads the current database value');
+  assert.ok(atomic.params.includes(JSON.stringify({ executionStage: 'executed' })), 'Stale arrays are stripped from the scalar patch');
+  assert.ok(atomic.params.includes(JSON.stringify([stageAudit])));
+
   await store.list(scope);
   assert.match(queries.at(-1).sql, /booking_source.*=.*booking_id.*=.*archived_at.*is null/i);
   assert.deepEqual(queries.at(-1).params, ['service', 42]);

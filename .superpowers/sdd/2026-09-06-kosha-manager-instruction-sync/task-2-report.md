@@ -114,3 +114,62 @@ exit_code=1
 ## Remaining concern
 
 - No separately verified `TEST_DATABASE_URL` was configured, so real database write-path integration coverage remains unavailable. The focused suite covers service behavior, rollback semantics through its transactional fake, and generated Drizzle SQL contracts; production build and the full non-write critical gate pass.
+
+## Fix round 1 — review findings
+
+### Rendered execution snapshot
+
+- Manager `POST /execution-viewed` now parses the JSON body and requires `payload.viewedThrough`.
+- The service validates the snapshot as a finite timestamp no later than the server clock, then sends it to the existing monotonic `greatest(existing, incoming)` read upsert.
+- A regression holds the rendered snapshot at `2026-09-06T09:00:30.000Z`, advances the server clock, records the manager review, and uploads a staff update at `09:00:45`. The later staff update remains unread, proving a concurrent upload is not swallowed by server-time acknowledgement.
+- Missing and future `viewedThrough` values return the existing structured 422 instruction error rather than being silently accepted.
+
+### Routed timeline interleaving
+
+- Reviewed all routed Kosha timeline/media writers. The affected callers are stage updates, standalone media uploads, delivery completion, and instruction audit events.
+- Added one shared current-row JSONB merge expression. Scalar patches are merged into the current `custom_fields`; reserved `koshaPortalTimeline` and `koshaPortalMedia` arrays are removed from stale patches and appended against the database row inside the update statement.
+- Rewired all four callers to that expression. Existing compare-and-set stage guards, delivery financial fields, permissions, and AJN structured error handling remain unchanged.
+- An interleaving regression starts from a current database timeline containing an instruction-edit event with `meta.previous.caption = "Old note"`, applies a stale stage snapshot, and proves the prior audit entry survives while the new stage event and media append.
+
+### Fix-round TDD and verification
+
+```text
+$ node scripts/test-kosha-instructions.cjs
+AssertionError: manager read used 2026-09-06T09:01:00.000Z instead of rendered snapshot 2026-09-06T09:00:30.000Z
+exit_code=1
+
+$ node scripts/test-kosha-instructions.cjs
+PASS: Kosha instruction routes, authorization, validation, source isolation, single storage, audit, notifications, revision, archive, read channels/races, batched counts and failure propagation
+exit_code=0
+
+$ node scripts/test-kosha-instruction-store.cjs
+AssertionError: routed custom-fields merge helpers were not exported
+exit_code=1
+
+$ node scripts/test-kosha-instruction-store.cjs
+PASS: Real Drizzle SQL source scoping, active filtering, row locks, batched unread, atomic routed timeline append, safe notification FK and failure propagation
+exit_code=0
+
+$ pnpm run test:kosha-operations
+All checks passed
+exit_code=0
+
+$ pnpm run typecheck
+$ tsc --noEmit
+exit_code=0
+
+$ pnpm run build
+✓ Compiled successfully in 5.2s
+Finished TypeScript in 32.5s
+✓ Generating static pages using 5 workers (1/1)
+exit_code=0
+
+$ pnpm run verify:critical
+✓ Compiled successfully in 5.1s
+Finished TypeScript in 31.5s
+AJN SAFETY CHECK PASSED — Push allowed.
+AJN DATABASE INTEGRATION TESTS: SKIPPED (normal release policy; not reported as PASS).
+exit_code=0
+```
+
+Per the fix-round instruction, `test:save-smoke` was not run. The database integration portion of `verify:critical` was **SKIPPED**, not passed, because no valid isolated `TEST_DATABASE_URL` is configured.

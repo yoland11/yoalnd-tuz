@@ -102,7 +102,7 @@ export function createKoshaInstructionService(
     async markViewed(scope: InstructionScope, actor: InstructionActor, audience: "staff" | "manager", viewedThrough?: unknown) {
       authorize(scope, actor, audience);
       const now = clock();
-      const viewedAt = audience === "manager" ? now : new Date(typeof viewedThrough === "string" ? viewedThrough : NaN);
+      const viewedAt = new Date(typeof viewedThrough === "string" ? viewedThrough : NaN);
       if (!Number.isFinite(viewedAt.getTime()) || viewedAt > now) throw new KoshaInstructionError(422, "وقت عرض التعليمات غير صالح");
       const read = await store.markViewed(scope, actor, audience === "staff" ? "manager_instruction" : "staff_execution", viewedAt);
       return { viewedAt: read.viewedAt.toISOString() };
@@ -144,7 +144,7 @@ export async function dispatchKoshaInstructionRequest(input: {
   if (method === "GET" && tail.length === 1 && tail[0] === "instruction-reads")
     return service.receipts(scope, actor);
   if (method === "POST" && tail.length === 1 && tail[0] === "execution-viewed")
-    return service.markViewed(scope, actor, "manager");
+    return service.markViewed(scope, actor, "manager", payload.viewedThrough);
   if (tail[0] === "instructions" && tail.length >= 2) {
     const instructionId = Number(tail[1]);
     if (!Number.isSafeInteger(instructionId) || instructionId <= 0)
