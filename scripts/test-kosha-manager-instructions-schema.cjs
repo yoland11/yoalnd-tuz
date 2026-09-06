@@ -17,7 +17,10 @@ require.extensions[".ts"] = (module, filename) => {
 
 const databaseSchema = require(path.resolve(__dirname, "../lib/db/src/schema/index.ts"));
 const { getTableColumns, getTableName, is } = require("drizzle-orm");
-const { getTableConfig, PgTable } = require("drizzle-orm/pg-core");
+const { getTableConfig, PgDialect, PgTable } = require("drizzle-orm/pg-core");
+
+const dialect = new PgDialect();
+const normalizeSql = (source) => source.replace(/\s+/g, " ").trim().toLowerCase();
 
 const expectedColumns = {
   kosha_manager_instructions: {
@@ -52,6 +55,17 @@ const exportedTables = [
   ["koshaBookingChannelReadsTable", "kosha_booking_channel_reads"],
 ];
 
+const expectedEnums = {
+  kosha_manager_instructions: {
+    booking_source: ["kosha", "service"],
+    kind: ["note", "image"],
+  },
+  kosha_booking_channel_reads: {
+    booking_source: ["kosha", "service"],
+    channel: ["manager_instruction", "staff_execution"],
+  },
+};
+
 for (const [exportName, tableName] of exportedTables) {
   const table = databaseSchema[exportName];
   assert.ok(table && is(table, PgTable), `${exportName} must be exported as a Drizzle table`);
@@ -67,6 +81,9 @@ for (const [exportName, tableName] of exportedTables) {
     assert.equal(Boolean(column.notNull), notNull, `${tableName}.${columnName} nullability`);
     assert.equal(Boolean(column.hasDefault), hasDefault, `${tableName}.${columnName} default`);
   }
+  for (const [columnName, enumValues] of Object.entries(expectedEnums[tableName])) {
+    assert.deepEqual(columns.get(columnName).enumValues, enumValues, `${tableName}.${columnName} must retain its inferred union`);
+  }
 
   const config = getTableConfig(table);
   const foreignKeys = config.foreignKeys.map((foreignKey) => foreignKey.reference());
@@ -78,36 +95,87 @@ const instructions = databaseSchema.koshaManagerInstructionsTable;
 const reads = databaseSchema.koshaBookingChannelReadsTable;
 
 const instructionConfig = getTableConfig(instructions);
-const instructionIndexes = instructionConfig.indexes.map((index) => index.config.columns.map((column) => column.name).join(","));
-assert.ok(instructionIndexes.includes("booking_source,booking_id,archived_at,created_at"), "instructions need an active-booking lookup index");
+const indexContracts = (config) => config.indexes.map((index) => ({
+  name: index.config.name,
+  columns: index.config.columns.map((column) => column.name),
+  unique: Boolean(index.config.unique),
+})).sort((a, b) => a.name.localeCompare(b.name));
+assert.deepEqual(indexContracts(instructionConfig), [{
+  name: "kosha_manager_instructions_active_booking_idx",
+  columns: ["booking_source", "booking_id", "archived_at", "created_at"],
+  unique: false,
+}], "instructions must retain their named active-booking lookup index");
 assert.deepEqual(
-  instructionConfig.foreignKeys.map((foreignKey) => foreignKey.reference().columns.map((column) => column.name)).sort(),
-  [["archived_by_staff_id"], ["uploaded_by_staff_id"]],
+  instructionConfig.foreignKeys.map((foreignKey) => {
+    const reference = foreignKey.reference();
+    return {
+      columns: reference.columns.map((column) => column.name),
+      table: getTableName(reference.foreignTable),
+      target: reference.foreignColumns.map((column) => column.name),
+      onDelete: foreignKey.onDelete,
+    };
+  }).sort((a, b) => a.columns[0].localeCompare(b.columns[0])),
+  [
+    { columns: ["archived_by_staff_id"], table: "staff", target: ["id"], onDelete: "set null" },
+    { columns: ["uploaded_by_staff_id"], table: "staff", target: ["id"], onDelete: "set null" },
+  ],
   "instructions must retain safe staff attribution after staff deletion",
 );
 assert.deepEqual(
-  instructionConfig.checks.map((constraint) => constraint.name).sort(),
-  ["kosha_manager_instructions_booking_source_check", "kosha_manager_instructions_kind_check", "kosha_manager_instructions_media_check"],
+  instructionConfig.checks.map((constraint) => ({ name: constraint.name, sql: dialect.sqlToQuery(constraint.value).sql })).sort((a, b) => a.name.localeCompare(b.name)),
+  [
+    { name: "kosha_manager_instructions_booking_source_check", sql: "\"kosha_manager_instructions\".\"booking_source\" in ('kosha', 'service')" },
+    { name: "kosha_manager_instructions_kind_check", sql: "\"kosha_manager_instructions\".\"kind\" in ('note', 'image')" },
+    { name: "kosha_manager_instructions_media_check", sql: "(\"kosha_manager_instructions\".\"kind\" = 'image' and \"kosha_manager_instructions\".\"media_url\" is not null and btrim(\"kosha_manager_instructions\".\"media_url\") <> '') or (\"kosha_manager_instructions\".\"kind\" = 'note' and \"kosha_manager_instructions\".\"media_url\" is null)" },
+  ],
   "instructions must constrain source, kind, and image media",
 );
+assert.equal(getTableColumns(instructions).revision.default, 1, "instructions must default revision to one");
 
 const readConfig = getTableConfig(reads);
-const readIndexes = readConfig.indexes.map((index) => ({
-  columns: index.config.columns.map((column) => column.name).join(","),
-  unique: Boolean(index.config.unique),
-}));
-assert.ok(readIndexes.some((index) => index.columns === "booking_source,booking_id,staff_id,channel" && index.unique), "reads must be unique per booking, staff, and channel");
-assert.ok(readIndexes.some((index) => index.columns === "booking_source,booking_id,channel" && !index.unique), "reads need a booking/channel lookup index");
+assert.deepEqual(indexContracts(readConfig), [
+  { name: "kosha_booking_channel_reads_booking_channel_idx", columns: ["booking_source", "booking_id", "channel"], unique: false },
+  { name: "kosha_booking_channel_reads_identity_idx", columns: ["booking_source", "booking_id", "staff_id", "channel"], unique: true },
+], "reads must retain named unique and lookup indexes");
 assert.deepEqual(
-  readConfig.foreignKeys.map((foreignKey) => foreignKey.reference().columns.map((column) => column.name)),
-  [["staff_id"]],
+  readConfig.foreignKeys.map((foreignKey) => {
+    const reference = foreignKey.reference();
+    return {
+      columns: reference.columns.map((column) => column.name),
+      table: getTableName(reference.foreignTable),
+      target: reference.foreignColumns.map((column) => column.name),
+      onDelete: foreignKey.onDelete,
+    };
+  }),
+  [{ columns: ["staff_id"], table: "staff", target: ["id"], onDelete: "restrict" }],
   "reads must attribute the viewer to staff",
 );
 assert.deepEqual(
-  readConfig.checks.map((constraint) => constraint.name),
-  ["kosha_booking_channel_reads_booking_source_check", "kosha_booking_channel_reads_channel_check"],
+  readConfig.checks.map((constraint) => ({ name: constraint.name, sql: dialect.sqlToQuery(constraint.value).sql })).sort((a, b) => a.name.localeCompare(b.name)),
+  [
+    { name: "kosha_booking_channel_reads_booking_source_check", sql: "\"kosha_booking_channel_reads\".\"booking_source\" in ('kosha', 'service')" },
+    { name: "kosha_booking_channel_reads_channel_check", sql: "\"kosha_booking_channel_reads\".\"channel\" in ('manager_instruction', 'staff_execution')" },
+  ],
   "reads must constrain booking source and channels",
 );
+
+const migrationSql = normalizeSql(fs.readFileSync(path.resolve(__dirname, "../lib/db/migrations/0110_kosha_manager_instructions.sql"), "utf8"));
+for (const fragment of [
+  'create table if not exists "kosha_manager_instructions"',
+  '"uploaded_by_staff_id" integer references "staff" ("id") on delete set null',
+  '"archived_by_staff_id" integer references "staff" ("id") on delete set null',
+  '"revision" integer not null default 1',
+  'constraint "kosha_manager_instructions_booking_source_check" check ("booking_source" in (\'kosha\', \'service\'))',
+  'constraint "kosha_manager_instructions_kind_check" check ("kind" in (\'note\', \'image\'))',
+  'constraint "kosha_manager_instructions_media_check" check (("kind" = \'image\' and "media_url" is not null and btrim("media_url") <> \'\') or ("kind" = \'note\' and "media_url" is null))',
+  'create index if not exists "kosha_manager_instructions_active_booking_idx" on "kosha_manager_instructions" ("booking_source", "booking_id", "archived_at", "created_at")',
+  'create table if not exists "kosha_booking_channel_reads"',
+  '"staff_id" integer not null references "staff" ("id") on delete restrict',
+  'constraint "kosha_booking_channel_reads_booking_source_check" check ("booking_source" in (\'kosha\', \'service\'))',
+  'constraint "kosha_booking_channel_reads_channel_check" check ("channel" in (\'manager_instruction\', \'staff_execution\'))',
+  'create unique index if not exists "kosha_booking_channel_reads_identity_idx" on "kosha_booking_channel_reads" ("booking_source", "booking_id", "staff_id", "channel")',
+  'create index if not exists "kosha_booking_channel_reads_booking_channel_idx" on "kosha_booking_channel_reads" ("booking_source", "booking_id", "channel")',
+]) assert.ok(migrationSql.includes(fragment), `migration must retain: ${fragment}`);
 
 assert.ok("koshaManagerInstructionsRelations" in databaseSchema, "instruction staff relations must be exported");
 assert.ok("koshaBookingChannelReadsRelations" in databaseSchema, "channel-read staff relations must be exported");

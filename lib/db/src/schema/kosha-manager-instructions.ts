@@ -2,6 +2,9 @@ import { relations, sql } from "drizzle-orm";
 import { check, index, integer, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 import { staffTable } from "./staff";
 
+export const KOSHA_BOOKING_SOURCES = ["kosha", "service"] as const;
+export type KoshaBookingSource = (typeof KOSHA_BOOKING_SOURCES)[number];
+
 export const KOSHA_MANAGER_INSTRUCTION_KINDS = ["note", "image"] as const;
 export type KoshaManagerInstructionKind = (typeof KOSHA_MANAGER_INSTRUCTION_KINDS)[number];
 
@@ -14,9 +17,9 @@ export type KoshaBookingChannel = (typeof KOSHA_BOOKING_CHANNELS)[number];
  */
 export const koshaManagerInstructionsTable = pgTable("kosha_manager_instructions", {
   id: serial("id").primaryKey(),
-  bookingSource: varchar("booking_source", { length: 12 }).notNull(),
+  bookingSource: varchar("booking_source", { length: 12, enum: KOSHA_BOOKING_SOURCES }).notNull(),
   bookingId: integer("booking_id").notNull(),
-  kind: varchar("kind", { length: 12 }).notNull(),
+  kind: varchar("kind", { length: 12, enum: KOSHA_MANAGER_INSTRUCTION_KINDS }).notNull(),
   mediaUrl: text("media_url"),
   caption: text("caption"),
   uploadedByStaffId: integer("uploaded_by_staff_id").references(() => staffTable.id, { onDelete: "set null" }),
@@ -39,10 +42,10 @@ export const koshaManagerInstructionsTable = pgTable("kosha_manager_instructions
  */
 export const koshaBookingChannelReadsTable = pgTable("kosha_booking_channel_reads", {
   id: serial("id").primaryKey(),
-  bookingSource: varchar("booking_source", { length: 12 }).notNull(),
+  bookingSource: varchar("booking_source", { length: 12, enum: KOSHA_BOOKING_SOURCES }).notNull(),
   bookingId: integer("booking_id").notNull(),
   staffId: integer("staff_id").notNull().references(() => staffTable.id, { onDelete: "restrict" }),
-  channel: varchar("channel", { length: 24 }).notNull(),
+  channel: varchar("channel", { length: 24, enum: KOSHA_BOOKING_CHANNELS }).notNull(),
   viewedAt: timestamp("viewed_at").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
