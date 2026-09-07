@@ -98,5 +98,5 @@ export type KoshaManagerDetail = {
   assignedStaff: Array<{ id: number | null; name: string; role: string }>;
   delivery: { hasLoss: boolean; hasBreakage: boolean; note: string | null; staffName: string | null; createdAt: string | null; signatureUrl: string | null } | null;
   workOrder: { id: number; number: string; status: string; leaderName: string | null; requiredArrivalAt: string | null; completedAt: string | null } | null;
-  permissions: { execution: boolean; resolveProblems: boolean; manageInstructions?: boolean };
+  permissions: { execution: boolean; resolveProblems: boolean; manageInstructions: boolean };
 };

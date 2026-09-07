@@ -30,7 +30,7 @@ import {
   uploadProgressLabel,
   type ImageUploadProgress,
 } from "@/lib/large-image-upload";
-import { adminFetch, apiErrorMessage, fetchAdminMe } from "@/views/admin/_lib";
+import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
@@ -222,14 +222,7 @@ function ManagerInstructions({ detail }: { detail: KoshaManagerDetail }) {
   const [archiveId, setArchiveId] = useState<number | null>(null);
 
   const instructions = useQuery(managerInstructionsQuery(detail.booking));
-  const session = useQuery({
-    queryKey: ["admin", "auth", "me", "kosha-manager-instructions"],
-    queryFn: () => fetchAdminMe({ force: true }),
-  });
-  const role = session.data?.role;
-  const canManage =
-    detail.permissions.manageInstructions === true ||
-    (detail.permissions.manageInstructions !== false && (role === "admin" || role === "manager"));
+  const canManage = detail.permissions.manageInstructions;
   const invalidateInstructions = () => {
     void client.invalidateQueries({ queryKey: ["admin", "kosha-manager", "instructions", bookingIdentity(detail.booking)] });
     void client.invalidateQueries({ queryKey: ["admin", "kosha-manager", "instruction-reads", bookingIdentity(detail.booking)] });

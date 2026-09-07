@@ -3,6 +3,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { bookingPhotosFromFields, bookingPhotoPreview } from "@/lib/booking-photos";
 import { bookingIdentity, bookingNumber, executionLabels, filterManagerHeaders, managerStats, type ManagerHeader } from "@/lib/kosha-manager";
 import type { KoshaManagerActivity, KoshaManagerBooking, KoshaManagerDetail, KoshaManagerList, KoshaManagerSource, KoshaManagerTimeline } from "@/lib/kosha-manager-contract";
+import { mayManageKoshaInstructions } from "./kosha-instructions";
 
 type Row = Record<string, any>;
 type Actor = {id:number;role:string;fullName?:string|null;username:string;permissions:string[]};
@@ -114,7 +115,7 @@ export async function koshaManagerDetail(id:number,source:KoshaManagerSource,act
   if(source==="service") {const original=await db.query.serviceOrdersTable.findFirst({where:eq(serviceOrdersTable.id,id)});const service=original?await db.query.servicesTable.findFirst({where:eq(servicesTable.id,original.serviceId)}):null;if(!original||!adapters.routed(original,service))return null;}
   const execution=mayViewKoshaExecution(actor);
   const safeBooking=execution?booking:redactExecutionBooking(booking);
-  const result:KoshaManagerDetail={booking:safeBooking,media:[],timeline:[],damages:[],referencePhotos:execution?[...bookingPhotosFromFields(booking.bookingDetails).map(bookingPhotoPreview),...(booking.venueImages||[])]:[],assignedStaff:execution?booking.assignedEmployees.map(name=>({id:null,name,role:"الفريق"})):[],delivery:null,workOrder:null,permissions:{execution,resolveProblems:execution&&mayResolveKoshaProblem(actor)}};
+  const result:KoshaManagerDetail={booking:safeBooking,media:[],timeline:[],damages:[],referencePhotos:execution?[...bookingPhotosFromFields(booking.bookingDetails).map(bookingPhotoPreview),...(booking.venueImages||[])]:[],assignedStaff:execution?booking.assignedEmployees.map(name=>({id:null,name,role:"الفريق"})):[],delivery:null,workOrder:null,permissions:{execution,resolveProblems:execution&&mayResolveKoshaProblem(actor),manageInstructions:mayManageKoshaInstructions(actor)}};
   if(!execution)return result;
   const fields=booking.bookingDetails as Row;
   const [media,events,damage,workorders,audit]=await Promise.all([
