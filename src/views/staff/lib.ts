@@ -2,6 +2,10 @@ import { adminFetch, compressImageFile, fileToDataUrl } from "@/views/admin/_lib
 import { uploadImageWithVariants } from "@/lib/large-image-upload";
 import { mutateOrQueue, type QueuedResult } from "./offline";
 import { formatMoney } from "@/lib/money";
+import type {
+  KoshaManagerInstruction,
+  KoshaManagerInstructionList,
+} from "@/lib/kosha-manager-contract";
 
 /**
  * Execution stages stored by the existing booking workflow. These keys must remain
@@ -112,6 +116,8 @@ export type CrewBooking = {
   selectedAccessories?: string[];
   selectedAddons?: string[];
   welcomeBoards?: string[];
+  /** Batched by the server for booking lists; older dashboard payloads may omit it. */
+  unreadInstructionCount?: number;
 };
 
 export type MediaRow = { id: number; url: string; kind: "image" | "video"; purpose: string; stage: string | null; createdAt: string };
@@ -139,7 +145,9 @@ export type KoshaSetup = {
   accessories: SetupItem[];
   package: { name: string; image: string | null; price: number; contents: string[] } | null;
 };
-export type BookingDetail = { booking: CrewBooking; setup?: KoshaSetup; timeline: TimelineRow[]; media: MediaRow[]; delivery: DeliveryRow; paymentRequests: PaymentReq[] };
+export type StaffManagerInstruction = KoshaManagerInstruction;
+export type StaffManagerInstructionList = KoshaManagerInstructionList;
+export type BookingDetail = { booking: CrewBooking; setup?: KoshaSetup; timeline: TimelineRow[]; media: MediaRow[]; delivery: DeliveryRow; paymentRequests: PaymentReq[]; unreadInstructionCount: number };
 
 export type MediaInput = {
   url: string;
@@ -194,6 +202,13 @@ export const staffApi = {
   bookings: (bucket: Bucket | "all", search = "") =>
     adminFetch<CrewBooking[]>(`${base}/bookings?bucket=${bucket}&search=${encodeURIComponent(search)}`),
   booking: (id: number, source: "kosha" | "service" = "kosha") => adminFetch<BookingDetail>(`${base}/bookings/${id}${sourceQuery(source)}`),
+  instructions: (id: number, source: "kosha" | "service" = "kosha") =>
+    adminFetch<StaffManagerInstructionList>(`${base}/bookings/${id}/instructions${sourceQuery(source)}`),
+  markInstructionsViewed: (id: number, viewedThrough: string, source: "kosha" | "service" = "kosha") =>
+    adminFetch<{ viewedAt: string }>(`${base}/bookings/${id}/instructions/viewed${sourceQuery(source)}`, {
+      method: "POST",
+      body: JSON.stringify({ viewedThrough }),
+    }),
   setStage: (id: number, toStage: StageKey, note?: string, media?: MediaInput[], source: "kosha" | "service" = "kosha"): Promise<BookingDetail | QueuedResult> =>
     mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/stage${sourceQuery(source)}`, { method: "POST", body: JSON.stringify({ toStage, note, media }) }),
   uploadMedia: (id: number, media: MediaInput[], purpose = "execution", note?: string, source: "kosha" | "service" = "kosha"): Promise<BookingDetail | QueuedResult> =>

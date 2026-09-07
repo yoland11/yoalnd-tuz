@@ -122,6 +122,11 @@ function BookingCard({ b }: { b: CrewBooking }) {
       ) : b.remainingAmount > 0 ? (
         <div className="mt-2 text-xs font-medium text-destructive">متبقٍ: {money(b.remainingAmount)} د.ع</div>
       ) : null}
+      {(b.unreadInstructionCount ?? 0) > 0 ? (
+        <div className="mt-2 inline-flex rounded-full bg-primary px-2.5 py-1 text-xs font-bold text-primary-foreground">
+          تعليمات الإدارة • {b.unreadInstructionCount} جديد
+        </div>
+      ) : null}
     </Link>
   );
 }

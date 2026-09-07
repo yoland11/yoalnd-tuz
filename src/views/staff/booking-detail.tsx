@@ -15,6 +15,7 @@ import {
   validateImageUpload,
   type ImageUploadProgress,
 } from "@/lib/large-image-upload";
+import { StaffManagerInstructions } from "./manager-instructions";
 
 const PURPOSE_LABEL: Record<string, string> = {
   execution: "التنفيذ", delivery: "التسليم", breakage: "كسر/فقدان", loss: "فقدان", signature: "توقيع",
@@ -429,6 +430,13 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
             <SetupGroup title="الإكسسوارات" items={setup.accessories} onZoom={setLightbox} showPrices={false} />
           </div>
         )}
+
+        <StaffManagerInstructions
+          key={`${source}:${id}`}
+          bookingId={id}
+          source={source}
+          initialUnreadCount={data.unreadInstructionCount}
+        />
 
         {/* Stage stepper */}
         <div ref={stageRef} className="rounded-xl border border-border bg-card p-3">
