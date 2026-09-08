@@ -64542,11 +64542,24 @@ async function handleStaffPortal(
       if (b === "today") todayList.push(r);
       if (b === "tomorrow") tomorrowList.push(r);
     }
+    const dashboardRows = [...todayList, ...tomorrowList];
+    const instructionScopes = dashboardRows.map(instructionScopeFromCrewBooking);
+    const unreadInstructions = await koshaInstructionService.unread(
+      instructionScopes,
+      auth,
+    );
+    const dashboardRowsWithUnread = dashboardRows.map((row, index) => ({
+      ...row,
+      unreadInstructionCount:
+        unreadInstructions.get(
+          `${instructionScopes[index].source}:${instructionScopes[index].id}`,
+        ) ?? 0,
+    }));
     return json({
       today,
       counts,
-      todayBookings: todayList,
-      tomorrowBookings: tomorrowList,
+      todayBookings: dashboardRowsWithUnread.slice(0, todayList.length),
+      tomorrowBookings: dashboardRowsWithUnread.slice(todayList.length),
     });
   }
 

@@ -115,3 +115,56 @@ exit_code=0
 - `pnpm run test:staff-portal-auth` has an unrelated existing failure in the source-text assertion `simple salary portal derives the employee from the authenticated session`. This task does not touch `handleUnifiedStaffPortal`, salary handling, or that test. The mandatory `verify:critical` gate passed.
 - Full write-path database smoke coverage remains unavailable until a separate safe test database is configured.
 - Existing untracked `docs/superpowers/` files were present before Task 4 and were left untouched.
+
+## Follow-up: dashboard batching and bounded mobile viewer (2026-09-08)
+
+### Findings and changes
+
+- The staff dashboard previously returned its `todayBookings` and `tomorrowBookings` without instruction unread counts, unlike the booking list. The dashboard now constructs source-safe scopes for both buckets and calls `koshaInstructionService.unread` once for the complete dashboard set. The returned `Map` enriches the original bucket split with `unreadInstructionCount`; it does not issue a query per card.
+- The shared RTL image viewer could size a portrait image independently of a long caption. It now uses one bounded, fixed-height flex layout: the header is fixed, the image region yields available space, and the caption owns an independent bounded scroll region. Navigation controls remain over the contained image region.
+- The browser fixture now supplies a 240×960 portrait SVG and a long Arabic caption at a 390×500 viewport. It checks the dialog, image, caption, and navigation controls remain inside the viewport; that the dialog does not have unbounded overflow; and that the full caption is reachable by scrolling.
+- The fixture now exercises dashboard cards explicitly, proving the unread badges come from `/staff/koshas/dashboard` and that no per-booking instruction endpoint is requested during dashboard rendering.
+- Browser-test failures caused by missing runtime or app availability now exit with code 2 and explain: the no-write fixture guarantee, a Playwright-enabled `package.json` runtime, the optional `AJN_BROWSER_ORIGIN`, and the requirement that `/staff/koshas` returns HTTP 2xx.
+
+### Regression evidence
+
+The prerequisite regression was added first. Its initial run failed because the old message suggested the invalid `node_modules\\package.json` path instead of a resolver-capable project manifest:
+
+```text
+AssertionError [ERR_ASSERTION]: Browser fixture explains how to point AJN_BROWSER_RUNTIME at the project manifest
+```
+
+After updating the fixture’s guarded setup output, the focused contract test passed:
+
+```text
+node scripts/test-kosha-instructions.cjs
+PASS: Kosha instruction routes, authorization, validation, source isolation, single storage, audit, notifications, revision, archive, read channels/races, batched counts and failure propagation
+```
+
+### Verification
+
+```text
+pnpm run test:kosha-manager
+PASS: Kosha manager source identity, combined filters, event date and cancellation precedence
+
+pnpm run test:kosha-operations
+All checks passed
+
+pnpm run typecheck
+exit_code=0
+
+pnpm run build
+Compiled successfully; TypeScript and static generation completed
+exit_code=0
+
+pnpm run verify:critical
+AJN SAFETY CHECK PASSED — Push allowed.
+AJN DATABASE INTEGRATION TESTS: SKIPPED (normal release policy; not reported as PASS).
+exit_code=0
+```
+
+`pnpm run test:save-smoke` remains **SKIPPED**, not passed: no separately verified isolated test database was used for this follow-up.
+
+### Browser-fixture environment note
+
+The available local Playwright runtime resolved and launched. The full browser fixture could not reach its UI assertions because this worktree’s temporary app instances did not render `/staff/koshas`: the development server served the client-side 404 shell, and the production server returned HTTP 500 while reading the server-side `settings` table (database access denied). This is an environment/application-startup prerequisite failure, not an empty-data fallback and not a test pass. The fixture now reports that distinction explicitly.

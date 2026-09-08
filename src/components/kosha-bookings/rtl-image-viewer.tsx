@@ -96,7 +96,7 @@ export function RtlImageViewer({
       </div>
       <Dialog open={active !== null} onOpenChange={(open) => !open && setActiveIndex(null)}>
         <DialogContent
-          className="w-[min(calc(100vw-1rem),60rem)] max-w-none gap-4 overflow-hidden bg-[#fbfaf7] p-4"
+          className="flex h-[min(calc(100dvh-1rem),48rem)] w-[min(calc(100vw-1rem),60rem)] max-w-none flex-col gap-4 overflow-hidden bg-[#fbfaf7] p-4"
           dir="rtl"
           aria-label={`عارض صور ${title}`}
           onKeyDown={(event) => {
@@ -111,19 +111,19 @@ export function RtlImageViewer({
             }
           }}
         >
-          <DialogHeader>
+          <DialogHeader className="shrink-0">
             <DialogTitle>عارض صور {title}</DialogTitle>
             <DialogDescription>
               {active ? `${active.uploader || "AJN"} · ${displayTimestamp(active.timestamp)}` : "عرض الصور"}
             </DialogDescription>
           </DialogHeader>
           {active ? (
-            <figure className="min-w-0 space-y-3">
-              <div className="relative overflow-hidden rounded-2xl bg-[#111827]">
+            <figure className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
+              <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-2xl bg-[#111827]">
                 <img
                   src={active.url}
                   alt={imageLabel(active, title)}
-                  className="max-h-[70dvh] w-full object-contain"
+                  className="h-full max-h-full w-full object-contain"
                 />
                 {canMove ? (
                   <div className="absolute inset-x-3 top-1/2 flex -translate-y-1/2 justify-between">
@@ -150,7 +150,7 @@ export function RtlImageViewer({
                   </div>
                 ) : null}
               </div>
-              <figcaption className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-white p-3 text-sm text-slate-700">
+              <figcaption className="max-h-40 min-h-0 shrink-0 overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-xl bg-white p-3 text-sm text-slate-700">
                 {active.caption?.trim() || "لا توجد تسمية للصورة."}
               </figcaption>
             </figure>

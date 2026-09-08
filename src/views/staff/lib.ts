@@ -116,7 +116,7 @@ export type CrewBooking = {
   selectedAccessories?: string[];
   selectedAddons?: string[];
   welcomeBoards?: string[];
-  /** Batched by the server for booking lists; older dashboard payloads may omit it. */
+  /** Batched by the server for booking-list and dashboard card payloads. */
   unreadInstructionCount?: number;
 };
 

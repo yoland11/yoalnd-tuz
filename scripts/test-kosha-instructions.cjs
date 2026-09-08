@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
 const ts = require('typescript');
 const vm = require('node:vm');
 const filename = 'src/server/kosha-instructions.ts';
@@ -11,6 +12,38 @@ if (fs.existsSync(filename)) {
 const api = moduleValue.exports;
 assert.equal(typeof api.createKoshaInstructionService, 'function', 'Instruction service must implement the manager/staff contract');
 assert.equal(typeof api.dispatchKoshaInstructionRequest, 'function', 'Instruction routes must share one tested action dispatcher');
+
+// Dashboard cards are a separate server response from the booking list. Keep a
+// focused wiring contract here so a UI fixture cannot accidentally hide a
+// missing server-side batch enrichment.
+const apiSource = fs.readFileSync('src/server/api.ts', 'utf8');
+const dashboardStart = apiSource.indexOf('// ── Dashboard ──');
+const dashboardEnd = apiSource.indexOf('// ── Bookings list ──', dashboardStart);
+assert(dashboardStart >= 0 && dashboardEnd > dashboardStart, 'Staff dashboard route must remain discoverable');
+const dashboardRoute = apiSource.slice(dashboardStart, dashboardEnd);
+assert.equal(
+  (dashboardRoute.match(/koshaInstructionService\.unread/g) || []).length,
+  1,
+  'Dashboard must issue one batched unread-instruction lookup',
+);
+assert.match(dashboardRoute, /instructionScopeFromCrewBooking/, 'Dashboard must preserve native/service source identity');
+assert.match(dashboardRoute, /unreadInstructionCount/, 'Dashboard cards must receive their unread count');
+
+// A missing local Playwright installation is expected in lightweight developer
+// environments. The browser fixture must fail with an actionable setup command,
+// rather than an opaque module-resolution error.
+const browserPrerequisite = spawnSync(
+  process.execPath,
+  ['scripts/test-kosha-staff-instructions-browser.mjs'],
+  {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    env: { ...process.env, AJN_BROWSER_RUNTIME: undefined, AJN_BROWSER_ORIGIN: undefined },
+  },
+);
+assert.equal(browserPrerequisite.status, 2, 'Browser fixture reports a missing runtime as a prerequisite failure');
+assert.match(browserPrerequisite.stderr, /Resolve-Path 'C:\\path\\to\\playwright-enabled-project\\package\.json'/, 'Browser fixture explains how to point AJN_BROWSER_RUNTIME at a Playwright-enabled project manifest');
+assert.match(browserPrerequisite.stderr, /AJN_BROWSER_ORIGIN/, 'Browser fixture documents the optional running-app origin override');
 
 const manager = { id: 1, role: 'manager', username: 'manager', permissions: [] };
 const employee = { id: 2, role: 'employee', username: 'crew', permissions: ['koshas'] };
