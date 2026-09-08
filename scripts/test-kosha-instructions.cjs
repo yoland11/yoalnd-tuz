@@ -12,6 +12,7 @@ if (fs.existsSync(filename)) {
 const api = moduleValue.exports;
 assert.equal(typeof api.createKoshaInstructionService, 'function', 'Instruction service must implement the manager/staff contract');
 assert.equal(typeof api.dispatchKoshaInstructionRequest, 'function', 'Instruction routes must share one tested action dispatcher');
+assert.equal(typeof api.filterKoshaInstructionAuditTimeline, 'function', 'Staff detail must share the exact instruction authorization boundary');
 
 // Dashboard cards are a separate server response from the booking list. Keep a
 // focused wiring contract here so a UI fixture cannot accidentally hide a
@@ -50,7 +51,31 @@ const employee = { id: 2, role: 'employee', username: 'crew', permissions: ['kos
 const outsider = { ...employee, id: 99 };
 const kosha = { source: 'kosha', id: 4, assignedStaff: [{ id: 2, name: 'Crew' }, { id: 3, name: 'Assistant' }] };
 const service = { ...kosha, source: 'service' };
-let state = { instructions: [], reads: [], events: [], notifications: [] };
+const instructionAuditTimeline = [
+  { id: 'instruction-created', type: 'instruction_created', note: 'Private caption', meta: { current: { caption: 'Private caption', mediaUrl: '/uploads/private.webp' } } },
+  { id: 'staff-stage', type: 'stage_changed', note: 'Visible execution note' },
+];
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.filterKoshaInstructionAuditTimeline({ ...kosha, assignedStaff: [] }, employee, instructionAuditTimeline))),
+  [instructionAuditTimeline[1]],
+  'An ordinary employee viewing an unassigned native booking cannot receive manager instruction audit snapshots',
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.filterKoshaInstructionAuditTimeline({ ...service, assignedStaff: [] }, employee, instructionAuditTimeline))),
+  [instructionAuditTimeline[1]],
+  'An ordinary employee viewing an unassigned routed booking cannot receive manager instruction audit snapshots',
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.filterKoshaInstructionAuditTimeline({ ...kosha, assignedStaff: [] }, manager, instructionAuditTimeline))),
+  instructionAuditTimeline,
+  'Supervisors retain manager instruction audit history on unassigned bookings',
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.filterKoshaInstructionAuditTimeline(kosha, employee, instructionAuditTimeline))),
+  instructionAuditTimeline,
+  'Exactly assigned staff retain manager instruction audit history',
+);
+let state = { instructions: [], reads: [], events: [], notifications: [], bookingVersions: {} };
 let stored = [];
 let failEvents = false;
 let batchCalls = 0;
@@ -60,6 +85,12 @@ const store = {
     const before = structuredClone(state);
     try { return await callback(store); } catch (error) { state = before; throw error; }
   },
+  async nextVersion(scope) {
+    const identity = `${scope.source}:${scope.id}`;
+    state.bookingVersions[identity] = (state.bookingVersions[identity] ?? 0) + 1;
+    return state.bookingVersions[identity];
+  },
+  async currentVersion(scope) { return state.bookingVersions[`${scope.source}:${scope.id}`] ?? 0; },
   async list(scope) { return state.instructions.filter(r => key(r, scope) && !r.archivedAt); },
   async find(scope, id) { return state.instructions.find(r => key(r, scope) && r.id === id && !r.archivedAt); },
   async insert(value) { const row = { ...value, id: state.instructions.length + 1 }; state.instructions.push(row); return row; },
@@ -72,17 +103,20 @@ const store = {
     state.notifications.push(...scope.assignedStaff.map(staff => ({ staffId: staff.id, href: api.instructionBookingHref(scope), action, instructionId: instruction.id })));
   },
   async reads(scope, channel) { return state.reads.filter(r => key(r, scope) && r.channel === channel); },
-  async markViewed(scope, actor, channel, viewedAt) {
+  async markViewed(scope, actor, channel, viewedAt, viewedVersion) {
     let row = state.reads.find(r => key(r, scope) && r.staffId === actor.id && r.channel === channel);
-    if (!row) { row = { bookingSource: scope.source, bookingId: scope.id, staffId: actor.id, channel, viewedAt }; state.reads.push(row); }
-    else if (viewedAt > row.viewedAt) row.viewedAt = viewedAt;
+    if (!row) { row = { bookingSource: scope.source, bookingId: scope.id, staffId: actor.id, channel, viewedAt, viewedVersion }; state.reads.push(row); }
+    else {
+      if (viewedAt > row.viewedAt) row.viewedAt = viewedAt;
+      if (viewedVersion > row.viewedVersion) row.viewedVersion = viewedVersion;
+    }
     return row;
   },
   async unreadCounts(bookings, staffId) {
     batchCalls++;
     return new Map(bookings.map(scope => {
       const read = state.reads.find(r => key(r, scope) && r.staffId === staffId && r.channel === 'manager_instruction');
-      return [`${scope.source}:${scope.id}`, state.instructions.filter(r => key(r, scope) && !r.archivedAt && (!read || r.updatedAt > read.viewedAt)).length];
+      return [`${scope.source}:${scope.id}`, state.instructions.filter(r => key(r, scope) && !r.archivedAt && r.bookingVersion > (read?.viewedVersion ?? 0)).length];
     }));
   },
 };
@@ -101,6 +135,7 @@ const status = code => error => error.status === code;
   assert.equal(first.instruction.mediaUrl, '/uploads/one.png');
   assert.equal(stored.length, 1, 'One image stores bytes exactly once');
   assert.equal(state.instructions.length, 1);
+  assert.equal(first.instruction.bookingVersion, 1, 'The first instruction mutation receives booking cursor one');
   assert.equal(state.events.length, 1);
   assert.deepEqual(state.notifications.map(n => n.staffId), [2, 3]);
   assert.equal(state.notifications[0].href, '/staff/koshas/booking/4?source=kosha');
@@ -109,17 +144,19 @@ const status = code => error => error.status === code;
   assert.equal((await app.list(kosha, employee, 'staff')).instructions.length, 1);
   assert.equal(state.reads.length, 0, 'GET never marks instructions viewed');
   await assert.rejects(() => app.edit(service, manager, first.instruction.id, { caption: 'cross booking' }), status(404));
-  await assert.rejects(() => app.markViewed(kosha, outsider, 'staff', now.toISOString()), status(403));
-  await assert.rejects(() => app.markViewed(kosha, employee, 'staff', '2099-01-01T00:00:00.000Z'), status(422));
+  await assert.rejects(() => app.markViewed(kosha, outsider, 'staff', now.toISOString(), 1), status(403));
+  await assert.rejects(() => app.markViewed(kosha, employee, 'staff', '2099-01-01T00:00:00.000Z', 1), status(422));
   const snapshot = await app.list(kosha, employee, 'staff');
-  await app.markViewed(kosha, employee, 'staff', snapshot.latestAt);
+  assert.equal(snapshot.latestVersion, 1);
+  await app.markViewed(kosha, employee, 'staff', snapshot.latestAt, snapshot.latestVersion);
   assert.equal((await app.list(kosha, employee, 'staff')).unreadCount, 0);
   now = new Date('2026-09-06T09:01:00.000Z');
   const edited = await app.edit(kosha, manager, first.instruction.id, { caption: 'New placement' });
   assert.equal(edited.instruction.revision, 2);
   assert.equal(stored.length, 1, 'Caption edit reuses the same storage object');
   assert.equal(state.events[2].previous.caption, 'Placement', 'Audit retains previous caption');
-  await app.markViewed(kosha, employee, 'staff', snapshot.latestAt);
+  assert.equal(edited.instruction.bookingVersion, 2, 'Edits advance the booking cursor');
+  await app.markViewed(kosha, employee, 'staff', snapshot.latestAt, snapshot.latestVersion);
   assert.equal((await app.list(kosha, employee, 'staff')).unreadCount, 1, 'An edit after the rendered snapshot remains unread');
   const receipts = await app.receipts(kosha, manager);
   assert.equal(receipts.staff.length, 2);
@@ -139,16 +176,29 @@ const status = code => error => error.status === code;
     () => api.dispatchKoshaInstructionRequest({ service: app, surface: 'manager', method: 'POST', tail: ['execution-viewed'], scope: kosha, actor: manager, payload: {} }),
     status(422),
   );
+  const raceScope = { ...kosha, id: 404 };
+  now = new Date('2026-09-06T10:00:00.000Z');
+  await app.create(raceScope, manager, { kind: 'note', caption: 'Committed first' });
+  const raceSnapshot = await app.list(raceScope, employee, 'staff');
+  await app.markViewed(raceScope, employee, 'staff', raceSnapshot.latestAt, raceSnapshot.latestVersion);
+  now = new Date('2026-09-06T09:00:00.000Z');
+  const committedLater = await app.create(raceScope, manager, { kind: 'note', caption: 'Committed later with an older timestamp' });
+  assert.equal(committedLater.instruction.bookingVersion, 2);
+  assert.equal((await app.list(raceScope, employee, 'staff')).unreadCount, 1, 'A later cursor remains unread even when its timestamp sorts before the acknowledgement');
+  await assert.rejects(() => app.markViewed(raceScope, employee, 'staff', raceSnapshot.latestAt, 99), status(422));
+  now = new Date('2026-09-06T11:00:00.000Z');
+
   const batched = await app.unread([kosha, service], employee);
   assert.equal(batchCalls, 1);
   assert.equal(batched.get('kosha:4'), 1);
   assert.equal(batched.get('service:4'), 1);
+  const instructionRowsBeforeArchive = state.instructions.length;
   await app.archive(kosha, manager, first.instruction.id);
-  assert.equal(state.instructions.length, 2, 'Archive does not delete history');
+  assert.equal(state.instructions.length, instructionRowsBeforeArchive, 'Archive does not delete history');
   assert.equal((await app.list(kosha, employee, 'staff')).instructions.length, 0);
   failEvents = true;
   await assert.rejects(() => app.create(kosha, manager, { kind: 'note', caption: 'Must roll back' }), /timeline unavailable/);
-  assert.equal(state.instructions.length, 2, 'Event failure rolls instruction back');
+  assert.equal(state.instructions.length, instructionRowsBeforeArchive, 'Event failure rolls instruction back');
   failEvents = false;
   const broken = api.createKoshaInstructionService({ ...store, list: async () => { throw new Error('database offline'); } }, async () => null);
   await assert.rejects(() => broken.list(kosha, employee, 'staff'), /database offline/, 'Database failure is never converted to empty instructions');
@@ -164,7 +214,12 @@ const status = code => error => error.status === code;
   assert.equal(receiptList.staff.length, 2);
   await api.dispatchKoshaInstructionRequest({ service: app, surface: 'manager', method: 'POST', tail: ['execution-viewed'], scope: routeScope, actor: manager, payload: { viewedThrough: '2026-09-06T09:00:30.000Z' } });
   const staffView = await api.dispatchKoshaInstructionRequest({ service: app, surface: 'staff', method: 'GET', tail: ['instructions'], scope: routeScope, actor: employee });
-  await api.dispatchKoshaInstructionRequest({ service: app, surface: 'staff', method: 'POST', tail: ['instructions', 'viewed'], scope: routeScope, actor: employee, payload: { viewedThrough: staffView.latestAt } });
+  await assert.rejects(
+    () => api.dispatchKoshaInstructionRequest({ service: app, surface: 'staff', method: 'POST', tail: ['instructions', 'viewed'], scope: routeScope, actor: employee, payload: { viewedThrough: staffView.latestAt } }),
+    status(422),
+    'Staff acknowledgement requires the rendered monotonic cursor',
+  );
+  await api.dispatchKoshaInstructionRequest({ service: app, surface: 'staff', method: 'POST', tail: ['instructions', 'viewed'], scope: routeScope, actor: employee, payload: { viewedThrough: staffView.latestAt, viewedVersion: staffView.latestVersion } });
   assert.equal((await app.list(routeScope, employee, 'staff')).unreadCount, 0);
   await api.dispatchKoshaInstructionRequest({ service: app, surface: 'manager', method: 'POST', tail: ['instructions', String(created.instruction.id), 'archive'], scope: routeScope, actor: manager });
   assert.equal((await app.list(routeScope, employee, 'staff')).instructions.length, 0);

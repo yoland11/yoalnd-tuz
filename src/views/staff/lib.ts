@@ -204,10 +204,10 @@ export const staffApi = {
   booking: (id: number, source: "kosha" | "service" = "kosha") => adminFetch<BookingDetail>(`${base}/bookings/${id}${sourceQuery(source)}`),
   instructions: (id: number, source: "kosha" | "service" = "kosha") =>
     adminFetch<StaffManagerInstructionList>(`${base}/bookings/${id}/instructions${sourceQuery(source)}`),
-  markInstructionsViewed: (id: number, viewedThrough: string, source: "kosha" | "service" = "kosha") =>
-    adminFetch<{ viewedAt: string }>(`${base}/bookings/${id}/instructions/viewed${sourceQuery(source)}`, {
+  markInstructionsViewed: (id: number, viewedThrough: string, viewedVersion: number, source: "kosha" | "service" = "kosha") =>
+    adminFetch<{ viewedAt: string; viewedVersion: number }>(`${base}/bookings/${id}/instructions/viewed${sourceQuery(source)}`, {
       method: "POST",
-      body: JSON.stringify({ viewedThrough }),
+      body: JSON.stringify({ viewedThrough, viewedVersion }),
     }),
   setStage: (id: number, toStage: StageKey, note?: string, media?: MediaInput[], source: "kosha" | "service" = "kosha"): Promise<BookingDetail | QueuedResult> =>
     mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/stage${sourceQuery(source)}`, { method: "POST", body: JSON.stringify({ toStage, note, media }) }),

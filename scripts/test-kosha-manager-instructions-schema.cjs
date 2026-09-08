@@ -70,6 +70,7 @@ const expectedColumns = {
     uploaded_by_staff_id: ["integer", false, false],
     uploaded_by_name: ["text", false, false],
     revision: ["integer", true, true],
+    booking_version: ["bigint", true, false],
     archived_at: ["timestamp", false, false],
     archived_by_staff_id: ["integer", false, false],
     created_at: ["timestamp", true, true],
@@ -82,6 +83,14 @@ const expectedColumns = {
     staff_id: ["integer", true, false],
     channel: ["varchar(24)", true, false],
     viewed_at: ["timestamp", true, false],
+    viewed_version: ["bigint", true, true],
+    created_at: ["timestamp", true, true],
+    updated_at: ["timestamp", true, true],
+  },
+  kosha_instruction_booking_versions: {
+    booking_source: ["varchar(12)", true, false],
+    booking_id: ["integer", true, false],
+    current_version: ["bigint", true, true],
     created_at: ["timestamp", true, true],
     updated_at: ["timestamp", true, true],
   },
@@ -90,6 +99,7 @@ const expectedColumns = {
 const exportedTables = [
   ["koshaManagerInstructionsTable", "kosha_manager_instructions"],
   ["koshaBookingChannelReadsTable", "kosha_booking_channel_reads"],
+  ["koshaInstructionBookingVersionsTable", "kosha_instruction_booking_versions"],
 ];
 
 const expectedEnums = {
@@ -100,6 +110,9 @@ const expectedEnums = {
   kosha_booking_channel_reads: {
     booking_source: ["kosha", "service"],
     channel: ["manager_instruction", "staff_execution"],
+  },
+  kosha_instruction_booking_versions: {
+    booking_source: ["kosha", "service"],
   },
 };
 
@@ -130,6 +143,7 @@ for (const [exportName, tableName] of exportedTables) {
 
 const instructions = databaseSchema.koshaManagerInstructionsTable;
 const reads = databaseSchema.koshaBookingChannelReadsTable;
+const versions = databaseSchema.koshaInstructionBookingVersionsTable;
 
 const instructionConfig = getTableConfig(instructions);
 const indexContracts = (config) => config.indexes.map((index) => ({
@@ -139,7 +153,7 @@ const indexContracts = (config) => config.indexes.map((index) => ({
 })).sort((a, b) => a.name.localeCompare(b.name));
 assert.deepEqual(indexContracts(instructionConfig), [{
   name: "kosha_manager_instructions_active_booking_idx",
-  columns: ["booking_source", "booking_id", "archived_at", "created_at"],
+  columns: ["booking_source", "booking_id", "archived_at", "booking_version"],
   unique: false,
 }], "instructions must retain their named active-booking lookup index");
 assert.deepEqual(
@@ -195,6 +209,18 @@ assert.deepEqual(
   ],
   "reads must constrain booking source and channels",
 );
+assert.equal(getTableColumns(reads).viewedVersion.default, 0, "reads must default the monotonic cursor to zero");
+
+const versionConfig = getTableConfig(versions);
+assert.deepEqual(indexContracts(versionConfig), [
+  { name: "kosha_instruction_booking_versions_identity_idx", columns: ["booking_source", "booking_id"], unique: true },
+], "booking versions must serialize one cursor per source-safe booking identity");
+assert.deepEqual(
+  versionConfig.checks.map((constraint) => ({ name: constraint.name, sql: dialect.sqlToQuery(constraint.value).sql })),
+  [{ name: "kosha_instruction_booking_versions_booking_source_check", sql: "\"kosha_instruction_booking_versions\".\"booking_source\" in ('kosha', 'service')" }],
+  "booking versions must constrain their polymorphic source",
+);
+assert.equal(getTableColumns(versions).currentVersion.default, 0, "booking versions must start at zero");
 
 const stripSqlComments = (source) => source.replace(/^\s*--.*$/gm, "");
 const migrationStatements = (source) => stripSqlComments(source)
@@ -212,6 +238,7 @@ const expectedMigrationStatements = [
     "uploaded_by_staff_id" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
     "uploaded_by_name" text,
     "revision" integer NOT NULL DEFAULT 1,
+    "booking_version" bigint NOT NULL,
     "archived_at" timestamp,
     "archived_by_staff_id" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
     "created_at" timestamp NOT NULL DEFAULT now(),
@@ -224,7 +251,7 @@ const expectedMigrationStatements = [
       CHECK (("kind" = 'image' AND "media_url" IS NOT NULL AND btrim("media_url") <> '') OR ("kind" = 'note' AND "media_url" IS NULL))
   )`,
   `CREATE INDEX IF NOT EXISTS "kosha_manager_instructions_active_booking_idx"
-    ON "kosha_manager_instructions" ("booking_source", "booking_id", "archived_at", "created_at")`,
+    ON "kosha_manager_instructions" ("booking_source", "booking_id", "archived_at", "booking_version")`,
   `CREATE TABLE IF NOT EXISTS "kosha_booking_channel_reads" (
     "id" serial PRIMARY KEY NOT NULL,
     "booking_source" varchar(12) NOT NULL,
@@ -232,6 +259,7 @@ const expectedMigrationStatements = [
     "staff_id" integer NOT NULL REFERENCES "staff" ("id") ON DELETE RESTRICT,
     "channel" varchar(24) NOT NULL,
     "viewed_at" timestamp NOT NULL,
+    "viewed_version" bigint NOT NULL DEFAULT 0,
     "created_at" timestamp NOT NULL DEFAULT now(),
     "updated_at" timestamp NOT NULL DEFAULT now(),
     CONSTRAINT "kosha_booking_channel_reads_booking_source_check"
@@ -243,6 +271,17 @@ const expectedMigrationStatements = [
     ON "kosha_booking_channel_reads" ("booking_source", "booking_id", "staff_id", "channel")`,
   `CREATE INDEX IF NOT EXISTS "kosha_booking_channel_reads_booking_channel_idx"
     ON "kosha_booking_channel_reads" ("booking_source", "booking_id", "channel")`,
+  `CREATE TABLE IF NOT EXISTS "kosha_instruction_booking_versions" (
+    "booking_source" varchar(12) NOT NULL,
+    "booking_id" integer NOT NULL,
+    "current_version" bigint NOT NULL DEFAULT 0,
+    "created_at" timestamp NOT NULL DEFAULT now(),
+    "updated_at" timestamp NOT NULL DEFAULT now(),
+    CONSTRAINT "kosha_instruction_booking_versions_booking_source_check"
+      CHECK ("booking_source" IN ('kosha', 'service'))
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "kosha_instruction_booking_versions_identity_idx"
+    ON "kosha_instruction_booking_versions" ("booking_source", "booking_id")`,
 ].map(normalizeSql);
 const assertMigrationContract = (source) => {
   const uncommented = stripSqlComments(source);

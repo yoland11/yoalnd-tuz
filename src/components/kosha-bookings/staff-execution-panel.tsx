@@ -525,6 +525,30 @@ function ExecutionPhotos({ title, images }: { title: string; images: RtlViewerIm
   );
 }
 
+function BookingReferencePhotos({ urls }: { urls: string[] }) {
+  const images: RtlViewerImage[] = urls.map((url, index) => ({
+    id: `booking-reference-${index + 1}`,
+    url,
+    caption: `صورة مرجعية محفوظة مع الحجز ${index + 1}`,
+    uploader: null,
+    timestamp: null,
+  }));
+  return (
+    <section className="space-y-3 rounded-2xl border border-[#e7dfd2] bg-[#faf8f5] p-4">
+      <h4 className="text-base font-semibold text-[#1f3047]">الصور المرجعية للحجز</h4>
+      <p className="text-xs text-slate-600">
+        صور مرجعية للعرض فقط من بيانات الحجز الأصلية؛ لا تُنشئ هذه الواجهة نسخة أخرى منها.
+      </p>
+      <RtlImageViewer
+        title="الصور المرجعية للحجز"
+        emptyText="لا توجد صور مرجعية محفوظة مع الحجز."
+        images={images}
+        accent="ivory"
+      />
+    </section>
+  );
+}
+
 export function StaffExecutionPanel({ detail }: { detail: KoshaManagerDetail }) {
   const client = useQueryClient();
   const acknowledgedSnapshots = useRef(new Set<string>());
@@ -630,6 +654,8 @@ export function StaffExecutionPanel({ detail }: { detail: KoshaManagerDetail }) 
           {ack.message}
         </p>
       ) : null}
+
+      <BookingReferencePhotos urls={detail.referencePhotos} />
 
       <ManagerInstructions detail={detail} />
 

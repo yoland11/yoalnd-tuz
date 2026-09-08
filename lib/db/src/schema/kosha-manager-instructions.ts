@@ -1,5 +1,5 @@
 import { relations, sql } from "drizzle-orm";
-import { check, index, integer, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
+import { bigint, check, index, integer, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 import { staffTable } from "./staff";
 
 export const KOSHA_BOOKING_SOURCES = ["kosha", "service"] as const;
@@ -25,12 +25,13 @@ export const koshaManagerInstructionsTable = pgTable("kosha_manager_instructions
   uploadedByStaffId: integer("uploaded_by_staff_id").references(() => staffTable.id, { onDelete: "set null" }),
   uploadedByName: text("uploaded_by_name"),
   revision: integer("revision").notNull().default(1),
+  bookingVersion: bigint("booking_version", { mode: "number" }).notNull(),
   archivedAt: timestamp("archived_at"),
   archivedByStaffId: integer("archived_by_staff_id").references(() => staffTable.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [
-  index("kosha_manager_instructions_active_booking_idx").on(table.bookingSource, table.bookingId, table.archivedAt, table.createdAt),
+  index("kosha_manager_instructions_active_booking_idx").on(table.bookingSource, table.bookingId, table.archivedAt, table.bookingVersion),
   check("kosha_manager_instructions_booking_source_check", sql`${table.bookingSource} in ('kosha', 'service')`),
   check("kosha_manager_instructions_kind_check", sql`${table.kind} in ('note', 'image')`),
   check("kosha_manager_instructions_media_check", sql`(${table.kind} = 'image' and ${table.mediaUrl} is not null and btrim(${table.mediaUrl}) <> '') or (${table.kind} = 'note' and ${table.mediaUrl} is null)`),
@@ -47,6 +48,7 @@ export const koshaBookingChannelReadsTable = pgTable("kosha_booking_channel_read
   staffId: integer("staff_id").notNull().references(() => staffTable.id, { onDelete: "restrict" }),
   channel: varchar("channel", { length: 24, enum: KOSHA_BOOKING_CHANNELS }).notNull(),
   viewedAt: timestamp("viewed_at").notNull(),
+  viewedVersion: bigint("viewed_version", { mode: "number" }).notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [
@@ -54,6 +56,22 @@ export const koshaBookingChannelReadsTable = pgTable("kosha_booking_channel_read
   index("kosha_booking_channel_reads_booking_channel_idx").on(table.bookingSource, table.bookingId, table.channel),
   check("kosha_booking_channel_reads_booking_source_check", sql`${table.bookingSource} in ('kosha', 'service')`),
   check("kosha_booking_channel_reads_channel_check", sql`${table.channel} in ('manager_instruction', 'staff_execution')`),
+]);
+
+/**
+ * Serializes manager-instruction mutations per source-safe booking identity.
+ * The atomic upsert increment is the ordering boundary; unlike wall-clock
+ * timestamps, a version cannot be committed after a later acknowledged value.
+ */
+export const koshaInstructionBookingVersionsTable = pgTable("kosha_instruction_booking_versions", {
+  bookingSource: varchar("booking_source", { length: 12, enum: KOSHA_BOOKING_SOURCES }).notNull(),
+  bookingId: integer("booking_id").notNull(),
+  currentVersion: bigint("current_version", { mode: "number" }).notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("kosha_instruction_booking_versions_identity_idx").on(table.bookingSource, table.bookingId),
+  check("kosha_instruction_booking_versions_booking_source_check", sql`${table.bookingSource} in ('kosha', 'service')`),
 ]);
 
 export const koshaManagerInstructionsRelations = relations(koshaManagerInstructionsTable, ({ one }) => ({
@@ -81,3 +99,5 @@ export type KoshaManagerInstruction = typeof koshaManagerInstructionsTable.$infe
 export type NewKoshaManagerInstruction = typeof koshaManagerInstructionsTable.$inferInsert;
 export type KoshaBookingChannelRead = typeof koshaBookingChannelReadsTable.$inferSelect;
 export type NewKoshaBookingChannelRead = typeof koshaBookingChannelReadsTable.$inferInsert;
+export type KoshaInstructionBookingVersion = typeof koshaInstructionBookingVersionsTable.$inferSelect;
+export type NewKoshaInstructionBookingVersion = typeof koshaInstructionBookingVersionsTable.$inferInsert;

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS "kosha_manager_instructions" (
   "uploaded_by_staff_id" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
   "uploaded_by_name" text,
   "revision" integer NOT NULL DEFAULT 1,
+  "booking_version" bigint NOT NULL,
   "archived_at" timestamp,
   "archived_by_staff_id" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
   "created_at" timestamp NOT NULL DEFAULT now(),
@@ -25,7 +26,7 @@ CREATE TABLE IF NOT EXISTS "kosha_manager_instructions" (
 );
 
 CREATE INDEX IF NOT EXISTS "kosha_manager_instructions_active_booking_idx"
-  ON "kosha_manager_instructions" ("booking_source", "booking_id", "archived_at", "created_at");
+  ON "kosha_manager_instructions" ("booking_source", "booking_id", "archived_at", "booking_version");
 
 CREATE TABLE IF NOT EXISTS "kosha_booking_channel_reads" (
   "id" serial PRIMARY KEY NOT NULL,
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS "kosha_booking_channel_reads" (
   "staff_id" integer NOT NULL REFERENCES "staff" ("id") ON DELETE RESTRICT,
   "channel" varchar(24) NOT NULL,
   "viewed_at" timestamp NOT NULL,
+  "viewed_version" bigint NOT NULL DEFAULT 0,
   "created_at" timestamp NOT NULL DEFAULT now(),
   "updated_at" timestamp NOT NULL DEFAULT now(),
   CONSTRAINT "kosha_booking_channel_reads_booking_source_check"
@@ -46,3 +48,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS "kosha_booking_channel_reads_identity_idx"
   ON "kosha_booking_channel_reads" ("booking_source", "booking_id", "staff_id", "channel");
 CREATE INDEX IF NOT EXISTS "kosha_booking_channel_reads_booking_channel_idx"
   ON "kosha_booking_channel_reads" ("booking_source", "booking_id", "channel");
+
+CREATE TABLE IF NOT EXISTS "kosha_instruction_booking_versions" (
+  "booking_source" varchar(12) NOT NULL,
+  "booking_id" integer NOT NULL,
+  "current_version" bigint NOT NULL DEFAULT 0,
+  "created_at" timestamp NOT NULL DEFAULT now(),
+  "updated_at" timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT "kosha_instruction_booking_versions_booking_source_check"
+    CHECK ("booking_source" IN ('kosha', 'service'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS "kosha_instruction_booking_versions_identity_idx"
+  ON "kosha_instruction_booking_versions" ("booking_source", "booking_id");

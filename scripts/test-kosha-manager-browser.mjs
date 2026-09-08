@@ -15,7 +15,7 @@ const detail={booking:b,media:[
  {id:"note:1",type:"note",title:"ملاحظة الكادر",note:"اختبار عرض ملاحظة التنفيذ",staffName:"موظف اختبار",createdAt:"2026-09-05T12:00:00Z"},
  {id:"event:2",type:"stage_changed",title:"تحديث مرحلة",note:"أحدث نشاط موظف يجب الإقرار به",staffName:"موظف اختبار",createdAt:"2026-09-06T09:10:00.000Z"},
  {id:"instruction-audit:33",type:"instruction_edited",title:"تعديل تعليمات المدير",note:"لا تظهر هذه كملاحظة موظف",staffName:"مدير اختبار",createdAt:"2026-09-06T09:12:00.000Z"}
-],damages:[{id:1,kind:"damage",description:"مشكلة اختبار — دون تغيير بيانات",status:"open",priority:"low",photoUrl:"/uploads/staff/problem-report.webp",staffName:"منفذ اختبار",createdAt:"2026-09-06T09:06:00.000Z",resolvedAt:null,canResolve:false}],referencePhotos:[],assignedStaff:[{id:7,name:"سارة علي",role:"leader"},{id:8,name:"حيدر حسن",role:"assistant"}],delivery:null,workOrder:null,permissions:{execution:true,resolveProblems:false,manageInstructions:true}};
+],damages:[{id:1,kind:"damage",description:"مشكلة اختبار — دون تغيير بيانات",status:"open",priority:"low",photoUrl:"/uploads/staff/problem-report.webp",staffName:"منفذ اختبار",createdAt:"2026-09-06T09:06:00.000Z",resolvedAt:null,canResolve:false}],referencePhotos:["/uploads/bookings/existing-reference.webp"],assignedStaff:[{id:7,name:"سارة علي",role:"leader"},{id:8,name:"حيدر حسن",role:"assistant"}],delivery:null,workOrder:null,permissions:{execution:true,resolveProblems:false,manageInstructions:true}};
 const instructions={instructions:[
  {id:31,bookingSource:"kosha",bookingId:11,kind:"image",mediaUrl:"/uploads/kosha/instructions/reference-one.webp",caption:"اجعل الورود البيضاء أعلى القوس",uploadedByStaffId:1,uploadedByName:"مدير اختبار",revision:1,createdAt:"2026-09-06T08:00:00.000Z",updatedAt:"2026-09-06T08:00:00.000Z",archivedAt:null,archivedByStaffId:null},
  {id:32,bookingSource:"kosha",bookingId:11,kind:"note",mediaUrl:null,caption:"ترك مسافة واضحة للمرور خلف الكوشة.",uploadedByStaffId:1,uploadedByName:"مدير اختبار",revision:2,createdAt:"2026-09-06T08:05:00.000Z",updatedAt:"2026-09-06T08:06:00.000Z",archivedAt:null,archivedByStaffId:null}
@@ -51,6 +51,8 @@ await page.getByRole("heading",{name:"تفاصيل الحجز",exact:true}).wait
 await page.getByText("40% مدفوع",{exact:false}).waitFor();
 await page.getByRole("heading",{name:"تنفيذ الكادر",exact:true}).waitFor();
 await page.getByRole("heading",{name:"تعليمات المدير",exact:true}).waitFor();
+await page.getByRole("heading",{name:"الصور المرجعية للحجز",exact:true}).waitFor();
+await page.getByRole("button",{name:"تكبير صورة الصور المرجعية للحجز",exact:false}).waitFor();
 await page.getByRole("button",{name:"إضافة صورة",exact:true}).waitFor();
 await page.getByRole("button",{name:"إضافة ملاحظة",exact:true}).waitFor();
 assert.equal(authMeCalls,authMeCallsBeforeDetails,"Instruction controls must use manager detail permissions without an extra /admin/auth/me dependency");

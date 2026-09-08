@@ -69,6 +69,7 @@ export type KoshaManagerInstruction = {
   uploadedByStaffId: number | null;
   uploadedByName: string | null;
   revision: number;
+  bookingVersion: number;
   createdAt: string | null;
   updatedAt: string | null;
   archivedAt: string | null;
@@ -77,15 +78,19 @@ export type KoshaManagerInstruction = {
 export type KoshaManagerInstructionList = {
   instructions: KoshaManagerInstruction[];
   latestAt: string | null;
+  latestVersion: number;
   viewedAt: string | null;
+  viewedVersion: number;
   unreadCount: number;
 };
 export type KoshaManagerInstructionReads = {
   latestAt: string | null;
+  latestVersion: number;
   staff: Array<{
     id: number;
     name: string;
     viewedAt: string | null;
+    viewedVersion: number;
     hasViewedLatest: boolean;
   }>;
 };

@@ -1,4 +1,4 @@
-import { db, koshaManagerInstructionsTable as instructions, koshaBookingChannelReadsTable as reads, koshaBookingEventsTable, koshaStaffNotificationsTable, serviceOrdersTable, type KoshaManagerInstruction } from "@workspace/db";
+import { db, koshaManagerInstructionsTable as instructions, koshaBookingChannelReadsTable as reads, koshaInstructionBookingVersionsTable as versions, koshaBookingEventsTable, koshaStaffNotificationsTable, serviceOrdersTable, type KoshaManagerInstruction } from "@workspace/db";
 import { and, desc, eq, isNull, sql, type SQLWrapper } from "drizzle-orm";
 import { instructionBookingHref, KoshaInstructionError, type InstructionScope, type InstructionStore } from "./kosha-instructions";
 
@@ -46,25 +46,54 @@ export function routedKoshaCustomFieldsSql(
     koshaPortalMedia: _media,
     ...safePatch
   } = normalized;
-  const timeline = JSON.stringify(append.timeline ?? []);
-  const media = JSON.stringify(append.media ?? []);
-  return sql`jsonb_set(
-    jsonb_set(
-      coalesce(${column}, '{}'::jsonb) || ${JSON.stringify(safePatch)}::jsonb,
+  let merged = sql`coalesce(${column}, '{}'::jsonb) || ${JSON.stringify(safePatch)}::jsonb`;
+  if (append.media?.length) {
+    const media = JSON.stringify(append.media);
+    merged = sql`jsonb_set(
+      ${merged},
       '{koshaPortalMedia}',
       (case when jsonb_typeof(${column}->'koshaPortalMedia')='array' then ${column}->'koshaPortalMedia' else '[]'::jsonb end) || ${media}::jsonb,
       true
-    ),
-    '{koshaPortalTimeline}',
-    (case when jsonb_typeof(${column}->'koshaPortalTimeline')='array' then ${column}->'koshaPortalTimeline' else '[]'::jsonb end) || ${timeline}::jsonb,
-    true
-  )`;
+    )`;
+  }
+  if (append.timeline?.length) {
+    const timeline = JSON.stringify(append.timeline);
+    merged = sql`jsonb_set(
+      ${merged},
+      '{koshaPortalTimeline}',
+      (case when jsonb_typeof(${column}->'koshaPortalTimeline')='array' then ${column}->'koshaPortalTimeline' else '[]'::jsonb end) || ${timeline}::jsonb,
+      true
+    )`;
+  }
+  return merged;
 }
 
 export function createKoshaInstructionStore(connection: Connection = db): InstructionStore {
   return {
     transaction: work => db.transaction(tx => work(createKoshaInstructionStore(tx))),
-    list: scope => connection.select().from(instructions).where(identity(scope)).orderBy(desc(instructions.updatedAt), desc(instructions.id)),
+    async nextVersion(scope) {
+      const [row] = await connection.insert(versions).values({
+        bookingSource: scope.source,
+        bookingId: scope.id,
+        currentVersion: 1,
+      }).onConflictDoUpdate({
+        target: [versions.bookingSource, versions.bookingId],
+        set: {
+          currentVersion: sql`${versions.currentVersion} + 1`,
+          updatedAt: sql`now()`,
+        },
+      }).returning({ currentVersion: versions.currentVersion });
+      if (!row) throw new Error("Instruction booking version allocation returned no row");
+      return Number(row.currentVersion);
+    },
+    async currentVersion(scope) {
+      const [row] = await connection.select({ currentVersion: versions.currentVersion })
+        .from(versions)
+        .where(and(eq(versions.bookingSource, scope.source), eq(versions.bookingId, scope.id)))
+        .limit(1);
+      return Number(row?.currentVersion ?? 0);
+    },
+    list: scope => connection.select().from(instructions).where(identity(scope)).orderBy(desc(instructions.bookingVersion), desc(instructions.id)),
     async find(scope, id) {
       const [row] = await connection.select().from(instructions).where(and(identity(scope), eq(instructions.id, id))).limit(1).for("update");
       return row;
@@ -109,12 +138,16 @@ export function createKoshaInstructionStore(connection: Connection = db): Instru
         bookingId: scope.source === "kosha" ? scope.id : null,
       })));
     },
-    reads: (scope, channel) => connection.select({ staffId: reads.staffId, viewedAt: reads.viewedAt }).from(reads).where(and(eq(reads.bookingSource, scope.source), eq(reads.bookingId, scope.id), eq(reads.channel, channel))),
-    async markViewed(scope, actor, channel, viewedAt) {
-      const [row] = await connection.insert(reads).values({ bookingSource: scope.source, bookingId: scope.id, staffId: actor.id, channel, viewedAt }).onConflictDoUpdate({
+    reads: (scope, channel) => connection.select({ staffId: reads.staffId, viewedAt: reads.viewedAt, viewedVersion: reads.viewedVersion }).from(reads).where(and(eq(reads.bookingSource, scope.source), eq(reads.bookingId, scope.id), eq(reads.channel, channel))),
+    async markViewed(scope, actor, channel, viewedAt, viewedVersion) {
+      const [row] = await connection.insert(reads).values({ bookingSource: scope.source, bookingId: scope.id, staffId: actor.id, channel, viewedAt, viewedVersion }).onConflictDoUpdate({
         target: [reads.bookingSource, reads.bookingId, reads.staffId, reads.channel],
-        set: { viewedAt: sql`greatest(${reads.viewedAt}, excluded.viewed_at)`, updatedAt: sql`now()` },
-      }).returning({ staffId: reads.staffId, viewedAt: reads.viewedAt });
+        set: {
+          viewedAt: sql`greatest(${reads.viewedAt}, excluded.viewed_at)`,
+          viewedVersion: sql`greatest(${reads.viewedVersion}, excluded.viewed_version)`,
+          updatedAt: sql`now()`,
+        },
+      }).returning({ staffId: reads.staffId, viewedAt: reads.viewedAt, viewedVersion: reads.viewedVersion });
       if (!row) throw new Error("Instruction view upsert returned no row");
       return row;
     },
@@ -125,7 +158,7 @@ export function createKoshaInstructionStore(connection: Connection = db): Instru
         select distinct id, source from jsonb_to_recordset(${wanted}::jsonb) as x(id int, source text)
       ) select w.id, w.source, count(i.id)::int as unread_count from wanted w
         left join kosha_booking_channel_reads r on r.booking_id=w.id and r.booking_source=w.source and r.staff_id=${staffId} and r.channel='manager_instruction'
-        left join kosha_manager_instructions i on i.booking_id=w.id and i.booking_source=w.source and i.archived_at is null and (r.viewed_at is null or i.updated_at > r.viewed_at)
+        left join kosha_manager_instructions i on i.booking_id=w.id and i.booking_source=w.source and i.archived_at is null and i.booking_version > coalesce(r.viewed_version, 0)
         group by w.id,w.source`);
       return new Map((result.rows as Array<{ id: number; source: string; unread_count: number }>).map(row => [`${row.source}:${row.id}`, Number(row.unread_count)]));
     },

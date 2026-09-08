@@ -9,7 +9,8 @@ import {
 } from "./lib";
 
 type AcknowledgementState = {
-  snapshot: string | null;
+  snapshotAt: string | null;
+  snapshotVersion: number | null;
   status: "idle" | "pending" | "success" | "error";
   message: string | null;
 };
@@ -53,7 +54,8 @@ export function StaffManagerInstructions({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [acknowledgement, setAcknowledgement] = useState<AcknowledgementState>({
-    snapshot: null,
+    snapshotAt: null,
+    snapshotVersion: null,
     status: "idle",
     message: null,
   });
@@ -79,19 +81,21 @@ export function StaffManagerInstructions({
     void load();
   }, [load]);
 
-  const markViewed = useCallback((snapshot: string) => {
-    setAcknowledgement({ snapshot, status: "pending", message: null });
-    void staffApi.markInstructionsViewed(bookingId, snapshot, source)
+  const markViewed = useCallback((snapshotAt: string, snapshotVersion: number) => {
+    setAcknowledgement({ snapshotAt, snapshotVersion, status: "pending", message: null });
+    void staffApi.markInstructionsViewed(bookingId, snapshotAt, snapshotVersion, source)
       .then(() => {
         setAcknowledgement({
-          snapshot,
+          snapshotAt,
+          snapshotVersion,
           status: "success",
           message: "تم تسجيل قراءة التعليمات",
         });
       })
       .catch((error) => {
         setAcknowledgement({
-          snapshot,
+          snapshotAt,
+          snapshotVersion,
           status: "error",
           message: `تعذر تسجيل قراءة التعليمات: ${apiErrorMessage(error, "حاول مرة أخرى")}`,
         });
@@ -99,12 +103,14 @@ export function StaffManagerInstructions({
   }, [bookingId, source]);
 
   useEffect(() => {
-    const snapshot = instructions?.latestAt;
-    if (!snapshot || !instructions.unreadCount || attemptedSnapshots.current.has(snapshot)) return;
+    const snapshotAt = instructions?.latestAt;
+    const snapshotVersion = instructions?.latestVersion ?? 0;
+    const snapshotKey = `${snapshotVersion}:${snapshotAt ?? ""}`;
+    if (!snapshotAt || snapshotVersion <= 0 || !instructions?.unreadCount || attemptedSnapshots.current.has(snapshotKey)) return;
     // Effects run only after React commits the successfully loaded instruction section.
     // Capture the rendered snapshot before the request so a later update stays unread.
-    attemptedSnapshots.current.add(snapshot);
-    markViewed(snapshot);
+    attemptedSnapshots.current.add(snapshotKey);
+    markViewed(snapshotAt, snapshotVersion);
   }, [instructions, markViewed]);
 
   const notes = useMemo(
@@ -116,7 +122,7 @@ export function StaffManagerInstructions({
     [instructions],
   );
   const renderedUnreadCount = instructions?.unreadCount ?? Math.max(0, initialUnreadCount);
-  const unreadCount = acknowledgement.status === "success" && acknowledgement.snapshot === instructions?.latestAt
+  const unreadCount = acknowledgement.status === "success" && acknowledgement.snapshotVersion === instructions?.latestVersion
     ? 0
     : renderedUnreadCount;
 
@@ -191,7 +197,7 @@ export function StaffManagerInstructions({
           <button
             type="button"
             className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-bold text-primary"
-            onClick={() => acknowledgement.snapshot && markViewed(acknowledgement.snapshot)}
+            onClick={() => acknowledgement.snapshotAt && acknowledgement.snapshotVersion && markViewed(acknowledgement.snapshotAt, acknowledgement.snapshotVersion)}
           >
             <RotateCcw className="h-4 w-4" aria-hidden="true" />
             إعادة تسجيل القراءة

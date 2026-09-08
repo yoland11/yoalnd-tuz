@@ -99,20 +99,24 @@ const operations = (value) => ({
 });
 const nativeInstructions = {
   instructions: [
-    { id: 31, bookingSource: "kosha", bookingId: 11, kind: "image", mediaUrl: "/uploads/reference-one.png", caption: longCaption, uploadedByStaffId: 1, uploadedByName: "مدير الاختبار", revision: 1, createdAt: "2026-09-06T08:00:00.000Z", updatedAt: "2026-09-06T08:00:00.000Z", archivedAt: null, archivedByStaffId: null },
-    { id: 32, bookingSource: "kosha", bookingId: 11, kind: "image", mediaUrl: "/uploads/reference-two.png", caption: "الورود الوردية", uploadedByStaffId: 1, uploadedByName: "مدير الاختبار", revision: 1, createdAt: "2026-09-06T08:05:00.000Z", updatedAt: "2026-09-06T08:05:00.000Z", archivedAt: null, archivedByStaffId: null },
-    { id: 33, bookingSource: "kosha", bookingId: 11, kind: "note", mediaUrl: null, caption: "اترك ممراً آمناً خلف الكوشة.", uploadedByStaffId: 1, uploadedByName: "مدير الاختبار", revision: 2, createdAt: "2026-09-06T08:03:00.000Z", updatedAt: "2026-09-06T08:04:00.000Z", archivedAt: null, archivedByStaffId: null },
+    { id: 31, bookingSource: "kosha", bookingId: 11, kind: "image", mediaUrl: "/uploads/reference-one.png", caption: longCaption, uploadedByStaffId: 1, uploadedByName: "مدير الاختبار", revision: 1, bookingVersion: 1, createdAt: "2026-09-06T08:00:00.000Z", updatedAt: "2026-09-06T08:00:00.000Z", archivedAt: null, archivedByStaffId: null },
+    { id: 32, bookingSource: "kosha", bookingId: 11, kind: "image", mediaUrl: "/uploads/reference-two.png", caption: "الورود الوردية", uploadedByStaffId: 1, uploadedByName: "مدير الاختبار", revision: 1, bookingVersion: 2, createdAt: "2026-09-06T08:05:00.000Z", updatedAt: "2026-09-06T08:05:00.000Z", archivedAt: null, archivedByStaffId: null },
+    { id: 33, bookingSource: "kosha", bookingId: 11, kind: "note", mediaUrl: null, caption: "اترك ممراً آمناً خلف الكوشة.", uploadedByStaffId: 1, uploadedByName: "مدير الاختبار", revision: 2, bookingVersion: 3, createdAt: "2026-09-06T08:03:00.000Z", updatedAt: "2026-09-06T08:04:00.000Z", archivedAt: null, archivedByStaffId: null },
   ],
   latestAt: "2026-09-06T08:05:00.000Z",
+  latestVersion: 3,
   viewedAt: null,
+  viewedVersion: 0,
   unreadCount: 2,
 };
 const serviceInstructions = {
   instructions: [
-    { id: 41, bookingSource: "service", bookingId: 12, kind: "note", mediaUrl: null, caption: "تعليمات الخدمة الأصلية.", uploadedByStaffId: 2, uploadedByName: "مشرف الخدمة", revision: 1, createdAt: "2026-09-06T09:00:00.000Z", updatedAt: "2026-09-06T09:00:00.000Z", archivedAt: null, archivedByStaffId: null },
+    { id: 41, bookingSource: "service", bookingId: 12, kind: "note", mediaUrl: null, caption: "تعليمات الخدمة الأصلية.", uploadedByStaffId: 2, uploadedByName: "مشرف الخدمة", revision: 1, bookingVersion: 4, createdAt: "2026-09-06T09:00:00.000Z", updatedAt: "2026-09-06T09:00:00.000Z", archivedAt: null, archivedByStaffId: null },
   ],
   latestAt: "2026-09-06T09:00:00.000Z",
+  latestVersion: 4,
   viewedAt: null,
+  viewedVersion: 0,
   unreadCount: 1,
 };
 
@@ -154,7 +158,7 @@ try {
           failNativeViewed = false;
           return route.fulfill({ status: 500, json: { error: { message: "تعذر تسجيل القراءة التجريبية", code: "TEST_ERROR" } } });
         }
-        return route.fulfill({ json: { viewedAt: request.postDataJSON().viewedThrough } });
+        return route.fulfill({ json: { viewedAt: request.postDataJSON().viewedThrough, viewedVersion: request.postDataJSON().viewedVersion } });
       }
       if (path.endsWith(`${detailPath}/instructions`)) {
         instructionGets.push({ id: value.id, source: url.searchParams.get("source") });
@@ -210,12 +214,12 @@ try {
   }), "Manager instructions render before execution stage controls on mobile");
   await page.getByRole("alert").filter({ hasText: "تعذر تسجيل قراءة التعليمات" }).waitFor();
   await page.getByText("تعليمات الإدارة • 2 جديد", { exact: true }).waitFor();
-  assert.deepEqual(viewed, [{ id: 11, source: "kosha", body: { viewedThrough: nativeInstructions.latestAt } }], "Failed acknowledgement uses only the rendered native snapshot");
+  assert.deepEqual(viewed, [{ id: 11, source: "kosha", body: { viewedThrough: nativeInstructions.latestAt, viewedVersion: nativeInstructions.latestVersion } }], "Failed acknowledgement uses only the rendered native cursor snapshot");
   await page.getByRole("button", { name: "إعادة تسجيل القراءة", exact: true }).click();
   await page.getByText("تم تسجيل قراءة التعليمات", { exact: true }).waitFor();
   assert.deepEqual(viewed.slice(0, 2), [
-    { id: 11, source: "kosha", body: { viewedThrough: nativeInstructions.latestAt } },
-    { id: 11, source: "kosha", body: { viewedThrough: nativeInstructions.latestAt } },
+    { id: 11, source: "kosha", body: { viewedThrough: nativeInstructions.latestAt, viewedVersion: nativeInstructions.latestVersion } },
+    { id: 11, source: "kosha", body: { viewedThrough: nativeInstructions.latestAt, viewedVersion: nativeInstructions.latestVersion } },
   ], "Retry resends the captured snapshot exactly");
   assert.equal(await page.getByText("تعليمات الإدارة • 2 جديد", { exact: true }).count(), 0, "Unread badge clears only after acknowledgement succeeds");
 
@@ -225,6 +229,9 @@ try {
   await viewer.waitFor();
   const caption = viewer.locator("figcaption");
   await caption.getByText("نهاية التعليمات الطويلة", { exact: false }).waitFor();
+  await viewer.evaluate(async (dialog) => {
+    await Promise.all(dialog.getAnimations().map((animation) => animation.finished.catch(() => undefined)));
+  });
   const viewerGeometry = await viewer.evaluate((dialog) => {
     const dialogRect = dialog.getBoundingClientRect();
     const image = dialog.querySelector("figure img")?.getBoundingClientRect();
@@ -233,13 +240,14 @@ try {
       .map((button) => button.getBoundingClientRect());
     const inside = (rect) => rect && rect.top >= dialogRect.top - 1 && rect.bottom <= dialogRect.bottom + 1;
     return {
+      dialogRect: { top: dialogRect.top, bottom: dialogRect.bottom, height: dialogRect.height, viewportHeight: window.innerHeight },
       dialogFitsViewport: dialogRect.top >= 0 && dialogRect.bottom <= window.innerHeight,
       imageAndCaptionContained: inside(image) && inside(captionRect),
       actionsContained: actions.length === 2 && actions.every(inside),
       boundedContent: dialog.scrollHeight <= dialog.clientHeight + 1,
     };
   });
-  assert(viewerGeometry.dialogFitsViewport, "Portrait viewer stays within the short mobile viewport");
+  assert(viewerGeometry.dialogFitsViewport, `Portrait viewer stays within the short mobile viewport: ${JSON.stringify(viewerGeometry.dialogRect)}`);
   assert(viewerGeometry.imageAndCaptionContained, "Portrait image and long caption remain inside the dialog");
   assert(viewerGeometry.actionsContained, "Viewer actions remain reachable on a short mobile viewport");
   assert(viewerGeometry.boundedContent, "Viewer uses a bounded layout instead of clipping overflowing content");
@@ -258,7 +266,7 @@ try {
   await page.getByText("تعليمات الخدمة الأصلية.", { exact: true }).waitFor();
   await page.getByText("تم تسجيل قراءة التعليمات", { exact: true }).waitFor();
   assert.deepEqual(instructionGets.filter((entry) => entry.id === 12), [{ id: 12, source: "service" }, { id: 12, source: "service" }], "Service retry preserves the exact source query");
-  assert.deepEqual(viewed.find((entry) => entry.id === 12), { id: 12, source: "service", body: { viewedThrough: serviceInstructions.latestAt } }, "Service acknowledgement uses its rendered snapshot");
+  assert.deepEqual(viewed.find((entry) => entry.id === 12), { id: 12, source: "service", body: { viewedThrough: serviceInstructions.latestAt, viewedVersion: serviceInstructions.latestVersion } }, "Service acknowledgement uses its rendered cursor snapshot");
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), "Mobile staff detail must not overflow horizontally");
   assert.deepEqual(errors, [], "No browser runtime errors");
   console.log("PASS: staff manager instructions — dashboard/list batching contract, native/service identity, unread failure/retry, mobile order and bounded RTL viewer access");

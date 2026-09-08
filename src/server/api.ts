@@ -19,6 +19,7 @@ import {
 import {
   createKoshaInstructionService,
   dispatchKoshaInstructionRequest,
+  filterKoshaInstructionAuditTimeline,
   KoshaInstructionError,
   mayReadKoshaInstructions,
   type InstructionScope,
@@ -7155,9 +7156,7 @@ async function updateRoutedKoshaServiceBooking(
   const fields: Record<string, any> = {
     ...((order.customFields ?? {}) as Record<string, any>),
   };
-  const update: Partial<typeof serviceOrdersTable.$inferInsert> = {
-    customFields: fields,
-  };
+  const update: Partial<typeof serviceOrdersTable.$inferInsert> = {};
   for (const key of [
     "koshaId",
     "brideName",
@@ -7237,6 +7236,10 @@ async function updateRoutedKoshaServiceBooking(
     };
   }
 
+  update.customFields = routedKoshaCustomFieldsSql(
+    serviceOrdersTable.customFields,
+    fields,
+  );
   const [row] = await db
     .update(serviceOrdersTable)
     .set(update)
@@ -30425,7 +30428,12 @@ async function saveBookingOperations(
   } else {
     await db
       .update(serviceOrdersTable)
-      .set({ customFields: details })
+      .set({
+        customFields: routedKoshaCustomFieldsSql(
+          serviceOrdersTable.customFields,
+          details,
+        ),
+      })
       .where(eq(serviceOrdersTable.id, reference.id));
   }
   reference.details = details;
@@ -30465,7 +30473,12 @@ async function stampBookingSoundDepartment(
   } else {
     await db
       .update(serviceOrdersTable)
-      .set({ customFields: details })
+      .set({
+        customFields: routedKoshaCustomFieldsSql(
+          serviceOrdersTable.customFields,
+          details,
+        ),
+      })
       .where(eq(serviceOrdersTable.id, reference.id));
   }
   reference.details = details;
@@ -31531,7 +31544,12 @@ async function handleBookingOperations(
             .where(eq(koshaBookingsTable.id, reference.id));
         } else {
           await tx.update(serviceOrdersTable)
-            .set({ customFields: nextDetails })
+            .set({
+              customFields: routedKoshaCustomFieldsSql(
+                serviceOrdersTable.customFields,
+                nextDetails,
+              ),
+            })
             .where(eq(serviceOrdersTable.id, reference.id));
         }
         await tx.insert(entityTimelineTable).values({
@@ -48775,6 +48793,12 @@ async function handleAdmin(
           update.archivedAt = null;
         }
       }
+      if (update.customFields !== undefined) {
+        update.customFields = routedKoshaCustomFieldsSql(
+          serviceOrdersTable.customFields,
+          update.customFields,
+        );
+      }
       const [row] = await db
         .update(serviceOrdersTable)
         .set(update)
@@ -64633,7 +64657,16 @@ async function handleStaffPortal(
       ) ?? 0;
     if (authorized.resolved.kind === "kosha") {
       const detail = await loadKoshaBookingDetail(id);
-      if (detail) return json({ ...detail, unreadInstructionCount });
+      if (detail)
+        return json({
+          ...detail,
+          timeline: filterKoshaInstructionAuditTimeline(
+            instructionScope,
+            auth,
+            detail.timeline,
+          ),
+          unreadInstructionCount,
+        });
       logKoshaBookingLookupFailure({
         auth,
         bookingId: id,
@@ -64645,11 +64678,17 @@ async function handleStaffPortal(
       });
       return error("الحجز غير موجود", 404);
     }
-    return json({
-      ...(await loadRoutedKoshaServiceBookingDetail(
+    const detail = await loadRoutedKoshaServiceBookingDetail(
         authorized.resolved.routed.order,
         authorized.resolved.routed.service,
-      )),
+      );
+    return json({
+      ...detail,
+      timeline: filterKoshaInstructionAuditTimeline(
+        instructionScope,
+        auth,
+        detail.timeline,
+      ),
       unreadInstructionCount,
     });
   }

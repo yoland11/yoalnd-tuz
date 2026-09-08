@@ -12,8 +12,10 @@ const client = { async query(query, params) {
   if (databaseFailure) throw new Error('offline');
   const sql = typeof query === 'string' ? query : query.text;
   queries.push({ sql, params });
+  if (/insert into "kosha_instruction_booking_versions"/i.test(sql))
+    return { rows: [[7]], rowCount: 1 };
   if (/insert into "kosha_booking_channel_reads"/i.test(sql))
-    return { rows: [{ staff_id: 1, viewed_at: new Date('2026-09-06T09:59:00Z') }], rowCount: 1 };
+    return { rows: [[1, new Date('2026-09-06T09:59:00Z'), 6]], rowCount: 1 };
   return { rows: [], rowCount: 0 };
 } };
 const db = drizzle(client);
@@ -44,6 +46,15 @@ const instruction = { id: 9, kind: 'note', revision: 2, caption: 'New note', med
   assert.equal(interleaved.koshaPortalTimeline[0].meta.previous.caption, 'Old note', 'Instruction previous-caption audit survives the interleaving');
   assert.deepEqual(JSON.parse(JSON.stringify(interleaved.koshaPortalMedia)), [{ id: 'existing-media' }, { id: 'new-media' }]);
   assert.deepEqual(JSON.parse(JSON.stringify(interleaved.bookingCenterServices)), [{ type: 'kosha' }]);
+  const staleAdminEdit = output.exports.mergeRoutedKoshaCustomFields(
+    { koshaPortalTimeline: [instructionAudit], koshaPortalMedia: [{ id: 'existing-media' }], brideName: 'Before' },
+    { koshaPortalTimeline: [], koshaPortalMedia: [], brideName: 'After' },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(staleAdminEdit)),
+    { koshaPortalTimeline: [instructionAudit], koshaPortalMedia: [{ id: 'existing-media' }], brideName: 'After' },
+    'A stale routed admin edit preserves the current instruction audit and media arrays',
+  );
   await db.update(schema.serviceOrdersTable).set({
     customFields: output.exports.routedKoshaCustomFieldsSql(
       schema.serviceOrdersTable.customFields,
@@ -56,6 +67,35 @@ const instruction = { id: 9, kind: 'note', revision: 2, caption: 'New note', med
   assert.match(atomic.sql, /custom_fields.*koshaPortalMedia.*custom_fields.*koshaPortalMedia/is, 'Media append reads the current database value');
   assert.ok(atomic.params.includes(JSON.stringify({ executionStage: 'executed' })), 'Stale arrays are stripped from the scalar patch');
   assert.ok(atomic.params.includes(JSON.stringify([stageAudit])));
+  await db.update(schema.serviceOrdersTable).set({
+    customFields: output.exports.routedKoshaCustomFieldsSql(
+      schema.serviceOrdersTable.customFields,
+      { customerName: 'Scalar only', koshaPortalTimeline: [], koshaPortalMedia: [] },
+    ),
+  }).returning();
+  const scalarOnly = queries.at(-1);
+  assert.doesNotMatch(scalarOnly.sql, /jsonb_set/i, 'An empty admin append preserves current JSON without creating portal arrays on unrelated service orders');
+  assert.ok(scalarOnly.params.includes(JSON.stringify({ customerName: 'Scalar only' })), 'Admin scalar patch strips stale portal arrays');
+
+  const apiSource = fs.readFileSync('src/server/api.ts', 'utf8');
+  const routedEdit = apiSource.slice(apiSource.indexOf('async function updateRoutedKoshaServiceBooking'), apiSource.indexOf('function productSharedStockId'));
+  const operationsSave = apiSource.slice(apiSource.indexOf('async function saveBookingOperations'), apiSource.indexOf('async function stampBookingSoundDepartment'));
+  const soundStamp = apiSource.slice(apiSource.indexOf('async function stampBookingSoundDepartment'), apiSource.indexOf('async function bookingOperationProducts'));
+  const assignmentSave = apiSource.slice(apiSource.indexOf('if (resource === "staff-assignment")'), apiSource.indexOf('if (resource === "catalog")'));
+  const serviceOrdersStart = apiSource.indexOf('if (section === "service-orders")');
+  const serviceOrderPatch = apiSource.slice(
+    apiSource.indexOf('if (method === "PATCH" && parts[2])', serviceOrdersStart),
+    apiSource.indexOf('if (section === "orders")', serviceOrdersStart),
+  );
+  for (const [name, source] of [
+    ['routed manager edit', routedEdit],
+    ['booking operations', operationsSave],
+    ['sound department stamp', soundStamp],
+    ['staff assignment', assignmentSave],
+    ['service-order edit', serviceOrderPatch],
+  ]) {
+    assert.match(source, /routedKoshaCustomFieldsSql\(/, `${name} must merge stale customFields against the current database row`);
+  }
 
   await store.list(scope);
   assert.match(queries.at(-1).sql, /booking_source.*=.*booking_id.*=.*archived_at.*is null/i);
@@ -66,13 +106,22 @@ const instruction = { id: 9, kind: 'note', revision: 2, caption: 'New note', med
   await store.reads(scope, 'manager_instruction');
   assert.match(queries.at(-1).sql, /booking_source.*=.*booking_id.*=.*channel/i);
   assert.deepEqual(queries.at(-1).params, ['service', 42, 'manager_instruction']);
-  await store.markViewed(scope, actor, 'staff_execution', new Date('2026-09-06T09:59:00Z'));
+  assert.match(queries.at(-1).sql, /viewed_version/i, 'Instruction reads return the monotonic cursor');
+  const allocatedVersion = await store.nextVersion(scope);
+  assert.equal(allocatedVersion, 7);
+  assert.match(queries.at(-1).sql, /insert into "kosha_instruction_booking_versions".*on conflict.*current_version.*\+.*1/is, 'Booking cursor allocation serializes through one atomic upsert');
+  const currentVersion = await store.currentVersion(scope);
+  assert.equal(currentVersion, 0);
+  assert.match(queries.at(-1).sql, /kosha_instruction_booking_versions.*booking_source.*booking_id/is, 'Future acknowledgements are bounded by the committed booking cursor');
+  await store.markViewed(scope, actor, 'manager_instruction', new Date('2026-09-06T09:59:00Z'), 6);
   assert.match(queries.at(-1).sql, /on conflict.*booking_source.*booking_id.*staff_id.*channel.*do update/is);
   assert.match(queries.at(-1).sql, /greatest\(.*viewed_at.*excluded\.viewed_at/i);
+  assert.match(queries.at(-1).sql, /greatest\(.*viewed_version.*excluded\.viewed_version/i, 'Read cursor is monotonic independently of timestamp order');
   await store.unreadCounts([scope, { ...scope, source: 'kosha' }], 2);
   assert.match(queries.at(-1).sql, /jsonb_to_recordset/);
   assert.match(queries.at(-1).sql, /manager_instruction/);
-  assert.match(queries.at(-1).sql, /updated_at.*>.*viewed_at/i);
+  assert.match(queries.at(-1).sql, /booking_version.*>.*viewed_version/i);
+  assert.doesNotMatch(queries.at(-1).sql, /i\.updated_at.*>.*r\.viewed_at/i, 'Unread calculation cannot depend on wall-clock ordering');
   assert.deepEqual(JSON.parse(queries.at(-1).params[0]), [{ id: 42, source: 'service' }, { id: 42, source: 'kosha' }]);
   await store.recordEvent(scope, actor, 'edited', instruction, { ...instruction, revision: 1, caption: 'Old note' });
   assert.match(queries.at(-1).sql, /jsonb_set/);

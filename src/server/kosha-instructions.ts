@@ -3,9 +3,11 @@ import type { KoshaBookingChannel, KoshaManagerInstruction, NewKoshaManagerInstr
 export type InstructionActor = { id: number; role: string; username: string; fullName?: string | null; permissions: string[] };
 export type InstructionScope = { source: "kosha" | "service"; id: number; assignedStaff: Array<{ id: number; name: string }> };
 type Instruction = KoshaManagerInstruction;
-type Read = { staffId: number; viewedAt: Date };
+type Read = { staffId: number; viewedAt: Date; viewedVersion: number };
 export type InstructionStore = {
   transaction<T>(work: (store: InstructionStore) => Promise<T>): Promise<T>;
+  nextVersion(scope: InstructionScope): Promise<number>;
+  currentVersion(scope: InstructionScope): Promise<number>;
   list(scope: InstructionScope): Promise<Instruction[]>;
   find(scope: InstructionScope, id: number): Promise<Instruction | undefined>;
   insert(value: NewKoshaManagerInstruction): Promise<Instruction>;
@@ -13,7 +15,7 @@ export type InstructionStore = {
   recordEvent(scope: InstructionScope, actor: InstructionActor, action: string, instruction: Instruction, previous: Instruction | null): Promise<void>;
   notify(scope: InstructionScope, actor: InstructionActor, action: string, instruction: Instruction): Promise<void>;
   reads(scope: InstructionScope, channel: KoshaBookingChannel): Promise<Read[]>;
-  markViewed(scope: InstructionScope, actor: InstructionActor, channel: KoshaBookingChannel, viewedAt: Date): Promise<Read>;
+  markViewed(scope: InstructionScope, actor: InstructionActor, channel: KoshaBookingChannel, viewedAt: Date, viewedVersion: number): Promise<Read>;
   unreadCounts(bookings: InstructionScope[], staffId: number): Promise<Map<string, number>>;
 };
 
@@ -25,6 +27,15 @@ export const mayManageKoshaInstructions = (actor: InstructionActor) => ["admin",
 export const mayReadKoshaInstructions = (actor: InstructionActor) => mayManageKoshaInstructions(actor) || actor.permissions.includes("booking_operations_view") || actor.permissions.includes("koshas");
 export function mayReadAssignedKoshaInstructions(scope: InstructionScope, actor: InstructionActor) {
   return mayReadKoshaInstructions(actor) && (mayManageKoshaInstructions(actor) || scope.assignedStaff.some(staff => staff.id === actor.id));
+}
+export function filterKoshaInstructionAuditTimeline<T extends { type?: unknown }>(
+  scope: InstructionScope,
+  actor: InstructionActor,
+  timeline: T[],
+) {
+  return mayReadAssignedKoshaInstructions(scope, actor)
+    ? timeline
+    : timeline.filter((event) => !String(event.type ?? "").startsWith("instruction_"));
 }
 function authorize(scope: InstructionScope, actor: InstructionActor, audience: "staff" | "manager", mutation = false) {
   if (!Number.isSafeInteger(scope.id) || scope.id <= 0 || !["kosha", "service"].includes(scope.source)) throw new KoshaInstructionError(400, "حدد رقم الحجز ومصدره");
@@ -46,6 +57,7 @@ function imageValue(value: unknown) {
   throw new KoshaInstructionError(422, "رابط صورة التعليمات غير صالح");
 }
 const latestTimestamp = (items: Instruction[]) => items.reduce<Date | null>((latest, row) => !latest || row.updatedAt > latest ? row.updatedAt : latest, null);
+const latestVersion = (items: Instruction[]) => items.reduce((latest, row) => Math.max(latest, row.bookingVersion), 0);
 
 export function createKoshaInstructionService(
   store: InstructionStore,
@@ -69,12 +81,13 @@ export function createKoshaInstructionService(
       const found = action === "created" ? null : await tx.find(scope, Number(id));
       const previous = found ? { ...found } : null;
       if (action !== "created" && !previous) throw new KoshaInstructionError(404, "التعليمات غير موجودة في هذا الحجز");
+      const bookingVersion = await tx.nextVersion(scope);
       const updatedAt = clock();
       const instruction = action === "created"
-        ? await tx.insert({ bookingSource: scope.source, bookingId: scope.id, kind: kind as "note" | "image", mediaUrl, caption, uploadedByStaffId: actor.id, uploadedByName: actor.fullName || actor.username, revision: 1, archivedAt: null, archivedByStaffId: null, createdAt: updatedAt, updatedAt })
+        ? await tx.insert({ bookingSource: scope.source, bookingId: scope.id, kind: kind as "note" | "image", mediaUrl, caption, uploadedByStaffId: actor.id, uploadedByName: actor.fullName || actor.username, revision: 1, bookingVersion, archivedAt: null, archivedByStaffId: null, createdAt: updatedAt, updatedAt })
         : await tx.update(scope, Number(id), action === "archived"
-          ? { archivedAt: updatedAt, archivedByStaffId: actor.id, updatedAt, revision: previous!.revision + 1 }
-          : { caption: captionValue(payload.caption, previous!.kind === "note"), revision: previous!.revision + 1, updatedAt });
+          ? { archivedAt: updatedAt, archivedByStaffId: actor.id, updatedAt, revision: previous!.revision + 1, bookingVersion }
+          : { caption: captionValue(payload.caption, previous!.kind === "note"), revision: previous!.revision + 1, updatedAt, bookingVersion });
       await tx.recordEvent(scope, actor, action, instruction, previous ?? null);
       await tx.notify(scope, actor, action, instruction);
       return { instruction };
@@ -87,25 +100,40 @@ export function createKoshaInstructionService(
     async list(scope: InstructionScope, actor: InstructionActor, audience: "staff" | "manager") {
       authorize(scope, actor, audience);
       const [instructions, reads] = await Promise.all([store.list(scope), store.reads(scope, "manager_instruction")]);
-      const viewedAt = reads.find(read => read.staffId === actor.id)?.viewedAt ?? null;
-      return { instructions, latestAt: latestTimestamp(instructions)?.toISOString() ?? null, viewedAt: viewedAt?.toISOString() ?? null, unreadCount: instructions.filter(row => !viewedAt || row.updatedAt > viewedAt).length };
+      const read = reads.find(row => row.staffId === actor.id);
+      const viewedAt = read?.viewedAt ?? null;
+      const viewedVersion = read?.viewedVersion ?? 0;
+      return { instructions, latestAt: latestTimestamp(instructions)?.toISOString() ?? null, latestVersion: latestVersion(instructions), viewedAt: viewedAt?.toISOString() ?? null, viewedVersion, unreadCount: instructions.filter(row => row.bookingVersion > viewedVersion).length };
     },
     async receipts(scope: InstructionScope, actor: InstructionActor) {
       authorize(scope, actor, "manager");
       const [instructions, reads] = await Promise.all([store.list(scope), store.reads(scope, "manager_instruction")]);
       const latest = latestTimestamp(instructions);
-      return { latestAt: latest?.toISOString() ?? null, staff: scope.assignedStaff.map(staff => {
-        const viewedAt = reads.find(read => read.staffId === staff.id)?.viewedAt ?? null;
-        return { ...staff, viewedAt: viewedAt?.toISOString() ?? null, hasViewedLatest: !latest || !!viewedAt && viewedAt >= latest };
+      const currentVersion = latestVersion(instructions);
+      return { latestAt: latest?.toISOString() ?? null, latestVersion: currentVersion, staff: scope.assignedStaff.map(staff => {
+        const read = reads.find(row => row.staffId === staff.id);
+        const viewedAt = read?.viewedAt ?? null;
+        const viewedVersion = read?.viewedVersion ?? 0;
+        return { ...staff, viewedAt: viewedAt?.toISOString() ?? null, viewedVersion, hasViewedLatest: currentVersion === 0 || viewedVersion >= currentVersion };
       }) };
     },
-    async markViewed(scope: InstructionScope, actor: InstructionActor, audience: "staff" | "manager", viewedThrough?: unknown) {
+    async markViewed(scope: InstructionScope, actor: InstructionActor, audience: "staff" | "manager", viewedThrough?: unknown, requestedVersion?: unknown) {
       authorize(scope, actor, audience);
       const now = clock();
       const viewedAt = new Date(typeof viewedThrough === "string" ? viewedThrough : NaN);
       if (!Number.isFinite(viewedAt.getTime()) || viewedAt > now) throw new KoshaInstructionError(422, "وقت عرض التعليمات غير صالح");
-      const read = await store.markViewed(scope, actor, audience === "staff" ? "manager_instruction" : "staff_execution", viewedAt);
-      return { viewedAt: read.viewedAt.toISOString() };
+      const channel = audience === "staff" ? "manager_instruction" : "staff_execution";
+      let viewedVersion = 0;
+      if (channel === "manager_instruction") {
+        viewedVersion = Number(requestedVersion);
+        if (!Number.isSafeInteger(viewedVersion) || viewedVersion <= 0)
+          throw new KoshaInstructionError(422, "نسخة عرض التعليمات غير صالحة");
+        const currentVersion = await store.currentVersion(scope);
+        if (viewedVersion > currentVersion)
+          throw new KoshaInstructionError(422, "نسخة عرض التعليمات أحدث من الحجز");
+      }
+      const read = await store.markViewed(scope, actor, channel, viewedAt, viewedVersion);
+      return { viewedAt: read.viewedAt.toISOString(), viewedVersion: read.viewedVersion };
     },
     async unread(scopes: InstructionScope[], actor: InstructionActor) {
       const allowed = scopes.filter(scope => mayReadAssignedKoshaInstructions(scope, actor));
@@ -132,7 +160,7 @@ export async function dispatchKoshaInstructionRequest(input: {
     if (method === "GET" && tail.length === 1 && tail[0] === "instructions")
       return service.list(scope, actor, "staff");
     if (method === "POST" && tail.length === 2 && tail[0] === "instructions" && tail[1] === "viewed")
-      return service.markViewed(scope, actor, "staff", payload.viewedThrough);
+      return service.markViewed(scope, actor, "staff", payload.viewedThrough, payload.viewedVersion);
     return null;
   }
 
