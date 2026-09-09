@@ -69,6 +69,7 @@ import {
   InvoiceTotalsCard,
   ProductCategoryChips,
   SalesInvoiceHeader,
+  SearchableProductSelect,
   premiumSalesInputClass,
   salesCategories,
   salesCategoryLabel,
@@ -2644,17 +2645,14 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                       <tr key={idx} className="hover:bg-muted/10">
                         <td className="px-3 py-2 min-w-[180px]">
                           <div className="space-y-1.5">
-                            <select
-                              aria-label={`اختيار منتج للسطر ${idx + 1}`}
-                              value={item.productId > 0 ? String(item.productId) : ""}
-                              disabled={detailProductsLoading}
-                              onChange={(event) => selectDetailProduct(idx, event.target.value)}
-                              className="h-9 w-full rounded border border-border/40 bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-wait"
-                            >
-                              <option value="">{detailProductsLoading ? "جارٍ تحميل المنتجات..." : "اختر منتجاً من المخزون"}</option>
-                              {item.productId > 0 && !detailProducts.some((product) => product.id === item.productId) ? <option value={item.productId}>{item.productName || `منتج #${item.productId}`}</option> : null}
-                              {detailProducts.map((product) => <option key={product.id} value={product.id}>{product.nameAr || product.name}{product.barcode ? ` · ${product.barcode}` : ""}</option>)}
-                            </select>
+                            <SearchableProductSelect
+                              products={detailProducts}
+                              value={item.productId > 0 ? item.productId : null}
+                              selectedLabel={item.productId > 0 ? item.productName || `منتج #${item.productId}` : undefined}
+                              loading={detailProductsLoading}
+                              disabled={saving || !!invoice?.financiallyReversed}
+                              onSelect={(productId) => selectDetailProduct(idx, String(productId))}
+                            />
                             {item.productId === 0 ? <input
                               value={item.productName}
                               onChange={(event) => updateDetailItem(idx, "productName", event.target.value)}

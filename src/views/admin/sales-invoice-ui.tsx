@@ -1,12 +1,15 @@
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Barcode,
+  Check,
+  ChevronDown,
   ChevronLeft,
   FileText,
   Package,
   Plus,
   ReceiptText,
   Save,
+  Search,
   ShoppingBag,
   ShoppingCart,
   Trash2,
@@ -45,6 +48,55 @@ export function salesCategoryLabel(product: SalesCatalogItem) {
 
 export function salesCategories(products: SalesCatalogItem[]) {
   return Array.from(new Set(products.map(salesCategoryLabel))).sort((a, b) => a.localeCompare(b, "ar"));
+}
+
+export function filterSalesProducts<T extends Pick<SalesCatalogItem, "name" | "nameAr" | "barcode">>(products: T[], query: string) {
+  const normalized = query.trim().toLocaleLowerCase("ar");
+  if (!normalized) return products;
+  return products.filter((product) => [product.nameAr, product.name, product.barcode]
+    .some((value) => String(value ?? "").toLocaleLowerCase("ar").includes(normalized)));
+}
+
+export function SearchableProductSelect({ products, value, selectedLabel, loading, disabled, onSelect }: { products: SalesCatalogItem[]; value: number | null; selectedLabel?: string; loading?: boolean; disabled?: boolean; onSelect: (productId: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selected = products.find((product) => product.id === value);
+  const results = useMemo(() => filterSalesProducts(products, query).slice(0, 40), [products, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const choose = (product: SalesCatalogItem) => {
+    onSelect(product.id);
+    setQuery("");
+    setOpen(false);
+  };
+
+  return <div ref={rootRef} className="relative">
+    <button type="button" disabled={disabled || loading} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)} className="flex h-10 w-full items-center justify-between gap-2 rounded-xl border border-[#E9E5E2] bg-white px-3 text-right text-sm text-[#182033] outline-none transition hover:border-[#C7A36A]/60 focus:border-[#B85C65]/60 focus:ring-2 focus:ring-[#B85C65]/10 disabled:cursor-wait">
+      <span className="min-w-0 truncate">{loading ? "جارٍ تحميل المنتجات..." : selected ? (selected.nameAr || selected.name) : selectedLabel || "اكتب للبحث عن منتج"}</span>
+      <ChevronDown className={`h-4 w-4 shrink-0 text-[#778092] transition ${open ? "rotate-180" : ""}`} />
+    </button>
+    {open ? <div className="absolute inset-x-0 top-[calc(100%+6px)] z-[90] overflow-hidden rounded-2xl border border-[#E9E5E2] bg-white shadow-[0_18px_50px_rgba(24,32,51,0.16)]">
+      <div className="relative border-b border-[#E9E5E2] p-2">
+        <Search className="absolute right-5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#778092]" />
+        <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); if (event.key === "Enter" && results[0]) choose(results[0]); }} placeholder="ابحث بالاسم أو الباركود..." className="h-10 w-full rounded-xl bg-[#F8F7F5] pr-10 pl-3 text-sm outline-none focus:ring-2 focus:ring-[#B85C65]/10" />
+      </div>
+      <div role="listbox" className="max-h-64 overflow-y-auto p-1.5 [scrollbar-width:thin]">
+        {results.length ? results.map((product) => <button key={product.id} type="button" role="option" aria-selected={product.id === value} onClick={() => choose(product)} className="flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-right hover:bg-[#FBF5F3]">
+          <span className="min-w-0"><span className="block truncate font-medium text-[#182033]">{product.nameAr || product.name}</span><span className="mt-0.5 block truncate text-xs text-[#778092]" dir="ltr">{product.barcode || "بدون باركود"}</span></span>
+          {product.id === value ? <Check className="h-4 w-4 shrink-0 text-[#3F9A76]" /> : <span className="shrink-0 text-xs font-medium text-[#806333]">{product.stock} متوفر</span>}
+        </button>) : <p className="px-3 py-8 text-center text-sm text-[#778092]">لا يوجد منتج مطابق للبحث.</p>}
+      </div>
+    </div> : null}
+  </div>;
 }
 
 export function SalesInvoiceHeader({ children }: { children?: ReactNode }) {

@@ -66,6 +66,7 @@
     "test:remote-printing": "node ./scripts/verify-remote-printing.mjs",
     "test:sales-invoice-print-template": "node ./scripts/verify-sales-invoice-print-template.mjs",
     "test:sales-invoice-ui": "node ./scripts/test-sales-invoice-ui.cjs",
+    "test:sales-product-search": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-sales-product-search.ts",
     "test:wedding-invoice-layout": "node ./scripts/verify-wedding-invoice-layout.mjs",
     "test:save-contracts": "node ./scripts/test-save-smoke.mjs",
     "test:save-smoke": "node ./scripts/run-critical-save-smoke.mjs",
