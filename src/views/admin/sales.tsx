@@ -61,21 +61,34 @@ import {
   InvoiceRegisterSummaryCards,
   type InvoiceRegisterSummary,
 } from "./invoice-payment-status";
+import {
+  InvoiceItemsCard,
+  InvoiceMobileSaveBar,
+  InvoiceSaveActions,
+  InvoiceSectionCard,
+  InvoiceTotalsCard,
+  ProductCategoryChips,
+  SalesInvoiceHeader,
+  premiumSalesInputClass,
+  salesCategories,
+  salesCategoryLabel,
+} from "./sales-invoice-ui";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
   stock: string; barcode?: string; images?: string[]; bundleId?: number; availableQuantity?: number;
   offerDeliveryFee?: number;
+  category?: string; categoryId?: number | null;
 };
 
 function ProductSearchThumbnail({ product }: { product: Pick<Product, "name" | "nameAr" | "images"> }) {
   const [failed, setFailed] = useState(false);
   const source = product.images?.find((image) => typeof image === "string" && image.trim());
   if (!source || failed) {
-    return <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-md border border-border/40 bg-muted text-muted-foreground"><Package className="h-4 w-4" /></span>;
+    return <span className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl border border-[#E9E5E2] bg-[#F8F7F5] text-[#C7A36A]"><Package className="h-5 w-5" /></span>;
   }
-  return <img src={source} alt={product.nameAr || product.name || ""} className="h-10 w-10 shrink-0 rounded-md border border-border/40 bg-muted object-cover" loading="lazy" onError={() => setFailed(true)} />;
+  return <img src={source} alt={product.nameAr || product.name || ""} className="h-16 w-16 shrink-0 rounded-xl border border-[#E9E5E2] bg-[#F8F7F5] object-cover" loading="lazy" onError={() => setFailed(true)} />;
 }
 type CartItem = {
   productId: number; bundleId?: number | null; productName: string; barcode: string;
@@ -336,6 +349,7 @@ export default function SalesPage() {
   const [form, setForm] = useState(newInvoice());
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQ, setSearchQ] = useState("");
+  const [selectedProductCategory, setSelectedProductCategory] = useState("");
   const [scanOpen, setScanOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [remotePrintOptionsOpen, setRemotePrintOptionsOpen] = useState(false);
@@ -466,14 +480,16 @@ export default function SalesPage() {
         offerDeliveryFee: finiteNumber(bundle.deliveryFee),
       })),
   ];
-  const q = searchQ.toLowerCase();
-  const filteredProducts = q
-    ? saleCatalog.filter(p =>
+  const productCategories = useMemo(() => salesCategories(saleCatalog), [saleCatalog]);
+  const q = useDeferredValue(searchQ.trim().toLowerCase());
+  const filteredProducts = saleCatalog.filter(p =>
+        (!selectedProductCategory || salesCategoryLabel(p) === selectedProductCategory) &&
+        (!q ||
         p.nameAr?.toLowerCase().includes(q) ||
         p.name?.toLowerCase().includes(q) ||
         p.barcode?.toLowerCase().includes(q)
-      ).slice(0, 10)
-    : [];
+        )
+      ).slice(0, 12);
 
   // ── Cart operations ──────────────────────────────────────────────────────
   function addToCart(p: Product) {
@@ -856,7 +872,7 @@ export default function SalesPage() {
 
   // ── View: POS ────────────────────────────────────────────────────────────
   return (
-    <div dir="rtl" className="space-y-4">
+    <div dir="rtl" className="min-h-screen space-y-4 bg-[#F8F7F5] pb-24 text-[#182033] md:pb-6">
       <BarcodeScanDialog
         open={scanOpen}
         onOpenChange={setScanOpen}
@@ -865,12 +881,7 @@ export default function SalesPage() {
         onAdd={handleScanAdd}
         onCreated={() => queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] })}
       />
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">فاتورة مبيعات</h1>
-          <p className="text-sm text-muted-foreground">نقطة البيع</p>
-        </div>
+      <SalesInvoiceHeader>
         <div className="flex gap-2 flex-wrap">
           {held.length > 0 && (
             <Button variant="outline" size="sm" onClick={() => setShowHeld(true)} className="relative">
@@ -889,12 +900,12 @@ export default function SalesPage() {
             <FileText className="w-4 h-4 ml-1" />
             سجل الفواتير
           </Button>
-          <Button variant="outline" size="sm" onClick={() => { setCart([]); setForm(newInvoice()); setDeliveryFormRevision((revision) => revision + 1); }}>
-            <RefreshCw className="w-4 h-4 ml-1" />
-            جديدة
+          <Button size="sm" onClick={() => { setCart([]); setForm(newInvoice()); setDeliveryFormRevision((revision) => revision + 1); }} className="rounded-xl bg-[#B85C65] text-white hover:bg-[#A64D57]">
+            <Plus className="w-4 h-4 ml-1" />
+            فاتورة جديدة
           </Button>
         </div>
-      </div>
+      </SalesInvoiceHeader>
 
       {/* Held Invoices Modal */}
       {showHeld && (
@@ -922,11 +933,11 @@ export default function SalesPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-4">
+      <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
         {/* Left: Cart */}
         <div className="space-y-4">
           {/* Product Search */}
-          <div className="bg-card rounded-xl border border-border/40 p-4">
+          <div className="rounded-[20px] border border-[#E9E5E2] bg-white p-4 shadow-[0_6px_24px_rgba(24,32,51,0.04)] sm:p-5">
             <div className="flex items-stretch gap-2">
               <div className="relative flex-1">
                 <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -936,7 +947,7 @@ export default function SalesPage() {
                   onChange={e => setSearchQ(e.target.value)}
                   onKeyDown={handleSearchKey}
                   placeholder="ابحث عن منتج أو امسح الباركود..."
-                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-2 pr-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="h-12 w-full rounded-xl border border-[#E9E5E2] bg-[#FCFBFA] px-4 pr-10 text-sm outline-none transition focus:border-[#B85C65]/60 focus:ring-2 focus:ring-[#B85C65]/10"
                   autoFocus
                 />
                 {searchQ && (
@@ -945,17 +956,21 @@ export default function SalesPage() {
                   </button>
                 )}
               </div>
-              <Button type="button" variant="outline" onClick={() => setScanOpen(true)} className="shrink-0 gap-1.5 whitespace-nowrap">
+              <Button type="button" variant="outline" onClick={() => setScanOpen(true)} className="h-12 shrink-0 gap-1.5 whitespace-nowrap rounded-xl border-[#C7A36A]/50 text-[#806333]">
                 <ScanLine className="w-4 h-4" /> مسح باركود
               </Button>
+              <Button type="button" variant="outline" onClick={() => setScanOpen(true)} className="hidden h-12 shrink-0 gap-1.5 whitespace-nowrap rounded-xl border-[#E8B8BC] text-[#9E4650] sm:inline-flex">
+                <Plus className="w-4 h-4" /> إضافة منتج يدوي
+              </Button>
             </div>
-            {filteredProducts.length > 0 && (
-              <div className="mt-2 border border-border/30 rounded-lg overflow-hidden divide-y divide-border/20">
+            <div className="mt-4"><ProductCategoryChips categories={productCategories} value={selectedProductCategory} onChange={setSelectedProductCategory} /></div>
+            {filteredProducts.length > 0 ? (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
                 {filteredProducts.map(p => (
                   <button
                     key={p.id}
                     onClick={() => addToCart(p)}
-                    className="w-full flex items-center justify-between px-3 py-2 hover:bg-primary/10 text-sm transition-colors text-right"
+                    className="flex min-h-24 w-full items-center justify-between rounded-2xl border border-[#E9E5E2] bg-[#FCFBFA] p-3 text-right text-sm transition hover:border-[#C7A36A]/60 hover:bg-[#F4EBDD]/30"
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <ProductSearchThumbnail product={p} />
@@ -965,109 +980,30 @@ export default function SalesPage() {
                       </div>
                     </div>
                     <div className="text-left">
-                      <p className="font-bold text-primary">{formatCurrency(p.price)}</p>
-                      <p className="text-xs text-muted-foreground">مخزون: {p.stock}</p>
+                      <p className="font-bold text-[#182033]">{formatCurrency(p.price)}</p>
+                      <p className={`mt-1 text-xs font-medium ${Number(p.stock) <= 0 ? "text-[#D75A5A]" : Number(p.stock) <= 3 ? "text-[#D99A43]" : "text-[#3F9A76]"}`}>{Number(p.stock) <= 0 ? "نفد المخزون" : Number(p.stock) <= 3 ? `مخزون منخفض: ${p.stock}` : `متوفر: ${p.stock}`}</p>
                     </div>
                   </button>
                 ))}
               </div>
-            )}
+            ) : <div className="mt-4 rounded-2xl border border-dashed border-[#E9E5E2] p-8 text-center text-sm text-[#778092]">لا توجد منتجات مطابقة للقسم والبحث المحددين.</div>}
           </div>
 
           {/* Cart Table */}
-          <div className="bg-card rounded-xl border border-border/40 overflow-hidden">
-            <div className="px-4 py-3 border-b border-border/30 flex items-center gap-2">
-              <ShoppingCart className="w-4 h-4 text-primary" />
-              <span className="font-semibold text-sm">أصناف الفاتورة</span>
-              <span className="text-xs text-muted-foreground">({cart.length} صنف)</span>
-            </div>
-            {cart.length === 0
-              ? <div className="py-12 text-center text-muted-foreground text-sm">ابحث عن منتج لإضافته</div>
-              : <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-muted/30 text-muted-foreground text-xs">
-                        <th className="px-3 py-2 text-right">#</th>
-                        <th className="px-3 py-2 text-right">المنتج</th>
-                        <th className="px-3 py-2 text-center">الكمية</th>
-                        <th className="px-3 py-2 text-center">السعر</th>
-                        <th className="px-3 py-2 text-center">خصم %</th>
-                        <th className="px-3 py-2 text-center">الخصم</th>
-                        <th className="px-3 py-2 text-center">الإجمالي</th>
-                        <th className="px-3 py-2"></th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/20">
-                      {cart.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-muted/10">
-                          <td className="px-3 py-2 text-muted-foreground">{idx + 1}</td>
-                          <td className="px-3 py-2">
-                            <input
-                              value={item.productName}
-                              onChange={e => updateItem(idx, "productName", e.target.value)}
-                              className="bg-transparent w-full min-w-[120px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded px-1"
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number" min="0.001" step="0.001"
-                              value={item.quantity}
-                              onChange={e => updateItem(idx, "quantity", e.target.value)}
-                              className="bg-background border border-border/30 rounded text-center w-20 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number" min="0"
-                              value={item.unitPrice}
-                              onChange={e => updateItem(idx, "unitPrice", e.target.value)}
-                              className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number" min="0" max="100"
-                              value={item.discountPct}
-                              onChange={e => updateItem(idx, "discountPct", e.target.value)}
-                              className="bg-background border border-border/30 rounded text-center w-16 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number" min="0"
-                              value={item.discount}
-                              onChange={e => updateItem(idx, "discount", e.target.value)}
-                              className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-center font-medium text-primary">
-                            {formatCurrency(item.total)}
-                          </td>
-                          <td className="px-3 py-2">
-                            <button onClick={() => removeItem(idx)} className="text-muted-foreground hover:text-destructive transition-colors">
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-            }
-          </div>
+          <InvoiceItemsCard items={cart} imageForLine={(line) => products.find((product) => product.barcode === line.barcode)?.images?.[0]} formatMoney={formatCurrency} onUpdate={(index, field, value) => updateItem(index, field as keyof CartItem, value)} onRemove={removeItem} disabled={saving} />
         </div>
 
         {/* Right: Invoice Details + Payment */}
         <div className="space-y-4">
           {/* Customer */}
-          <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">
-            <h3 className="font-semibold text-sm">بيانات الفاتورة</h3>
+          <InvoiceSectionCard title="بيانات الفاتورة" icon={<FileText className="h-5 w-5" />} description="العميل والتاريخ والجهة المرتبطة">
+            <div className="space-y-3">
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">التاريخ</label>
               <input
                 type="date" value={form.date}
                 onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className={`w-full ${premiumSalesInputClass}`}
               />
             </div>
             <div>
@@ -1093,7 +1029,7 @@ export default function SalesPage() {
                 value={form.customerPhone}
                 onChange={e => setForm(f => ({ ...f, customerPhone: e.target.value }))}
                 placeholder="07XX XXX XXXX"
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className={`w-full ${premiumSalesInputClass}`}
                 dir="ltr"
               />
             </div>
@@ -1105,7 +1041,7 @@ export default function SalesPage() {
                   const supplier = suppliers.find((row) => String(row.id) === event.target.value);
                   setForm((current) => ({ ...current, supplierId: event.target.value, supplierName: supplier?.name ?? "" }));
                 }}
-                className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className={`w-full ${premiumSalesInputClass}`}
               >
                 <option value="">بدون مورد</option>
                 {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
@@ -1120,11 +1056,11 @@ export default function SalesPage() {
               />
               <label htmlFor="isInternal" className="text-xs text-muted-foreground cursor-pointer">فاتورة داخلية (بدون إشعارات)</label>
             </div>
-          </div>
+            </div>
+          </InvoiceSectionCard>
 
           {/* Totals */}
-          <div className="bg-card rounded-xl border border-border/40 p-4 space-y-2">
-            <h3 className="font-semibold text-sm mb-3">الإجماليات</h3>
+          <InvoiceTotalsCard total={formatCurrency(grandTotal)}>
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">المجموع الفرعي</span>
               <span>{formatCurrency(subtotal)}</span>
@@ -1135,7 +1071,7 @@ export default function SalesPage() {
                 type="number" min="0"
                 value={form.discountAmount}
                 onChange={e => setForm(f => ({ ...f, discountAmount: e.target.value }))}
-                className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className={`${premiumSalesInputClass} w-28 text-left`}
                 dir="ltr"
               />
             </div>
@@ -1145,7 +1081,7 @@ export default function SalesPage() {
                 <input
                   value={form.couponCode}
                   onChange={e => setForm(f => ({ ...f, couponCode: e.target.value.toUpperCase().replace(/\s+/g, ""), couponDiscountAmount: "0" }))}
-                  className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className={`${premiumSalesInputClass} w-28 text-left`}
                   dir="ltr"
                   placeholder="CODE"
                 />
@@ -1166,7 +1102,7 @@ export default function SalesPage() {
                 type="number" min="0" max="100"
                 value={form.taxPct}
                 onChange={e => setForm(f => ({ ...f, taxPct: e.target.value }))}
-                className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className={`${premiumSalesInputClass} w-28 text-left`}
                 dir="ltr"
               />
             </div>
@@ -1200,18 +1136,14 @@ export default function SalesPage() {
                 <span>{formatCurrency(remaining)}</span>
               </div>
             )}
-            <div className="flex justify-between text-base font-bold pt-2 border-t border-border/30">
-              <span>الإجمالي الكلي</span>
-              <span className="text-primary">{formatCurrency(grandTotal)}</span>
-            </div>
-          </div>
+          </InvoiceTotalsCard>
 
           {/* Delivery (province-based) */}
           <DeliverySection key={deliveryFormRevision} subtotal={subtotal} customerId={form.customerId ? Number(form.customerId) : null} customerPhone={form.customerPhone} onChange={setDelivery} />
 
           {/* Payment */}
-          <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">
-            <h3 className="font-semibold text-sm">طريقة الدفع</h3>
+          <InvoiceSectionCard title="طريقة الدفع" icon={<ShoppingCart className="h-5 w-5" />} description="اختر طريقة التسوية وسجّل المبلغ المستلم">
+            <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
               {PAYMENT_METHODS.map(m => (
                 <button
@@ -1219,8 +1151,8 @@ export default function SalesPage() {
                   onClick={() => setForm(f => ({ ...f, paymentMethod: m.value, paidAmount: isCashPaymentMethod(m.value) ? grandTotal.toString() : f.paidAmount }))}
                   className={`rounded-lg py-2 text-sm font-medium border transition-colors ${
                     form.paymentMethod === m.value
-                      ? "bg-primary text-black border-primary"
-                      : "border-border/40 text-muted-foreground hover:border-primary/50"
+                      ? "border-[#B85C65]/50 bg-[#F9ECEC] text-[#9E4650]"
+                      : "border-[#E9E5E2] bg-white text-[#778092] hover:border-[#C7A36A]/60"
                   }`}
                 >
                   {m.label}
@@ -1235,7 +1167,7 @@ export default function SalesPage() {
                 onChange={e => setForm(f => ({ ...f, paidAmount: e.target.value }))}
                 readOnly={isCashPaymentMethod(form.paymentMethod)}
                 placeholder={grandTotal.toString()}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className={`w-full ${premiumSalesInputClass}`}
                 dir="ltr"
               />
             </div>
@@ -1259,42 +1191,15 @@ export default function SalesPage() {
                 value={form.notes}
                 onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
                 rows={2}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="min-h-24 w-full resize-none rounded-xl border border-[#E9E5E2] bg-[#FCFBFA] px-3 py-2 text-sm outline-none focus:border-[#B85C65]/60 focus:ring-2 focus:ring-[#B85C65]/10"
               />
             </div>
-          </div>
+            </div>
+          </InvoiceSectionCard>
 
           {/* Action Buttons */}
-          <div className="grid grid-cols-2 gap-2">
-            <Button
-              onClick={() => onSaveClick()}
-              disabled={saving || cart.length === 0}
-              className="w-full bg-primary text-black hover:bg-primary/90 font-bold h-12 text-base"
-            >
-              {saving
-                ? <><RefreshCw className="w-4 h-4 ml-2 animate-spin" />جاري الحفظ...</>
-                : <><Save className="w-4 h-4 ml-2" />حفظ الفاتورة</>
-              }
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setMobilePrintActionsOpen(true)}
-              disabled={saving || cart.length === 0 || !canCreateRemotePrint}
-              className="h-12 text-base font-bold sm:hidden"
-            >
-              <Printer className="w-4 h-4 ml-2" />حفظ وطباعة
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setRemotePrintOptionsOpen(true)}
-              disabled={saving || cart.length === 0 || !canCreateRemotePrint}
-              className="hidden h-12 text-base font-bold sm:inline-flex"
-            >
-              <Printer className="w-4 h-4 ml-2" />حفظ وطباعة ▼
-            </Button>
-          </div>
+          <InvoiceSaveActions saving={saving} disabled={saving || cart.length === 0} canPrint={canCreateRemotePrint} onSave={() => onSaveClick()} onSavePrint={() => setRemotePrintOptionsOpen(true)} />
+          <InvoiceMobileSaveBar total={formatCurrency(grandTotal)} saving={saving} disabled={saving || cart.length === 0} onSave={() => onSaveClick()} />
 
           {printCurrentUser !== undefined && !canCreateRemotePrint ? <p className="mt-2 text-xs text-muted-foreground">تحتاج صلاحية طباعة فواتير المبيعات لاستخدام الحفظ والطباعة.</p> : null}
 
