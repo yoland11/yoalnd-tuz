@@ -178,3 +178,71 @@ exit 0
 - No migration was applied and no Production data was touched.
 - The final fix commit was created on `codex/kosha-instruction-sync`.
 - No push was performed.
+
+## Residual staff payload redaction closure (2026-09-09)
+
+The follow-up security review found a second serialization path around the
+authorized top-level timeline. Both native and routed staff crew serializers
+still carried `bookingDetails.koshaPortalTimeline`; routed bookings populated
+that object from the complete service-order `customFields`. Consequently, an
+ordinary employee allowed to see an unassigned booking could receive manager
+instruction captions and media URLs from nested `instruction_created`,
+`instruction_edited`, or `instruction_archived` audit snapshots even though the
+top-level detail timeline had been filtered.
+
+The exact staff serialization boundary now removes every `instruction_*` event
+from the generic nested booking-details timeline for both booking sources. It
+preserves non-instruction execution events, staff execution media, assignment
+metadata, routing fields, and the persisted source object. The manager/admin
+formatters are unchanged. Assigned staff and supervisors retain intended access
+through the authorization-aware instructions endpoint and, on detail responses,
+the separately filtered top-level timeline.
+
+Coverage now proves:
+
+- native and routed crew serializers invoke the nested audit redactor;
+- native and routed detail loaders use those crew serializers;
+- list and dashboard responses consume the same redacted visible-row set;
+- nested create/edit/archive snapshots containing both `caption` and `mediaUrl`
+  are removed while a staff execution event remains;
+- redaction does not mutate stored booking details.
+
+TDD red evidence:
+
+```text
+AssertionError [ERR_ASSERTION]: Staff booking serializers must expose a tested nested-audit redaction boundary
++ actual - expected
++ 'undefined'
+- 'function'
+```
+
+Fresh verification evidence:
+
+```text
+node scripts/test-kosha-instructions.cjs
+PASS: Kosha instruction routes, authorization, validation, source isolation, single storage, audit, notifications, revision, archive, read channels/races, batched counts and failure propagation
+
+pnpm run typecheck
+$ tsc --noEmit
+exit 0
+
+pnpm run build
+Compiled successfully
+Finished TypeScript
+Generated static pages
+exit 0
+
+pnpm run verify:critical
+PASS 22 critical AJN database table contracts are backward-compatible
+PASS Additive tables/columns and harmless indexes remain allowed
+PASS application server request code performs no DDL
+PASS Critical-file change policy (standard)
+AJN FINANCIAL APPROVAL CONTRACT PASSED — cash-box posting remains approval-first.
+AJN PAYMENT STATE CONTRACT PASSED — approved payment snapshots reconcile centrally.
+AJN SAFETY CHECK PASSED — Push allowed.
+exit 0
+```
+
+`pnpm run test:save-smoke`: **SKIPPED**, not passed. No separately
+verified isolated `TEST_DATABASE_URL` was configured. No schema, payment,
+finance, inventory, Production data, or manager/admin response behavior changed.

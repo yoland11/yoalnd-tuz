@@ -13,6 +13,7 @@ const api = moduleValue.exports;
 assert.equal(typeof api.createKoshaInstructionService, 'function', 'Instruction service must implement the manager/staff contract');
 assert.equal(typeof api.dispatchKoshaInstructionRequest, 'function', 'Instruction routes must share one tested action dispatcher');
 assert.equal(typeof api.filterKoshaInstructionAuditTimeline, 'function', 'Staff detail must share the exact instruction authorization boundary');
+assert.equal(typeof api.redactKoshaInstructionAuditsFromBookingDetails, 'function', 'Staff booking serializers must expose a tested nested-audit redaction boundary');
 
 // Dashboard cards are a separate server response from the booking list. Keep a
 // focused wiring contract here so a UI fixture cannot accidentally hide a
@@ -29,6 +30,33 @@ assert.equal(
 );
 assert.match(dashboardRoute, /instructionScopeFromCrewBooking/, 'Dashboard must preserve native/service source identity');
 assert.match(dashboardRoute, /unreadInstructionCount/, 'Dashboard cards must receive their unread count');
+
+const nativeCrewFormatterStart = apiSource.indexOf('async function formatKoshaBookingForCrew');
+const nativeCrewFormatterEnd = apiSource.indexOf('/**\n * The single source of truth', nativeCrewFormatterStart);
+const routedCrewFormatterStart = apiSource.indexOf('async function formatRoutedKoshaServiceBookingForCrew');
+const routedCrewFormatterEnd = apiSource.indexOf('async function loadRoutedKoshaServiceBookingDetail', routedCrewFormatterStart);
+const nativeDetailLoaderStart = apiSource.indexOf('async function loadKoshaBookingDetail');
+const nativeDetailLoaderEnd = apiSource.indexOf('function routedServiceExecutionFields', nativeDetailLoaderStart);
+const routedDetailLoaderStart = routedCrewFormatterEnd;
+const routedDetailLoaderEnd = apiSource.indexOf('/**\n * Persists execution state', routedDetailLoaderStart);
+const listStart = apiSource.indexOf('// ── Bookings list ──');
+const listEnd = apiSource.indexOf('// ── Booking detail ──', listStart);
+assert(nativeCrewFormatterStart >= 0 && nativeCrewFormatterEnd > nativeCrewFormatterStart, 'Native crew formatter must remain discoverable');
+assert(routedCrewFormatterStart >= 0 && routedCrewFormatterEnd > routedCrewFormatterStart, 'Routed crew formatter must remain discoverable');
+assert.match(
+  apiSource.slice(nativeCrewFormatterStart, nativeCrewFormatterEnd),
+  /redactKoshaInstructionAuditsFromBookingDetails/,
+  'Native staff rows must redact nested manager-instruction audit snapshots',
+);
+assert.match(
+  apiSource.slice(routedCrewFormatterStart, routedCrewFormatterEnd),
+  /redactKoshaInstructionAuditsFromBookingDetails/,
+  'Routed staff rows must redact nested manager-instruction audit snapshots',
+);
+assert.match(apiSource.slice(nativeDetailLoaderStart, nativeDetailLoaderEnd), /formatKoshaBookingForCrew/, 'Native detail must use the redacted crew serializer');
+assert.match(apiSource.slice(routedDetailLoaderStart, routedDetailLoaderEnd), /formatRoutedKoshaServiceBookingForCrew/, 'Routed detail must use the redacted crew serializer');
+assert.match(dashboardRoute, /getVisibleKoshaBookingsForStaff/, 'Dashboard must consume redacted native/routed crew rows');
+assert.match(apiSource.slice(listStart, listEnd), /getVisibleKoshaBookingsForStaff/, 'List must consume redacted native/routed crew rows');
 
 // A missing local Playwright installation is expected in lightweight developer
 // environments. The browser fixture must fail with an actionable setup command,
@@ -53,16 +81,34 @@ const kosha = { source: 'kosha', id: 4, assignedStaff: [{ id: 2, name: 'Crew' },
 const service = { ...kosha, source: 'service' };
 const instructionAuditTimeline = [
   { id: 'instruction-created', type: 'instruction_created', note: 'Private caption', meta: { current: { caption: 'Private caption', mediaUrl: '/uploads/private.webp' } } },
+  { id: 'instruction-edited', type: 'instruction_edited', note: 'Edited private caption', meta: { previous: { caption: 'Private caption', mediaUrl: '/uploads/private.webp' }, current: { caption: 'Edited private caption', mediaUrl: '/uploads/private-v2.webp' } } },
+  { id: 'instruction-archived', type: 'instruction_archived', note: 'Archived private caption', meta: { previous: { caption: 'Edited private caption', mediaUrl: '/uploads/private-v2.webp' }, current: { caption: 'Edited private caption', mediaUrl: '/uploads/private-v2.webp' } } },
   { id: 'staff-stage', type: 'stage_changed', note: 'Visible execution note' },
 ];
+const bookingDetailsWithInstructionAudit = {
+  koshaPortalTimeline: instructionAuditTimeline,
+  koshaPortalMedia: [{ url: '/uploads/execution-proof.webp', purpose: 'stage-proof' }],
+  bookingCenterServices: [{ type: 'kosha' }],
+};
+const redactedBookingDetails = api.redactKoshaInstructionAuditsFromBookingDetails(bookingDetailsWithInstructionAudit);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(redactedBookingDetails)),
+  {
+    koshaPortalTimeline: [instructionAuditTimeline.at(-1)],
+    koshaPortalMedia: bookingDetailsWithInstructionAudit.koshaPortalMedia,
+    bookingCenterServices: bookingDetailsWithInstructionAudit.bookingCenterServices,
+  },
+  'Generic staff bookingDetails retain execution data but never contain manager instruction captions or media snapshots',
+);
+assert.equal(bookingDetailsWithInstructionAudit.koshaPortalTimeline.length, 4, 'Staff redaction must not mutate persisted booking details');
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.filterKoshaInstructionAuditTimeline({ ...kosha, assignedStaff: [] }, employee, instructionAuditTimeline))),
-  [instructionAuditTimeline[1]],
+  [instructionAuditTimeline.at(-1)],
   'An ordinary employee viewing an unassigned native booking cannot receive manager instruction audit snapshots',
 );
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.filterKoshaInstructionAuditTimeline({ ...service, assignedStaff: [] }, employee, instructionAuditTimeline))),
-  [instructionAuditTimeline[1]],
+  [instructionAuditTimeline.at(-1)],
   'An ordinary employee viewing an unassigned routed booking cannot receive manager instruction audit snapshots',
 );
 assert.deepEqual(

@@ -22,6 +22,7 @@ import {
   filterKoshaInstructionAuditTimeline,
   KoshaInstructionError,
   mayReadKoshaInstructions,
+  redactKoshaInstructionAuditsFromBookingDetails,
   type InstructionScope,
 } from "./kosha-instructions";
 import QRCode from "qrcode";
@@ -62138,6 +62139,9 @@ async function formatKoshaBookingForCrew(row: any) {
   );
   return {
     ...base,
+    bookingDetails: redactKoshaInstructionAuditsFromBookingDetails(
+      base.bookingDetails,
+    ),
     executionStage,
     assignedStaffId: row.assignedStaffId ?? row.assigned_staff_id ?? null,
     assignedStaffIds: bookingAssignedStaff(details).ids,
@@ -62504,8 +62508,12 @@ async function formatRoutedKoshaServiceBookingForCrew(
 ) {
   const fields = routedServiceExecutionFields(order);
   const executionStage = syncedCrewStage(fields, fields.executionStage);
+  const base = await formatRoutedKoshaServiceBooking(order, service);
   return {
-    ...(await formatRoutedKoshaServiceBooking(order, service)),
+    ...base,
+    bookingDetails: redactKoshaInstructionAuditsFromBookingDetails(
+      base.bookingDetails,
+    ),
     executionStage,
     assignedStaffId: fields.assignedStaffId ?? null,
     assignedStaffIds: bookingAssignedStaff(fields).ids,

@@ -28,6 +28,9 @@ export const mayReadKoshaInstructions = (actor: InstructionActor) => mayManageKo
 export function mayReadAssignedKoshaInstructions(scope: InstructionScope, actor: InstructionActor) {
   return mayReadKoshaInstructions(actor) && (mayManageKoshaInstructions(actor) || scope.assignedStaff.some(staff => staff.id === actor.id));
 }
+function withoutKoshaInstructionAudits<T extends { type?: unknown }>(timeline: T[]) {
+  return timeline.filter((event) => !String(event.type ?? "").startsWith("instruction_"));
+}
 export function filterKoshaInstructionAuditTimeline<T extends { type?: unknown }>(
   scope: InstructionScope,
   actor: InstructionActor,
@@ -35,7 +38,18 @@ export function filterKoshaInstructionAuditTimeline<T extends { type?: unknown }
 ) {
   return mayReadAssignedKoshaInstructions(scope, actor)
     ? timeline
-    : timeline.filter((event) => !String(event.type ?? "").startsWith("instruction_"));
+    : withoutKoshaInstructionAudits(timeline);
+}
+export function redactKoshaInstructionAuditsFromBookingDetails<T extends Record<string, any>>(
+  bookingDetails: T,
+): T {
+  if (!Array.isArray(bookingDetails.koshaPortalTimeline)) return bookingDetails;
+  return {
+    ...bookingDetails,
+    koshaPortalTimeline: withoutKoshaInstructionAudits(
+      bookingDetails.koshaPortalTimeline,
+    ),
+  };
 }
 function authorize(scope: InstructionScope, actor: InstructionActor, audience: "staff" | "manager", mutation = false) {
   if (!Number.isSafeInteger(scope.id) || scope.id <= 0 || !["kosha", "service"].includes(scope.source)) throw new KoshaInstructionError(400, "حدد رقم الحجز ومصدره");
