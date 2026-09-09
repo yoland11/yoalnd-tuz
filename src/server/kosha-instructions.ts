@@ -51,6 +51,21 @@ export function redactKoshaInstructionAuditsFromBookingDetails<T extends Record<
     ),
   };
 }
+export function filterKoshaInstructionAuditDetail<
+  T extends { booking: { bookingDetails: Record<string, any> }; timeline: Array<{ type?: unknown }> },
+>(scope: InstructionScope, actor: InstructionActor, detail: T): T {
+  if (mayReadAssignedKoshaInstructions(scope, actor)) return detail;
+  return {
+    ...detail,
+    booking: {
+      ...detail.booking,
+      bookingDetails: redactKoshaInstructionAuditsFromBookingDetails(
+        detail.booking.bookingDetails,
+      ),
+    },
+    timeline: withoutKoshaInstructionAudits(detail.timeline),
+  };
+}
 function authorize(scope: InstructionScope, actor: InstructionActor, audience: "staff" | "manager", mutation = false) {
   if (!Number.isSafeInteger(scope.id) || scope.id <= 0 || !["kosha", "service"].includes(scope.source)) throw new KoshaInstructionError(400, "حدد رقم الحجز ومصدره");
   const allowed = mutation ? mayManageKoshaInstructions(actor) : audience === "staff" ? mayReadAssignedKoshaInstructions(scope, actor) : mayReadKoshaInstructions(actor);

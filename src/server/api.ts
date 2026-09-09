@@ -19,7 +19,7 @@ import {
 import {
   createKoshaInstructionService,
   dispatchKoshaInstructionRequest,
-  filterKoshaInstructionAuditTimeline,
+  filterKoshaInstructionAuditDetail,
   KoshaInstructionError,
   mayReadKoshaInstructions,
   redactKoshaInstructionAuditsFromBookingDetails,
@@ -10794,7 +10794,10 @@ async function syncRentalSoundBooking(rental: any) {
         .update(serviceOrdersTable)
         .set({
           ...shared,
-          customFields: { ...previousFields, ...commonFields },
+          customFields: routedKoshaCustomFieldsSql(
+            serviceOrdersTable.customFields,
+            { ...previousFields, ...commonFields },
+          ),
         } as any)
         .where(eq(serviceOrdersTable.id, Number(linked.id)))
         .returning();
@@ -11021,7 +11024,10 @@ async function syncStoreSoundBooking(input: {
           remainingAmount: String(payment.remaining),
           paymentStatus: payment.status,
           internalNotes: internalNotes ?? linked.internal_notes ?? null,
-          customFields: { ...previousFields, ...commonFields },
+          customFields: routedKoshaCustomFieldsSql(
+            serviceOrdersTable.customFields,
+            { ...previousFields, ...commonFields },
+          ),
         } as any)
         .where(eq(serviceOrdersTable.id, Number(linked.id)))
         .returning();
@@ -11158,12 +11164,12 @@ async function syncSalesInvoiceSoundBooking(invoice: any, items: any[]) {
         .update(serviceOrdersTable)
         .set({
           status: "cancelled",
-          customFields: {
+          customFields: routedKoshaCustomFieldsSql(serviceOrdersTable.customFields, {
             ...prior,
             soundItems: [],
             sourceStatus: invoice.status,
             soundSyncState: "source_has_no_sound_items",
-          },
+          }),
         } as any)
         .where(eq(serviceOrdersTable.id, Number(linked.id)))
         .returning();
@@ -11236,7 +11242,10 @@ async function syncSalesInvoiceSoundBooking(invoice: any, items: any[]) {
           eventDate: linked.event_date || shared.eventDate,
           eventLocation: linked.event_location || null,
           internalNotes: linked.internal_notes || shared.internalNotes,
-          customFields: { ...previous, ...commonFields },
+          customFields: routedKoshaCustomFieldsSql(
+            serviceOrdersTable.customFields,
+            { ...previous, ...commonFields },
+          ),
         } as any)
         .where(eq(serviceOrdersTable.id, Number(linked.id)))
         .returning();
@@ -33289,7 +33298,13 @@ async function handleSoundCenter(
       if (existing) {
         const [booking] = await tx
           .update(serviceOrdersTable)
-          .set(values as any)
+          .set({
+            ...values,
+            customFields: routedKoshaCustomFieldsSql(
+              serviceOrdersTable.customFields,
+              customFields,
+            ),
+          } as any)
           .where(eq(serviceOrdersTable.id, Number(existing.id)))
           .returning();
         return { booking, created: false };
@@ -57006,10 +57021,10 @@ async function handleCollections(
           depositAmount: String(paid),
           remainingAmount: String(remaining),
           paymentStatus,
-          customFields: {
+          customFields: routedKoshaCustomFieldsSql(serviceOrdersTable.customFields, {
             ...((before.source.customFields ?? {}) as Record<string, unknown>),
             paymentMethod: sourceMethod,
-          },
+          }),
         })
         .where(eq(serviceOrdersTable.id, data.sourceId));
     } else if (data.sourceType === "sales_invoice") {
@@ -59399,7 +59414,7 @@ async function handlePhotographyStaffPortal(
                 data.location !== undefined
                   ? nullableText(data.location)
                   : central.eventLocation,
-              customFields: {
+              customFields: routedKoshaCustomFieldsSql(serviceOrdersTable.customFields, {
                 ...centralFields,
                 assignedPhotographerId:
                   data.assignedStaffId ??
@@ -59415,7 +59430,7 @@ async function handlePhotographyStaffPortal(
                     })
                   )?.stage,
                 ),
-              },
+              }),
             })
             .where(eq(serviceOrdersTable.id, event.bookingId));
           await syncCentralBookingToPhotography(event.bookingId, {
@@ -62441,7 +62456,7 @@ async function koshaBookingSetup(booking: any) {
   };
 }
 
-async function loadKoshaBookingDetail(bookingId: number) {
+async function loadKoshaBookingDetail(bookingId: number, auth: AdminUser) {
   const booking = await db.query.koshaBookingsTable.findFirst({
     where: eq(koshaBookingsTable.id, bookingId),
   });
@@ -62464,8 +62479,12 @@ async function loadKoshaBookingDetail(bookingId: number) {
       orderBy: [desc(koshaPaymentRequestsTable.createdAt)],
     }),
   ]);
-  return {
-    booking: await formatKoshaBookingForCrew(booking),
+  const crewBooking = await formatKoshaBookingForCrew(booking);
+  const detail = {
+    // Detail access is assignment-aware; list/dashboard serializers remain
+    // redacted. Filter raw nested audits and the timeline together here so
+    // stage/media/delivery response branches cannot bypass authorization.
+    booking: { ...crewBooking, bookingDetails: booking.bookingDetails ?? {} },
     setup: await koshaBookingSetup(booking),
     timeline: events.map((e: any) => ({
       ...e,
@@ -62490,6 +62509,11 @@ async function loadKoshaBookingDetail(bookingId: number) {
       reviewedAt: p.reviewedAt?.toISOString?.() ?? null,
     })),
   };
+  return filterKoshaInstructionAuditDetail(
+    instructionScopeFromCrewBooking(crewBooking),
+    auth,
+    detail,
+  );
 }
 
 function routedServiceExecutionFields(
@@ -62526,6 +62550,7 @@ async function formatRoutedKoshaServiceBookingForCrew(
 
 async function loadRoutedKoshaServiceBookingDetail(
   order: typeof serviceOrdersTable.$inferSelect,
+  auth: AdminUser,
   service?: {
     type?: string | null;
     name?: string | null;
@@ -62533,8 +62558,15 @@ async function loadRoutedKoshaServiceBookingDetail(
   } | null,
 ) {
   const fields = routedServiceExecutionFields(order);
-  return {
-    booking: await formatRoutedKoshaServiceBookingForCrew(order, service),
+  const crewBooking = await formatRoutedKoshaServiceBookingForCrew(order, service);
+  const detail = {
+    booking: {
+      ...crewBooking,
+      // Keep formatter-owned routing metadata (for example
+      // `routedBookingSource`) while supplying the raw persisted fields to
+      // the authorization-aware audit filter below.
+      bookingDetails: { ...crewBooking.bookingDetails, ...fields },
+    },
     setup: await koshaBookingSetup({
       ...fields,
       koshaId: fields.koshaId ?? null,
@@ -62552,6 +62584,11 @@ async function loadRoutedKoshaServiceBookingDetail(
     delivery: fields.koshaPortalDelivery ?? null,
     paymentRequests: [],
   };
+  return filterKoshaInstructionAuditDetail(
+    instructionScopeFromCrewBooking(crewBooking),
+    auth,
+    detail,
+  );
 }
 
 /**
@@ -64664,15 +64701,10 @@ async function handleStaffPortal(
         `${instructionScope.source}:${instructionScope.id}`,
       ) ?? 0;
     if (authorized.resolved.kind === "kosha") {
-      const detail = await loadKoshaBookingDetail(id);
+      const detail = await loadKoshaBookingDetail(id, auth);
       if (detail)
         return json({
           ...detail,
-          timeline: filterKoshaInstructionAuditTimeline(
-            instructionScope,
-            auth,
-            detail.timeline,
-          ),
           unreadInstructionCount,
         });
       logKoshaBookingLookupFailure({
@@ -64688,15 +64720,11 @@ async function handleStaffPortal(
     }
     const detail = await loadRoutedKoshaServiceBookingDetail(
         authorized.resolved.routed.order,
+        auth,
         authorized.resolved.routed.service,
       );
     return json({
       ...detail,
-      timeline: filterKoshaInstructionAuditTimeline(
-        instructionScope,
-        auth,
-        detail.timeline,
-      ),
       unreadInstructionCount,
     });
   }
@@ -64779,10 +64807,11 @@ async function handleStaffPortal(
         ? json(
             await loadRoutedKoshaServiceBookingDetail(
               routed.order,
+              auth,
               routed.service,
             ),
           )
-        : json(await loadKoshaBookingDetail(id));
+        : json(await loadKoshaBookingDetail(id, auth));
     }
     // Documentation is optional. When media is supplied it still goes through
     // the shared validated uploader; an empty collection must never block a
@@ -64876,6 +64905,7 @@ async function handleStaffPortal(
           return json(
             await loadRoutedKoshaServiceBookingDetail(
               latest.order,
+              auth,
               latest.service,
             ),
           );
@@ -64908,7 +64938,7 @@ async function handleStaffPortal(
         );
       }
       return json(
-        await loadRoutedKoshaServiceBookingDetail(updated, routed.service),
+        await loadRoutedKoshaServiceBookingDetail(updated, auth, routed.service),
       );
     }
     const booking = nativeBooking!;
@@ -64993,7 +65023,7 @@ async function handleStaffPortal(
         where: eq(koshaBookingsTable.id, id),
       });
       if (latest?.executionStage === toStage) {
-        return json(await loadKoshaBookingDetail(id));
+        return json(await loadKoshaBookingDetail(id, auth));
       }
       return error(
         "تغيرت مرحلة الحجز من جهاز آخر؛ تمّت مزامنة الحالة الحالية",
@@ -65041,7 +65071,7 @@ async function handleStaffPortal(
         },
       );
     }
-    return json(await loadKoshaBookingDetail(id));
+    return json(await loadKoshaBookingDetail(id, auth));
   }
 
   // ── Standalone media upload ──
@@ -65098,7 +65128,7 @@ async function handleStaffPortal(
         { timeline: [timelineEntry], media: savedMedia },
       );
       return json(
-        await loadRoutedKoshaServiceBookingDetail(updated, routed.service),
+        await loadRoutedKoshaServiceBookingDetail(updated, auth, routed.service),
       );
     }
     const booking = nativeBooking;
@@ -65117,7 +65147,7 @@ async function handleStaffPortal(
       stage: (booking as any).executionStage,
       purpose: String(data?.purpose ?? "execution"),
     });
-    return json(await loadKoshaBookingDetail(id));
+    return json(await loadKoshaBookingDetail(id, auth));
   }
 
   // ── Delivery report (تم التسليم) ──
@@ -65197,10 +65227,11 @@ async function handleStaffPortal(
         ? json(
             await loadRoutedKoshaServiceBookingDetail(
               routed.order,
+              auth,
               routed.service,
             ),
           )
-        : json(await loadKoshaBookingDetail(id));
+        : json(await loadKoshaBookingDetail(id, auth));
     }
     if (routed) {
       const fields = routedServiceExecutionFields(routed.order);
@@ -65277,7 +65308,7 @@ async function handleStaffPortal(
         .where(eq(serviceOrdersTable.id, routed.order.id))
         .returning();
       return json(
-        await loadRoutedKoshaServiceBookingDetail(updated, routed.service),
+        await loadRoutedKoshaServiceBookingDetail(updated, auth, routed.service),
       );
     }
     const booking = nativeBooking;
@@ -65412,7 +65443,7 @@ async function handleStaffPortal(
       .update(koshaBookingsTable)
       .set(patch)
       .where(eq(koshaBookingsTable.id, id));
-    return json(await loadKoshaBookingDetail(id));
+    return json(await loadKoshaBookingDetail(id, auth));
   }
 
   // ── Collect remaining balance → creates a pending request for the manager ──

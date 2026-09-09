@@ -26,6 +26,7 @@ import {
 } from "./sound-detection";
 import { ensurePhotographyIntegrationTables } from "./photography-integration-schema";
 import { normalizeShootStage, SHOOT_STAGE_LABELS } from "./photography-shoots";
+import { routedKoshaCustomFieldsSql } from "./kosha-instruction-store";
 
 type JsonMap = Record<string, any>;
 export type PhotographySyncActor = {
@@ -589,7 +590,7 @@ export async function syncCentralBookingToPhotography(
     await tx
       .update(serviceOrdersTable)
       .set({
-        customFields: {
+        customFields: routedKoshaCustomFieldsSql(serviceOrdersTable.customFields, {
           ...fields,
           departments: [...departments],
           photographyPortal: {
@@ -601,7 +602,7 @@ export async function syncCentralBookingToPhotography(
             customerStatus: CUSTOMER_STATUS[normalizeShootStage(shoot.stage)],
             syncedAt: new Date().toISOString(),
           },
-        },
+        }),
       })
       .where(eq(serviceOrdersTable.id, bookingId));
 
@@ -654,7 +655,7 @@ export async function syncPhotographyStageToCentralBooking(
       .update(serviceOrdersTable)
       .set({
         status: centralStatus,
-        customFields: {
+        customFields: routedKoshaCustomFieldsSql(serviceOrdersTable.customFields, {
           ...fields,
           photographyWorkflowStatus: stage,
           photographyCustomerStatus: CUSTOMER_STATUS[stage],
@@ -664,7 +665,7 @@ export async function syncPhotographyStageToCentralBooking(
             customerStatus: CUSTOMER_STATUS[stage],
             syncedAt: new Date().toISOString(),
           },
-        },
+        }),
       })
       .where(eq(serviceOrdersTable.id, bookingId));
     await tx.insert(serviceOrderStatusHistoryTable).values({

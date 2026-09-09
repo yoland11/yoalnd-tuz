@@ -87,14 +87,55 @@ const instruction = { id: 9, kind: 'note', revision: 2, caption: 'New note', med
     apiSource.indexOf('if (method === "PATCH" && parts[2])', serviceOrdersStart),
     apiSource.indexOf('if (section === "orders")', serviceOrdersStart),
   );
+  const photographySource = fs.readFileSync('src/server/photography-booking-integration.ts', 'utf8');
+  const collections = apiSource.slice(apiSource.indexOf('async function handleCollections'), apiSource.indexOf('async function handleCollections') + 6400);
+  const photographyEventStart = apiSource.indexOf('validationError("staff.photography.events.update"');
+  const photographyEventEdit = apiSource.slice(photographyEventStart, apiSource.indexOf('return json(await formatPhotographyEvent(updated))', photographyEventStart));
   for (const [name, source] of [
     ['routed manager edit', routedEdit],
     ['booking operations', operationsSave],
     ['sound department stamp', soundStamp],
     ['staff assignment', assignmentSave],
     ['service-order edit', serviceOrderPatch],
+    ['collection payment-method update', collections],
+    ['photography event edit', photographyEventEdit],
+    ['central booking photography synchronization', photographySource.slice(photographySource.indexOf('export async function syncCentralBookingToPhotography'), photographySource.indexOf('const CENTRAL_STATUS_BY_STAGE'))],
+    ['photography stage synchronization', photographySource.slice(photographySource.indexOf('export async function syncPhotographyStageToCentralBooking'), photographySource.indexOf('export async function findPhotographerConflict'))],
   ]) {
     assert.match(source, /routedKoshaCustomFieldsSql\(/, `${name} must merge stale customFields against the current database row`);
+  }
+
+  // Every direct service-order JSON replacement must use the preservation
+  // expression. This AST contract catches a new writer outside the known routes.
+  for (const [filename, source] of [['api.ts', apiSource], ['photography-booking-integration.ts', photographySource]]) {
+    const tree = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
+    function visit(node) {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'set' && /\.update\(serviceOrdersTable\)$/.test(node.expression.expression.getText(tree))) {
+        let values = node.arguments[0];
+        if (ts.isAsExpression(values)) values = values.expression;
+        if (ts.isObjectLiteralExpression(values)) {
+          const customFields = values.properties.find(property => property.name?.getText(tree) === 'customFields');
+          if (customFields) assert.match(customFields.getText(tree), /routedKoshaCustomFieldsSql\(/, `${filename}:${tree.getLineAndCharacterOfPosition(node.pos).line + 1} service-order JSON write must preserve reserved arrays`);
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(tree);
+  }
+
+  for (const [writer, stalePatch] of [
+    ['collections', { paymentMethod: 'transfer' }],
+    ['photography event', { assignedPhotographerId: 12, photographyWorkflowStatus: 'shooting' }],
+    ['central photography sync', { departments: ['kosha', 'photography'], photographyPortal: { shootId: 8 } }],
+    ['photography stage sync', { photographyWorkflowStatus: 'completed', photographyCustomerStatus: 'ready' }],
+  ]) {
+    const current = { koshaPortalTimeline: [instructionAudit, stageAudit], koshaPortalMedia: [{ id: 'interleaved-photo' }], unrelated: 'keep' };
+    const patch = { ...stalePatch, koshaPortalTimeline: [], koshaPortalMedia: [] };
+    const merged = output.exports.mergeRoutedKoshaCustomFields(current, patch);
+    assert.deepEqual(JSON.parse(JSON.stringify(merged)), { ...current, ...stalePatch }, `${writer} cannot erase manager audit/staff media written after its read`);
+    await db.update(schema.serviceOrdersTable).set({ customFields: output.exports.routedKoshaCustomFieldsSql(schema.serviceOrdersTable.customFields, patch) }).returning();
+    assert.match(queries.at(-1).sql, /coalesce\("service_orders"\."custom_fields", '\{\}'::jsonb\) \|\|/i, `${writer} must merge at the database row boundary`);
+    assert.ok(queries.at(-1).params.includes(JSON.stringify(stalePatch)), `${writer} must not replay stale reserved arrays in SQL parameters`);
   }
 
   await store.list(scope);

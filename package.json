@@ -38,6 +38,8 @@
     "test:sound-reservations": "node ./scripts/test-unified-sound-reservations.mjs",
     "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs",
     "test:kosha-manager": "node ./scripts/test-kosha-manager.mjs",
+    "test:kosha-instruction-store": "node ./scripts/test-kosha-instruction-store.cjs",
+    "test:kosha-staff-detail": "node ./scripts/test-kosha-staff-detail.cjs",
     "test:kosha-staff-instructions": "node ./scripts/test-kosha-staff-instructions-browser.mjs",
     "test:kosha-manager-schema": "node ./scripts/test-kosha-manager-instructions-schema.cjs",
     "test:products-pdf": "node ./scripts/verify-products-pdf-export.mjs",
