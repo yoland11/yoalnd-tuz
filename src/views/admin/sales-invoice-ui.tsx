@@ -57,6 +57,11 @@ export function filterSalesProducts<T extends Pick<SalesCatalogItem, "name" | "n
     .some((value) => String(value ?? "").toLocaleLowerCase("ar").includes(normalized)));
 }
 
+export function stepSalesQuantity(value: number, direction: -1 | 1) {
+  if (direction === 1) return Math.max(1, Math.floor(Number(value) || 0) + 1);
+  return Math.max(1, Math.ceil(Number(value) || 1) - 1);
+}
+
 export function SearchableProductSelect({ products, value, selectedLabel, loading, disabled, onSelect }: { products: SalesCatalogItem[]; value: number | null; selectedLabel?: string; loading?: boolean; disabled?: boolean; onSelect: (productId: number) => void }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -154,7 +159,11 @@ function LineThumbnail({ source, alt }: { source?: string; alt: string }) {
 }
 
 export function InvoiceItemsCard({ items, imageForLine, formatMoney, onUpdate, onRemove, disabled }: { items: SalesCartLine[]; imageForLine?: (line: SalesCartLine) => string | undefined; formatMoney: (value: number) => string; onUpdate: (index: number, field: keyof SalesCartLine, value: string) => void; onRemove: (index: number) => void; disabled?: boolean }) {
-  const quantity = (index: number, value: number) => onUpdate(index, "quantity", String(Math.max(0.001, Math.round(value * 1000) / 1000)));
+  const quantity = (index: number, requestedValue: number) => {
+    const currentValue = items[index]?.quantity ?? 1;
+    const direction: -1 | 1 = requestedValue > currentValue ? 1 : -1;
+    onUpdate(index, "quantity", String(stepSalesQuantity(currentValue, direction)));
+  };
   return (
     <section className={`${surface} overflow-hidden`}>
       <div className="flex items-center justify-between border-b border-[#E9E5E2] px-4 py-4">

@@ -9,6 +9,10 @@ const purchasesSource = readFileSync(
   new URL("../src/views/admin/purchases.tsx", import.meta.url),
   "utf8",
 );
+const printHelpersSource = readFileSync(
+  new URL("../src/views/admin/print-helpers.ts", import.meta.url),
+  "utf8",
+);
 
 const html = buildSalesInvoiceThermalHtml({
   paperSize: "80mm",
@@ -89,6 +93,20 @@ const longReceipt = buildSalesInvoiceThermalHtml({
   companyPhone: "07701234567",
   companyAddress: "بغداد، عنوان فرع طويل لاختبار التفاف تذييل الإيصال الحراري",
 });
+const compact58Receipt = buildSalesInvoiceThermalHtml({
+  paperSize: "58mm",
+  invoiceNo: "SI-58-1",
+  customerName: "عميل باسم طويل لاختبار ورق 58 ملم",
+  items: [{
+    productName: "منتج طويل لاختبار التصميم الحراري الضيق",
+    quantity: "1.5",
+    unitPrice: "25000",
+    total: "37500",
+  }],
+  total: "37500",
+  paid: "0",
+  remaining: "37500",
+});
 const checks = [
   ["Latin number helper", formatLatinNumber("١٢٣٤٥٦٧٫٥") === "1,234,567.5"],
   [
@@ -133,6 +151,20 @@ const checks = [
     ].every((token) => longReceipt.includes(token)),
   ],
   [
+    "58mm has its own compact two-row item composition",
+    compact58Receipt.includes('class="receipt invoice-thermal-58"') &&
+      compact58Receipt.includes('class="ln2"') &&
+      compact58Receipt.includes('<th class="name">الصنف</th><th>الإجمالي</th>') &&
+      !compact58Receipt.includes("<th>#</th>"),
+  ],
+  [
+    "A4 sales printing uses a dedicated sheet instead of thermal markup",
+    printHelpersSource.includes('const body = `<main class="sales-sheet">') &&
+      printHelpersSource.includes("const css = salesInvoiceSheetCss();") &&
+      printHelpersSource.includes("if (isThermal) {") &&
+      !printHelpersSource.includes('paperSize: input.paperSize === "a4" ? "80mm"'),
+  ],
+  [
     "Large numeric values may wrap inside compact table columns",
     longReceipt.includes(
       ".receipt-items .num { white-space:normal; overflow-wrap:anywhere; word-break:break-word; }",
@@ -157,11 +189,9 @@ const checks = [
   ],
   ["Blank notes are omitted", !html.includes("ملاحظات")],
   [
-    "Purchase invoices use the shared 80mm receipt instead of a desktop A4 window",
-    purchasesSource.includes("openSalesInvoicePrintWindow({") &&
-      purchasesSource.includes('paperSize: "80mm"') &&
-      purchasesSource.includes('documentTitle: "فاتورة مشتريات"') &&
-      !purchasesSource.includes("@page{size:A4;margin:14mm}"),
+    "Purchase invoices preserve their dedicated A4 statement path",
+    purchasesSource.includes("openPurchaseInvoicePrintWindow(") &&
+      purchasesSource.includes("createPurchaseInvoicePrintElement("),
   ],
 ];
 checks.push(
