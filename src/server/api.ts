@@ -1282,14 +1282,17 @@ function phoneLast4(value: string | null | undefined): string {
 
 function trackingCodeForPhone(phone: string): string {
   // Surface the familiar last four digits without turning a public tracking
-  // link into a guessable phone-number lookup. The random suffix remains the
-  // capability token and keeps codes unique even when customers share a tail.
+  // link into a guessable phone-number lookup. Keep the full code below the
+  // service_orders.tracking_code varchar(40) limit while retaining 120 bits of
+  // entropy, so customers sharing a phone tail still receive unique tokens.
   const tail = phoneLast4(phone) || "0000";
-  return generateTrackingCode(`AJN-${tail}`);
+  return `AJN-${tail}-${randomBytes(15).toString("hex").toUpperCase()}`;
 }
 
 function isSecureTrackingCode(value: string): boolean {
-  return /^AJN-(?:\d{4}-)?[A-F0-9]{32}$/.test(value);
+  // Accept both the corrected 30-character suffix and legacy 32-character
+  // secure tokens that were generated without a phone tail.
+  return /^AJN-(?:\d{4}-)?[A-F0-9]{30,32}$/.test(value);
 }
 
 function normalizeTrackingCode(value: string): string {
@@ -10595,7 +10598,12 @@ async function createServiceOrderWithHistory(
 }
 
 function serviceBookingSaveError(err: unknown): CheckoutError {
-  const driverError = err as { code?: string; column?: string };
+  const wrapped = err as {
+    code?: string;
+    column?: string;
+    cause?: { code?: string; column?: string };
+  };
+  const driverError = wrapped?.cause ?? wrapped;
   const code = driverError?.code;
   if (code === "23503")
     return new CheckoutError("الخدمة أو العميل المرتبط بالحجز غير موجود", 409, {
@@ -48603,11 +48611,18 @@ async function handleAdmin(
           { settleByAmount: true },
         );
       } catch (err) {
+        const diagnostic = safeServerError(err);
+        const databaseError = (err as any)?.cause ?? err;
         console.error("admin service booking core save failed", {
           serviceId: data.serviceId,
           actorId: auth.id,
-          code: (err as any)?.code,
-          message: err instanceof Error ? err.message : "unknown",
+          code: diagnostic.code,
+          message: diagnostic.message,
+          detail: String(databaseError?.detail ?? "").slice(0, 300) || null,
+          hint: String(databaseError?.hint ?? "").slice(0, 300) || null,
+          constraint: String(databaseError?.constraint ?? "").slice(0, 120) || null,
+          column: String(databaseError?.column ?? "").slice(0, 120) || null,
+          table: String(databaseError?.table ?? "").slice(0, 120) || null,
         });
         throw serviceBookingSaveError(err);
       }
