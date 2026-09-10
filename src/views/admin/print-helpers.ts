@@ -617,6 +617,57 @@ function purchaseInvoiceStatementCss() {
   `;
 }
 
+function purchaseInvoiceThermalMarkup(input: PurchaseInvoiceStatementInput) {
+  const esc = escapePrintHtml;
+  const company = input.companyName?.trim() || "مجموعة علي جان نهاد";
+  const issuedAt = input.issuedAt
+    ? new Intl.DateTimeFormat("en-CA", { dateStyle: "medium" }).format(new Date(input.issuedAt))
+    : "—";
+  const items = input.items.length
+    ? input.items.map((item) => `<div class="purchase-thermal-item"><strong>${esc(item.productName)}</strong><div><span class="num">${esc(item.quantity)} × ${esc(formatCurrency(item.unitPrice))}</span><b class="num">${esc(formatCurrency(item.total))}</b></div></div>`).join("")
+    : '<p class="purchase-thermal-empty">لا توجد أصناف مسجلة</p>';
+
+  return `<main class="purchase-thermal-receipt" data-paper-size="80mm">
+    <header>${input.logoUrl ? `<img src="${esc(input.logoUrl)}" alt="" onerror="this.remove()">` : ""}<h1>${esc(company)}</h1><p>فاتورة مشتريات</p></header>
+    <section class="purchase-thermal-meta"><div><span>رقم الفاتورة</span><b class="num">${esc(input.invoiceNo)}</b></div><div><span>التاريخ</span><b class="num">${esc(issuedAt)}</b></div><div><span>المورد</span><b>${esc(input.supplierName || "—")}</b></div><div><span>حالة الدفع</span><b>${esc(purchasePaymentStatusLabel(input.paymentStatus))}</b></div></section>
+    <section class="purchase-thermal-items">${items}</section>
+    <section class="purchase-thermal-totals"><div><span>الإجمالي</span><b class="num">${esc(formatCurrency(input.total))}</b></div><div><span>المدفوع</span><b class="num">${esc(formatCurrency(input.paid))}</b></div><div class="remaining"><span>المتبقي</span><b class="num">${esc(formatCurrency(input.remaining))}</b></div></section>
+    ${input.notes ? `<section class="purchase-thermal-notes"><b>ملاحظات</b><p>${esc(input.notes)}</p></section>` : ""}
+    <footer>${input.companyPhone ? `<div class="num">${esc(input.companyPhone)}</div>` : ""}<p>شكراً لكم</p></footer>
+  </main>`;
+}
+
+function purchaseInvoiceThermalCss() {
+  return `
+    @page { size: 80mm auto; margin: 0; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    html, body { width: 80mm; max-width: 80mm; margin: 0 !important; padding: 0 !important; background: #fff; color: #000; direction: rtl; font-family: Tahoma, Arial, sans-serif; }
+    body { display: flex; justify-content: center; }
+    .purchase-thermal-receipt { width: 64mm; max-width: 64mm; padding: 4mm 0; font-size: 10px; line-height: 1.55; overflow: hidden; }
+    .purchase-thermal-receipt header { text-align: center; border-bottom: 1px dashed #000; padding-bottom: 3mm; }
+    .purchase-thermal-receipt header img { display: block; max-width: 30mm; max-height: 15mm; margin: 0 auto 2mm; object-fit: contain; }
+    .purchase-thermal-receipt h1 { margin: 0; font-size: 16px; }
+    .purchase-thermal-receipt header p, .purchase-thermal-receipt footer p { margin: 1mm 0 0; }
+    .purchase-thermal-meta { padding: 2mm 0; border-bottom: 1px dashed #000; }
+    .purchase-thermal-meta > div, .purchase-thermal-totals > div, .purchase-thermal-item > div { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 1mm 3mm; }
+    .purchase-thermal-meta span, .purchase-thermal-meta b, .purchase-thermal-totals span, .purchase-thermal-totals b, .purchase-thermal-item span, .purchase-thermal-item b { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+    .purchase-thermal-meta b, .purchase-thermal-item b { text-align: left; }
+    .purchase-thermal-items { border-bottom: 1px dashed #000; }
+    .purchase-thermal-item { padding: 2mm 0; border-bottom: 1px dotted #777; break-inside: avoid; page-break-inside: avoid; }
+    .purchase-thermal-item:last-child { border-bottom: 0; }
+    .purchase-thermal-item > strong { display: block; margin-bottom: 1mm; overflow-wrap: anywhere; }
+    .purchase-thermal-totals { padding: 2mm 0; border-bottom: 1px dashed #000; }
+    .purchase-thermal-totals > div { padding: .5mm 0; }
+    .purchase-thermal-totals .remaining { font-size: 12px; font-weight: 800; border-top: 1px solid #000; margin-top: 1mm; padding-top: 1.5mm; }
+    .purchase-thermal-notes { padding: 2mm 0; border-bottom: 1px dashed #000; overflow-wrap: anywhere; }
+    .purchase-thermal-notes p { margin: 1mm 0 0; white-space: pre-wrap; }
+    .purchase-thermal-empty, .purchase-thermal-receipt footer { text-align: center; }
+    .purchase-thermal-receipt footer { padding-top: 3mm; }
+    .num { direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums; }
+    @media print { html,body { width:80mm; max-width:80mm; margin:0 !important; padding:0 !important; } body > :not(.purchase-thermal-receipt) { display:none !important; } }
+  `;
+}
+
 export function createPurchaseInvoicePrintElement(
   input: PurchaseInvoiceStatementInput,
 ): HTMLDivElement {
@@ -649,13 +700,25 @@ export function preparePurchaseInvoicePrintWindow(): Window {
 export function openPurchaseInvoicePrintWindow(
   input: PurchaseInvoiceStatementInput,
   existingWindow?: Window | null,
+  paperSize: "a4" | "80mm" = "a4",
 ) {
   const popup = existingWindow && !existingWindow.closed
     ? existingWindow
     : preparePurchaseInvoicePrintWindow();
   popup.document.open();
-  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${escapePrintHtml(input.invoiceNo)}</title><style>${purchaseInvoiceStatementCss()}</style></head><body>${purchaseInvoiceStatementMarkup(input)}${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.write(buildPurchaseInvoicePrintHtml(input, paperSize));
   popup.document.close();
+}
+
+export function buildPurchaseInvoicePrintHtml(
+  input: PurchaseInvoiceStatementInput,
+  paperSize: "a4" | "80mm" = "a4",
+) {
+  const thermal = paperSize === "80mm";
+  const css = thermal ? purchaseInvoiceThermalCss() : purchaseInvoiceStatementCss();
+  const markup = thermal ? purchaseInvoiceThermalMarkup(input) : purchaseInvoiceStatementMarkup(input);
+  const viewport = thermal ? '<meta name="viewport" content="width=device-width,initial-scale=1">' : "";
+  return `<!doctype html><html dir="rtl"><head><meta charset="utf-8">${viewport}<title>${escapePrintHtml(input.invoiceNo)}</title><style>${css}</style></head><body>${markup}${printWhenImagesReadyScript()}</body></html>`;
 }
 
 export function sheetReportCss(size: "a4" | "a5" = "a4") {

@@ -39,6 +39,12 @@ import {
 } from "./_lib";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
 import { usePublicSettings } from "@/lib/public-settings";
 import { downloadElementPdf } from "@/lib/pdf";
@@ -114,6 +120,7 @@ type PurchaseInvoice = {
   createdByName: string;
   createdAt: string;
 };
+type PurchasePrintPaper = "a4" | "80mm";
 type InvoiceRegisterOptions = {
   branches?: Array<{ value: string; label: string }>;
   cashBoxes?: Array<{ value: string; label: string }>;
@@ -596,12 +603,12 @@ export default function PurchasesPage() {
     }
   }
 
-  async function printInvoice(inv: PurchaseInvoice) {
+  async function printInvoice(inv: PurchaseInvoice, paperSize: PurchasePrintPaper = "a4") {
     let popup: Window | null = null;
     try {
       popup = preparePurchaseInvoicePrintWindow();
       const full = await adminFetch<PurchaseInvoiceDetails>(`/admin/purchase-invoices/${inv.id}`);
-      printPurchaseInvoiceStatement(full, settings, popup);
+      printPurchaseInvoiceStatement(full, settings, popup, paperSize);
     } catch (error) {
       if (popup && !popup.closed) popup.close();
       toast({
@@ -1432,8 +1439,9 @@ function printPurchaseInvoiceStatement(
   invoice: PurchaseInvoiceDetails,
   settings: any,
   existingWindow?: Window | null,
+  paperSize: PurchasePrintPaper = "a4",
 ) {
-  openPurchaseInvoicePrintWindow(purchaseInvoicePrintInput(invoice, settings), existingWindow);
+  openPurchaseInvoicePrintWindow(purchaseInvoicePrintInput(invoice, settings), existingWindow, paperSize);
 }
 
 async function downloadPurchaseInvoicePdf(
@@ -1458,6 +1466,41 @@ async function downloadPurchaseInvoicePdf(
 
 function invoicePaymentLabel(status: string) {
   return status === "paid" ? "مدفوع بالكامل" : status === "partial" ? "مدفوع جزئياً" : "غير مدفوع";
+}
+
+function PurchasePrintMenu({
+  onPrint,
+  compact = false,
+}: {
+  onPrint: (paperSize: PurchasePrintPaper) => void;
+  compact?: boolean;
+}) {
+  return (
+    <DropdownMenu dir="rtl">
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant={compact ? "ghost" : "outline"}
+          size="sm"
+          title="خيارات طباعة فاتورة المشتريات"
+          aria-label="خيارات طباعة فاتورة المشتريات"
+        >
+          <Printer className="h-4 w-4" />
+          {compact ? null : "طباعة الفاتورة"}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-52">
+        <DropdownMenuItem onSelect={() => onPrint("a4")}>
+          <FileDown className="h-4 w-4" />
+          <span><b className="block">طباعة A4</b><small className="text-muted-foreground">ورق اعتيادي</small></span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onPrint("80mm")}>
+          <Printer className="h-4 w-4" />
+          <span><b className="block">طباعة حراري 80mm</b><small className="text-muted-foreground">وصل مختصر للطابعة الحرارية</small></span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 function PurchaseInvoicePaymentDialog({
@@ -1531,10 +1574,10 @@ function PurchaseInvoicePaymentDialog({
   };
   const history = details?.payments ?? [];
   const canSubmit = enteredAmount > 0 && enteredAmount <= summary.remainingAmount;
-  const printCurrentInvoice = () => {
+  const printCurrentInvoice = (paperSize: PurchasePrintPaper) => {
     if (!details) return;
     try {
-      printPurchaseInvoiceStatement(details, settings);
+      printPurchaseInvoiceStatement(details, settings, undefined, paperSize);
     } catch (error) {
       toast({
         title: "تعذر فتح نافذة الطباعة",
@@ -1569,9 +1612,7 @@ function PurchaseInvoicePaymentDialog({
       </DialogHeader>
       {detailsQuery.isLoading ? <p className="py-10 text-center text-muted-foreground">جارٍ تحميل تفاصيل الفاتورة...</p> : details ? <div className="min-w-0 space-y-5">
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={printCurrentInvoice}>
-            <Printer className="h-4 w-4" />طباعة الفاتورة
-          </Button>
+          <PurchasePrintMenu onPrint={printCurrentInvoice} />
           <Button type="button" variant="outline" size="sm" onClick={() => void exportCurrentInvoicePdf()} disabled={exportingPdf}>
             <FileDown className="h-4 w-4" />{exportingPdf ? "جارٍ إنشاء PDF..." : "حفظ PDF"}
           </Button>
@@ -1682,7 +1723,7 @@ function PurchaseListView({
   onBack: () => void;
   onDetails: (inv: PurchaseInvoice) => void;
   onEdit: (inv: PurchaseInvoice) => void;
-  onPrint: (inv: PurchaseInvoice) => void;
+  onPrint: (inv: PurchaseInvoice, paperSize: PurchasePrintPaper) => void;
   onPdf: (inv: PurchaseInvoice) => void;
   onDelete: (inv: PurchaseInvoice) => void;
   loading: boolean;
@@ -1941,14 +1982,10 @@ function PurchaseListView({
                           <Wallet className="w-4 h-4" />
                           تسجيل دفعة
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => onPrint(inv)}
-                          title="طباعة"
-                        >
-                          <Printer className="w-4 h-4" />
-                        </Button>
+                        <PurchasePrintMenu
+                          compact
+                          onPrint={(paperSize) => onPrint(inv, paperSize)}
+                        />
                         <Button
                           variant="ghost"
                           size="sm"

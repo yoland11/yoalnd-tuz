@@ -193,6 +193,18 @@ const checks = [
     purchasesSource.includes("openPurchaseInvoicePrintWindow(") &&
       purchasesSource.includes("createPurchaseInvoicePrintElement("),
   ],
+  [
+    "Purchase invoices offer A4 and 80mm print formats",
+    purchasesSource.includes('type PurchasePrintPaper = "a4" | "80mm"') &&
+      purchasesSource.includes('طباعة A4') &&
+      purchasesSource.includes('طباعة حراري 80mm'),
+  ],
+  [
+    "Purchase thermal printing uses a dedicated receipt composition",
+    printHelpersSource.includes("purchaseInvoiceThermalMarkup") &&
+      printHelpersSource.includes('@page { size: 80mm auto; margin: 0; }') &&
+      printHelpersSource.includes('paperSize === "80mm"'),
+  ],
 ];
 checks.push(
   [
