@@ -14,6 +14,7 @@ const checks = [
   ["premium header component exists", ui.includes("export function SalesInvoiceHeader")],
   ["real category chips component exists", ui.includes("export function ProductCategoryChips")],
   ["invoice items component exists", ui.includes("export function InvoiceItemsCard")],
+  ["mobile invoice cards expose editable unit price", /md:hidden[\s\S]*سعر الوحدة[\s\S]*onUpdate\(index, "unitPrice", e\.target\.value\)/.test(ui)],
   ["totals component exists", ui.includes("export function InvoiceTotalsCard")],
   ["mobile save bar exists", ui.includes("export function InvoiceMobileSaveBar")],
 ];
