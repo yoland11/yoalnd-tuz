@@ -1,0 +1,23 @@
+{
+  "skill_name": "ajn-booking-center-invoice",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "The Booking Center invoice shows the wrong remaining balance. Fix it without changing the A4 appearance.",
+      "expected_output": "Inspects the type=booking API and canonical payment source before touching presentation; preserves the protected A4 design and does not change other invoice branches.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Add 80mm printing to the existing Booking Center A4 invoice and replace A4 with the receipt layout.",
+      "expected_output": "Refuses to replace the protected A4 template, explains that thermal is a separately scoped template, and leaves the A4 dimensions and output unchanged.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Customer Arabic names overflow in Booking Center print preview. Repair the print bug.",
+      "expected_output": "Scopes work to type=booking, preserves the A4 visual contract, verifies RTL/overflow with rendered evidence, and runs the focused A4 plus mandatory repository checks.",
+      "files": []
+    }
+  ]
+}
