@@ -446,9 +446,21 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   });
   const reject = useMutation({
     mutationFn: ({ id, reason }: { id: number; reason: string }) => adminFetch(`/admin/master-cash/transactions/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) }),
-    onSuccess: () => { invalidate(); toast({ title: "تم رفض المعاملة" }); },
+    onSuccess: (_data, variables) => {
+      invalidate();
+      toast({
+        title: variables.reason.startsWith("طلب تعديل:")
+          ? "تمت إعادة الحركة لصاحبها للتعديل"
+          : "تم رفض المعاملة",
+      });
+    },
     onError: (error: Error) => toast({ title: "تعذر رفض المعاملة", description: error.message, variant: "destructive" }),
   });
+  const requestModification = (id: number) => {
+    const reason = window.prompt("اكتب التعديل المطلوب (3 أحرف على الأقل):");
+    if (!reason || reason.trim().length < 3) return;
+    reject.mutate({ id, reason: `طلب تعديل: ${reason.trim()}` });
+  };
   const recalculate = useMutation({
     mutationFn: () => adminFetch("/admin/master-cash/recalculate", { method: "POST" }),
     onSuccess: () => { invalidate(); toast({ title: "تمت مطابقة الصندوق مع القيود المنفذة" }); },
@@ -535,7 +547,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
 
         <TabsContent value="ledger" className="space-y-3">
           <div className="flex flex-wrap items-end gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden"><Filter className="mb-2 h-4 w-4 text-muted-foreground" /><input type="date" value={filters.from} onChange={(event) => { setFilters({ ...filters, from: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><input type="date" value={filters.to} onChange={(event) => { setFilters({ ...filters, to: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><select value={filters.status} onChange={(event) => { setFilters({ ...filters, status: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الحالات</option>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={filters.voucherType} onChange={(event) => { setFilters({ ...filters, voucherType: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل السندات</option>{VOUCHER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={filters.department} onChange={(event) => { setFilters({ ...filters, department: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الأقسام</option>{DEPARTMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><label className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input value={filters.search} onChange={(event) => { setFilters({ ...filters, search: event.target.value }); setPage(1); }} placeholder="رقم السند أو المرجع أو العميل" className={`${inputClass} pr-9`} /></label></div>
-          <TransactionTable rows={rows} loading={transactions.isLoading} isManager={canApprove} onOpen={setSelectedId} onApprove={(id) => approve.mutate(id)} onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }} busy={approve.isPending || reject.isPending} />
+          <TransactionTable rows={rows} loading={transactions.isLoading} isManager={canApprove} onOpen={setSelectedId} onApprove={(id) => approve.mutate(id)} onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }} onRequestModification={requestModification} busy={approve.isPending || reject.isPending} />
           {(transactions.data?.total ?? 0) > 20 && <div className="flex items-center justify-between print:hidden"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>السابق</Button><span className="text-xs text-muted-foreground">صفحة {page.toLocaleString("ar-IQ-u-nu-latn")} من {Math.ceil((transactions.data?.total ?? 0) / 20).toLocaleString("ar-IQ-u-nu-latn")}</span><Button variant="outline" size="sm" disabled={page * 20 >= (transactions.data?.total ?? 0)} onClick={() => setPage((value) => value + 1)}>التالي</Button></div>}
         </TabsContent>
 
@@ -552,6 +564,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
             onOpen={setSelectedId}
             onApprove={(id) => approve.mutate(id)}
             onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }}
+            onRequestModification={requestModification}
           />
         </TabsContent>
       </Tabs>
@@ -561,8 +574,8 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   );
 }
 
-function TransactionTable({ rows, loading, isManager, onOpen, onApprove, onReject, busy, emptyMessage = "لا توجد حركات ضمن الفلاتر" }: { rows: FinancialTransaction[]; loading: boolean; isManager: boolean; onOpen: (id: number) => void; onApprove: (id: number) => void; onReject: (id: number) => void; busy: boolean; emptyMessage?: string }) {
-  return <div className="overflow-x-auto rounded-xl border border-border/30 bg-card">{loading ? <div className="p-5"><Skeleton className="h-56 rounded-xl" /></div> : rows.length === 0 ? <EmptyState message={emptyMessage} /> : <table className="w-full min-w-[920px] text-sm"><thead><tr className="border-b border-border/30 text-xs text-muted-foreground">{["رقم الحركة", "التاريخ", "القسم", "البيان", "الاتجاه والتصنيف", "المبلغ", "الحالة", "بواسطة", "إجراء"].map((label) => <th key={label} className="px-3 py-3 text-center font-medium">{label}</th>)}</tr></thead><tbody>{rows.map((row) => { const movement = movementDisplay(row); return <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]"><td className="px-3 py-3 text-center font-mono text-xs text-primary"><button onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</button></td><td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td><td className="px-3 py-3 text-center">{departmentLabel(row.department)}</td><td className="max-w-56 px-3 py-3"><p className="truncate text-foreground" title={row.description}>{row.description || row.transactionType}</p><p className="text-xs text-muted-foreground">{row.transactionType}</p></td><td className={`px-3 py-3 text-center font-medium ${movement.isLiability ? "text-primary" : row.direction === "revenue" ? "text-status-success" : "text-destructive"}`}><span className="block">{movement.direction}</span><span className="block text-xs font-normal text-muted-foreground">{movement.classification}</span></td><td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td><td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td><td className="px-3 py-3 text-center text-xs text-muted-foreground">{row.requestedByName || "النظام"}</td><td className="px-3 py-3"><div className="flex justify-center gap-1"><Button size="sm" variant="outline" onClick={() => onOpen(row.id)}><History className="h-3.5 w-3.5" /></Button>{isManager && row.approvalStatus === "pending" && <><Button size="sm" disabled={busy} onClick={() => onApprove(row.id)} className="gap-1"><Check className="h-3.5 w-3.5" /> اعتماد</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onReject(row.id)} className="text-destructive hover:text-destructive"><X className="h-3.5 w-3.5" /></Button></>}</div></td></tr>; })}</tbody><TableTotalsFooter rows={rows} labelColSpan={4} cells={[{ key: "direction", label: "التشغيلي فقط", value: () => 0, format: (_, entries) => <span className="text-xs"><span className="text-status-success">إيراد {formatCurrency(entries.filter((entry) => !movementDisplay(entry).isLiability && entry.direction === "revenue").reduce((sum, entry) => sum + Number(entry.amount || 0), 0))}</span><span className="mx-2 text-muted-foreground">/</span><span className="text-destructive">مصروف {formatCurrency(entries.filter((entry) => !movementDisplay(entry).isLiability && entry.direction === "expense").reduce((sum, entry) => sum + Number(entry.amount || 0), 0))}</span></span> }, { key: "amount", label: "صافي التدفق النقدي", value: (entry) => entry.direction === "revenue" ? Number(entry.amount || 0) : -Number(entry.amount || 0), format: formatCurrency }, { key: "status", label: "" }, { key: "requestedBy", label: "" }, { key: "actions", label: "" }]} /></table>}</div>;
+function TransactionTable({ rows, loading, isManager, onOpen, onApprove, onReject, onRequestModification, busy, emptyMessage = "لا توجد حركات ضمن الفلاتر" }: { rows: FinancialTransaction[]; loading: boolean; isManager: boolean; onOpen: (id: number) => void; onApprove: (id: number) => void; onReject: (id: number) => void; onRequestModification: (id: number) => void; busy: boolean; emptyMessage?: string }) {
+  return <div className="overflow-x-auto rounded-xl border border-border/30 bg-card">{loading ? <div className="p-5"><Skeleton className="h-56 rounded-xl" /></div> : rows.length === 0 ? <EmptyState message={emptyMessage} /> : <table className="w-full min-w-[920px] text-sm"><thead><tr className="border-b border-border/30 text-xs text-muted-foreground">{["رقم الحركة", "التاريخ", "القسم", "البيان", "الاتجاه والتصنيف", "المبلغ", "الحالة", "بواسطة", "إجراء"].map((label) => <th key={label} className="px-3 py-3 text-center font-medium">{label}</th>)}</tr></thead><tbody>{rows.map((row) => { const movement = movementDisplay(row); return <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]"><td className="px-3 py-3 text-center font-mono text-xs text-primary"><button onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</button></td><td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td><td className="px-3 py-3 text-center">{departmentLabel(row.department)}</td><td className="max-w-56 px-3 py-3"><p className="truncate text-foreground" title={row.description}>{row.description || row.transactionType}</p><p className="text-xs text-muted-foreground">{row.transactionType}</p></td><td className={`px-3 py-3 text-center font-medium ${movement.isLiability ? "text-primary" : row.direction === "revenue" ? "text-status-success" : "text-destructive"}`}><span className="block">{movement.direction}</span><span className="block text-xs font-normal text-muted-foreground">{movement.classification}</span></td><td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td><td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td><td className="px-3 py-3 text-center text-xs text-muted-foreground">{row.requestedByName || "النظام"}</td><td className="px-3 py-3"><div className="flex justify-center gap-1"><Button size="sm" variant="outline" onClick={() => onOpen(row.id)}><History className="h-3.5 w-3.5" /></Button>{isManager && row.approvalStatus === "pending" && <><Button size="sm" disabled={busy} onClick={() => onApprove(row.id)} className="gap-1"><Check className="h-3.5 w-3.5" /> اعتماد</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onRequestModification(row.id)} className="gap-1"><Pencil className="h-3.5 w-3.5" /> طلب تعديل</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onReject(row.id)} className="text-destructive hover:text-destructive"><X className="h-3.5 w-3.5" /></Button></>}</div></td></tr>; })}</tbody><TableTotalsFooter rows={rows} labelColSpan={4} cells={[{ key: "direction", label: "التشغيلي فقط", value: () => 0, format: (_, entries) => <span className="text-xs"><span className="text-status-success">إيراد {formatCurrency(entries.filter((entry) => !movementDisplay(entry).isLiability && entry.direction === "revenue").reduce((sum, entry) => sum + Number(entry.amount || 0), 0))}</span><span className="mx-2 text-muted-foreground">/</span><span className="text-destructive">مصروف {formatCurrency(entries.filter((entry) => !movementDisplay(entry).isLiability && entry.direction === "expense").reduce((sum, entry) => sum + Number(entry.amount || 0), 0))}</span></span> }, { key: "amount", label: "صافي التدفق النقدي", value: (entry) => entry.direction === "revenue" ? Number(entry.amount || 0) : -Number(entry.amount || 0), format: formatCurrency }, { key: "status", label: "" }, { key: "requestedBy", label: "" }, { key: "actions", label: "" }]} /></table>}</div>;
 }
 
 /**
@@ -572,7 +585,7 @@ function TransactionTable({ rows, loading, isManager, onOpen, onApprove, onRejec
  * Service / Financial requests) and a top filter that buckets by source type.
  */
 function ApprovalsPanel({
-  rows, counts, total, filter, onFilter, loading, isManager, busy, onOpen, onApprove, onReject,
+  rows, counts, total, filter, onFilter, loading, isManager, busy, onOpen, onApprove, onReject, onRequestModification,
 }: {
   rows: FinancialTransaction[];
   counts: Record<ApprovalBucket, number>;
@@ -585,6 +598,7 @@ function ApprovalsPanel({
   onOpen: (id: number) => void;
   onApprove: (id: number) => void;
   onReject: (id: number) => void;
+  onRequestModification: (id: number) => void;
 }) {
   const totals = useMemo(
     () =>
@@ -653,6 +667,7 @@ function ApprovalsPanel({
                     <td className="px-3 py-3">
                       <div className="flex justify-center gap-1">
                         <Button size="sm" disabled={busy} onClick={() => onApprove(row.id)} className="gap-1"><Check className="h-3.5 w-3.5" /> اعتماد</Button>
+                        <Button size="sm" variant="outline" disabled={busy} onClick={() => onRequestModification(row.id)} className="gap-1"><Pencil className="h-3.5 w-3.5" /> طلب تعديل</Button>
                         <Button size="sm" variant="outline" disabled={busy} onClick={() => onReject(row.id)} className="text-destructive hover:text-destructive"><X className="h-3.5 w-3.5" /></Button>
                       </div>
                     </td>

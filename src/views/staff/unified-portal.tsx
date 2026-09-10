@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { TaskFileList, TaskFilePicker, TaskPhotoGallery, TaskPhotoPicker, type TaskFile, type TaskPhoto } from "@/components/task-photo-gallery";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/query-client";
+import { getTaskWorkflowStage } from "@/lib/task-workflows";
 // Legacy print helpers stay inert until the historical payroll code is retired.
 // The staff portal no longer exposes a salary tab or calls the payroll endpoint.
 import { salarySlipCss } from "@/views/admin/print-helpers";
@@ -31,6 +32,7 @@ type Task = {
   comments?: Array<{ id: number; body: string; createdAt: string; staff?: { fullName?: string; username?: string } | null }>;
   timeline?: Array<{ id: number; title: string; body?: string | null; createdAt: string; actorName?: string | null; metadata?: Record<string, unknown> }>;
   completionPercent?: number;
+  workflow?: { department: string; label: string; stage: string; stageLabel: string; nextActionLabel: string; steps: Array<{ id: string; label: string }> };
 };
 type Booking = { id: number; source: string; service: string; customer: string; date: string | null; time: string | null; location: string | null; status: string; href: string };
 type Notice = { id: number; type: string; title: string; body: string; href: string | null; readAt: string | null; createdAt: string };
@@ -89,6 +91,27 @@ function priorityClass(priority: string) {
   return priority === "urgent" || priority === "high"
     ? "bg-destructive/10 text-destructive"
     : priority === "low" ? "bg-muted text-muted-foreground" : "bg-primary/10 text-primary";
+}
+
+function WorkflowProgress({ task }: { task: Task }) {
+  if (!task.workflow?.steps?.length) return null;
+  const current = getTaskWorkflowStage(
+    { department: task.workflow.department, label: task.workflow.label, taskTypes: [], steps: task.workflow.steps.map((step) => ({ ...step, actionLabel: "" })) },
+    task.workflow.stage,
+  );
+  const currentIndex = task.workflow.steps.findIndex((step) => step.id === current.id);
+  return <section aria-label="مراحل تنفيذ المهمة" className="rounded-xl border border-border bg-muted/25 p-3">
+    <div className="mb-3 flex items-center justify-between gap-3">
+      <h3 className="text-sm font-extrabold">مسار {task.workflow.label}</h3>
+      <span className="text-xs font-bold text-primary">{task.workflow.stageLabel}</span>
+    </div>
+    <ol className="flex overflow-x-auto pb-1">
+      {task.workflow.steps.map((step, index) => <li key={step.id} className="flex min-w-24 flex-1 flex-col items-center gap-2 text-center text-[11px]">
+        <span className={`grid size-6 place-items-center rounded-full border text-xs ${index <= currentIndex ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-muted-foreground"}`}>{index < currentIndex ? "✓" : index + 1}</span>
+        <span className={index <= currentIndex ? "font-bold text-foreground" : "text-muted-foreground"}>{step.label}</span>
+      </li>)}
+    </ol>
+  </section>;
 }
 
 function SectionTitle({ children, action }: { children: ReactNode; action?: ReactNode }) {
@@ -267,6 +290,9 @@ function StaffTaskDialog({ taskId, open, onOpenChange }: { taskId: number | null
   const [progressNote, setProgressNote] = useState("");
   const [completionNotes, setCompletionNotes] = useState("");
   const [completionPercent, setCompletionPercent] = useState(0);
+  const [showProblem, setShowProblem] = useState(false);
+  const [problemCategory, setProblemCategory] = useState("missing_item");
+  const [problemNote, setProblemNote] = useState("");
   const [items, setItems] = useState<Array<{ id: number; title: string; requiredQuantity: number; completedQuantity: number }>>([]);
   useEffect(() => {
     setPhotos([]);
@@ -290,8 +316,8 @@ function StaffTaskDialog({ taskId, open, onOpenChange }: { taskId: number | null
     ]);
   };
   const transition = useMutation({
-    mutationFn: (statusAction: "accept" | "start") => adminFetch(`/admin/tasks/${taskId}/progress`, { method: "POST", body: JSON.stringify({ items: [], statusAction }) }),
-    onSuccess: async (_data, statusAction) => { await refresh(); toast({ title: statusAction === "accept" ? "تم استلام المهمة" : "بدأ العمل بالمهمة" }); },
+    mutationFn: (action: "accept" | "advance") => adminFetch(`/admin/tasks/${taskId}/progress`, { method: "POST", body: JSON.stringify(action === "advance" ? { items: [], workflowAction: "advance" } : { items: [], statusAction: "accept" }) }),
+    onSuccess: async (_data, action) => { await refresh(); toast({ title: action === "accept" ? "تم استلام المهمة" : "تم تحديث مرحلة التنفيذ" }); },
     onError: (error: any) => toast({ title: "تعذر تحديث حالة المهمة", description: error?.message, variant: "destructive" }),
   });
   const saveProgress = useMutation({
@@ -310,6 +336,20 @@ function StaffTaskDialog({ taskId, open, onOpenChange }: { taskId: number | null
     onSuccess: async () => { setPhotos([]); setFiles([]); await refresh(); toast({ title: "تم تأكيد الإنجاز وإرسال المهمة للمراجعة" }); },
     onError: (error: any) => toast({ title: "تعذر تأكيد الإنجاز", description: error?.message, variant: "destructive" }),
   });
+  const reportProblem = useMutation({
+    mutationFn: () => adminFetch(`/admin/tasks/${taskId}/problem`, {
+      method: "POST",
+      body: JSON.stringify({ category: problemCategory, note: problemNote }),
+    }),
+    onSuccess: async () => {
+      setShowProblem(false);
+      setProblemNote("");
+      await refresh();
+      toast({ title: "تم إرسال المشكلة إلى المدير" });
+    },
+    onError: (error: any) =>
+      toast({ title: "تعذر إرسال المشكلة", description: error?.message, variant: "destructive" }),
+  });
   const removePhoto = useMutation({
     mutationFn: (photoId: number) => adminFetch(`/admin/tasks/${taskId}/photos/${photoId}`, { method: "DELETE" }),
     onSuccess: async () => { await refresh(); toast({ title: "تم حذف مرفق الإنجاز" }); },
@@ -325,13 +365,27 @@ function StaffTaskDialog({ taskId, open, onOpenChange }: { taskId: number | null
         <DialogDescription>{task?.taskNo || (taskId ? `المهمة #${taskId}` : "")}</DialogDescription>
       </DialogHeader>
       {detail.isLoading ? <div className="space-y-3 p-5"><div className="h-10 animate-pulse rounded-lg bg-muted" /><div className="h-36 animate-pulse rounded-lg bg-muted" /></div> : detail.isError ? <div className="p-5"><Failure title="تعذر تحميل تفاصيل المهمة" error={detail.error} onRetry={() => void detail.refetch()} /></div> : task ? <div className="space-y-5 p-4 sm:p-5">
-        <div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${priorityClass(task.priority)}`}>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "عالية" : task.priority === "low" ? "منخفضة" : "متوسطة"}</span><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-bold text-muted-foreground">{statusLabel(task.status)}</span>{task.status === "new" ? <Button type="button" size="sm" className="min-h-10" disabled={transition.isPending} onClick={() => transition.mutate("accept")}>استلام المهمة</Button> : null}{task.status === "accepted" ? <Button type="button" size="sm" className="min-h-10" disabled={transition.isPending} onClick={() => transition.mutate("start")}>بدء العمل</Button> : null}</div>
+        <div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${priorityClass(task.priority)}`}>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "عالية" : task.priority === "low" ? "منخفضة" : "متوسطة"}</span><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-bold text-muted-foreground">{statusLabel(task.status)}</span>{task.status === "new" ? <Button type="button" size="sm" className="min-h-10" disabled={transition.isPending} onClick={() => transition.mutate("accept")}>استلام المهمة</Button> : null}</div>
+        <WorkflowProgress task={task} />
         <section className="space-y-3"><p className="text-sm leading-7 text-foreground">{task.description || "لا يوجد وصف إضافي."}</p><dl className="grid grid-cols-2 gap-3 rounded-xl bg-muted/35 p-3 text-sm"><div><dt className="text-xs text-muted-foreground">وقت البدء</dt><dd className="mt-1 font-bold">{textDate(task.startAt, true)}</dd></div><div><dt className="text-xs text-muted-foreground">الموعد النهائي</dt><dd className="mt-1 font-bold">{textDate(task.dueAt, true)}</dd></div><div><dt className="text-xs text-muted-foreground">القسم</dt><dd className="mt-1 font-bold">{task.department || "غير محدد"}</dd></div><div><dt className="text-xs text-muted-foreground">الموقع</dt><dd className="mt-1 font-bold">{task.location || "غير محدد"}</dd></div></dl>{task.notes ? <div className="rounded-lg border-r-4 border-primary bg-primary/5 p-3 text-sm"><strong>تعليمات المدير:</strong> {task.notes}</div> : null}</section>
         <section className="space-y-3"><h3 className="text-sm font-extrabold">صور وتوضيحات من المدير</h3><TaskPhotoGallery photos={task.managerPhotos ?? []} emptyText="لم يرفق المدير صوراً لهذه المهمة" /></section>
         {items.length ? <section className="space-y-2"><h3 className="text-sm font-extrabold">تقدم قائمة التنفيذ</h3>{items.map((item, index) => <label key={item.id} className="flex min-h-12 items-center gap-3 rounded-lg border border-border p-3"><span className="min-w-0 flex-1 text-sm font-bold">{item.title}</span><input disabled={locked} type="number" min="0" max={item.requiredQuantity} value={item.completedQuantity} onChange={(event) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, completedQuantity: Math.min(current.requiredQuantity, Math.max(0, Number(event.target.value))) } : current))} className="h-11 w-24 rounded-lg border bg-background px-2 text-center text-sm" /><span className="text-xs text-muted-foreground">/ {item.requiredQuantity}</span></label>)}</section> : null}
         <section className="space-y-3"><h3 className="text-sm font-extrabold">صور إنجاز الموظف</h3>{(task.employeePhotos ?? []).length ? <div className="space-y-3"><TaskPhotoGallery photos={task.employeePhotos ?? []} />{!locked ? <div className="flex flex-wrap gap-2">{(task.employeePhotos ?? []).filter((photo) => photo.id).map((photo, index) => <Button key={photo.id} type="button" size="sm" variant="outline" className="min-h-10 text-destructive hover:text-destructive" disabled={removePhoto.isPending} onClick={() => photo.id && removePhoto.mutate(photo.id)}>حذف صورة {index + 1}</Button>)}</div> : null}</div> : <p className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-sm text-muted-foreground">لم تتم إضافة صور إنجاز بعد</p>}</section>
         <section className="space-y-3"><h3 className="text-sm font-extrabold">فيديوهات ومستندات الإنجاز</h3><TaskFileList files={task.employeeFiles ?? []} onRemove={!locked ? (file) => file.id && removePhoto.mutate(file.id) : undefined} removing={removePhoto.isPending} /></section>
         {!locked ? <>
+          {task.status !== "new" && task.workflow?.stage !== "executed" ? <Button type="button" className="min-h-12 w-full" disabled={transition.isPending} onClick={() => transition.mutate("advance")}>{transition.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : task.workflow?.nextActionLabel ?? "متابعة التنفيذ"}</Button> : null}
+          <section className="rounded-xl border border-border p-3">
+            <Button type="button" variant="outline" className="min-h-11 w-full" onClick={() => setShowProblem((current) => !current)}>يوجد مشكلة</Button>
+            {showProblem ? <div className="mt-3 flex flex-col gap-3">
+              <label htmlFor="task-problem-category" className="text-sm font-bold">نوع المشكلة</label>
+              <select id="task-problem-category" value={problemCategory} onChange={(event) => setProblemCategory(event.target.value)} className="min-h-11 rounded-lg border bg-background px-3 text-sm">
+                <option value="missing_item">عنصر ناقص</option><option value="delay">تأخير</option><option value="customer_absent">العميل غير موجود</option><option value="location_problem">مشكلة بالموقع</option><option value="equipment_problem">عطل بالمعدات</option><option value="need_help">أحتاج مساعدة</option><option value="other">أخرى</option>
+              </select>
+              <label htmlFor="task-problem-note" className="text-sm font-bold">ملاحظة مختصرة (اختياري)</label>
+              <textarea id="task-problem-note" value={problemNote} onChange={(event) => setProblemNote(event.target.value)} rows={2} className="rounded-lg border bg-background p-3 text-sm" placeholder="اشرح المشكلة باختصار…" />
+              <Button type="button" variant="destructive" className="min-h-11" disabled={reportProblem.isPending} onClick={() => reportProblem.mutate()}>{reportProblem.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "إرسال المشكلة"}</Button>
+            </div> : null}
+          </section>
           <TaskPhotoPicker photos={photos} onChange={setPhotos} label="صور إنجاز المهمة (اختياري)" description="يمكن التقاط عدة صور أو اختيارها من المعرض. الصور اختيارية ولا تمنع إكمال المهمة." />
           <TaskFilePicker files={files} onChange={setFiles} />
           <section className="space-y-3 rounded-xl border border-border p-3"><div className="flex items-center justify-between gap-3"><label htmlFor="task-progress-percent" className="text-sm font-extrabold">نسبة الإنجاز</label><output htmlFor="task-progress-percent" className="text-sm font-black text-primary">{completionPercent}%</output></div><input id="task-progress-percent" type="range" min="0" max="100" step="5" value={completionPercent} onChange={(event) => setCompletionPercent(Number(event.target.value))} className="min-h-11 w-full accent-primary" /><label htmlFor="task-progress-note" className="text-sm font-extrabold">ملاحظة تقدم (اختياري)</label><textarea id="task-progress-note" value={progressNote} onChange={(event) => setProgressNote(event.target.value)} rows={2} className="w-full rounded-lg border bg-background p-3 text-sm" placeholder="ما الذي تم إنجازه حتى الآن؟" /><Button type="button" variant="outline" className="min-h-11 w-full sm:w-auto" disabled={saveProgress.isPending} onClick={() => saveProgress.mutate()}>{saveProgress.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "حفظ التقدم"}</Button></section>
