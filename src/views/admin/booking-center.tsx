@@ -319,7 +319,10 @@ function unify(serviceOrders: ServiceOrder[], koshaBookings: KoshaBooking[]): Un
     source: "service",
     id: order.id,
     number: order.trackingCode || `AJN-${String(order.id).padStart(5, "0")}`,
-    customerId: num(order.customFields?.customerId) || null,
+    // Prefer the canonical service_orders.customer_id (Phase 1) over the legacy
+    // value mirrored into customFields, so the unified customer account resolves
+    // to the one real customer.
+    customerId: num((order as any).customerId ?? order.customFields?.customerId) || null,
     customerName: order.customerName,
     phone: order.phone,
     eventDate: dateOnly(order.eventDate),
