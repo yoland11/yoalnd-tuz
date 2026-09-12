@@ -30673,6 +30673,35 @@ async function bookingOperationAssets(reference: BookingOperationsReference) {
   const passportMap = new Map(passports.map((row) => [row.productId, row]));
   const custodyMap = new Map(custody.map((row) => [row.productId, row]));
   const warehouseMap = new Map(warehouses.map((row) => [row.id, row.name]));
+  // Employee custody for THIS booking: who is responsible, when it left, when it
+  // returned. Read-only — surfaces the existing reservation timeline, mutates
+  // nothing and never duplicates an asset.
+  const reservationRows = await db.execute(sql`
+    SELECT DISTINCT ON (product_id)
+      product_id, staff_id, checkout_at::text AS checkout_at,
+      returned_at::text AS returned_at, status
+    FROM employee_custody_reservations
+    WHERE booking_type = ${reference.entityType} AND booking_id = ${reference.id}
+    ORDER BY product_id, id DESC
+  `);
+  const reservationMap = new Map<number, any>();
+  for (const row of (reservationRows.rows ?? []) as any[])
+    reservationMap.set(Number(row.product_id), row);
+  const custodyStaffIds = Array.from(
+    new Set(
+      [...reservationMap.values()]
+        .map((row) => Number(row.staff_id))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    ),
+  );
+  const custodyStaff = custodyStaffIds.length
+    ? await db.query.staffTable.findMany({
+        where: inArray(staffTable.id, custodyStaffIds),
+      })
+    : [];
+  const custodyStaffMap = new Map(
+    custodyStaff.map((row) => [row.id, row.fullName || row.username || `#${row.id}`]),
+  );
   return linked.map((item) => {
     const product: any = productMap.get(item.productId);
     const profile: any = profileMap.get(item.productId);
@@ -30739,6 +30768,20 @@ async function bookingOperationAssets(reference: BookingOperationsReference) {
       description: item.description ?? null,
       estimatedCost: Number(item.estimatedCost ?? 0),
       photoUrls: Array.isArray(item.photoUrls) ? item.photoUrls : [],
+      // Employee custody (responsible person + timeline) for this booking.
+      responsibleStaffName: (() => {
+        const reservation = reservationMap.get(item.productId);
+        const staffId = reservation ? Number(reservation.staff_id) : 0;
+        return staffId ? (custodyStaffMap.get(staffId) ?? null) : null;
+      })(),
+      checkoutAt:
+        item.checkoutAt ??
+        reservationMap.get(item.productId)?.checkout_at ??
+        (issued?.issuedAt ? String(issued.issuedAt) : null),
+      returnedAt:
+        item.returnedAt ??
+        reservationMap.get(item.productId)?.returned_at ??
+        (issued?.returnedAt ? String(issued.returnedAt) : null),
     };
   });
 }
