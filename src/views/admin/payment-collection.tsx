@@ -231,6 +231,13 @@ function CollectPaymentDialog({
       queryClient.invalidateQueries({ queryKey: ["admin", "statement"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "master-cash"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "receipt-vouchers"] });
+      // Phase 15: keep the unified customer account + every booking view in sync
+      // after any collection, from whichever page it was recorded.
+      queryClient.invalidateQueries({ queryKey: ["admin", "customer-account"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "customer-statement"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "booking-operations"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "booking-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
       toast({ title: "تم تسجيل الدفعة", description: "أُنشئ سند قبض وحركة مالية بانتظار الاعتماد حسب الصلاحيات." });
       onSuccess();
     },

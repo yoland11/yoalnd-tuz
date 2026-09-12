@@ -438,6 +438,12 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["admin", "master-cash"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "finance"] });
+    // Phase 15: approving/rejecting/reversing changes the official balance, so
+    // refresh the unified customer account and every booking/document view.
+    for (const key of [
+      "customer-account", "customer-statement", "booking-operations",
+      "booking-workspace", "kosha-bookings", "service-orders", "sales-invoices", "customers",
+    ]) queryClient.invalidateQueries({ queryKey: ["admin", key] });
   };
   const approve = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/master-cash/transactions/${id}/approve`, { method: "POST", body: JSON.stringify({}) }),
