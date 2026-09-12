@@ -306,6 +306,7 @@ import {
   updateFinancialTransaction,
   type FinancialActor,
 } from "@/server/master-cash-box";
+import { getCustomerAccountSummary } from "@/server/customer-account";
 import {
   assetSaleEligibility,
   calculateAssetSaleOutcome,
@@ -48016,6 +48017,29 @@ async function handleAdmin(
         };
       });
       return json({ results });
+    }
+
+    // Unified customer financial account (Phase 2) — the ONE canonical
+    // receivable/paid/balance figure derived from reconciled documents, joined
+    // by canonical customer_id. Read-only; gated by the "customers" permission.
+    if (method === "GET" && parts[2] && parts[3] === "account") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const customer = await db.query.customersTable.findFirst({
+        where: eq(customersTable.id, id),
+      });
+      if (!customer) return error("غير موجود", 404);
+      // Link any historical service bookings by phone before deriving totals.
+      try {
+        await ensureServiceOrderCustomerLinks();
+      } catch {
+        /* non-fatal: derive from whatever is already linked */
+      }
+      const account = await getCustomerAccountSummary({
+        id: customer.id,
+        phone: customer.phone,
+      });
+      return json({ account });
     }
 
     if (method === "GET" && parts[2]) {
