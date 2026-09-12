@@ -9532,6 +9532,35 @@ async function ensureCustomerBackfill(): Promise<void> {
   await customerBackfillPromise;
 }
 
+let serviceOrderCustomerLinkPromise: Promise<void> | null = null;
+// One-time (per process) reconciliation for Phase 1 unified identity: link
+// historical service_orders to their canonical customer by EXACT normalized
+// phone. It NEVER guesses identity from a name, and never creates or mutates a
+// customer — rows whose phone cannot be matched exactly are left null for a
+// separate reviewed pass. Runs after ensureCustomerBackfill so the matching
+// customer rows already exist. Idempotent and cheap after the first run.
+async function ensureServiceOrderCustomerLinks(): Promise<void> {
+  if (!serviceOrderCustomerLinkPromise) {
+    serviceOrderCustomerLinkPromise = ensureCustomerBackfill()
+      .then(() =>
+        db.execute(sql`
+          UPDATE service_orders so
+          SET customer_id = c.id
+          FROM customers c
+          WHERE so.customer_id IS NULL
+            AND so.phone = c.phone
+            AND so.phone ~ '^[0-9]{10,}$'
+        `),
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        serviceOrderCustomerLinkPromise = null;
+        throw err;
+      });
+  }
+  await serviceOrderCustomerLinkPromise;
+}
+
 function publicCustomer(customer: any) {
   return {
     id: customer.id,
@@ -10500,8 +10529,21 @@ async function insertServiceOrderWithTracking(
   },
 ) {
   // Surface the service customer on /admin/customers — create-or-link by phone.
-  if (values.phone && !options?.skipCustomerSync)
-    await ensureCustomerForPhone(values.phone, (values as any).customerName);
+  // Phase 1: also capture the canonical customer id so the service booking
+  // carries a stable link to the one real customer account (not just name+phone).
+  let linkedCustomerId: number | null = (values as any).customerId ?? null;
+  if (values.phone && !options?.skipCustomerSync) {
+    const linkedCustomer = await ensureCustomerForPhone(
+      values.phone,
+      (values as any).customerName,
+    );
+    if (linkedCustomer?.id) linkedCustomerId = linkedCustomer.id;
+  } else if (values.phone && linkedCustomerId == null) {
+    // Sync skipped by the caller: resolve an existing customer without creating
+    // one, so the booking still carries the canonical link when possible.
+    const existing = await findCustomerByPhone(values.phone, db, false);
+    if (existing?.id) linkedCustomerId = existing.id;
+  }
   const executor = options?.executor ?? db;
   const paymentMethod = (values as any)?.customFields?.paymentMethod;
   const payment = paymentSummary(
@@ -10514,6 +10556,7 @@ async function insertServiceOrderWithTracking(
     .insert(serviceOrdersTable)
     .values({
       ...values,
+      customerId: linkedCustomerId,
       trackingCode: trackingCodeForPhone(values.phone),
       phoneLast4: phoneLast4(values.phone),
       totalAmount: String(money((values as any).totalAmount)),
@@ -47770,6 +47813,8 @@ async function handleAdmin(
       // Reconcile any historical orders/bookings/services that predate auto-customer-creation.
       try {
         await ensureCustomerBackfill();
+        // Phase 1: link historical service bookings to their canonical customer.
+        await ensureServiceOrderCustomerLinks();
       } catch {
         /* non-fatal: still show whatever customers exist */
       }

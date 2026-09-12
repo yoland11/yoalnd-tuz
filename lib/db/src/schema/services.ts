@@ -27,6 +27,11 @@ export const serviceOrdersTable = pgTable("service_orders", {
   trackingCode: varchar("tracking_code", { length: 40 }),
   qrToken: varchar("qr_token", { length: 80 }),
   phoneLast4: varchar("phone_last4", { length: 4 }),
+  // Canonical customer link (Phase 1). Kept as a plain nullable integer to
+  // mirror kosha_bookings.customer_id; the real FK + index live in migration
+  // 0111. Older rows are backfilled from their normalized phone. Financial
+  // totals and payment state are unaffected by this identity link.
+  customerId: integer("customer_id"),
   customerName: text("customer_name").notNull(),
   phone: varchar("phone", { length: 20 }).notNull(),
   eventDate: text("event_date"),
