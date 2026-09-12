@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
-import { openCompanyLoanRepaymentReceiptPrintWindow, openCompanyLoanStatementPrintWindow } from "./print-helpers";
+import { buildCompanyLoanRepaymentReceiptDocumentHtml, buildCompanyLoanStatementDocumentHtml } from "./print-helpers";
+import { usePrint } from "@/components/print/print-provider";
 
 type Repayment = { id: number; repaymentNo: string; paymentDate: string; amount: number; paymentMethod: string; referenceNo?: string | null; notes?: string | null; status: string; cashAccountCode?: string | null; attachments?: string[] };
 type Loan = { id: number; loanNo: string; lenderName: string; lenderPhone?: string | null; originalAmount: number; totalRepaid: number; remainingAmount: number; receivedDate: string; agreementDate?: string | null; dueDate?: string | null; attachments?: string[]; paymentMethod: string; referenceNo?: string | null; notes?: string | null; status: string; repayments: Repayment[] };
@@ -23,7 +24,7 @@ const canRepay = (loan: Loan) => loan.remainingAmount > 0 && !["pending", "cance
 const attachmentsFor = (url: string) => url.trim() ? [url.trim()] : [];
 
 export function CompanyLoansPanel({ embedded = false }: { embedded?: boolean }) {
-  const qc = useQueryClient(); const { toast } = useToast();
+  const qc = useQueryClient(); const { toast } = useToast(); const { print } = usePrint();
   const [open, setOpen] = useState(false); const [editLoan, setEditLoan] = useState<Loan | null>(null); const [detailsLoan, setDetailsLoan] = useState<Loan | null>(null); const [repayLoan, setRepayLoan] = useState<Loan | null>(null);
   const [form, setForm] = useState<LoanForm>(blankLoanForm); const [repayment, setRepayment] = useState<RepaymentForm>(blankRepaymentForm);
   const query = useQuery({ queryKey: ["company-loans"], queryFn: () => adminFetch<LoansResponse>("/admin/loans") });
@@ -33,9 +34,25 @@ export function CompanyLoansPanel({ embedded = false }: { embedded?: boolean }) 
   const update = useMutation({ mutationFn: () => adminFetch(`/admin/loans/${editLoan!.id}`, { method: "PUT", body: JSON.stringify(loanPayload()) }), onSuccess: () => { refresh(); setEditLoan(null); toast({ title: "تم حفظ بيانات القرض" }); }, onError: (error) => toast({ title: apiErrorMessage(error), variant: "destructive" }) });
   const cancel = useMutation({ mutationFn: ({ id, reason }: { id: number; reason: string }) => adminFetch(`/admin/loans/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) }), onSuccess: () => { refresh(); toast({ title: "تم إلغاء الطلب مع الحفاظ على السجل المالي" }); }, onError: (error) => toast({ title: apiErrorMessage(error), variant: "destructive" }) });
   const repay = useMutation({ mutationFn: () => adminFetch(`/admin/loans/${repayLoan!.id}/repayments`, { method: "POST", body: JSON.stringify({ amount: Number(repayment.amount), paymentDate: repayment.paymentDate, paymentMethod: repayment.paymentMethod, referenceNo: repayment.referenceNo || null, notes: repayment.notes || null, attachments: attachmentsFor(repayment.attachmentUrl), idempotencyKey: repayment.idempotencyKey }) }), onSuccess: (result: any) => { refresh(); setRepayLoan(null); setRepayment(blankRepaymentForm()); toast({ title: result?.alreadySubmitted ? "تم تسجيل طلب السداد مسبقاً" : "تم إرسال سداد القرض للموافقات المالية" }); }, onError: (error) => toast({ title: apiErrorMessage(error), variant: "destructive" }) });
-  function printLoan(loan: Loan) { openCompanyLoanStatementPrintWindow({ ...loan, repayments: loan.repayments.map((item) => ({ ...item, cashAccount: "الصندوق الرئيسي" })) }); void adminFetch(`/admin/loans/${loan.id}/printed`, { method: "POST" }); }
-  const printStatement = printLoan;
-  const printReceipt = (loan: Loan, item: Repayment) => { openCompanyLoanRepaymentReceiptPrintWindow({ ...loan, repayment: { ...item, cashAccount: "الصندوق الرئيسي" } }); void adminFetch(`/admin/loans/${loan.id}/repayments/${item.id}/printed`, { method: "POST" }); };
+  const printStatement = (loan: Loan) => {
+    const input = { ...loan, repayments: loan.repayments.map((item) => ({ ...item, cashAccount: "الصندوق الرئيسي" })) };
+    print({
+      documentLabel: `كشف قرض ${loan.loanNo}`,
+      formats: [{ id: "a4", buildHtml: () => buildCompanyLoanStatementDocumentHtml(input) }],
+      onPrinted: () => { void adminFetch(`/admin/loans/${loan.id}/printed`, { method: "POST" }); },
+    });
+  };
+  const printReceipt = (loan: Loan, item: Repayment) => {
+    const input = { ...loan, repayment: { ...item, cashAccount: "الصندوق الرئيسي" } };
+    print({
+      documentLabel: `وصل سداد ${item.repaymentNo}`,
+      formats: [
+        { id: "a4", buildHtml: () => buildCompanyLoanRepaymentReceiptDocumentHtml(input, "a4") },
+        { id: "thermal80", buildHtml: () => buildCompanyLoanRepaymentReceiptDocumentHtml(input, "80mm") },
+      ],
+      onPrinted: () => { void adminFetch(`/admin/loans/${loan.id}/repayments/${item.id}/printed`, { method: "POST" }); },
+    });
+  };
   const totals = useMemo(() => (query.data?.loans ?? []).reduce((acc, loan) => ({ original: acc.original + loan.originalAmount, repaid: acc.repaid + loan.totalRepaid, remaining: acc.remaining + loan.remainingAmount, fullyPaid: acc.fullyPaid + (loan.status === "fully_repaid" ? 1 : 0) }), { original: 0, repaid: 0, remaining: 0, fullyPaid: 0 }), [query.data]);
   const startEdit = (loan: Loan) => { setEditLoan(loan); setForm({ lenderName: loan.lenderName, lenderPhone: loan.lenderPhone ?? "", amount: String(loan.originalAmount), receivedDate: loan.receivedDate, agreementDate: loan.agreementDate || loan.receivedDate, dueDate: loan.dueDate || "", paymentMethod: loan.paymentMethod, referenceNo: loan.referenceNo ?? "", notes: loan.notes ?? "", attachmentUrl: loan.attachments?.[0] ?? "" }); };
   const startRepayment = (loan: Loan) => { setRepayLoan(loan); setRepayment({ ...blankRepaymentForm(), amount: String(loan.remainingAmount) }); };

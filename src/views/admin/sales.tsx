@@ -21,6 +21,7 @@ import { adminFetch, apiErrorMessage, apiErrorStatus, canPrintSalesInvoice, fetc
 import DeliverySection, { type DeliveryInitialValue, type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
 import {
+  buildSalesInvoiceDocumentHtml,
   createSalesInvoiceThermalPdfElement,
   downloadDataUrl,
   openQrPrintWindow,
@@ -43,6 +44,7 @@ import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { AccountSummaryCard, type LastPayment } from "./payment-collection";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { downloadElementPdf } from "@/lib/pdf";
+import { usePrint } from "@/components/print/print-provider";
 import {
   createRemoteSalesInvoicePrintJob,
   defaultRemotePrintOptions,
@@ -1942,6 +1944,7 @@ function StatementStat({ label, value, accent }: { label: string; value: string;
 function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; onClose: () => void }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { print } = usePrint();
   const [saving, setSaving] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
@@ -2252,55 +2255,84 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     }
   }
 
-  async function printInvoice() {
+  function buildInvoicePrintInput(size: SalesInvoicePrintSize): SalesInvoiceReceiptInput {
+    return {
+      paperSize: size,
+      invoiceNo: invoice!.invoiceNo,
+      issuedAt: invoice!.createdAt || invoice!.date || draft.date,
+      customerName: draft.customerName || invoice!.customerName,
+      customerPhone: formatIraqiPhone(draft.customerPhone || invoice!.customerPhone || ""),
+      paymentMethod: draft.paymentMethod || invoice!.paymentMethod,
+      paymentStatus: invoice!.status === "cancelled" ? "unpaid" : paymentStatus,
+      employeeName: invoice!.createdByName,
+      items,
+      subtotal,
+      discount: discountAmount,
+      tax: taxAmount,
+      offerDeliveryFee: invoice!.offerDeliveryFee,
+      total,
+      paid: paidAmount,
+      remaining: remainingAmount,
+      notes: invoice!.notes,
+      qrDataUrl: invoice!.qr?.dataUrl,
+      qrCaption: invoice!.invoiceNo,
+      logoUrl: logoSrc(settings),
+      companyName: settings?.site_name,
+      companyPhone: settings?.phone || settings?.whatsapp,
+      companyAddress: settings?.address,
+      footerText: printerSettings?.footerText,
+      showLogo: printerSettings?.showLogo !== false,
+      showQr: printerSettings?.showQr !== false,
+      showCustomerPhone: printerSettings?.showCustomerPhone !== false,
+      showEmployeeName: printerSettings?.showEmployeeName !== false,
+      showAddress: printerSettings?.showAddress !== false,
+    };
+  }
+
+  // Actual local (browser) print for a chosen size: records the print-audit,
+  // then opens the shared invoice document. Financial totals and payment state
+  // are read-only inputs; printing never mutates them.
+  async function runLocalPrint(size: SalesInvoicePrintSize) {
     if (!invoice) return;
     try {
       await adminFetch(`/admin/sales-invoices/${invoice.id}/print-audit`, {
         method: "POST",
-        body: JSON.stringify({ paperSize: printSize }),
+        body: JSON.stringify({ paperSize: size }),
       });
     } catch (cause) {
       toast({ title: "تعذر تسجيل الطباعة", description: apiErrorMessage(cause), variant: "destructive" });
       return;
     }
-    const copies = printSize === "a4" ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 2);
+    const copies = size === "a4" ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 2);
     try {
+      const input = buildInvoicePrintInput(size);
       for (let copy = 0; copy < copies; copy += 1) {
-        openSalesInvoicePrintWindow({
-          paperSize: printSize,
-          invoiceNo: invoice.invoiceNo,
-          issuedAt: invoice.createdAt || invoice.date || draft.date,
-          customerName: draft.customerName || invoice.customerName,
-          customerPhone: formatIraqiPhone(draft.customerPhone || invoice.customerPhone || ""),
-          paymentMethod: draft.paymentMethod || invoice.paymentMethod,
-          paymentStatus: invoice.status === "cancelled" ? "unpaid" : paymentStatus,
-          employeeName: invoice.createdByName,
-          items,
-          subtotal,
-          discount: discountAmount,
-          tax: taxAmount,
-          offerDeliveryFee: invoice.offerDeliveryFee,
-          total,
-          paid: paidAmount,
-          remaining: remainingAmount,
-          notes: invoice.notes,
-          qrDataUrl: invoice.qr?.dataUrl,
-          qrCaption: invoice.invoiceNo,
-          logoUrl: logoSrc(settings),
-          companyName: settings?.site_name,
-          companyPhone: settings?.phone || settings?.whatsapp,
-          companyAddress: settings?.address,
-          footerText: printerSettings?.footerText,
-          showLogo: printerSettings?.showLogo !== false,
-          showQr: printerSettings?.showQr !== false,
-          showCustomerPhone: printerSettings?.showCustomerPhone !== false,
-          showEmployeeName: printerSettings?.showEmployeeName !== false,
-          showAddress: printerSettings?.showAddress !== false,
-        });
+        openSalesInvoicePrintWindow(input);
       }
     } catch (error) {
       toast({ title: "تعذر فتح نافذة الطباعة", description: error instanceof Error ? error.message : "تعذر تجهيز الفاتورة", variant: "destructive" });
     }
+  }
+
+  // Unified print: choose A4 / 80mm, preview, then print via runLocalPrint.
+  function printInvoice() {
+    if (!invoice) return;
+    print({
+      documentLabel: `فاتورة #${invoice.invoiceNo}`,
+      defaultFormat: printSize === "a4" ? "a4" : "thermal80",
+      formats: [
+        {
+          id: "a4",
+          buildHtml: () => buildSalesInvoiceDocumentHtml(buildInvoicePrintInput("a4")),
+          onPrint: () => runLocalPrint("a4"),
+        },
+        {
+          id: "thermal80",
+          buildHtml: () => buildSalesInvoiceDocumentHtml(buildInvoicePrintInput("80mm")),
+          onPrint: () => runLocalPrint("80mm"),
+        },
+      ],
+    });
   }
 
   const canDirectPrint = canPrintSalesInvoice(currentUser);

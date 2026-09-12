@@ -20,6 +20,7 @@ import { registerServiceWorker } from "@/lib/pwa";
 import { ThemeVariables } from "@/components/theme-variables";
 import { DesktopRuntime } from "@/components/desktop-runtime";
 import { AjnSplashScreen } from "@/components/ajn-splash-screen";
+import { PrintProvider } from "@/components/print/print-provider";
 
 // Admin — lazy (large bundle, staff-only)
 const Admin = lazy(() => import("@/views/admin/index"));
@@ -355,12 +356,14 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeVariables />
       <TooltipProvider>
-        <DesktopRuntime />
-        <AjnSplashScreen />
-        <WouterRouter>
-          <Router />
-        </WouterRouter>
-        <Toaster />
+        <PrintProvider>
+          <DesktopRuntime />
+          <AjnSplashScreen />
+          <WouterRouter>
+            <Router />
+          </WouterRouter>
+          <Toaster />
+        </PrintProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );

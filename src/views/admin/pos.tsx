@@ -12,7 +12,8 @@ import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, fetchAdminMe, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { openSalesInvoicePrintWindow, printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss } from "./print-helpers";
+import { buildSalesInvoiceDocumentHtml, openSalesInvoicePrintWindow, printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss, type SalesInvoicePrintSize, type SalesInvoiceReceiptInput } from "./print-helpers";
+import { usePrint } from "@/components/print/print-provider";
 import { formatMoney } from "@/lib/money";
 import DeliverySection, { type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
@@ -468,6 +469,7 @@ function openPrintWindow(
 export default function POSPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { print } = usePrint();
   const barcodeRef = useRef<HTMLInputElement>(null);
   const { data: settings } = usePublicSettings();
 
@@ -537,6 +539,57 @@ export default function POSPage() {
     queryFn: async () => (await adminFetch<{ bundles: any[] }>("/admin/product-bundles")).bundles ?? [],
     staleTime: 30_000,
   });
+
+  // Build a sales-invoice document input from the last saved POS sale, so the
+  // unified print dialog can preview + print A4 / 80mm from identical data.
+  function posReprintInput(size: SalesInvoicePrintSize): SalesInvoiceReceiptInput {
+    const receiptForm = lastSavedForm ?? form;
+    const receiptTotals = lastSavedTotals ?? totals;
+    const receiptCart = lastSavedCart.length ? lastSavedCart : cart;
+    return {
+      paperSize: size,
+      invoiceNo: lastInvoiceNo,
+      issuedAt: receiptForm.date,
+      customerName: receiptForm.customerName,
+      customerPhone: receiptForm.customerPhone,
+      paymentMethod: receiptForm.paymentMethod,
+      paymentStatus:
+        receiptTotals.paid >= receiptTotals.grand ? "paid" : receiptTotals.paid > 0 ? "partial" : "unpaid",
+      employeeName: null,
+      items: receiptCart.map((item) => ({
+        productName: item.productName,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        total: item.total,
+      })),
+      subtotal: receiptTotals.subtotal,
+      discount: receiptTotals.discount,
+      tax: receiptTotals.tax,
+      offerDeliveryFee: receiptTotals.offerDeliveryFee,
+      deliveryFee: receiptTotals.deliveryFee,
+      total: receiptTotals.grand,
+      paid: receiptTotals.paid,
+      remaining: receiptTotals.remaining,
+      notes: receiptForm.notes,
+      logoUrl: printerSettings?.showLogo === false ? undefined : logoSrc(settings),
+      companyName: settings?.site_name,
+      companyPhone: settings?.phone,
+      companyAddress: settings?.address,
+      showLogo: printerSettings?.showLogo !== false,
+    };
+  }
+
+  function reprintLastInvoice() {
+    if (!lastInvoiceNo) return;
+    print({
+      documentLabel: `فاتورة #${lastInvoiceNo}`,
+      defaultFormat: "thermal80",
+      formats: [
+        { id: "a4", buildHtml: () => buildSalesInvoiceDocumentHtml(posReprintInput("a4")) },
+        { id: "thermal80", buildHtml: () => buildSalesInvoiceDocumentHtml(posReprintInput("80mm")) },
+      ],
+    });
+  }
   const { data: printCurrentUser } = useQuery({ queryKey: ["admin", "me", "pos-print"], queryFn: () => fetchAdminMe(), staleTime: 5 * 60 * 1000 });
   const canRemotePrint = Boolean(printCurrentUser && (printCurrentUser.role === "admin" || printCurrentUser.permissions.includes("print.sales_invoice")));
   const { data: remotePrinters = [] } = useQuery<RemotePrinter[]>({
@@ -1383,7 +1436,7 @@ export default function POSPage() {
                 آخر فاتورة: <strong>{lastInvoiceNo}</strong>
               </span>
               <button
-                onClick={() => openPrintWindow(lastSavedCart, form, totals, lastInvoiceNo, "80mm", settings)}
+                onClick={reprintLastInvoice}
                 className="text-[11px] text-status-success hover:text-status-success underline"
               >
                 إعادة طباعة

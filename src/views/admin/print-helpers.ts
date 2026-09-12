@@ -1,5 +1,8 @@
 import { formatCurrency } from "@/lib/money";
-import { buildSalesInvoiceThermalHtml } from "@workspace/print-template";
+import {
+  buildSalesInvoiceThermalHtml,
+  salesInvoiceThermalCss,
+} from "@workspace/print-template";
 
 export type ThermalPaperSize = "58mm" | "80mm" | "a4" | "pdf";
 
@@ -387,27 +390,21 @@ export function createSalesInvoiceThermalPdfElement(
   return wrapper;
 }
 
-export function openSalesInvoicePrintWindow(
+/**
+ * Pure builder: the complete standalone Sales Invoice document (thermal OR A4),
+ * WITHOUT any auto-print `<script>`. This is the single source of truth for the
+ * sales-invoice print output; both the legacy popup path and the unified print
+ * dialog render exactly this markup, so the two outputs can never drift.
+ */
+export function buildSalesInvoiceDocumentHtml(
   input: SalesInvoiceReceiptInput,
-  existingWindow?: Window | null,
-) {
+): string {
   const isThermal = input.paperSize === "58mm" || input.paperSize === "80mm";
-  const popup =
-    existingWindow && !existingWindow.closed
-      ? existingWindow
-      : window.open(
-          "",
-          "_blank",
-          salesInvoicePrintWindowFeatures(input.paperSize),
-        );
-  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
-  popup.document.open();
 
-  // Browser printing and AJN Print Agent both render this same document
-  // builder. Keep thermal invoice markup and number formatting out of this
-  // view-local integration layer so the two outputs cannot drift.
+  // Thermal invoice markup + number formatting live in @workspace/print-template
+  // so browser printing and the AJN Print Agent stay byte-identical.
   if (isThermal) {
-    const thermalDocument = buildSalesInvoiceThermalHtml({
+    return buildSalesInvoiceThermalHtml({
       paperSize: input.paperSize as "58mm" | "80mm",
       invoiceNo: input.invoiceNo,
       issuedAt: input.issuedAt,
@@ -440,14 +437,6 @@ export function openSalesInvoicePrintWindow(
       showEmployeeName: input.showEmployeeName,
       showAddress: input.showAddress,
     });
-    popup.document.write(
-      thermalDocument.replace(
-        "</body>",
-        `${printWhenImagesReadyScript()}</body>`,
-      ),
-    );
-    popup.document.close();
-    return;
   }
 
   const esc = escapePrintHtml;
@@ -528,8 +517,26 @@ export function openSalesInvoicePrintWindow(
       : "";
   const body = `<main class="sales-sheet">${header}<hr class="rule"><div class="kv-grid">${metaRows}</div><table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>${totals}${qr}${footer}</main>`;
   const css = salesInvoiceSheetCss();
+  return `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.invoiceNo)}</title><style>${css}</style></head><body>${body}</body></html>`;
+}
+
+export function openSalesInvoicePrintWindow(
+  input: SalesInvoiceReceiptInput,
+  existingWindow?: Window | null,
+) {
+  const popup =
+    existingWindow && !existingWindow.closed
+      ? existingWindow
+      : window.open(
+          "",
+          "_blank",
+          salesInvoicePrintWindowFeatures(input.paperSize),
+        );
+  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  const html = buildSalesInvoiceDocumentHtml(input);
+  popup.document.open();
   popup.document.write(
-    `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.invoiceNo)}</title><style>${css}</style></head><body>${body}${printWhenImagesReadyScript()}</body></html>`,
+    html.replace("</body>", `${printWhenImagesReadyScript()}</body>`),
   );
   popup.document.close();
 }
@@ -1204,6 +1211,68 @@ export function depreciationReportCss(kind: "a4" | "80mm") {
   `;
 }
 
+export type ThermalReceiptRow = {
+  label: string;
+  value: string | number | null | undefined;
+  strong?: boolean;
+};
+
+export type ThermalReceiptInput = {
+  /** Document title, e.g. "قسيمة راتب" or "وصل سداد قرض". */
+  title: string;
+  docNo?: string | null;
+  dateTime?: string | null;
+  rows: ThermalReceiptRow[];
+  /** Bold headline amount inside the framed total box. */
+  amountLabel?: string;
+  amountValue?: string | number | null;
+  /** Extra pay lines rendered under the total (already formatted). */
+  extraLines?: Array<{ label: string; value: string | number }>;
+  statusText?: string | null;
+  notes?: string | null;
+  companyName?: string | null;
+  companyPhone?: string | null;
+  logoUrl?: string | null;
+  footerText?: string | null;
+};
+
+/**
+ * Shared 80mm thermal receipt for NON-item documents (salary, loan repayment,
+ * cash payment/collection/expense receipts, supplier payments…). It reuses the
+ * canonical thermal stylesheet so every thermal output looks consistent, and it
+ * is a real receipt layout — never a scaled-down A4 sheet. Read-only: it only
+ * renders values passed in; it performs no financial calculation.
+ */
+export function buildThermalReceiptHtml(input: ThermalReceiptInput): string {
+  const esc = escapePrintHtml;
+  const kv = (label: string, value: unknown, big = false) =>
+    value === undefined || value === null || String(value).trim() === ""
+      ? ""
+      : `<div class="receipt-info-row kv"><span>${esc(label)}</span><span class="v ${big ? "big" : ""}">${esc(value)}</span></div>`;
+  const meta =
+    kv("رقم الوصل", input.docNo, true) + kv("التاريخ والوقت", input.dateTime);
+  const rows = input.rows.map((row) => kv(row.label, row.value, row.strong)).join("");
+  const amount =
+    input.amountValue === undefined || input.amountValue === null
+      ? ""
+      : `<div class="grand"><span>${esc(input.amountLabel || "الإجمالي")}</span><span class="num">${esc(input.amountValue)}</span></div>`;
+  const extras = (input.extraLines || [])
+    .map(
+      (line) =>
+        `<div class="payline"><span>${esc(line.label)}</span><span class="num">${esc(line.value)}</span></div>`,
+    )
+    .join("");
+  const status = input.statusText
+    ? `<div class="payline remain"><span>الحالة</span><span>${esc(input.statusText)}</span></div>`
+    : "";
+  const notes = input.notes?.trim()
+    ? `<hr class="rule dashed"><div class="receipt-info-row kv"><span>ملاحظات</span><span class="v">${esc(input.notes.trim())}</span></div>`
+    : "";
+  const header = `<div class="r-head">${input.logoUrl ? `<img class="r-logo" src="${esc(input.logoUrl)}" alt="" onerror="this.remove()">` : ""}<div class="r-company">${esc(input.companyName?.trim() || "مجموعة علي جان نهاد")}</div><div class="r-sub">لتنظيم المناسبات</div><div class="r-sub">${esc(input.title)}</div></div>`;
+  const footer = `<div class="thanks">${esc(input.footerText?.trim() || "وصل للقراءة والطباعة فقط")}</div>${input.companyPhone ? `<div class="r-sub center num">${esc(input.companyPhone)}</div>` : ""}`;
+  return `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.docNo || input.title)}</title><style>${salesInvoiceThermalCss("80mm")}</style></head><body><div class="receipt invoice-thermal-80">${header}<hr class="rule"><div class="meta-rows">${meta}${rows}</div><hr class="rule dashed">${amount}${extras}${status}${notes}${footer}</div></body></html>`;
+}
+
 /** Shared A4 salary-slip layout. Keep salary printing out of view-local CSS. */
 export function salarySlipCss() {
   return `
@@ -1239,15 +1308,54 @@ export type SimpleSalarySlipPrintInput = {
   paidAt?: string | null;
 };
 
+/**
+ * Pure builder for a simple salary slip. A4 is the full professional slip; 80mm
+ * is a compact thermal salary receipt. No auto-print script and no financial
+ * mutation — every amount is passed in already computed.
+ */
+export function buildSimpleSalarySlipDocumentHtml(
+  input: SimpleSalarySlipPrintInput,
+  paperSize: SalesInvoicePrintSize = "a4",
+): string {
+  const status = input.paymentStatus === "paid" ? "تم الصرف" : "غير مصروف";
+  const paidAt = input.paidAt ? statementDate(input.paidAt) : "—";
+  if (paperSize === "58mm" || paperSize === "80mm") {
+    return buildThermalReceiptHtml({
+      title: "قسيمة راتب موظف",
+      docNo: input.month,
+      dateTime: englishDateTime.format(new Date()),
+      rows: [
+        { label: "الموظف", value: input.employeeName, strong: true },
+        { label: "القسم", value: input.department || "—" },
+        { label: "تاريخ الصرف", value: paidAt },
+        { label: "الراتب الأساسي", value: statementMoney(input.baseSalary) },
+        { label: "المكافأة", value: statementMoney(input.bonus) },
+        { label: "الخصم", value: statementMoney(input.deduction) },
+      ],
+      amountLabel: "صافي الراتب",
+      amountValue: statementMoney(input.netSalary),
+      statusText: status,
+      companyName: input.companyName,
+      logoUrl: input.logoUrl,
+      footerText: "قسيمة للقراءة والطباعة فقط · لا تنشئ أو تعدل أي حركة مالية",
+    });
+  }
+  const logo = input.logoUrl ? `<img class="report-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : "";
+  const money = (value: number) => statementEsc(statementMoney(value));
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>قسيمة راتب ${statementEsc(input.employeeName)}</title><style>${salarySlipCss()}</style></head><body><section class="report-sheet salary-slip"><header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div><div class="report-title">قسيمة راتب موظف</div></div>${logo}<div class="report-meta">الشهر: <span class="num">${statementEsc(input.month)}</span><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header><div class="salary-person"><div class="field"><span>الموظف</span><b>${statementEsc(input.employeeName)}</b></div><div class="field"><span>القسم</span><b>${statementEsc(input.department || "—")}</b></div><div class="field"><span>الحالة</span><b>${status}</b></div><div class="field"><span>تاريخ الصرف</span><b class="num">${statementEsc(paidAt)}</b></div></div><table class="salary-components"><thead><tr><th>البيان</th><th>المبلغ</th></tr></thead><tbody><tr><td>الراتب الأساسي</td><td class="num">${money(input.baseSalary)}</td></tr><tr><td>المكافأة</td><td class="num">${money(input.bonus)}</td></tr><tr><td>الخصم</td><td class="num">${money(input.deduction)}</td></tr></tbody></table><div class="salary-net"><span>صافي الراتب</span><b class="num">${money(input.netSalary)}</b></div><div class="salary-signatures"><div>توقيع الموظف</div><div>اعتماد الإدارة</div></div><footer class="report-footer">قسيمة للقراءة والطباعة فقط · لا تنشئ أو تعدل أي حركة مالية</footer></section></body></html>`;
+}
+
 /** A4 print window for the new simple salary module. */
 export function openSimpleSalarySlipPrintWindow(input: SimpleSalarySlipPrintInput) {
   const popup = window.open("", "_blank", "width=980,height=760");
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
-  const status = input.paymentStatus === "paid" ? "تم الصرف" : "غير مصروف";
-  const paidAt = input.paidAt ? statementDate(input.paidAt) : "—";
-  const logo = input.logoUrl ? `<img class="report-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : "";
-  const money = (value: number) => statementEsc(statementMoney(value));
-  popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>قسيمة راتب ${statementEsc(input.employeeName)}</title><style>${salarySlipCss()}</style></head><body><section class="report-sheet salary-slip"><header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div><div class="report-title">قسيمة راتب موظف</div></div>${logo}<div class="report-meta">الشهر: <span class="num">${statementEsc(input.month)}</span><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header><div class="salary-person"><div class="field"><span>الموظف</span><b>${statementEsc(input.employeeName)}</b></div><div class="field"><span>القسم</span><b>${statementEsc(input.department || "—")}</b></div><div class="field"><span>الحالة</span><b>${status}</b></div><div class="field"><span>تاريخ الصرف</span><b class="num">${statementEsc(paidAt)}</b></div></div><table class="salary-components"><thead><tr><th>البيان</th><th>المبلغ</th></tr></thead><tbody><tr><td>الراتب الأساسي</td><td class="num">${money(input.baseSalary)}</td></tr><tr><td>المكافأة</td><td class="num">${money(input.bonus)}</td></tr><tr><td>الخصم</td><td class="num">${money(input.deduction)}</td></tr></tbody></table><div class="salary-net"><span>صافي الراتب</span><b class="num">${money(input.netSalary)}</b></div><div class="salary-signatures"><div>توقيع الموظف</div><div>اعتماد الإدارة</div></div><footer class="report-footer">قسيمة للقراءة والطباعة فقط · لا تنشئ أو تعدل أي حركة مالية</footer></section>${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.open();
+  popup.document.write(
+    buildSimpleSalarySlipDocumentHtml(input, "a4").replace(
+      "</body>",
+      `${printWhenImagesReadyScript()}</body>`,
+    ),
+  );
   popup.document.close();
 }
 
@@ -1271,22 +1379,69 @@ export type CompanyLoanPrintInput = {
 const loanStatusAr: Record<string, string> = { pending: "بانتظار الموافقة", active: "نشط", partially_repaid: "مسدد جزئياً", fully_repaid: "مسدد بالكامل", cancelled: "ملغي", rejected: "مرفوض", executed: "منفذ", reversed: "معكوس", partially_reversed: "عكس جزئي" };
 const loanMethodAr: Record<string, string> = { cash: "نقد", transfer: "تحويل", card: "بطاقة", pos: "نقطة بيع", other: "أخرى" };
 
+/** Pure A4 builder for a company-loan statement (report-only — no thermal). */
+export function buildCompanyLoanStatementDocumentHtml(input: CompanyLoanPrintInput): string {
+  const cell = (label: string, value: unknown) => `<div class="loan-field"><span>${statementEsc(label)}</span><b>${statementEsc(value || "—")}</b></div>`;
+  const rows = input.repayments.length ? input.repayments.map((item) => `<tr><td class="num">${statementEsc(item.repaymentNo)}</td><td class="num">${statementEsc(statementDate(item.paymentDate))}</td><td class="num">${statementEsc(statementMoney(item.amount))}</td><td>${statementEsc(loanMethodAr[item.paymentMethod] || item.paymentMethod)}</td><td>${statementEsc(item.cashAccount || "الصندوق الرئيسي")}</td><td>${statementEsc(loanStatusAr[item.status] || item.status)}</td></tr>`).join("") : `<tr><td colspan="6" class="empty-row">لا توجد دفعات سداد مسجلة.</td></tr>`;
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>كشف التزام ${statementEsc(input.loanNo)}</title><style>${sheetReportCss("a4")}.loan-sheet{min-height:250mm}.loan-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:15px 0}.loan-field{border:1px solid #111;padding:8px;min-height:50px}.loan-field span{display:block;color:#555;font-size:10px;margin-bottom:4px}.loan-note{border:1px solid #111;padding:10px;white-space:pre-wrap;margin:12px 0}.loan-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}.loan-summary div{border:1px solid #111;padding:9px}.loan-summary span{display:block;font-size:10px}.loan-summary b{font-size:15px}.loan-sheet table{width:100%;border-collapse:collapse;margin-top:10px}.loan-sheet th,.loan-sheet td{border:1px solid #111;padding:7px;text-align:right}.loan-sheet th{background:#f2f2f2}.num{font-variant-numeric:tabular-nums}@media(max-width:640px){.loan-grid,.loan-summary{grid-template-columns:1fr}}</style></head><body><main class="report-sheet loan-sheet"><header class="report-head"><div><div class="report-company">مجموعة علي جان نهاد</div><div class="report-title">كشف قرض وتمويل — التزام</div><p>هذا القرض التزام على الشركة وليس إيراداً تشغيلياً.</p></div><div class="report-meta">رقم القرض: <b class="num">${statementEsc(input.loanNo)}</b><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header><section class="loan-grid">${cell("المقرض", input.lenderName)}${cell("رقم الهاتف", input.lenderPhone)}${cell("تاريخ الاستلام", statementDate(input.receivedDate))}${cell("تاريخ الاتفاق", input.agreementDate ? statementDate(input.agreementDate) : "—")}${cell("تاريخ الاستحقاق", input.dueDate ? statementDate(input.dueDate) : "—")}${cell("طريقة الاستلام", loanMethodAr[input.paymentMethod] || input.paymentMethod)}${cell("رقم المرجع", input.referenceNo)}${cell("الحالة", loanStatusAr[input.status] || input.status)}</section><section class="loan-summary"><div><span>أصل القرض</span><b class="num">${statementEsc(statementMoney(input.originalAmount))}</b></div><div><span>إجمالي المسدد</span><b class="num">${statementEsc(statementMoney(input.totalRepaid))}</b></div><div><span>الالتزام المتبقي</span><b class="num">${statementEsc(statementMoney(input.remainingAmount))}</b></div></section><section class="loan-note"><b>الملاحظات</b><br>${statementEsc(input.notes || "لا توجد ملاحظات")}</section><h2>سجل السداد</h2><table><thead><tr><th>رقم السداد</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>الصندوق / الحساب</th><th>الحالة</th></tr></thead><tbody>${rows}</tbody></table><footer class="report-footer">كشف للقراءة والطباعة فقط — لا ينشئ ولا يعدل أي حركة مالية.</footer></main></body></html>`;
+}
+
 /** Shared A4 RTL print builder for company-loan statements. */
 export function openCompanyLoanStatementPrintWindow(input: CompanyLoanPrintInput) {
   const popup = window.open("", "_blank", "width=980,height=760");
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
-  const cell = (label: string, value: unknown) => `<div class="loan-field"><span>${statementEsc(label)}</span><b>${statementEsc(value || "—")}</b></div>`;
-  const rows = input.repayments.length ? input.repayments.map((item) => `<tr><td class="num">${statementEsc(item.repaymentNo)}</td><td class="num">${statementEsc(statementDate(item.paymentDate))}</td><td class="num">${statementEsc(statementMoney(item.amount))}</td><td>${statementEsc(loanMethodAr[item.paymentMethod] || item.paymentMethod)}</td><td>${statementEsc(item.cashAccount || "الصندوق الرئيسي")}</td><td>${statementEsc(loanStatusAr[item.status] || item.status)}</td></tr>`).join("") : `<tr><td colspan="6" class="empty-row">لا توجد دفعات سداد مسجلة.</td></tr>`;
-  popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>كشف التزام ${statementEsc(input.loanNo)}</title><style>${sheetReportCss("a4")}.loan-sheet{min-height:250mm}.loan-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:15px 0}.loan-field{border:1px solid #111;padding:8px;min-height:50px}.loan-field span{display:block;color:#555;font-size:10px;margin-bottom:4px}.loan-note{border:1px solid #111;padding:10px;white-space:pre-wrap;margin:12px 0}.loan-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}.loan-summary div{border:1px solid #111;padding:9px}.loan-summary span{display:block;font-size:10px}.loan-summary b{font-size:15px}.loan-sheet table{width:100%;border-collapse:collapse;margin-top:10px}.loan-sheet th,.loan-sheet td{border:1px solid #111;padding:7px;text-align:right}.loan-sheet th{background:#f2f2f2}.num{font-variant-numeric:tabular-nums}@media(max-width:640px){.loan-grid,.loan-summary{grid-template-columns:1fr}}</style></head><body><main class="report-sheet loan-sheet"><header class="report-head"><div><div class="report-company">مجموعة علي جان نهاد</div><div class="report-title">كشف قرض وتمويل — التزام</div><p>هذا القرض التزام على الشركة وليس إيراداً تشغيلياً.</p></div><div class="report-meta">رقم القرض: <b class="num">${statementEsc(input.loanNo)}</b><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header><section class="loan-grid">${cell("المقرض", input.lenderName)}${cell("رقم الهاتف", input.lenderPhone)}${cell("تاريخ الاستلام", statementDate(input.receivedDate))}${cell("تاريخ الاتفاق", input.agreementDate ? statementDate(input.agreementDate) : "—")}${cell("تاريخ الاستحقاق", input.dueDate ? statementDate(input.dueDate) : "—")}${cell("طريقة الاستلام", loanMethodAr[input.paymentMethod] || input.paymentMethod)}${cell("رقم المرجع", input.referenceNo)}${cell("الحالة", loanStatusAr[input.status] || input.status)}</section><section class="loan-summary"><div><span>أصل القرض</span><b class="num">${statementEsc(statementMoney(input.originalAmount))}</b></div><div><span>إجمالي المسدد</span><b class="num">${statementEsc(statementMoney(input.totalRepaid))}</b></div><div><span>الالتزام المتبقي</span><b class="num">${statementEsc(statementMoney(input.remainingAmount))}</b></div></section><section class="loan-note"><b>الملاحظات</b><br>${statementEsc(input.notes || "لا توجد ملاحظات")}</section><h2>سجل السداد</h2><table><thead><tr><th>رقم السداد</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>الصندوق / الحساب</th><th>الحالة</th></tr></thead><tbody>${rows}</tbody></table><footer class="report-footer">كشف للقراءة والطباعة فقط — لا ينشئ ولا يعدل أي حركة مالية.</footer></main>${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.open();
+  popup.document.write(
+    buildCompanyLoanStatementDocumentHtml(input).replace(
+      "</body>",
+      `${printWhenImagesReadyScript()}</body>`,
+    ),
+  );
   popup.document.close();
+}
+
+/**
+ * Pure builder for a single company-loan repayment receipt. A4 is the formal
+ * receipt; 80mm is a compact thermal receipt. No auto-print script; read-only.
+ */
+export function buildCompanyLoanRepaymentReceiptDocumentHtml(
+  input: Omit<CompanyLoanPrintInput, "repayments"> & { repayment: CompanyLoanPrintInput["repayments"][number] },
+  paperSize: SalesInvoicePrintSize = "a4",
+): string {
+  const r = input.repayment;
+  if (paperSize === "58mm" || paperSize === "80mm") {
+    return buildThermalReceiptHtml({
+      title: "وصل سداد قرض",
+      docNo: r.repaymentNo,
+      dateTime: statementDate(r.paymentDate),
+      rows: [
+        { label: "رقم القرض", value: input.loanNo },
+        { label: "المقرض", value: input.lenderName, strong: true },
+        { label: "طريقة الدفع", value: loanMethodAr[r.paymentMethod] || r.paymentMethod },
+        { label: "الصندوق / الحساب", value: r.cashAccount || "الصندوق الرئيسي" },
+        { label: "المتبقي بعد السداد", value: statementMoney(input.remainingAmount) },
+      ],
+      amountLabel: "المبلغ المسدد",
+      amountValue: statementMoney(r.amount),
+      statusText: loanStatusAr[r.status] || r.status,
+      notes: r.notes || undefined,
+      footerText: "وصل للقراءة والطباعة فقط — لا ينشئ ولا يعدل أي حركة مالية.",
+    });
+  }
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>وصل سداد ${statementEsc(r.repaymentNo)}</title><style>${sheetReportCss("a4")}.loan-receipt{max-width:180mm;margin:auto;border:1px solid #111;padding:12mm}.loan-receipt .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:16px 0}.loan-receipt .box{border:1px solid #111;padding:8px}.loan-receipt .box span{display:block;font-size:10px;color:#555}.loan-receipt .total{border:2px solid #111;padding:12px;display:flex;justify-content:space-between;font-size:17px;font-weight:800}.num{font-variant-numeric:tabular-nums}</style></head><body><main class="report-sheet loan-receipt"><header class="report-head"><div><div class="report-company">مجموعة علي جان نهاد</div><div class="report-title">وصل سداد قرض</div></div><div class="report-meta">رقم الوصل: <b class="num">${statementEsc(r.repaymentNo)}</b><br>رقم القرض: <b class="num">${statementEsc(input.loanNo)}</b></div></header><section class="grid"><div class="box"><span>المقرض</span><b>${statementEsc(input.lenderName)}</b></div><div class="box"><span>تاريخ السداد</span><b class="num">${statementEsc(statementDate(r.paymentDate))}</b></div><div class="box"><span>طريقة الدفع</span><b>${statementEsc(loanMethodAr[r.paymentMethod] || r.paymentMethod)}</b></div><div class="box"><span>الصندوق / الحساب</span><b>${statementEsc(r.cashAccount || "الصندوق الرئيسي")}</b></div><div class="box"><span>المتبقي بعد السداد</span><b class="num">${statementEsc(statementMoney(input.remainingAmount))}</b></div><div class="box"><span>الحالة</span><b>${statementEsc(loanStatusAr[r.status] || r.status)}</b></div></section><div class="total"><span>المبلغ المسدد</span><b class="num">${statementEsc(statementMoney(r.amount))}</b></div><section class="loan-note" style="margin-top:12px"><b>الملاحظة</b><br>${statementEsc(r.notes || "—")}</section><footer class="report-footer">وصل للقراءة والطباعة فقط — لا ينشئ ولا يعدل أي حركة مالية.</footer></main></body></html>`;
 }
 
 /** Printable receipt for one approved/executed company-loan repayment. */
 export function openCompanyLoanRepaymentReceiptPrintWindow(input: Omit<CompanyLoanPrintInput, "repayments"> & { repayment: CompanyLoanPrintInput["repayments"][number] }) {
   const popup = window.open("", "_blank", "width=980,height=760");
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
-  const r = input.repayment;
-  popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>وصل سداد ${statementEsc(r.repaymentNo)}</title><style>${sheetReportCss("a4")}.loan-receipt{max-width:180mm;margin:auto;border:1px solid #111;padding:12mm}.loan-receipt .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:16px 0}.loan-receipt .box{border:1px solid #111;padding:8px}.loan-receipt .box span{display:block;font-size:10px;color:#555}.loan-receipt .total{border:2px solid #111;padding:12px;display:flex;justify-content:space-between;font-size:17px;font-weight:800}.num{font-variant-numeric:tabular-nums}</style></head><body><main class="report-sheet loan-receipt"><header class="report-head"><div><div class="report-company">مجموعة علي جان نهاد</div><div class="report-title">وصل سداد قرض</div></div><div class="report-meta">رقم الوصل: <b class="num">${statementEsc(r.repaymentNo)}</b><br>رقم القرض: <b class="num">${statementEsc(input.loanNo)}</b></div></header><section class="grid"><div class="box"><span>المقرض</span><b>${statementEsc(input.lenderName)}</b></div><div class="box"><span>تاريخ السداد</span><b class="num">${statementEsc(statementDate(r.paymentDate))}</b></div><div class="box"><span>طريقة الدفع</span><b>${statementEsc(loanMethodAr[r.paymentMethod] || r.paymentMethod)}</b></div><div class="box"><span>الصندوق / الحساب</span><b>${statementEsc(r.cashAccount || "الصندوق الرئيسي")}</b></div><div class="box"><span>المتبقي بعد السداد</span><b class="num">${statementEsc(statementMoney(input.remainingAmount))}</b></div><div class="box"><span>الحالة</span><b>${statementEsc(loanStatusAr[r.status] || r.status)}</b></div></section><div class="total"><span>المبلغ المسدد</span><b class="num">${statementEsc(statementMoney(r.amount))}</b></div><section class="loan-note" style="margin-top:12px"><b>الملاحظة</b><br>${statementEsc(r.notes || "—")}</section><footer class="report-footer">وصل للقراءة والطباعة فقط — لا ينشئ ولا يعدل أي حركة مالية.</footer></main>${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.open();
+  popup.document.write(
+    buildCompanyLoanRepaymentReceiptDocumentHtml(input, "a4").replace(
+      "</body>",
+      `${printWhenImagesReadyScript()}</body>`,
+    ),
+  );
   popup.document.close();
 }
 

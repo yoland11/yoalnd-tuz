@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { adminFetch } from "./_lib";
 import { useToast } from "@/hooks/use-toast";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { openSimpleSalarySlipPrintWindow } from "./print-helpers";
+import { buildSimpleSalarySlipDocumentHtml } from "./print-helpers";
+import { usePrint } from "@/components/print/print-provider";
 
 type Salary = { id:number; runId:number; employeeId:number; employeeName:string; username:string; department:string; month:string; baseSalary:number; bonus:number; deduction:number; netSalary:number; paymentStatus:string; notes?:string|null; paidAt?:string|null };
 type Staff = { id:number; fullName:string; username:string; department:string; baseSalary:number };
@@ -19,7 +20,7 @@ const date=(v?:string|null)=>v?new Intl.DateTimeFormat("ar-IQ-u-nu-latn",{dateSt
 const blank=(month=currentMonth())=>({employeeId:"",month,baseSalary:"0",bonus:"0",deduction:"0",notes:""});
 
 export default function SimpleSalariesPage(){
- const {toast}=useToast(); const qc=useQueryClient();
+ const {toast}=useToast(); const qc=useQueryClient(); const {print}=usePrint();
  const {data:settings}=usePublicSettings();
  const [month,setMonth]=useState(currentMonth()); const [search,setSearch]=useState(""); const [department,setDepartment]=useState(""); const [status,setStatus]=useState("");
  const [form,setForm]=useState(blank()); const [editing,setEditing]=useState<Salary|null>(null); const [open,setOpen]=useState(false); const [historyEmployee,setHistoryEmployee]=useState<Salary|null>(null);
@@ -37,7 +38,7 @@ export default function SimpleSalariesPage(){
  const net=Math.max(0,Number(form.baseSalary||0)+Number(form.bonus||0)-Number(form.deduction||0));
  const toggleAll=(checked:boolean)=>setSelected(checked?new Set(unpaid.map(r=>r.id)):new Set());
  const toggle=(id:number,checked:boolean)=>setSelected(old=>{const next=new Set(old);checked?next.add(id):next.delete(id);return next;});
- const printSalary=(row:Salary)=>openSimpleSalarySlipPrintWindow({companyName:settings?.site_name,logoUrl:logoSrc(settings),employeeName:row.employeeName||row.username,department:row.department,month:row.month,baseSalary:row.baseSalary,bonus:row.bonus,deduction:row.deduction,netSalary:row.netSalary,paymentStatus:row.paymentStatus,paidAt:row.paidAt});
+ const printSalary=(row:Salary)=>{const input={companyName:settings?.site_name,logoUrl:logoSrc(settings),employeeName:row.employeeName||row.username,department:row.department,month:row.month,baseSalary:row.baseSalary,bonus:row.bonus,deduction:row.deduction,netSalary:row.netSalary,paymentStatus:row.paymentStatus,paidAt:row.paidAt};print({documentLabel:`قسيمة راتب ${row.employeeName||row.username} · ${row.month}`,formats:[{id:"a4",buildHtml:()=>buildSimpleSalarySlipDocumentHtml(input,"a4")},{id:"thermal80",buildHtml:()=>buildSimpleSalarySlipDocumentHtml(input,"80mm")}]});};
  return <div className="space-y-4" dir="rtl">
   <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-bold">رواتب الموظفين</h1><p className="text-sm text-muted-foreground">سجل شهري بسيط: الأساسي + المكافأة − الخصم.</p></div><Button onClick={()=>{setEditing(null);setForm(blank(month));setOpen(true);}}><Plus className="ml-1 h-4 w-4"/>إضافة راتب</Button></div>
   <div className="grid grid-cols-2 gap-3 md:grid-cols-5">{[["عدد الموظفين",query.data?.totals.count||0],["إجمالي الرواتب الأساسية",money(query.data?.totals.base||0)],["إجمالي المكافآت",money(query.data?.totals.bonus||0)],["إجمالي الخصومات",money(query.data?.totals.deduction||0)],["صافي الرواتب",money(query.data?.totals.net||0)]].map(([label,value])=><div key={String(label)} className="rounded-xl border bg-card p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 font-bold">{value}</p></div>)}</div>
