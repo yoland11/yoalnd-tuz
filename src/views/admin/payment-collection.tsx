@@ -131,7 +131,7 @@ export function AccountSummaryCard({
           ) : null}
           {remaining > 0 && canCollect ? (
             <Button size="sm" className="gap-1.5" onClick={() => setOpen(true)}>
-              <Banknote className="h-4 w-4" /> تحصيل دفعة
+              <Banknote className="h-4 w-4" /> تسجيل دفعة
             </Button>
           ) : remaining <= 0 ? (
             <span className="inline-flex items-center gap-1 text-xs font-semibold text-status-success">
@@ -270,7 +270,7 @@ function CollectPaymentDialog({
       <div className="my-6 w-full max-w-lg rounded-xl border border-border/40 bg-card shadow-2xl">
         <div className="flex items-center justify-between gap-3 border-b border-border/30 p-4">
           <div>
-            <h2 className="font-bold text-foreground">تحصيل دفعة</h2>
+            <h2 className="font-bold text-foreground">تسجيل دفعة</h2>
             <p className="mt-1 text-xs text-muted-foreground">المتبقي الحالي: {formatCurrency(remaining)}</p>
           </div>
           <button type="button" onClick={onClose} disabled={collect.isPending} className="text-muted-foreground hover:text-foreground disabled:opacity-50">
