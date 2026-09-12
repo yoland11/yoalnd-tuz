@@ -540,13 +540,14 @@ export default function OrdersPage() {
                 <div key={order.id} className="bg-card rounded-xl border border-border/30 p-4">
                   <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
                     <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
+                      <p className="text-lg font-extrabold leading-tight text-foreground">{order.customerName || "زبون"}</p>
+                      <p className="mt-0.5 text-sm font-bold text-muted-foreground" dir="ltr">{formatIraqiPhone(phone) || "—"}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-xs font-bold text-primary">طلب #{order.trackingCode ?? order.id}</span>
                         {rentalOrder && (
                           <span className="rounded-full border border-primary/35 bg-primary/10 px-2.5 py-0.5 text-[11px] font-bold text-primary">إيجار</span>
                         )}
                       </div>
-                      <p className="text-sm text-muted-foreground">{order.customerName} — {formatIraqiPhone(phone)}</p>
                       {order.governorate && <p className="text-xs text-muted-foreground">{order.governorate}{order.area ? ` • ${order.area}` : ""} {order.address ? `• ${order.address}` : ""}</p>}
                     </div>
                     <div className="flex items-center gap-3 flex-wrap">
@@ -688,9 +689,12 @@ export default function OrdersPage() {
                   )}
                   <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
                     <div>
-                      <p className="font-mono text-sm font-bold text-foreground">{o.trackingCode ?? "—"}</p>
-                      <p className="text-sm text-muted-foreground">{o.customerName} — {formatIraqiPhone(o.phone)}</p>
-                      <p className="text-xs text-primary">{o.serviceName}</p>
+                      <p className="text-lg font-extrabold leading-tight text-foreground">{o.customerName || "زبون"}</p>
+                      <p className="mt-0.5 text-sm font-bold text-muted-foreground" dir="ltr">{formatIraqiPhone(o.phone) || "—"}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-xs font-bold text-primary">طلب #{o.trackingCode ?? o.id}</span>
+                        <span className="text-xs text-primary">{o.serviceName}</span>
+                      </div>
                       {o.eventDate && <p className="text-xs text-muted-foreground">📅 {o.eventDate} {o.eventLocation ? `• ${o.eventLocation}` : ""}</p>}
                       {o.eventDate && <EventCountdown targetDate={o.eventDate} compact className="mt-2 max-w-xs" />}
                       {!isReschedulePending && o.customerConfirmation === "confirmed" && (
