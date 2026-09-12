@@ -234,11 +234,28 @@ function readableDate(value?: string | null) {
 }
 
 function toneFor(value: string) {
-  if (["completed", "paid", "active", "returned", "ready", "consumed"].includes(value)) return "success";
-  if (["damaged", "missing", "lost", "cancelled", "shortage"].includes(value)) return "danger";
-  if (["preparing", "reserved", "picked", "pending", "inspection", "maintenance"].includes(value)) return "warning";
+  if (["completed", "paid", "active", "returned", "ready", "consumed", "executed"].includes(value)) return "success";
+  if (["damaged", "missing", "lost", "cancelled", "shortage", "rejected"].includes(value)) return "danger";
+  if (["preparing", "reserved", "picked", "pending", "inspection", "maintenance", "reversed", "draft"].includes(value)) return "warning";
   if (["out", "loaded", "assets_out", "event_active"].includes(value)) return "info";
   return "neutral";
+}
+
+// Financial-approval status/type labels for the unified booking ledger.
+const FINANCIAL_STATUS_LABELS: Record<string, string> = {
+  draft: "مسودة",
+  pending: "بانتظار الموافقة",
+  executed: "معتمد ومنفّذ",
+  rejected: "مرفوض",
+  reversed: "معكوس",
+  cancelled: "ملغي",
+};
+
+function ledgerTypeLabel(row: any): string {
+  if (row?.reversalReason || row?.reversedTransactionId || String(row?.transactionType ?? "").includes("reversal"))
+    return "عكس / تصحيح";
+  if (row?.direction === "revenue") return row?.sourceEvent === "payment" ? "دفعة / قبض" : "قبض";
+  return "صرف";
 }
 
 function OperationStatus({ value, label }: { value: string; label?: string }) {
@@ -584,10 +601,41 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
     queryClient.invalidateQueries({ queryKey: ["admin", "booking-workspace"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "customer-account"] });
   };
-  return <div className="ajn-op-tab-panel"><div className="ajn-op-section-head"><div><CircleDollarSign /><span><small>الصندوق والحسابات وكشف العميل</small><h2>الملخص المالي</h2></span></div><div className="ajn-op-actions"><Button variant="outline" asChild><Link href={invoiceUrl}><Printer /> الفاتورة</Link></Button></div></div>
+  return <div className="ajn-op-tab-panel"><div className="ajn-op-section-head"><div><CircleDollarSign /><span><small>مصدر واحد للحقيقة المالية · هذا الحجز وحساب العميل</small><h2>الملخص المالي</h2></span></div><div className="ajn-op-actions"><Button variant="outline" asChild><Link href={invoiceUrl}><Printer /> الفاتورة</Link></Button></div></div>
+    {/* 1) Booking summary + inline approval-first "تسجيل دفعة". */}
+    <h3 className="mb-2 mt-1 text-sm font-bold text-foreground">ملخص هذا الحجز</h3>
     <AccountSummaryCard sourceType={sourceType} sourceId={booking.id} total={booking.total} paid={booking.paid} remaining={booking.remaining} paymentStatus={booking.paymentStatus} onCollected={refetchFinance} />
-    <div className="mt-3"><CustomerFinancialSummary customerId={booking.customerId} /></div>
-    <QueryState loading={query.isLoading} error={query.error}><div className="ajn-op-finance-layout mt-3"><section className="ajn-op-finance-summary">{summary.map(([label, value]) => <div key={String(label)}><span>{label}</span><b>{money(Number(value))}</b></div>)}</section><section className="ajn-op-ledger"><h3><Landmark /> العمليات والقيود المرتبطة</h3>{data?.transactions?.length ? data.transactions.map((row: any) => <div key={row.id}><span><b>{row.transactionNo || `#${row.id}`}</b><small>{readableDate(row.transactionTime)} · {row.paymentMethod || "—"}</small></span><strong>{money(Number(row.amount))}</strong><OperationStatus value={row.approvalStatus} /></div>) : <div className="ajn-op-empty compact"><ReceiptText /><h3>لا توجد عملية مالية منشورة</h3><p>تظهر هنا العمليات المرتبطة بالحجز من الصندوق الرئيسي من دون إنشاء قيد مكرر.</p></div>}</section></div></QueryState></div>;
+    {/* 2) Customer-wide account — deliberately distinct from the booking balance. */}
+    <div className="mt-4"><CustomerFinancialSummary customerId={booking.customerId} /></div>
+    <QueryState loading={query.isLoading} error={query.error}>
+      {/* 3) Booking financial breakdown. */}
+      <section className="ajn-op-finance-summary mt-4">{summary.map(([label, value]) => <div key={String(label)}><span>{label}</span><b>{money(Number(value))}</b></div>)}</section>
+      {/* 4) Movement log — one row per canonical financial_transaction of this booking. */}
+      <section className="ajn-op-ledger mt-4">
+        <h3><Landmark /> سجل الحركات المالية</h3>
+        {data?.transactions?.length ? (
+          <div className="overflow-x-auto rounded-lg border border-border/30">
+            <table className="w-full min-w-[720px] text-right text-xs">
+              <thead className="bg-muted/40 text-muted-foreground">
+                <tr>{["النوع", "المرجع", "المبلغ", "الحالة", "التاريخ", "الصندوق", "أنشأ الطلب", "اعتمد"].map((head) => <th key={head} className="p-2 font-semibold">{head}</th>)}</tr>
+              </thead>
+              <tbody>
+                {data.transactions.map((row: any) => <tr key={row.id} className="border-t border-border/20">
+                  <td className="p-2 font-semibold">{ledgerTypeLabel(row)}</td>
+                  <td className="p-2 tabular-nums" dir="ltr">{row.transactionNo || row.referenceNo || `#${row.id}`}</td>
+                  <td className="p-2">{money(Number(row.amount))}</td>
+                  <td className="p-2"><OperationStatus value={row.approvalStatus} label={FINANCIAL_STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus} /></td>
+                  <td className="p-2">{readableDate(row.transactionTime)}</td>
+                  <td className="p-2">الصندوق الرئيسي</td>
+                  <td className="p-2">{row.requestedByName || "—"}</td>
+                  <td className="p-2">{row.approvedByName || row.executedByName || "—"}</td>
+                </tr>)}
+              </tbody>
+            </table>
+          </div>
+        ) : <div className="ajn-op-empty compact"><ReceiptText /><h3>لا توجد عملية مالية منشورة</h3><p>تظهر هنا كل حركات هذا الحجز من الصندوق الرئيسي — دفعات وقبض وعكوسات — من دون إنشاء قيد مكرر.</p></div>}
+      </section>
+    </QueryState></div>;
 }
 
 function TasksTab({ base, queryKey, entityType, entityId }: { base: string; queryKey: unknown[]; entityType: string; entityId: number }) {
