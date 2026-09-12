@@ -67326,7 +67326,7 @@ async function handleAccounting(
             FROM orders WHERE (customer_id = ${customerId} OR (${accountPhone} <> '' AND right(regexp_replace(coalesce(customer_phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10))) AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
             UNION ALL
             SELECT 'service_order', id, coalesce(tracking_code, 'SRV-' || id), created_at::date::text, total_amount::float, deposit_amount::float, remaining_amount::float, due_date::text, payment_status
-            FROM service_orders WHERE ${accountPhone} <> '' AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10) AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            FROM service_orders WHERE (customer_id = ${customerId} OR (${accountPhone} <> '' AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10))) AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
             UNION ALL
             SELECT 'graduation_order', id, order_no, created_at::date::text, total_amount::float, paid_amount::float, remaining_amount::float, due_date::text, payment_status
             FROM graduation_orders WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
