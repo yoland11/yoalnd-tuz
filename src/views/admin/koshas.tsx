@@ -14,6 +14,7 @@ import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory, KoshaPackage } from "@/views/koshas";
 import { formatMoney } from "@/lib/money";
 import { AccountSummaryCard } from "./payment-collection";
+import { CustomerFinancialSummary } from "./customer-financial-summary";
 import { AssignWorkOrderDialog } from "./koshat-tasks";
 import { useEditFormGuard } from "@/hooks/use-edit-form-guard";
 
@@ -1607,11 +1608,15 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
               paymentStatus={booking.paymentStatus ?? "unpaid"}
               onCollected={() => {
                 queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
+                queryClient.invalidateQueries({ queryKey: ["admin", "customer-account"] });
                 onClose();
               }}
               compact
             />
           )}
+          {/* Customer-wide account — this kosha booking is one of possibly several
+              distinct customer documents; كل حجز سجل مستقل في ذمة العميل. */}
+          <div className="mt-3"><CustomerFinancialSummary customerId={(booking as any).customerId} compact /></div>
         </KoshaDetailSection>
       </div>
 
