@@ -10532,18 +10532,22 @@ async function insertServiceOrderWithTracking(
   // Surface the service customer on /admin/customers — create-or-link by phone.
   // Phase 1: also capture the canonical customer id so the service booking
   // carries a stable link to the one real customer account (not just name+phone).
-  let linkedCustomerId: number | null = (values as any).customerId ?? null;
+  //
+  // When the caller already resolved the customer (skipCustomerSync — e.g. inside
+  // a db.transaction, where the customer row was created on the SAME tx and its
+  // id placed in customFields.customerId), reuse that id directly. It must NOT
+  // issue a second query on the default `db` connection here: while the caller's
+  // transaction holds the pooled connection, a second checkout deadlocks on a
+  // single-connection (serverless) pool and fails the whole booking save.
+  let linkedCustomerId: number | null =
+    (values as any).customerId ??
+    (Number((values as any)?.customFields?.customerId) || null);
   if (values.phone && !options?.skipCustomerSync) {
     const linkedCustomer = await ensureCustomerForPhone(
       values.phone,
       (values as any).customerName,
     );
     if (linkedCustomer?.id) linkedCustomerId = linkedCustomer.id;
-  } else if (values.phone && linkedCustomerId == null) {
-    // Sync skipped by the caller: resolve an existing customer without creating
-    // one, so the booking still carries the canonical link when possible.
-    const existing = await findCustomerByPhone(values.phone, db, false);
-    if (existing?.id) linkedCustomerId = existing.id;
   }
   const executor = options?.executor ?? db;
   const paymentMethod = (values as any)?.customFields?.paymentMethod;
