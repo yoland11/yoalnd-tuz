@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
+  buildCustomerStatement,
   summarizeCustomerAccount,
   type CustomerAccountDocument,
 } from "@/server/customer-account-summary";
@@ -37,6 +38,21 @@ const overpaid = summarizeCustomerAccount(2, [
   { sourceType: "order", sourceId: 9, reference: "ORD-9", date: null, total: 100_000, paid: 100_000, remaining: 0, paymentStatus: "paid", linkedById: true },
 ]);
 check("fully paid document leaves zero balance", overpaid.currentBalance === 0);
+
+// ── Customer statement: chronological debit/credit with a running balance ──
+// Task worked example: K-104 +1,000,000 → RC-500 −400,000 → SI-900 +100,000 → RC-550 −200,000.
+const statement = buildCustomerStatement([
+  { date: "2026-09-04", type: "فاتورة مبيعات", reference: "SI-900", description: "استحقاق", debit: 100_000, credit: 0 },
+  { date: "2026-09-01", type: "حجز كوشة", reference: "K-104", description: "استحقاق", debit: 1_000_000, credit: 0 },
+  { date: "2026-09-05", type: "سند قبض", reference: "RC-550", description: "دفعة", debit: 0, credit: 200_000 },
+  { date: "2026-09-02", type: "سند قبض", reference: "RC-500", description: "دفعة", debit: 0, credit: 400_000 },
+]);
+check("statement is ordered chronologically", statement.entries.map((e) => e.reference).join(",") === "K-104,RC-500,SI-900,RC-550");
+check("running balance after Kosha debit is 1,000,000", statement.entries[0].balance === 1_000_000);
+check("running balance after first receipt is 600,000", statement.entries[1].balance === 600_000);
+check("running balance after store invoice is 700,000", statement.entries[2].balance === 700_000);
+check("closing balance matches the account balance (500,000)", statement.closingBalance === 500_000);
+check("empty statement closes at zero", buildCustomerStatement([]).closingBalance === 0);
 
 // ── Architecture invariants: read-only, joined by canonical customer_id ──
 const service = readFileSync("src/server/customer-account.ts", "utf8");

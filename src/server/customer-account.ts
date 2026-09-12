@@ -1,18 +1,24 @@
 import { sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
+  buildCustomerStatement,
+  customerSourceLabelAr,
   round2,
   summarizeCustomerAccount,
   type CustomerAccountDocument,
   type CustomerAccountSourceType,
   type CustomerAccountSummary,
+  type CustomerStatementEntry,
+  type CustomerStatementLine,
 } from "@/server/customer-account-summary";
 
 export {
+  buildCustomerStatement,
   summarizeCustomerAccount,
   type CustomerAccountDocument,
   type CustomerAccountSourceType,
   type CustomerAccountSummary,
+  type CustomerStatementEntry,
 } from "@/server/customer-account-summary";
 
 /**
@@ -122,4 +128,60 @@ export async function getCustomerAccountSummary(
 ): Promise<CustomerAccountSummary> {
   const documents = await getCustomerAccountDocuments(customer, executor);
   return summarizeCustomerAccount(customer.id, documents);
+}
+
+/**
+ * Chronological كشف حساب: each receivable document is a debit at its date, each
+ * executed payment a credit — direct source payments (deposits/direct
+ * collections tagged customer_id) plus posted receipt-voucher allocations. These
+ * two payment sets are disjoint by construction (a receipt's cash movement is a
+ * `receipt_voucher` transaction; its application is the allocation), so they are
+ * summed exactly as the payment-state engine reconciles them — never
+ * double-counted. Read-only; posts nothing.
+ */
+export async function getCustomerStatement(
+  customer: { id: number; phone?: string | null },
+  executor: { execute: (query: any) => Promise<any> } = db,
+): Promise<{ entries: CustomerStatementEntry[]; closingBalance: number }> {
+  const documents = await getCustomerAccountDocuments(customer, executor);
+  const debitLines: CustomerStatementLine[] = documents.map((doc) => ({
+    date: doc.date,
+    type: customerSourceLabelAr(doc.sourceType),
+    reference: doc.reference,
+    description: `${customerSourceLabelAr(doc.sourceType)} — استحقاق`,
+    debit: doc.total,
+    credit: 0,
+  }));
+  const cid = customer.id;
+  const result = await executor.execute(sql`
+    SELECT * FROM (
+      SELECT transaction_time::text AS date, 'دفعة' AS type,
+             coalesce(transaction_no, '#' || id) AS reference,
+             coalesce(nullif(notes, ''), nullif(description, ''), 'دفعة معتمدة') AS description,
+             CASE WHEN direction = 'revenue' THEN 0 ELSE amount::numeric END AS debit,
+             CASE WHEN direction = 'revenue' THEN amount::numeric ELSE 0 END AS credit
+      FROM financial_transactions
+      WHERE customer_id = ${cid} AND approval_status = 'executed'
+        AND source_type IN ('sales_invoice', 'order', 'service_order', 'kosha_booking')
+      UNION ALL
+      SELECT coalesce(a.posted_at::text, v.date::text) AS date, 'سند قبض' AS type,
+             v.voucher_no AS reference, 'تخصيص سند قبض' AS description,
+             0 AS debit,
+             greatest(a.amount::numeric - coalesce(a.reversed_amount::numeric, 0), 0) AS credit
+      FROM receipt_voucher_allocations a
+      JOIN receipt_vouchers v ON v.id = a.receipt_voucher_id
+      WHERE a.customer_id = ${cid} AND a.posted_at IS NOT NULL
+        AND a.source_type IN ('sales_invoice', 'order', 'service_order', 'kosha_booking')
+        AND coalesce(v.approval_status, 'executed') = 'executed'
+    ) movements
+  `);
+  const creditLines: CustomerStatementLine[] = ((result.rows ?? []) as any[]).map((row) => ({
+    date: row.date ? String(row.date) : null,
+    type: String(row.type),
+    reference: String(row.reference ?? ""),
+    description: String(row.description ?? ""),
+    debit: num(row.debit),
+    credit: num(row.credit),
+  }));
+  return buildCustomerStatement([...debitLines, ...creditLines]);
 }

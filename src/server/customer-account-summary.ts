@@ -48,6 +48,60 @@ export function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+const SOURCE_TYPE_LABEL_AR: Record<string, string> = {
+  sales_invoice: "فاتورة مبيعات",
+  order: "طلب متجر",
+  service_order: "حجز خدمة",
+  kosha_booking: "حجز كوشة",
+};
+
+export function customerSourceLabelAr(sourceType: string): string {
+  return SOURCE_TYPE_LABEL_AR[sourceType] ?? sourceType;
+}
+
+export type CustomerStatementLine = {
+  date: string | null;
+  /** النوع */
+  type: string;
+  /** المرجع */
+  reference: string;
+  /** البيان */
+  description: string;
+  /** مدين (receivable created) */
+  debit: number;
+  /** دائن (payment received) */
+  credit: number;
+};
+
+export type CustomerStatementEntry = CustomerStatementLine & {
+  /** الرصيد الجاري = Σ(مدين − دائن) حتى هذا السطر */
+  balance: number;
+};
+
+/**
+ * Pure: order statement lines chronologically (debits before credits on the
+ * same day) and compute the running receivable balance. Side-effect-free so the
+ * ledger math is unit-testable without a DB.
+ */
+export function buildCustomerStatement(lines: CustomerStatementLine[]): {
+  entries: CustomerStatementEntry[];
+  closingBalance: number;
+} {
+  const sorted = [...lines].sort((a, b) => {
+    const da = a.date ? Date.parse(a.date) : 0;
+    const db = b.date ? Date.parse(b.date) : 0;
+    if (da !== db) return da - db;
+    // On the same date, show the receivable (debit) before its payment (credit).
+    return (a.debit > 0 ? 0 : 1) - (b.debit > 0 ? 0 : 1);
+  });
+  let balance = 0;
+  const entries = sorted.map((line) => {
+    balance = round2(balance + line.debit - line.credit);
+    return { ...line, debit: round2(line.debit), credit: round2(line.credit), balance };
+  });
+  return { entries, closingBalance: balance };
+}
+
 /**
  * Pure fold of reconciled document snapshots into a customer account summary.
  * Side-effect-free so the accounting math is unit-testable without a DB.

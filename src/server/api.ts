@@ -306,7 +306,7 @@ import {
   updateFinancialTransaction,
   type FinancialActor,
 } from "@/server/master-cash-box";
-import { getCustomerAccountSummary } from "@/server/customer-account";
+import { getCustomerAccountSummary, getCustomerStatement } from "@/server/customer-account";
 import {
   assetSaleEligibility,
   calculateAssetSaleOutcome,
@@ -48040,6 +48040,27 @@ async function handleAdmin(
         phone: customer.phone,
       });
       return json({ account });
+    }
+
+    // Chronological كشف حساب العميل (debit/credit/running balance) — read-only,
+    // same canonical derivation as the account summary.
+    if (method === "GET" && parts[2] && parts[3] === "statement") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const customer = await db.query.customersTable.findFirst({
+        where: eq(customersTable.id, id),
+      });
+      if (!customer) return error("غير موجود", 404);
+      try {
+        await ensureServiceOrderCustomerLinks();
+      } catch {
+        /* non-fatal */
+      }
+      const statement = await getCustomerStatement({
+        id: customer.id,
+        phone: customer.phone,
+      });
+      return json({ statement });
     }
 
     if (method === "GET" && parts[2]) {
