@@ -54,6 +54,16 @@ check("running balance after store invoice is 700,000", statement.entries[2].bal
 check("closing balance matches the account balance (500,000)", statement.closingBalance === 500_000);
 check("empty statement closes at zero", buildCustomerStatement([]).closingBalance === 0);
 
+// Reversal (Phase 21): reversing an approved payment restores the receivable.
+// A reversal posts an opposite-direction movement, which lands as a debit here.
+const withReversal = buildCustomerStatement([
+  { date: "2026-09-01", type: "حجز كوشة", reference: "K-1", description: "استحقاق", debit: 1_000_000, credit: 0 },
+  { date: "2026-09-02", type: "دفعة", reference: "TXN-1", description: "دفعة معتمدة", debit: 0, credit: 400_000 },
+  { date: "2026-09-03", type: "عكس دفعة", reference: "TXN-2", description: "عكس حركة", debit: 400_000, credit: 0 },
+]);
+check("reversal debit restores the balance", withReversal.entries[2].balance === 1_000_000);
+check("reversed payment leaves the receivable whole", withReversal.closingBalance === 1_000_000);
+
 // ── Architecture invariants: read-only, joined by canonical customer_id ──
 const service = readFileSync("src/server/customer-account.ts", "utf8");
 check("joins by the canonical customer_id", service.includes("customer_id = ${cid}"));
