@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import { CustomerFinancialSummary } from "./customer-financial-summary";
 import { EmptyState } from "./_layout";
 import ScanDocumentButton from "./scan-document-button";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
@@ -267,6 +268,9 @@ export default function CustomersPage() {
                   <Metric icon={Receipt} label="فواتير مفتوحة" value={(detail.summary?.openInvoices ?? detail.summary?.unpaidCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} tone={(detail.summary?.openInvoices ?? 0) > 0 ? "text-status-warning" : "text-status-success"} />
                   <Metric icon={Receipt} label="الفواتير" value={(detail.summary?.invoices ?? detail.invoices?.length ?? 0).toLocaleString("ar-IQ-u-nu-latn")} />
                 </div>
+
+                {/* Canonical unified account (same server derivation as every booking page). */}
+                <CustomerFinancialSummary customerId={detail.id} />
 
                 <div className="rounded-xl border border-border/25 bg-background/40 p-4">
                   <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground"><Wallet className="h-4 w-4 text-primary" /> آخر دفعة</h4>
