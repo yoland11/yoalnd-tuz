@@ -32712,6 +32712,102 @@ async function handleBookingOperations(
     return json({ timeline: timeline.map(formatTimelineRow), audit });
   }
 
+  // Apply/edit a booking-level discount from the finance tab. A discount reduces
+  // the net billable total (so the canonical remaining recomputes from it); it
+  // moves no cash and never touches paid money. Permission-gated + audited.
+  if (resource === "discount" && method === "POST") {
+    if (!can("booking_finance_view", "booking_edit"))
+      return error("ليس لديك صلاحية تعديل خصم الحجز", 403);
+    const parsed = z
+      .object({
+        amount: z.coerce.number().min(0),
+        reason: z.string().trim().max(500).optional().nullable(),
+      })
+      .safeParse(await body(req));
+    if (!parsed.success)
+      return validationError("booking-operations.discount", parsed);
+    const discount = money(parsed.data.amount);
+    const isKosha = reference.source === "kosha";
+    const fields = (reference.details ?? {}) as Record<string, any>;
+    const existingDiscount = money(fields?.pricing?.discountAmount ?? 0);
+    const currentTotal = money((reference.row as any).totalAmount ?? 0);
+    // The gross subtotal is the current (already net) total plus any discount
+    // previously applied, so re-editing the discount never compounds.
+    const subtotal = money(currentTotal + existingDiscount);
+    if (discount > subtotal)
+      return error("الخصم أكبر من إجمالي الحجز", 422);
+    const newTotal = money(subtotal - discount);
+    const paid = money(
+      isKosha
+        ? (reference.row as any).paidAmount ?? 0
+        : (reference.row as any).depositAmount ?? 0,
+    );
+    const payment = paymentSummary(newTotal, paid, undefined, undefined);
+    const nextFields = {
+      ...fields,
+      pricing: {
+        ...(fields.pricing ?? {}),
+        subtotal,
+        discountAmount: discount,
+        discountReason: parsed.data.reason ?? null,
+        discountBy: (auth as any).fullName || auth.username,
+        discountById: auth.id,
+        discountAt: new Date().toISOString(),
+      },
+    };
+    if (isKosha) {
+      await db
+        .update(koshaBookingsTable)
+        .set({
+          totalAmount: String(newTotal),
+          paidAmount: String(payment.deposit),
+          remainingAmount: String(payment.remaining),
+          paymentStatus: payment.status,
+          bookingDetails: nextFields,
+          updatedAt: new Date(),
+        })
+        .where(eq(koshaBookingsTable.id, reference.id));
+    } else {
+      await db
+        .update(serviceOrdersTable)
+        .set({
+          totalAmount: String(newTotal),
+          depositAmount: String(payment.deposit),
+          remainingAmount: String(payment.remaining),
+          paymentStatus: payment.status,
+          customFields: routedKoshaCustomFieldsSql(
+            serviceOrdersTable.customFields,
+            nextFields,
+          ),
+        })
+        .where(eq(serviceOrdersTable.id, reference.id));
+    }
+    await addEntityTimeline({
+      entityType: reference.entityType,
+      entityId: reference.id,
+      type: "discount_applied",
+      title: "تم تعديل خصم الحجز",
+      body: `الخصم: ${discount} · الإجمالي بعد الخصم: ${newTotal}${parsed.data.reason ? ` · السبب: ${parsed.data.reason}` : ""}`,
+      actor: erpActorFromAdmin(auth),
+      metadata: { discount, subtotal, newTotal, reason: parsed.data.reason ?? null },
+    });
+    await logAdminActivity(
+      req,
+      "booking_discount_applied",
+      reference.entityType,
+      reference.id,
+      { discount, subtotal, newTotal, reason: parsed.data.reason ?? null },
+    );
+    return json({
+      ok: true,
+      discount,
+      subtotal,
+      total: newTotal,
+      remaining: payment.remaining,
+      paymentStatus: payment.status,
+    });
+  }
+
   if (resource === "finance" && method === "GET") {
     if (!can("booking_finance_view"))
       return error("ليس لديك صلاحية عرض مالية الحجز", 403);

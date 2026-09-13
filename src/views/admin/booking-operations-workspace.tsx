@@ -28,6 +28,7 @@ import {
   PackageCheck,
   PackageOpen,
   Pencil,
+  Percent,
   Plus,
   Printer,
   QrCode,
@@ -588,12 +589,58 @@ function InventoryTab({ base, queryKey }: { base: string; queryKey: unknown[] })
   return <div className="ajn-op-tab-panel"><div className="ajn-op-section-head"><div><Boxes /><span><small>سجل المخزون الأصلي</small><h2>حركات المخزون</h2></span></div><Button variant="outline" asChild><Link href="/admin/inventory">فتح المخزون</Link></Button></div><QueryState loading={query.isLoading} error={query.error} empty={!query.data?.data.length}><div className="ajn-op-table-wrap"><table className="ajn-op-table"><thead><tr><th>رقم الحركة</th><th>التاريخ والوقت</th><th>المنتج</th><th>الكمية</th><th>الاتجاه</th><th>السبب</th><th>الموظف</th></tr></thead><tbody>{query.data?.data.map((row) => <tr key={row.id}><td>#{row.id}</td><td>{readableDate(row.createdAt)}</td><td>#{row.productId ?? "—"}</td><td className={Number(row.quantityChange) < 0 ? "is-danger" : "is-positive"}>{Number(row.quantityChange) > 0 ? "+" : ""}{row.quantityChange}</td><td>{Number(row.quantityChange) < 0 ? "صرف" : "إرجاع"}</td><td>{row.reason}</td><td>{row.createdByName || "النظام"}</td></tr>)}</tbody></table></div></QueryState></div>;
 }
 
+function BookingDiscountControl({ base, currentDiscount, onChanged }: { base: string; currentDiscount: number; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState(String(currentDiscount || ""));
+  const [reason, setReason] = useState("");
+  const save = useMutation({
+    mutationFn: () =>
+      adminFetch(`${base}/discount`, {
+        method: "POST",
+        body: JSON.stringify({ amount: Number(amount || 0), reason: reason.trim() || null }),
+      }),
+    onSuccess: () => {
+      setOpen(false);
+      setReason("");
+      onChanged();
+      toast({ title: "تم تحديث خصم الحجز" });
+    },
+    onError: (error: any) =>
+      toast({ title: "تعذر تحديث الخصم", description: error?.message, variant: "destructive" }),
+  });
+  return (
+    <div className="mt-3 rounded-xl border border-border/30 bg-background/40 p-3" dir="rtl">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Percent className="h-4 w-4 text-primary" /> خصم الحجز
+          {currentDiscount > 0 ? (
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-bold text-primary">{money(currentDiscount)}</span>
+          ) : null}
+        </div>
+        <Button size="sm" variant="outline" onClick={() => { setAmount(String(currentDiscount || "")); setOpen((value) => !value); }}>
+          {currentDiscount > 0 ? "تعديل الخصم" : "إضافة خصم"}
+        </Button>
+      </div>
+      {open ? (
+        <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1.5fr_auto]">
+          <label className="grid gap-1 text-xs"><span className="text-muted-foreground">مبلغ الخصم</span><Input type="number" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
+          <label className="grid gap-1 text-xs"><span className="text-muted-foreground">السبب (اختياري)</span><Input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="سبب الخصم" /></label>
+          <div className="flex items-end"><Button size="sm" disabled={save.isPending || Number(amount || 0) < 0} onClick={() => save.mutate()}>{save.isPending ? "جارٍ الحفظ…" : "حفظ الخصم"}</Button></div>
+        </div>
+      ) : null}
+      <p className="mt-2 text-[11px] text-muted-foreground">الخصم يقلّل الإجمالي المستحق للحجز ويعيد حساب المتبقي؛ لا يحرّك أي مبلغ من الصندوق الرئيسي.</p>
+    </div>
+  );
+}
+
 function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; queryKey: unknown[]; booking: BookingOperationsBooking; invoiceUrl: string; paymentUrl?: string }) {
   const queryClient = useQueryClient();
   const query = useQuery<any>({ queryKey: [...queryKey, "finance"], queryFn: () => adminFetch(`${base}/finance`) });
   const data = query.data;
   const assetRental = Number(booking.raw?.assetRentalAmount ?? booking.raw?.equipmentRentalAmount ?? 0);
-  const discount = Number(booking.raw?.discountAmount ?? booking.raw?.discount ?? 0);
+  const pricing = (booking.source === "kosha" ? booking.raw?.bookingDetails : booking.raw?.customFields)?.pricing;
+  const discount = Number(pricing?.discountAmount ?? booking.raw?.discountAmount ?? booking.raw?.discount ?? 0);
   const summary = [["إجمالي الحجز", data?.finalAmount ?? booking.total], ["المنتجات", data?.productCharges ?? 0], ["تأجير الأصول", assetRental], ["الخصم", discount], ["المدفوع", data?.paid ?? booking.paid], ["المتبقي", data?.remaining ?? booking.remaining], ["الربح التقديري", data?.estimatedProfit ?? 0]];
   // One booking = one payment source. The inline collector posts an
   // approval-first receipt against it — no duplicate ledger, no navigating away.
@@ -608,6 +655,8 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
     {/* 1) Booking summary + inline approval-first "تسجيل دفعة". */}
     <h3 className="mb-2 mt-1 text-sm font-bold text-foreground">ملخص هذا الحجز</h3>
     <AccountSummaryCard sourceType={sourceType} sourceId={booking.id} total={booking.total} paid={booking.paid} remaining={booking.remaining} paymentStatus={booking.paymentStatus} onCollected={refetchFinance} />
+    {/* Booking-level discount — reduces the net total; reconciles remaining. */}
+    <BookingDiscountControl base={base} currentDiscount={discount} onChanged={refetchFinance} />
     {/* 2) Customer-wide account — deliberately distinct from the booking balance. */}
     <div className="mt-4"><CustomerFinancialSummary customerId={booking.customerId} /></div>
     <QueryState loading={query.isLoading} error={query.error}>
