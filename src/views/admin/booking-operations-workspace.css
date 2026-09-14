@@ -616,3 +616,104 @@
   .ajn-booking-operations { margin: 0; padding: 0; background: #fff; color: #111; }
   .ajn-op-sticky { position: static; background: #fff; color: #111; box-shadow: none; }
 }
+
+/* =====================================================================
+   Phase 6 — readability & hierarchy pass
+   Typography ONLY. No layout, structure, business logic or A4-print change.
+   Raises the previously tiny type scale to a readable hierarchy and gives
+   financial values and status/section titles clear emphasis. Appended last
+   so it wins the cascade at equal specificity; deleting this block fully
+   reverts the workspace to its previous sizing.
+   Scale (root 16px): micro/meta ≥ .68rem (~11px), labels .75–.8rem (12–13px),
+   values .82–.9rem (13–14px), important amounts 1.02–1.08rem (16–17px),
+   section titles .92–1rem (15–16px), page title unchanged (already ~20px).
+   ===================================================================== */
+
+/* Header identity + fact strip (event date/time, location, service, dept, status) */
+.ajn-op-facts b { font-size: .82rem; font-weight: 750; }
+.ajn-op-facts small { font-size: .68rem; }
+.ajn-op-identity p { font-size: .74rem; }
+
+/* Overview financial KPI cards — the primary money surface */
+.ajn-op-financial-cards small { font-size: .75rem; }
+.ajn-op-financial-cards strong { font-size: 1.05rem; font-weight: 800; }
+.ajn-op-payment-card b { font-size: 1rem; }
+.ajn-op-command-summary small { font-size: .74rem; }
+.ajn-op-command-summary strong { font-size: 1rem; font-weight: 800; }
+.ajn-op-summary-strip span { font-size: .68rem; }
+.ajn-op-summary-strip b { font-size: .9rem; }
+
+/* Section + sidebar titles */
+.ajn-op-section-head h2 { font-size: 1rem; }
+.ajn-op-section-head small { font-size: .66rem; }
+.ajn-op-side-title h2 { font-size: .92rem; }
+
+/* Sidebar customer information + finance */
+.ajn-op-sidebar dt { font-size: .75rem; }
+.ajn-op-sidebar dd { font-size: .86rem; }
+.ajn-op-side-finance span { font-size: .75rem; }
+.ajn-op-side-finance b { font-size: .95rem; }
+.ajn-op-side-finance > button { font-size: .78rem; }
+.ajn-op-side-readiness small { font-size: .72rem; }
+.ajn-op-side-readiness b { font-size: .95rem; }
+.ajn-op-side-readiness span { font-size: .7rem; }
+
+/* Finance tab — the totals block (total / paid / remaining) */
+.ajn-op-finance-summary span { font-size: .74rem; }
+.ajn-op-finance-summary b { font-size: 1.08rem; font-weight: 800; }
+
+/* Ledger + warehouse rows */
+.ajn-op-warehouse-columns h3,
+.ajn-op-ledger h3 { font-size: .82rem; }
+.ajn-op-warehouse-columns b,
+.ajn-op-ledger b { font-size: .78rem; }
+.ajn-op-warehouse-columns small,
+.ajn-op-ledger small { font-size: .66rem; }
+.ajn-op-ledger strong { font-size: .8rem; }
+
+/* Data tables (products / assets) */
+.ajn-op-table th,
+.ajn-op-table td { font-size: .76rem; }
+.ajn-op-table td small { font-size: .66rem; }
+.ajn-op-table input,
+.ajn-op-table select { font-size: .74rem; }
+
+/* Status pills, tabs, quick bar */
+.ajn-op-status { font-size: .7rem; }
+.ajn-op-tabs > [role="tablist"] button { font-size: .76rem; }
+.ajn-op-quickbar > span { font-size: .72rem; }
+.ajn-op-quickbar button { font-size: .72rem; }
+
+/* Readiness rows */
+.ajn-op-readiness-rows strong { font-size: .78rem; }
+.ajn-op-readiness-rows b { font-size: .78rem; }
+
+/* Timeline / activity */
+.ajn-op-timeline strong { font-size: .76rem; }
+.ajn-op-timeline time,
+.ajn-op-timeline p,
+.ajn-op-timeline small { font-size: .66rem; }
+
+/* Tasks, documents, audit lists */
+.ajn-op-task-list h3 { font-size: .84rem; }
+.ajn-op-task-list p { font-size: .72rem; }
+.ajn-op-task-list small { font-size: .66rem; }
+.ajn-op-document-list b { font-size: .78rem; }
+.ajn-op-document-list small { font-size: .66rem; }
+.ajn-op-audit-list b { font-size: .74rem; }
+.ajn-op-audit-list small { font-size: .64rem; }
+.ajn-op-audit-list code { font-size: .66rem; }
+
+/* Add / product picker menus + empty states */
+.ajn-op-add-menu b { font-size: .84rem; }
+.ajn-op-add-menu small { font-size: .72rem; }
+.ajn-op-picker-results b { font-size: .74rem; }
+.ajn-op-picker-results small { font-size: .62rem; }
+.ajn-op-picker-results strong { font-size: .8rem; }
+.ajn-op-empty h3 { font-size: .9rem; }
+.ajn-op-empty p { font-size: .74rem; }
+
+/* Assets list cards + workflow steps */
+.ajn-op-asset-main h3 { font-size: .82rem; }
+.ajn-op-asset-stats b { font-size: .8rem; }
+.ajn-op-flow-title strong { font-size: .82rem; }
