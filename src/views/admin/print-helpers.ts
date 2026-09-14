@@ -4,6 +4,14 @@ import {
   salesInvoiceThermalCss,
 } from "@workspace/print-template";
 
+/**
+ * Single source for the AJN company-name fallback rendered on printed
+ * documents when a caller does not pass an explicit `companyName`. Extracted
+ * verbatim from the previously duplicated string literals in this file; the
+ * printed output is byte-identical to before.
+ */
+const AJN_COMPANY_NAME = "مجموعة علي جان نهاد";
+
 export type ThermalPaperSize = "58mm" | "80mm" | "a4" | "pdf";
 
 export function thermalPageWidth(size: ThermalPaperSize) {
@@ -440,7 +448,7 @@ export function buildSalesInvoiceDocumentHtml(
   }
 
   const esc = escapePrintHtml;
-  const company = input.companyName?.trim() || "مجموعة علي جان نهاد";
+  const company = input.companyName?.trim() || AJN_COMPANY_NAME;
   const issuedAt = input.issuedAt ? new Date(input.issuedAt) : null;
   const dateTime =
     issuedAt && !Number.isNaN(issuedAt.getTime())
@@ -576,7 +584,7 @@ function purchasePaymentStatusLabel(value?: string | null) {
  */
 function purchaseInvoiceStatementMarkup(input: PurchaseInvoiceStatementInput) {
   const esc = escapePrintHtml;
-  const company = input.companyName?.trim() || "مجموعة علي جان نهاد";
+  const company = input.companyName?.trim() || AJN_COMPANY_NAME;
   const invoiceDate = input.issuedAt
     ? new Intl.DateTimeFormat("en-CA", { dateStyle: "medium" }).format(
         new Date(input.issuedAt),
@@ -626,7 +634,7 @@ function purchaseInvoiceStatementCss() {
 
 function purchaseInvoiceThermalMarkup(input: PurchaseInvoiceStatementInput) {
   const esc = escapePrintHtml;
-  const company = input.companyName?.trim() || "مجموعة علي جان نهاد";
+  const company = input.companyName?.trim() || AJN_COMPANY_NAME;
   const issuedAt = input.issuedAt
     ? new Intl.DateTimeFormat("en-CA", { dateStyle: "medium" }).format(new Date(input.issuedAt))
     : "—";
@@ -896,14 +904,10 @@ export function customerStatementSheetCss() {
   `;
 }
 
-function statementEsc(value: unknown) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+// Identical output to `escapePrintHtml` (& is replaced first, so later passes
+// never re-encode it). Aliased to the single canonical escaper — no behaviour
+// change; the name is kept so existing call sites stay untouched.
+const statementEsc = escapePrintHtml;
 
 export function customerStatementPrintHtml(input: CustomerStatementPrintInput) {
   const transactions = [...input.transactions];
@@ -917,7 +921,7 @@ export function customerStatementPrintHtml(input: CustomerStatementPrintInput) {
   const logo = input.logoUrl ? `<img class="statement-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : "<div></div>";
   const companyContact = [input.companyAddress, input.companyPhone, input.companyWebsite].filter(Boolean).map((value) => `<span class="statement-company-contact">${statementEsc(value)}</span>`).join("");
   const footerContact = [input.companyPhone, input.companyWebsite].filter(Boolean).map(statementEsc).join(" · ");
-  return `<main class="report-sheet customer-statement-sheet"><header class="statement-head">${logo}<h1 class="statement-title">كشف حساب العميل</h1><div class="statement-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}${companyContact}</div></header><div class="statement-period">الفترة من ${statementEsc(periodFrom)} إلى ${statementEsc(periodTo)}</div><section class="statement-meta"><div><strong>اسم العميل:</strong><span>${statementEsc(input.customerName)}</span></div><div><strong>رقم الهاتف:</strong><span class="num">${statementEsc(input.customerPhone || "—")}</span></div><div><strong>تاريخ الطباعة:</strong><span>${statementEsc(dateText(new Date()))}</span></div><div><strong>فترة الكشف:</strong><span>${statementEsc(periodFrom)} — ${statementEsc(periodTo)}</span></div></section><table class="report-table statement-table"><thead><tr><th>التاريخ</th><th>رقم الفاتورة</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>${rows}</tbody></table><section class="statement-totals"><div class="statement-total"><strong>إجمالي عدد الفواتير</strong><strong class="num">${statementEsc(transactions.length)}</strong></div><div class="statement-total"><strong>إجمالي المبلغ</strong><strong class="num">${statementEsc(formatCurrency(input.totalCharges))}</strong></div><div class="statement-total"><strong>إجمالي المدفوع</strong><strong class="num">${statementEsc(formatCurrency(input.totalPayments))}</strong></div><div class="statement-total"><strong>إجمالي المتبقي</strong><strong class="num">${statementEsc(formatCurrency(input.outstandingBalance))}</strong></div></section><footer class="statement-footer">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}${footerContact ? `<br>${footerContact}` : ""}</footer></main>`;
+  return `<main class="report-sheet customer-statement-sheet"><header class="statement-head">${logo}<h1 class="statement-title">كشف حساب العميل</h1><div class="statement-company">${statementEsc(input.companyName || AJN_COMPANY_NAME)}${companyContact}</div></header><div class="statement-period">الفترة من ${statementEsc(periodFrom)} إلى ${statementEsc(periodTo)}</div><section class="statement-meta"><div><strong>اسم العميل:</strong><span>${statementEsc(input.customerName)}</span></div><div><strong>رقم الهاتف:</strong><span class="num">${statementEsc(input.customerPhone || "—")}</span></div><div><strong>تاريخ الطباعة:</strong><span>${statementEsc(dateText(new Date()))}</span></div><div><strong>فترة الكشف:</strong><span>${statementEsc(periodFrom)} — ${statementEsc(periodTo)}</span></div></section><table class="report-table statement-table"><thead><tr><th>التاريخ</th><th>رقم الفاتورة</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>${rows}</tbody></table><section class="statement-totals"><div class="statement-total"><strong>إجمالي عدد الفواتير</strong><strong class="num">${statementEsc(transactions.length)}</strong></div><div class="statement-total"><strong>إجمالي المبلغ</strong><strong class="num">${statementEsc(formatCurrency(input.totalCharges))}</strong></div><div class="statement-total"><strong>إجمالي المدفوع</strong><strong class="num">${statementEsc(formatCurrency(input.totalPayments))}</strong></div><div class="statement-total"><strong>إجمالي المتبقي</strong><strong class="num">${statementEsc(formatCurrency(input.outstandingBalance))}</strong></div></section><footer class="statement-footer">${statementEsc(input.companyName || AJN_COMPANY_NAME)}${footerContact ? `<br>${footerContact}` : ""}</footer></main>`;
 }
 
 export function openCustomerStatementPrintWindow(input: CustomerStatementPrintInput) {
@@ -1009,7 +1013,7 @@ export function salesInvoiceRegisterPrintHtml(input: SalesInvoiceRegisterPrintIn
   const contact = [input.companyAddress, input.companyPhone, input.companyWebsite].filter(Boolean).map(statementEsc).join(" · ");
   const period = input.periodFrom || input.periodTo ? `${dateText(input.periodFrom)} — ${dateText(input.periodTo)}` : "كل الفترات";
   const filters = input.filters?.filter(Boolean).join(" · ") || "بدون فلاتر إضافية";
-  return `<main class="report-sheet sales-register-sheet"><header class="report-head">${logo}<div><div class="report-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div><h1 class="report-title">سجل فواتير المبيعات</h1><p class="register-subtitle">تقرير حسب الموظف والفلاتر المحددة</p></div><div class="report-meta">تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span><br>عدد الفواتير: <span class="num">${statementEsc(input.rows.length)}</span></div></header><section class="register-meta"><div><strong>الموظف</strong><span>${statementEsc(input.employeeName)}</span></div><div><strong>الفترة</strong><span class="num">${statementEsc(period)}</span></div><div><strong>الفلاتر</strong><span>${statementEsc(filters)}</span></div></section><section class="report-summary"><div class="report-stat"><span>عدد الفواتير</span><strong class="num">${statementEsc(input.rows.length)}</strong></div><div class="report-stat"><span>إجمالي المبيعات</span><strong class="num">${statementEsc(formatCurrency(input.totalSales))}</strong></div><div class="report-stat"><span>إجمالي المدفوع</span><strong class="num">${statementEsc(formatCurrency(input.totalPaid))}</strong></div><div class="report-stat"><span>إجمالي المتبقي</span><strong class="num">${statementEsc(formatCurrency(input.totalRemaining))}</strong></div></section><table class="report-table"><thead><tr><th>#</th><th>رقم الفاتورة</th><th>التاريخ</th><th>العميل</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>حالة الدفع</th><th>طريقة الدفع</th><th>الموظف</th></tr></thead><tbody>${rows}</tbody></table><footer class="report-footer">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}${contact ? `<br>${contact}` : ""}</footer></main>`;
+  return `<main class="report-sheet sales-register-sheet"><header class="report-head">${logo}<div><div class="report-company">${statementEsc(input.companyName || AJN_COMPANY_NAME)}</div><h1 class="report-title">سجل فواتير المبيعات</h1><p class="register-subtitle">تقرير حسب الموظف والفلاتر المحددة</p></div><div class="report-meta">تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span><br>عدد الفواتير: <span class="num">${statementEsc(input.rows.length)}</span></div></header><section class="register-meta"><div><strong>الموظف</strong><span>${statementEsc(input.employeeName)}</span></div><div><strong>الفترة</strong><span class="num">${statementEsc(period)}</span></div><div><strong>الفلاتر</strong><span>${statementEsc(filters)}</span></div></section><section class="report-summary"><div class="report-stat"><span>عدد الفواتير</span><strong class="num">${statementEsc(input.rows.length)}</strong></div><div class="report-stat"><span>إجمالي المبيعات</span><strong class="num">${statementEsc(formatCurrency(input.totalSales))}</strong></div><div class="report-stat"><span>إجمالي المدفوع</span><strong class="num">${statementEsc(formatCurrency(input.totalPaid))}</strong></div><div class="report-stat"><span>إجمالي المتبقي</span><strong class="num">${statementEsc(formatCurrency(input.totalRemaining))}</strong></div></section><table class="report-table"><thead><tr><th>#</th><th>رقم الفاتورة</th><th>التاريخ</th><th>العميل</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>حالة الدفع</th><th>طريقة الدفع</th><th>الموظف</th></tr></thead><tbody>${rows}</tbody></table><footer class="report-footer">${statementEsc(input.companyName || AJN_COMPANY_NAME)}${contact ? `<br>${contact}` : ""}</footer></main>`;
 }
 
 export function openSalesInvoiceRegisterPrintWindow(input: SalesInvoiceRegisterPrintInput) {
@@ -1168,7 +1172,7 @@ export function employeeAccountStatementPrintHtml(input: EmployeeAccountStatemen
   const transactionRows = (input.transactions || []).map((transaction) => ({ date: transaction.date, html: `<tr><td class="num">${statementEsc(statementDate(transaction.date))}</td><td>${transaction.direction === "addition" ? "إضافة" : "استقطاع"} · ${statementEsc(transaction.type)}</td><td class="statement-id">${statementEsc(transaction.reference || "—")}</td><td class="num">${statementEsc(statementMoney(transaction.amount))}</td><td>${statementEsc(transaction.status || "مسجلة")}${transaction.description ? `<br><small>${statementEsc(transaction.description)}</small>` : ""}</td></tr>` }));
   const ledgerRows = [...paymentRows, ...transactionRows].sort((a, b) => String(b.date).localeCompare(String(a.date))).map((entry) => entry.html).join("") || `<tr><td class="empty-row" colspan="5">لا توجد معاملات أو دفعات مسجلة لهذه الفترة</td></tr>`;
   return `<main class="report-sheet employee-account-statement">
-    <header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div><div class="report-title">كشف حساب موظف</div>${info ? `<div class="company-contact">${info}</div>` : ""}</div>${input.logoUrl ? `<img class="report-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : ""}<div class="report-meta">رقم الكشف: <span class="statement-id">${statementEsc(input.statementNumber)}</span><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header>
+    <header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || AJN_COMPANY_NAME)}</div><div class="report-title">كشف حساب موظف</div>${info ? `<div class="company-contact">${info}</div>` : ""}</div>${input.logoUrl ? `<img class="report-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : ""}<div class="report-meta">رقم الكشف: <span class="statement-id">${statementEsc(input.statementNumber)}</span><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header>
     <section class="employee-card"><div class="employee-field"><span>الموظف</span><strong>${statementEsc(input.employeeName)}</strong></div><div class="employee-field"><span>الرمز الوظيفي</span><strong class="statement-id">${statementEsc(input.employeeCode || "—")}</strong></div><div class="employee-field"><span>القسم / المسمى</span><strong>${statementEsc([input.department, input.jobTitle].filter(Boolean).join(" · ") || "—")}</strong></div><div class="employee-field"><span>فترة الكشف</span><strong class="num">${statementEsc(statementDate(input.periodStart))} — ${statementEsc(statementDate(input.periodEnd))}</strong></div></section>
     <section class="report-summary statement-summary"><div class="report-stat">الراتب الأساسي<strong class="num">${statementEsc(statementMoney(input.baseSalary))}</strong></div><div class="report-stat">الدفعات<strong class="num">${statementEsc(statementMoney(input.amountPaid))}</strong></div><div class="report-stat">الرصيد المتبقي<strong class="num">${statementEsc(statementMoney(input.remainingBalance))}</strong></div><div class="report-stat net">صافي الراتب<strong class="num">${statementEsc(statementMoney(input.netSalary))}</strong></div></section>
     <section class="statement-section"><div class="section-title">ملخص الحضور والإضافي</div><div class="attendance-grid">${attendance}</div><div class="report-meta" style="margin-top:5px">ساعات الإضافي: <span class="num">${statementEsc(englishNumber.format(Number(input.overtimeHours) || 0))}</span> · قيمة الإضافي: <span class="num">${statementEsc(statementMoney(input.overtimeAmount))}</span></div></section>
@@ -1268,7 +1272,7 @@ export function buildThermalReceiptHtml(input: ThermalReceiptInput): string {
   const notes = input.notes?.trim()
     ? `<hr class="rule dashed"><div class="receipt-info-row kv"><span>ملاحظات</span><span class="v">${esc(input.notes.trim())}</span></div>`
     : "";
-  const header = `<div class="r-head">${input.logoUrl ? `<img class="r-logo" src="${esc(input.logoUrl)}" alt="" onerror="this.remove()">` : ""}<div class="r-company">${esc(input.companyName?.trim() || "مجموعة علي جان نهاد")}</div><div class="r-sub">لتنظيم المناسبات</div><div class="r-sub">${esc(input.title)}</div></div>`;
+  const header = `<div class="r-head">${input.logoUrl ? `<img class="r-logo" src="${esc(input.logoUrl)}" alt="" onerror="this.remove()">` : ""}<div class="r-company">${esc(input.companyName?.trim() || AJN_COMPANY_NAME)}</div><div class="r-sub">لتنظيم المناسبات</div><div class="r-sub">${esc(input.title)}</div></div>`;
   const footer = `<div class="thanks">${esc(input.footerText?.trim() || "وصل للقراءة والطباعة فقط")}</div>${input.companyPhone ? `<div class="r-sub center num">${esc(input.companyPhone)}</div>` : ""}`;
   return `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.docNo || input.title)}</title><style>${salesInvoiceThermalCss("80mm")}</style></head><body><div class="receipt invoice-thermal-80">${header}<hr class="rule"><div class="meta-rows">${meta}${rows}</div><hr class="rule dashed">${amount}${extras}${status}${notes}${footer}</div></body></html>`;
 }
@@ -1342,7 +1346,7 @@ export function buildSimpleSalarySlipDocumentHtml(
   }
   const logo = input.logoUrl ? `<img class="report-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : "";
   const money = (value: number) => statementEsc(statementMoney(value));
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>قسيمة راتب ${statementEsc(input.employeeName)}</title><style>${salarySlipCss()}</style></head><body><section class="report-sheet salary-slip"><header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div><div class="report-title">قسيمة راتب موظف</div></div>${logo}<div class="report-meta">الشهر: <span class="num">${statementEsc(input.month)}</span><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header><div class="salary-person"><div class="field"><span>الموظف</span><b>${statementEsc(input.employeeName)}</b></div><div class="field"><span>القسم</span><b>${statementEsc(input.department || "—")}</b></div><div class="field"><span>الحالة</span><b>${status}</b></div><div class="field"><span>تاريخ الصرف</span><b class="num">${statementEsc(paidAt)}</b></div></div><table class="salary-components"><thead><tr><th>البيان</th><th>المبلغ</th></tr></thead><tbody><tr><td>الراتب الأساسي</td><td class="num">${money(input.baseSalary)}</td></tr><tr><td>المكافأة</td><td class="num">${money(input.bonus)}</td></tr><tr><td>الخصم</td><td class="num">${money(input.deduction)}</td></tr></tbody></table><div class="salary-net"><span>صافي الراتب</span><b class="num">${money(input.netSalary)}</b></div><div class="salary-signatures"><div>توقيع الموظف</div><div>اعتماد الإدارة</div></div><footer class="report-footer">قسيمة للقراءة والطباعة فقط · لا تنشئ أو تعدل أي حركة مالية</footer></section></body></html>`;
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>قسيمة راتب ${statementEsc(input.employeeName)}</title><style>${salarySlipCss()}</style></head><body><section class="report-sheet salary-slip"><header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || AJN_COMPANY_NAME)}</div><div class="report-title">قسيمة راتب موظف</div></div>${logo}<div class="report-meta">الشهر: <span class="num">${statementEsc(input.month)}</span><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header><div class="salary-person"><div class="field"><span>الموظف</span><b>${statementEsc(input.employeeName)}</b></div><div class="field"><span>القسم</span><b>${statementEsc(input.department || "—")}</b></div><div class="field"><span>الحالة</span><b>${status}</b></div><div class="field"><span>تاريخ الصرف</span><b class="num">${statementEsc(paidAt)}</b></div></div><table class="salary-components"><thead><tr><th>البيان</th><th>المبلغ</th></tr></thead><tbody><tr><td>الراتب الأساسي</td><td class="num">${money(input.baseSalary)}</td></tr><tr><td>المكافأة</td><td class="num">${money(input.bonus)}</td></tr><tr><td>الخصم</td><td class="num">${money(input.deduction)}</td></tr></tbody></table><div class="salary-net"><span>صافي الراتب</span><b class="num">${money(input.netSalary)}</b></div><div class="salary-signatures"><div>توقيع الموظف</div><div>اعتماد الإدارة</div></div><footer class="report-footer">قسيمة للقراءة والطباعة فقط · لا تنشئ أو تعدل أي حركة مالية</footer></section></body></html>`;
 }
 
 /** A4 print window for the new simple salary module. */
@@ -1711,18 +1715,7 @@ export function openGraduationProductionSheet({
     packaging: "قائمة التغليف",
     delivery: "ملف التسليم",
   };
-  const safe = (value: unknown) =>
-    String(value ?? "").replace(
-      /[&<>"']/g,
-      (character) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[character] || character,
-    );
+  const safe = escapePrintHtml;
   const details = Object.entries(snapshot || {})
     .filter(
       ([key]) =>
@@ -1749,18 +1742,7 @@ export function openResearchReceiptPrint({
   chapters?: Array<Record<string, any>>;
   sources?: Array<Record<string, any>>;
 }) {
-  const safe = (value: unknown) =>
-    String(value ?? "").replace(
-      /[&<>"']/g,
-      (character) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[character] || character,
-    );
+  const safe = escapePrintHtml;
   const rows = chapters
     .map(
       (chapter) =>
