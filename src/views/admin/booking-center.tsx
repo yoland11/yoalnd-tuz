@@ -56,6 +56,7 @@ import { EditServiceOrderModal } from "./orders";
 import { EditKoshaBookingModal } from "./koshas";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { BookingThermalPrintAction } from "@/components/booking-thermal-print";
+import { BookingThermalReceiptAction } from "@/components/booking-thermal-receipt";
 import {
   bookingPhotoKey,
   bookingPhotoPreview,
@@ -622,6 +623,26 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
             <Link href={pdfHref} target="_blank" rel="noopener noreferrer" aria-label={`حفظ PDF للحجز ${booking.number || booking.customerName}`}><FileDown className="h-3.5 w-3.5" /> حفظ PDF</Link>
           </Button>
           <BookingThermalPrintAction booking={booking} />
+          <BookingThermalReceiptAction
+            data={{
+              bookingNumber: booking.number,
+              contractNumber: booking.contractNumber || null,
+              customerName: booking.customerName,
+              phone: booking.phone,
+              service: booking.services
+                .map((service) => SERVICE_META.find((meta) => meta.key === service.type)?.label ?? service.type)
+                .filter(Boolean)
+                .join(" · "),
+              eventDate: booking.eventDate,
+              eventTime: booking.eventTime,
+              location: booking.hall,
+              total: booking.total,
+              paid: booking.paid,
+              remaining: booking.remaining,
+              paymentStatus: booking.paymentStatus,
+              notes: booking.notes ?? null,
+            }}
+          />
           <Button size="sm" variant="ghost" asChild>
             <Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`} aria-label={`فتح مساحة عمل الحجز ${booking.number || booking.customerName}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link>
           </Button>

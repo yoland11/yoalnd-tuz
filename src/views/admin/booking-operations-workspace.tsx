@@ -73,6 +73,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
 import { BookingThermalPrintAction } from "@/components/booking-thermal-print";
+import { BookingThermalReceiptAction } from "@/components/booking-thermal-receipt";
 import { AccountSummaryCard } from "./payment-collection";
 import { CustomerFinancialSummary } from "./customer-financial-summary";
 import "./booking-operations-workspace.css";
@@ -403,6 +404,29 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
     ? `النقل بواسطة AJN${Number(booking.raw?.transportationFee ?? 0) > 0 ? ` — ${formatCurrency(Number(booking.raw.transportationFee))}` : ""}`
     : transportationMode === "customer" ? "النقل من مسؤولية الزبون" : null;
 
+  // Read-only projection of the booking's authoritative values for the dedicated
+  // 80mm thermal receipt. No recomputation — total/paid/remaining/status are used
+  // exactly as the booking-operations source provides them.
+  const thermalReceiptData = {
+    bookingNumber: booking.number,
+    contractNumber:
+      booking.raw?.customFields?.contractNumber ??
+      booking.raw?.contractNumber ??
+      booking.raw?.customFields?.contractNo ??
+      null,
+    customerName: booking.customerName,
+    phone: booking.phone,
+    service: booking.services.map((service) => service.type).filter(Boolean).join(" · "),
+    eventDate: booking.eventDate,
+    eventTime: booking.eventTime,
+    location: booking.hall,
+    total: booking.total,
+    paid: booking.paid,
+    remaining: booking.remaining,
+    paymentStatus: booking.paymentStatus,
+    notes: booking.notes ?? null,
+  };
+
   return <div className="ajn-booking-operations" dir="rtl">
     <div className="ajn-op-back"><Button variant="ghost" asChild><Link href="/admin/bookings"><ChevronLeft className="h-4 w-4" /> مركز الحجوزات</Link></Button><span>مساحة تشغيل موحدة · البيانات من وحدات AJN الأصلية</span></div>
 
@@ -418,7 +442,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
           <span><CircleDollarSign /><b>{booking.paymentStatus || "غير مكتمل"}</b><small>حالة الدفع</small></span>
           <span><Warehouse /><b>{STAGE_LABELS[overview.data?.warehouseStage ?? "reserved"]}</b><small>حالة المستودع</small></span>
         </div>
-        <div className="ajn-op-header-actions">{onEdit ? <Button variant="outline" onClick={onEdit}><Pencil /> تعديل</Button> : null}<Button variant="outline" onClick={() => window.print()}><Printer /> طباعة</Button><BookingThermalPrintAction booking={booking} /><PreparationListAction base={base} booking={booking} />{whatsappNumber ? <Button variant="outline" onClick={() => window.open(`https://wa.me/${whatsappNumber}`, "_blank", "noopener,noreferrer")}><MessageCircle /> إرسال</Button> : null}<Button className="ajn-op-primary" onClick={() => changeTab("finance")}><Banknote /> تسجيل دفعة</Button><BookingBranchControl booking={booking} /><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
+        <div className="ajn-op-header-actions">{onEdit ? <Button variant="outline" onClick={onEdit}><Pencil /> تعديل</Button> : null}<Button variant="outline" onClick={() => window.print()}><Printer /> طباعة</Button><BookingThermalPrintAction booking={booking} /><BookingThermalReceiptAction data={thermalReceiptData} /><PreparationListAction base={base} booking={booking} />{whatsappNumber ? <Button variant="outline" onClick={() => window.open(`https://wa.me/${whatsappNumber}`, "_blank", "noopener,noreferrer")}><MessageCircle /> إرسال</Button> : null}<Button className="ajn-op-primary" onClick={() => changeTab("finance")}><Banknote /> تسجيل دفعة</Button><BookingBranchControl booking={booking} /><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
       </div>
     </header>
 
