@@ -418,7 +418,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
           <span><CircleDollarSign /><b>{booking.paymentStatus || "غير مكتمل"}</b><small>حالة الدفع</small></span>
           <span><Warehouse /><b>{STAGE_LABELS[overview.data?.warehouseStage ?? "reserved"]}</b><small>حالة المستودع</small></span>
         </div>
-        <div className="ajn-op-header-actions">{onEdit ? <Button variant="outline" onClick={onEdit}><Pencil /> تعديل</Button> : null}<Button variant="outline" onClick={() => window.print()}><Printer /> طباعة</Button><BookingThermalPrintAction booking={booking} />{whatsappNumber ? <Button variant="outline" onClick={() => window.open(`https://wa.me/${whatsappNumber}`, "_blank", "noopener,noreferrer")}><MessageCircle /> إرسال</Button> : null}<Button className="ajn-op-primary" onClick={() => changeTab("finance")}><Banknote /> تسجيل دفعة</Button><BookingBranchControl booking={booking} /><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
+        <div className="ajn-op-header-actions">{onEdit ? <Button variant="outline" onClick={onEdit}><Pencil /> تعديل</Button> : null}<Button variant="outline" onClick={() => window.print()}><Printer /> طباعة</Button><BookingThermalPrintAction booking={booking} /><PreparationListAction base={base} booking={booking} />{whatsappNumber ? <Button variant="outline" onClick={() => window.open(`https://wa.me/${whatsappNumber}`, "_blank", "noopener,noreferrer")}><MessageCircle /> إرسال</Button> : null}<Button className="ajn-op-primary" onClick={() => changeTab("finance")}><Banknote /> تسجيل دفعة</Button><BookingBranchControl booking={booking} /><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
       </div>
     </header>
 
@@ -587,6 +587,99 @@ function DepreciationTab({ base, queryKey }: { base: string; queryKey: unknown[]
 function InventoryTab({ base, queryKey }: { base: string; queryKey: unknown[] }) {
   const query = useQuery<{ data: any[] }>({ queryKey: [...queryKey, "inventory"], queryFn: () => adminFetch(`${base}/inventory`) });
   return <div className="ajn-op-tab-panel"><div className="ajn-op-section-head"><div><Boxes /><span><small>سجل المخزون الأصلي</small><h2>حركات المخزون</h2></span></div><Button variant="outline" asChild><Link href="/admin/inventory">فتح المخزون</Link></Button></div><QueryState loading={query.isLoading} error={query.error} empty={!query.data?.data.length}><div className="ajn-op-table-wrap"><table className="ajn-op-table"><thead><tr><th>رقم الحركة</th><th>التاريخ والوقت</th><th>المنتج</th><th>الكمية</th><th>الاتجاه</th><th>السبب</th><th>الموظف</th></tr></thead><tbody>{query.data?.data.map((row) => <tr key={row.id}><td>#{row.id}</td><td>{readableDate(row.createdAt)}</td><td>#{row.productId ?? "—"}</td><td className={Number(row.quantityChange) < 0 ? "is-danger" : "is-positive"}>{Number(row.quantityChange) > 0 ? "+" : ""}{row.quantityChange}</td><td>{Number(row.quantityChange) < 0 ? "صرف" : "إرجاع"}</td><td>{row.reason}</td><td>{row.createdByName || "النظام"}</td></tr>)}</tbody></table></div></QueryState></div>;
+}
+
+// Consolidated, printable preparation (picking) sheet: every product/material +
+// asset the crew must gather for the booking, with quantities and check boxes.
+function buildPreparationListHtml(
+  booking: BookingOperationsBooking,
+  products: any[],
+  assets: any[],
+): string {
+  const esc = (value: unknown) =>
+    String(value ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] ?? c));
+  const productRows = products
+    .filter((item) => item?.status !== "released")
+    .map((item) => {
+      const variant = item.variantLabel || item.color || "";
+      return `<tr><td class="chk">☐</td><td>${esc(item.productName)}${variant ? ` <small>(${esc(variant)})</small>` : ""}</td><td class="num">${esc(item.quantity)}</td><td class="num">${item.status === "consumed" ? esc(item.quantity) : ""}</td><td>${esc(item.barcode ?? "")}</td><td></td></tr>`;
+    })
+    .join("");
+  const assetRows = assets
+    .map(
+      (item) =>
+        `<tr><td class="chk">☐</td><td>${esc(item.name)}${item.serialNumber ? ` <small>(${esc(item.serialNumber)})</small>` : ""}</td><td class="num">${esc(item.quantity ?? 1)}</td><td>${esc(item.assetCode ?? "")}</td><td class="num">${item.qrToken ? "QR" : "—"}</td><td></td></tr>`,
+    )
+    .join("");
+  const empty = (cols: number, label: string) => `<tr><td colspan="${cols}" class="empty">${label}</td></tr>`;
+  return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>قائمة تجهيز ${esc(booking.number)}</title><style>
+    @page { size: A4; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Cairo, Tahoma, Arial, sans-serif; color: #000; direction: rtl; font-size: 12px; margin: 0; }
+    h1 { font-size: 20px; margin: 0; }
+    .head { display: flex; justify-content: space-between; gap: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 10px; }
+    .meta { font-size: 12px; line-height: 1.9; }
+    .meta b { font-weight: 700; }
+    h2 { font-size: 14px; margin: 16px 0 6px; border-bottom: 1px solid #000; padding-bottom: 3px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #000; padding: 5px 6px; text-align: right; vertical-align: top; }
+    th { background: #f2f2f2; font-weight: 800; }
+    .chk { width: 30px; text-align: center; font-size: 15px; }
+    .num { text-align: center; width: 74px; }
+    .empty { text-align: center; padding: 12px; }
+    .sign { display: flex; justify-content: space-between; gap: 30px; margin-top: 34px; }
+    .sign div { border-top: 1px dashed #000; padding-top: 6px; width: 30%; text-align: center; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style></head><body>
+    <div class="head">
+      <div><h1>AJN — قائمة التجهيز</h1><div class="meta">مجموعة علي جان نهاد · لتنظيم المناسبات</div></div>
+      <div class="meta">
+        <div><b>رقم الحجز:</b> ${esc(booking.number)}</div>
+        <div><b>العميل:</b> ${esc(booking.customerName)}</div>
+        <div><b>الهاتف:</b> ${esc(booking.phone)}</div>
+        <div><b>تاريخ المناسبة:</b> ${esc(booking.eventDate)} ${esc(booking.eventTime ?? "")}</div>
+        <div><b>الموقع:</b> ${esc(booking.hall ?? "")}</div>
+      </div>
+    </div>
+    <h2>المنتجات والمواد</h2>
+    <table><thead><tr><th class="chk">✓</th><th>المادة / المنتج</th><th class="num">المطلوب</th><th class="num">المُجهّز</th><th>الباركود</th><th>ملاحظة</th></tr></thead><tbody>${productRows || empty(6, "لا توجد منتجات أو مواد مرتبطة بالحجز")}</tbody></table>
+    <h2>الأصول والمعدات</h2>
+    <table><thead><tr><th class="chk">✓</th><th>الأصل</th><th class="num">الكمية</th><th>الرقم</th><th class="num">QR</th><th>ملاحظة</th></tr></thead><tbody>${assetRows || empty(6, "لا توجد أصول أو معدات مرتبطة بالحجز")}</tbody></table>
+    <div class="sign"><div>جهّز بواسطة</div><div>التوقيع</div><div>التاريخ</div></div>
+    <script>window.onload=function(){setTimeout(function(){window.print();},200);};</script>
+  </body></html>`;
+}
+
+function PreparationListAction({ base, booking }: { base: string; booking: BookingOperationsBooking }) {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(false);
+  const openList = async () => {
+    setLoading(true);
+    try {
+      const [productsRes, assetsRes] = await Promise.all([
+        adminFetch<any>(`${base}/products`).catch(() => null),
+        adminFetch<any>(`${base}/assets`).catch(() => null),
+      ]);
+      const products: any[] = productsRes?.items ?? [];
+      const assets: any[] = assetsRes?.assets ?? [];
+      const popup = window.open("", "_blank", "width=900,height=800");
+      if (!popup) {
+        toast({ title: "تعذر فتح نافذة الطباعة", description: "اسمح بالنوافذ المنبثقة ثم حاول مجدداً.", variant: "destructive" });
+        return;
+      }
+      popup.document.write(buildPreparationListHtml(booking, products, assets));
+      popup.document.close();
+    } catch (error: any) {
+      toast({ title: "تعذر إنشاء قائمة التجهيز", description: error?.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <Button variant="outline" onClick={openList} disabled={loading}>
+      <ClipboardCheck /> {loading ? "جارٍ التجهيز…" : "قائمة التجهيز"}
+    </Button>
+  );
 }
 
 function BookingDiscountControl({ base, currentDiscount, onChanged }: { base: string; currentDiscount: number; onChanged: () => void }) {

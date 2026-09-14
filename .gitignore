@@ -84,6 +84,10 @@ desktop/release/
 .vercel
 .env*
 !.env.example
+# local tooling caches / scratch (never commit)
+.pnpm-store/
+.tmp-codex/
+output/
 # Build artifacts
 .next/
 node_modules/
