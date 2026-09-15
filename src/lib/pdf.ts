@@ -204,9 +204,15 @@ export async function downloadElementPdf(
       .set({
         margin: options?.margin ?? [8, 8, 8, 8],
         filename,
-        image: { type: "jpeg", quality: 0.96 },
+        // PNG is lossless: JPEG's DCT/chroma subsampling softens Arabic text and
+        // thin table rules, making the exported PDF look blurry. PNG keeps edges
+        // crisp; documents are line-art + text, so it also compresses well.
+        image: { type: "png" },
         html2canvas: {
-          scale: options?.scale ?? Math.min(2, window.devicePixelRatio || 1.5),
+          // Render at a higher pixel density so rasterised text stays sharp when
+          // the bitmap is placed on the PDF page. Callers may still pass a lower
+          // scale for very long reports to stay within canvas/memory limits.
+          scale: options?.scale ?? Math.min(3, Math.max(2.5, window.devicePixelRatio || 1.5)),
           useCORS: true,
           // A tainted canvas cannot be saved as a PDF. Cross-origin images are
           // loaded only when they expose CORS headers, preserving the rest of
