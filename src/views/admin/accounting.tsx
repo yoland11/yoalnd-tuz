@@ -10,7 +10,7 @@ import { EmptyState } from "./_layout";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 import { useToast } from "@/hooks/use-toast";
 import { useSearch } from "wouter";
-import { downloadElementPdf } from "@/lib/pdf";
+import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import {
   customerStatementDateInRange,
@@ -984,8 +984,36 @@ function ReceivablesTab() {
   }
 
   async function exportPdf() {
-    if (!reportRef.current) return;
-    await downloadElementPdf(reportRef.current, `ajn-${type}-${from}-${to}.pdf`, { format: "a4", margin: 8 });
+    if (!rows.length) return;
+    const title = RECEIVABLE_REPORTS.find((item) => item.value === type)?.label ?? "تقرير المحاسبة";
+    const moneyKeys = new Set(["total", "paid", "remaining", "amount", "total_paid"]);
+    const numKeys = new Set(["invoice_count", "open_invoices", "payment_count"]);
+    const codeKeys = new Set(["phone", "date", "last_invoice_date", "oldest_due_date", "voucher_no", "period"]);
+    const reportColumns: ReportColumn<Record<string, any>>[] = columns.map(([key, label]): ReportColumn<Record<string, any>> => {
+      if (moneyKeys.has(key)) return { key, header: label, width: 11, kind: "money", priority: "high" };
+      if (numKeys.has(key)) return { key, header: label, width: 7, kind: "number", align: "center", priority: "medium" };
+      if (key === "method") return { key, header: label, width: 9, align: "center", priority: "medium", value: (row) => methodLabel(String(row.method ?? "")) };
+      if (key === "approval_status") return { key, header: label, width: 9, align: "center", priority: "medium", value: (row) => (row.approval_status === "executed" ? "معتمد" : row.approval_status === "pending" ? "قيد الاعتماد" : String(row.approval_status ?? "—")) };
+      if (codeKeys.has(key)) return { key, header: label, width: 10, kind: "code", priority: "medium" };
+      return { key, header: label, width: 16, priority: "high" };
+    });
+    await exportReport<Record<string, any>>({
+      options: {
+        title,
+        subtitle: `الفترة: ${from} — ${to}`,
+        orientation: columns.length > 4 ? "landscape" : "portrait",
+        summary: [
+          { label: "عدد السجلات", value: rows.length.toLocaleString("en-US") },
+          { label: customerReport ? "إجمالي المتبقي" : "إجمالي التقرير", value: formatCurrency(total), tone: total > 0 ? "negative" : "positive" },
+          { label: "إجمالي المدفوع", value: formatCurrency(paid), tone: "positive" },
+        ],
+        footerNote: `${title} · نظام AJN`,
+      },
+      columns: reportColumns,
+      rows,
+      filename: `ajn-${type}-${from}-${to}.pdf`,
+      mode: "download",
+    });
   }
 
   return (

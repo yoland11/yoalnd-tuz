@@ -9,7 +9,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { downloadElementPdf } from "@/lib/pdf";
+import { exportReport } from "@/lib/pdf-report";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, formatCurrency, type AdminMe } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -276,6 +276,29 @@ function ProfilePanel({ staffId, isManager, levelLabels }: { staffId: number; is
     ["متوسط زمن إنجاز المهمة", d.avgCompleteHours ? `${d.avgCompleteHours.toFixed(1)} ساعة` : "—"],
   ];
 
+  async function exportPdf() {
+    await exportReport<[string, string]>({
+      options: {
+        title: `بطاقة أداء الموظف — ${p.info.name}`,
+        subtitle: `${p.department} · @${p.info.username} · الترتيب #${p.rank}`,
+        orientation: "portrait",
+        summary: [
+          { label: "الترتيب", value: `#${p.rank}` },
+          { label: "القسم", value: p.department },
+          ...CATS.map((category) => ({ label: `${category.emoji} ${category.label}`, value: String(p.categories[category.key] ?? 0) })),
+        ],
+        footerNote: `بطاقة أداء · @${p.info.username} · نظام AJN`,
+      },
+      columns: [
+        { key: "label", header: "البند", width: 40, priority: "high", value: (metric) => metric[0] },
+        { key: "value", header: "القيمة", width: 30, kind: "code", priority: "high", value: (metric) => metric[1] },
+      ],
+      rows: metrics,
+      filename: `performance-${p.info.username}.pdf`,
+      mode: "download",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <div ref={reportRef} className="space-y-4">
@@ -392,7 +415,7 @@ function ProfilePanel({ staffId, isManager, levelLabels }: { staffId: number; is
 
       {/* Manager actions + export */}
       <div className="flex flex-wrap items-center gap-2 print:hidden">
-        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => reportRef.current && downloadElementPdf(reportRef.current, `performance-${p.info.username}.pdf`)}>
+        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void exportPdf()}>
           <FileDown className="h-4 w-4" /> تصدير PDF
         </Button>
       </div>
