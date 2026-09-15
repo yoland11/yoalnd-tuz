@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, CreditCard, FileSpreadsheet, FileText, Printer, Receipt, Search, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { downloadElementPdf } from "@/lib/pdf";
+import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, formatCurrency, formatMoney } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -80,7 +80,33 @@ export default function DailyFinancialReportPage() {
 
   async function exportPdf() {
     void recordReportAudit("report_pdf_exported", "التقرير اليومي", "pdf");
-    await downloadElementPdf(reportRef.current, `daily-report-${filters.date}.pdf`);
+    if (!data) return;
+    const flat = flattenRows(data);
+    const columns: ReportColumn<(string | number)[]>[] = [
+      { key: "section", header: "القسم", width: 12, priority: "high", value: (row) => row[0] },
+      { key: "ref", header: "المرجع", width: 11, kind: "code", priority: "medium", value: (row) => row[1] },
+      { key: "date", header: "التاريخ", width: 10, kind: "code", priority: "medium", value: (row) => row[2] },
+      { key: "customer", header: "العميل / العنوان", width: 22, priority: "high", value: (row) => row[3] },
+      { key: "amount", header: "المبلغ", width: 12, kind: "money", priority: "high", value: (row) => row[4] },
+      { key: "payment", header: "الدفع", width: 11, align: "center", priority: "medium", value: (row) => row[5] },
+      { key: "status", header: "الحالة", width: 12, align: "center", priority: "medium", value: (row) => row[6] },
+    ];
+    await exportReport<(string | number)[]>({
+      options: {
+        title: "التقرير اليومي",
+        subtitle: `التاريخ: ${filters.date}`,
+        orientation: "landscape",
+        summary: cards.map((card) => ({
+          label: card.label,
+          value: card.plain ? formatMoney(card.value ?? 0) : formatCurrency(card.value ?? 0),
+        })),
+        footerNote: `عدد الحركات: ${flat.length.toLocaleString("en-US")} · التقرير اليومي · نظام AJN`,
+      },
+      columns,
+      rows: flat,
+      filename: `daily-report-${filters.date}.pdf`,
+      mode: "download",
+    });
   }
 
   function printReport(thermal = false) {

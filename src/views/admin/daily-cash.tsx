@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { downloadElementPdf } from "@/lib/pdf";
+import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "./_layout";
 import { adminFetch, formatCurrency, formatMoney } from "./_lib";
@@ -217,7 +217,42 @@ function DailyCashPage({ mode }: { mode: PageMode }) {
   async function exportPdf() {
     setExportingPdf(true);
     try {
-      await downloadElementPdf(pageRef.current, `${title}.pdf`);
+      const isRec = mode === "reconciliation";
+      const columns: ReportColumn<DailyCashRow>[] = [
+        { key: "reportDate", header: "التاريخ", width: 11, kind: "code", priority: "high" },
+        { key: "openingBalance", header: "رصيد الافتتاح", width: 13, kind: "money", priority: "high" },
+        { key: "totalSales", header: "المبيعات", width: 13, kind: "money", priority: "high" },
+        { key: "totalExpenses", header: "المصاريف", width: 13, kind: "money", priority: "high" },
+        { key: "closingBalance", header: "رصيد الإغلاق", width: 13, kind: "money", priority: "high" },
+        ...(isRec
+          ? ([
+              { key: "expectedCashBalance", header: "المتوقع", width: 12, kind: "money", priority: "medium" },
+              { key: "actualCashInDrawer", header: "النقد الفعلي", width: 12, kind: "money", priority: "high", value: (row) => row.actualCashInDrawer ?? "" },
+              { key: "difference", header: "الفرق", width: 10, kind: "money", priority: "high", value: (row) => row.difference ?? "" },
+              { key: "status", header: "الحالة", width: 10, align: "center", priority: "high", value: (row) => STATUS_LABELS[row.status] },
+            ] as ReportColumn<DailyCashRow>[])
+          : []),
+        { key: "createdByName", header: "بواسطة", width: 12, priority: "low" },
+      ];
+      await exportReport<DailyCashRow>({
+        options: {
+          title,
+          subtitle: `الفترة: ${appliedFilters.from} — ${appliedFilters.to}`,
+          orientation: isRec ? "landscape" : "portrait",
+          totalsLabel: "الإجمالي",
+          totals: [
+            { key: "openingBalance", text: formatCurrency(totals?.openingBalance ?? 0) },
+            { key: "totalSales", text: formatCurrency(totals?.totalSales ?? 0) },
+            { key: "totalExpenses", text: formatCurrency(totals?.totalExpenses ?? 0) },
+            { key: "closingBalance", text: formatCurrency(totals?.closingBalance ?? 0) },
+          ],
+          footerNote: `عدد الأيام: ${rows.length.toLocaleString("en-US")} · ${title} · نظام AJN`,
+        },
+        columns,
+        rows,
+        filename: `${title}.pdf`,
+        mode: "download",
+      });
     } catch (err) {
       alert(err instanceof Error ? err.message : "تعذر تصدير PDF");
     } finally {
