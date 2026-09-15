@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileSpreadsheet, FileText, Pencil, Plus, Printer, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { fileToDataUrl, adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
-import { downloadElementPdf } from "@/lib/pdf";
+import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; createdByName: string; createdAt: string };
@@ -26,7 +26,6 @@ const paymentMethods = [
 export default function ExpensesPage({ startNew = false }: { startNew?: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const reportRef = useRef<HTMLDivElement | null>(null);
   const { data: settings } = usePublicSettings();
   const [filters, setFilters] = useState({ from: monthStart(), to: today(), categoryId: "", paymentMethod: "", search: "", user: "" });
   const [form, setForm] = useState<ExpenseForm | null>(() => startNew ? blankForm() : null);
@@ -78,7 +77,35 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
 
   async function exportPdf() {
     void recordReportAudit("report_pdf_exported", "تقرير المصاريف", "pdf");
-    await downloadElementPdf(reportRef.current, `expenses-${filters.from}-${filters.to}.pdf`);
+    const statusLabel = (value?: string) =>
+      (({ executed: "معتمد", pending: "بانتظار الموافقة", rejected: "مرفوض", reversed: "معكوس", cancelled: "ملغي" }) as Record<string, string>)[
+        String(value ?? "executed")
+      ] ?? "معتمد";
+    const columns: ReportColumn<Expense>[] = [
+      { key: "date", header: "التاريخ", width: 9, kind: "code", priority: "high" },
+      { key: "name", header: "البيان", width: 20, priority: "high" },
+      { key: "categoryName", header: "التصنيف", width: 12, priority: "medium" },
+      { key: "paymentMethod", header: "طريقة الدفع", width: 10, align: "center", priority: "medium", value: (row) => paymentLabel(row.paymentMethod) },
+      { key: "createdByName", header: "بواسطة", width: 12, priority: "medium" },
+      { key: "approvalStatus", header: "الحالة", width: 10, align: "center", priority: "medium", value: (row) => statusLabel(row.approvalStatus) },
+      { key: "amount", header: "المبلغ", width: 11, kind: "money", priority: "high" },
+      { key: "notes", header: "ملاحظات", width: 16, priority: "low", value: (row) => row.notes || "" },
+    ];
+    await exportReport<Expense>({
+      options: {
+        title: "تقرير المصاريف",
+        subtitle: `الفترة: ${filters.from} — ${filters.to}`,
+        orientation: "landscape",
+        logoUrl: logoSrc(settings),
+        totalsLabel: "إجمالي المصاريف المعتمدة",
+        totals: [{ key: "amount", text: formatCurrency(total) }],
+        footerNote: `عدد الحركات: ${expenses.length.toLocaleString("en-US")} · تقرير المصاريف · نظام AJN`,
+      },
+      columns,
+      rows: expenses,
+      filename: `expenses-${filters.from}-${filters.to}.pdf`,
+      mode: "download",
+    });
   }
   function printReport(thermal = false) {
     void recordReportAudit("report_printed", "تقرير المصاريف", thermal ? "thermal" : "a4");
@@ -120,7 +147,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
         <div className="relative"><Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><input value={filters.search} onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))} className={`${inputCls} pr-9`} placeholder="بحث" /></div>
       </div>
 
-      <div ref={reportRef} className="space-y-4">
+      <div className="space-y-4">
         <div className="bg-card rounded-xl border border-border/30 p-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <img src={logoSrc(settings)} alt="AJN" className="h-12 w-20 object-contain rounded-lg bg-background/60 border border-border/30" />
