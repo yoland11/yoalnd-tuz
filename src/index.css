@@ -266,6 +266,46 @@ a:hover {
   /* Using same variables as root for true dark mode */
 }
 
+/* =====================================================================
+   Alt (dark) appearance safety net
+   The alternate appearance (theme toggle) flips the semantic tokens
+   (--background/--foreground/--card/--muted-foreground/…) to a dark
+   palette. Components that use those tokens adapt automatically, but a
+   minority hard-code neutral Tailwind colours (text-slate-900, text-black,
+   bg-white, …) that keep their light-mode value and become unreadable on
+   the now-dark surfaces — "some words disappear in dark mode".
+
+   Remap ONLY neutral greys / near-white to the matching token so nothing
+   vanishes. Semantic colours (coral, green, red, amber, blue …) are left
+   untouched. Scoped to the [data-ajn-appearance="alt"] marker, so the light
+   theme is 100% unaffected, and excluding areas that intentionally stay
+   light (the booking operations workspace). :where() keeps specificity low
+   so component-specific styles can still override when needed.
+   ===================================================================== */
+[data-ajn-appearance="alt"] :where(
+  .text-black, .text-slate-950, .text-slate-900, .text-slate-800, .text-slate-700,
+  .text-gray-950, .text-gray-900, .text-gray-800, .text-gray-700,
+  .text-zinc-900, .text-zinc-800, .text-neutral-900, .text-neutral-800, .text-stone-900
+):not(.ajn-booking-operations, .ajn-booking-operations *) {
+  color: hsl(var(--foreground));
+}
+[data-ajn-appearance="alt"] :where(
+  .text-slate-600, .text-slate-500, .text-gray-600, .text-gray-500,
+  .text-zinc-600, .text-zinc-500, .text-neutral-600, .text-neutral-500
+):not(.ajn-booking-operations, .ajn-booking-operations *) {
+  color: hsl(var(--muted-foreground));
+}
+[data-ajn-appearance="alt"] :where(
+  .bg-white, .bg-slate-50, .bg-slate-100, .bg-gray-50, .bg-gray-100, .bg-neutral-50, .bg-zinc-50
+):not(.ajn-booking-operations, .ajn-booking-operations *) {
+  background-color: hsl(var(--card));
+}
+[data-ajn-appearance="alt"] :where(
+  .border-white, .border-slate-200, .border-slate-100, .border-gray-200, .border-gray-100
+):not(.ajn-booking-operations, .ajn-booking-operations *) {
+  border-color: hsl(var(--border));
+}
+
 @layer base {
   * {
     @apply border-border;
