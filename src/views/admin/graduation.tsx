@@ -71,7 +71,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ProductionProgressPanel } from "./production-progress";
 import { useToast } from "@/hooks/use-toast";
-import { downloadElementPdf } from "@/lib/pdf";
+import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { formatCurrency } from "@/lib/money";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { processImageFile } from "@/lib/image-tools";
@@ -2810,14 +2810,39 @@ function Reports() {
     URL.revokeObjectURL(link.href);
   }
   async function exportPdf() {
-    if (!reportRef.current) return;
+    if (!data?.items?.length) return;
     setPdf(true);
     try {
-      await downloadElementPdf(
-        reportRef.current,
-        `graduation-report-${from}-${to}.pdf`,
-        { margin: 8 },
-      );
+      const items: any[] = data.items;
+      const sum = (key: string) => items.reduce((acc, row) => acc + (Number(row[key]) || 0), 0);
+      const columns: ReportColumn<any>[] = [
+        { key: "orderNo", header: "رقم الطلب", width: 10, kind: "code", priority: "high" },
+        { key: "customerName", header: "الزبون", width: 20, priority: "high" },
+        { key: "status", header: "الحالة", width: 11, align: "center", priority: "medium" },
+        { key: "stageLabel", header: "المرحلة", width: 12, align: "center", priority: "medium" },
+        { key: "totalAmount", header: "الإجمالي", width: 12, kind: "money", priority: "high" },
+        { key: "paidAmount", header: "المدفوع", width: 12, kind: "money", priority: "high" },
+        { key: "remainingAmount", header: "المتبقي", width: 12, kind: "money", priority: "high" },
+        { key: "createdAt", header: "التاريخ", width: 11, kind: "code", priority: "medium", value: (row) => new Date(row.createdAt).toLocaleDateString("en-CA") },
+      ];
+      await exportReport<any>({
+        options: {
+          title: "تقرير طلبات التخرّج",
+          subtitle: `الفترة: ${from} — ${to}`,
+          orientation: "landscape",
+          totalsLabel: "الإجمالي",
+          totals: [
+            { key: "totalAmount", text: formatCurrency(sum("totalAmount")) },
+            { key: "paidAmount", text: formatCurrency(sum("paidAmount")) },
+            { key: "remainingAmount", text: formatCurrency(sum("remainingAmount")) },
+          ],
+          footerNote: `عدد الطلبات: ${items.length.toLocaleString("en-US")} · تقرير التخرّج · نظام AJN`,
+        },
+        columns,
+        rows: items,
+        filename: `graduation-report-${from}-${to}.pdf`,
+        mode: "download",
+      });
     } finally {
       setPdf(false);
     }
