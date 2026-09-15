@@ -39,7 +39,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Skeleton } from "@/components/ui/skeleton";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { downloadElementPdf } from "@/lib/pdf";
+import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency, formatMoney, type AdminMe } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -510,6 +510,38 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   }
 
   const data = dashboard.data;
+  const exportPdf = async () => {
+    const columns: ReportColumn<FinancialTransaction>[] = [
+      { key: "transactionNo", header: "رقم الحركة", width: 9, kind: "code", priority: "high" },
+      { key: "transactionDate", header: "التاريخ", width: 8, kind: "code", priority: "high" },
+      { key: "department", header: "القسم", width: 9, priority: "medium", value: (row) => departmentLabel(row.department) },
+      { key: "direction", header: "الاتجاه", width: 7, align: "center", priority: "high", value: (row) => movementDisplay(row).direction },
+      { key: "classification", header: "التصنيف", width: 12, priority: "medium", value: (row) => movementDisplay(row).classification },
+      { key: "amount", header: "المبلغ", width: 10, kind: "money", priority: "high" },
+      { key: "approvalStatus", header: "الحالة", width: 9, align: "center", priority: "high", value: (row) => STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus },
+      { key: "requestedByName", header: "بواسطة", width: 11, priority: "medium" },
+      { key: "description", header: "الوصف", width: 15, priority: "low" },
+    ];
+    await exportReport<FinancialTransaction>({
+      options: {
+        title: "الصندوق الرئيسي — دفتر الحركات",
+        subtitle: "الموافقات المالية والحركات النقدية",
+        orientation: "landscape",
+        summary: [
+          { label: "الرصيد الحالي", value: formatCurrency(data.cashBox.currentBalance) },
+          { label: "الرصيد المتاح", value: formatCurrency(data.cashBox.availableBalance) },
+          { label: "إجمالي الإيرادات", value: formatCurrency(data.cashBox.totalRevenue), tone: "positive" },
+          { label: "إجمالي المصاريف", value: formatCurrency(data.cashBox.totalExpenses), tone: "negative" },
+          { label: "صافي الربح", value: formatCurrency(data.cashBox.netProfit), tone: data.cashBox.netProfit >= 0 ? "positive" : "negative" },
+        ],
+        footerNote: `عدد الحركات المعروضة: ${rows.length.toLocaleString("en-US")} · الصندوق الرئيسي · نظام AJN`,
+      },
+      columns,
+      rows,
+      filename: `master-cash-${todayBaghdad()}.pdf`,
+      mode: "download",
+    });
+  };
   return (
     <div ref={reportRef} className="space-y-5" dir="rtl">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -517,7 +549,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
         <div className="flex flex-wrap gap-2 print:hidden">
           <Button size="sm" onClick={() => setShowForm((value) => !value)} className="gap-1.5"><Plus className="h-4 w-4" /> طلب مالي</Button>
           <Button size="sm" variant="outline" onClick={() => window.print()} className="gap-1.5"><Printer className="h-4 w-4" /> طباعة</Button>
-          <Button size="sm" variant="outline" onClick={() => reportRef.current && downloadElementPdf(reportRef.current, `master-cash-${todayBaghdad()}.pdf`)} className="gap-1.5"><FileDown className="h-4 w-4" /> PDF</Button>
+          <Button size="sm" variant="outline" onClick={() => void exportPdf()} className="gap-1.5"><FileDown className="h-4 w-4" /> PDF</Button>
           <Button size="sm" variant="outline" onClick={() => downloadCsv(rows)} className="gap-1.5"><FileSpreadsheet className="h-4 w-4" /> Excel</Button>
           {isManager && <Button size="icon" variant="outline" title="إعادة احتساب الصندوق" disabled={recalculate.isPending} onClick={() => recalculate.mutate()}>{recalculate.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}</Button>}
         </div>

@@ -40,6 +40,9 @@ export type ReportColumn<Row = Record<string, unknown>> = {
 
 export type ReportMetaItem = { label: string; value: string };
 
+/** A summary KPI shown in the stats grid above the table (for dashboard reports). */
+export type ReportSummaryStat = { label: string; value: string; tone?: "default" | "positive" | "negative" };
+
 export type ReportTotalsCell = {
   /** Column key this total sits under (aligns it to that column). */
   key: string;
@@ -55,6 +58,8 @@ export type ReportDocumentOptions = {
   logoUrl?: string | null;
   meta?: ReportMetaItem[];
   dateRange?: { from?: string | null; to?: string | null };
+  /** Optional KPI cards rendered above the table (dashboard-style reports). */
+  summary?: ReportSummaryStat[];
   /** Optional totals/summary row rendered in the table footer. */
   totalsLabel?: string;
   totals?: ReportTotalsCell[];
@@ -120,6 +125,13 @@ export function reportDocumentCss(orientation: "portrait" | "landscape" = "portr
     .rpt-meta { font-size: 11px; line-height: 1.9; text-align: left; min-width: 40mm; }
     .rpt-meta b { font-weight: 700; }
     .rpt-meta .num { direction: ltr; unicode-bidi: isolate; }
+    .rpt-summary { display: grid; gap: 8px; margin-bottom: 12px; }
+    .rpt-summary > div { border: 1px solid #d1d5db; border-radius: 6px; padding: 8px 10px; }
+    .rpt-summary span { display: block; font-size: 10px; color: #4b5563; }
+    .rpt-summary strong { display: block; margin-top: 3px; font-size: 13px; color: #111827;
+      direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums; }
+    .rpt-summary strong.pos { color: #237a57; }
+    .rpt-summary strong.neg { color: #b23a4c; }
     table.rpt-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     .rpt-table thead { display: table-header-group; }
     .rpt-table th { background: #f3f4f6; border: 1px solid #111827; padding: 6px 5px;
@@ -217,11 +229,20 @@ export function buildReportDocumentHtml<Row>(
     <div class="rpt-meta">${metaHtml}</div>
   </div>`;
 
+  const summaryHtml = options.summary && options.summary.length
+    ? `<div class="rpt-summary" style="grid-template-columns:repeat(${Math.min(options.summary.length, 5)},minmax(0,1fr))">${options.summary
+        .map(
+          (stat) =>
+            `<div><span>${esc(stat.label)}</span><strong class="${stat.tone === "positive" ? "pos" : stat.tone === "negative" ? "neg" : ""}">${esc(stat.value)}</strong></div>`,
+        )
+        .join("")}</div>`
+    : "";
+
   const footerNote = options.footerNote || "تقرير للقراءة والطباعة فقط · صادر من نظام AJN";
   const docFooter = `<div class="rpt-doc-footer"><span>${esc(footerNote)}</span><span class="num">${esc(String(rows.length))} سطر</span></div>`;
   const pageFooter = `<div class="rpt-page-footer">${esc(options.company || DEFAULT_COMPANY)} · ${esc(footerNote)}</div>`;
 
-  return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${esc(options.title)}</title><style>${reportDocumentCss(orientation)}</style></head><body>${header}<table class="rpt-table">${colgroup}${thead}${tfoot}<tbody>${body}</tbody></table>${docFooter}${pageFooter}</body></html>`;
+  return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${esc(options.title)}</title><style>${reportDocumentCss(orientation)}</style></head><body>${header}${summaryHtml}<table class="rpt-table">${colgroup}${thead}${tfoot}<tbody>${body}</tbody></table>${docFooter}${pageFooter}</body></html>`;
 }
 
 /**
