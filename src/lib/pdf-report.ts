@@ -224,6 +224,31 @@ export function buildReportDocumentHtml<Row>(
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${esc(options.title)}</title><style>${reportDocumentCss(orientation)}</style></head><body>${header}<table class="rpt-table">${colgroup}${thead}${tfoot}<tbody>${body}</tbody></table>${docFooter}${pageFooter}</body></html>`;
 }
 
+/**
+ * High-level convenience: build the report document and either download it as a
+ * PDF file (default — matches the existing "تحميل PDF" buttons and fixes the
+ * broken column layout) or open it for printing (best quality: repeated header +
+ * page footer + vector-sharp text).
+ */
+export async function exportReport<Row>(input: {
+  options: ReportDocumentOptions;
+  columns: ReportColumn<Row>[];
+  rows: Row[];
+  filename: string;
+  /** "download" (default) → direct PDF file · "print" → paged-media print window. */
+  mode?: "download" | "print";
+  /** Cap the number of columns, dropping low-priority ones first. */
+  maxColumns?: number;
+}): Promise<void> {
+  const columns = pickReportColumns(input.columns, input.maxColumns);
+  const html = buildReportDocumentHtml(input.options, columns, input.rows);
+  if (input.mode === "print") {
+    openReportPrintWindow(html);
+    return;
+  }
+  await downloadReportPdf(html, input.filename, input.options.orientation ?? "portrait");
+}
+
 /** Minimal auto-print bootstrap (waits for images) for the print-window path. */
 function autoPrintScript(): string {
   return `<script>(function(){function go(){setTimeout(function(){window.focus();window.print();},80);}var imgs=document.images;if(!imgs.length){window.onload=go;return;}var left=imgs.length;function one(){if(--left<=0)go();}window.onload=function(){for(var i=0;i<imgs.length;i++){var im=imgs[i];if(im.complete)one();else{im.onload=one;im.onerror=one;}}};})();</script>`;

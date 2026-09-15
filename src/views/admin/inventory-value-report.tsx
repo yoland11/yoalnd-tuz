@@ -1,10 +1,10 @@
-import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Download, FileSpreadsheet, Package, Printer, RefreshCw, Search, WalletCards, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
-import { downloadElementPdf } from "@/lib/pdf";
+import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -51,7 +51,6 @@ const EMPTY_TOTALS: InventoryValueTotals = {
 };
 
 export default function InventoryValueReportPage() {
-  const reportRef = useRef<HTMLDivElement | null>(null);
   const { data: settings } = usePublicSettings();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
@@ -92,7 +91,37 @@ export default function InventoryValueReportPage() {
     setExportingPdf(true);
     try {
       await recordReportAudit("report_pdf_exported", "تقرير قيمة المخزون", "pdf");
-      await downloadElementPdf(reportRef.current, "تقرير قيمة المخزون.pdf");
+      const categoryLabel = categories.find((item) => item.value === appliedCategory)?.label ?? "كل التصنيفات";
+      const columns: ReportColumn<InventoryValueRow>[] = [
+        { key: "productName", header: "اسم المنتج", width: 20, priority: "high" },
+        { key: "categoryName", header: "التصنيف", width: 12, priority: "medium" },
+        { key: "stock", header: "الكمية", width: 8, kind: "number", align: "center", priority: "high" },
+        { key: "wholesalePrice", header: "سعر الجملة", width: 11, kind: "money", priority: "medium" },
+        { key: "salePrice", header: "سعر البيع", width: 11, kind: "money", priority: "high" },
+        { key: "wholesaleValue", header: "قيمة الجملة", width: 12, kind: "money", priority: "high" },
+        { key: "saleValue", header: "قيمة البيع", width: 12, kind: "money", priority: "high" },
+        { key: "expectedProfit", header: "الربح المتوقع", width: 12, kind: "money", priority: "high" },
+      ];
+      await exportReport<InventoryValueRow>({
+        options: {
+          title: "تقرير قيمة المخزون",
+          subtitle: `التصنيف: ${categoryLabel}${appliedSearch ? ` · بحث: ${appliedSearch}` : ""}`,
+          orientation: "landscape",
+          logoUrl: logoSrc(settings),
+          totalsLabel: "الإجمالي",
+          totals: [
+            { key: "stock", text: totals.totalQuantity.toLocaleString("en-US") },
+            { key: "wholesaleValue", text: formatCurrency(totals.totalWholesaleValue) },
+            { key: "saleValue", text: formatCurrency(totals.totalSaleValue) },
+            { key: "expectedProfit", text: formatCurrency(totals.expectedProfit) },
+          ],
+          footerNote: `عدد المنتجات: ${totals.productCount.toLocaleString("en-US")} · تقرير قيمة المخزون · نظام AJN`,
+        },
+        columns,
+        rows,
+        filename: "تقرير قيمة المخزون.pdf",
+        mode: "download",
+      });
     } catch (err) {
       alert(err instanceof Error ? err.message : "تعذر تصدير PDF");
     } finally {
@@ -269,78 +298,6 @@ export default function InventoryValueReportPage() {
         )}
       </div>
 
-      <div
-        ref={reportRef}
-        dir="rtl"
-        aria-hidden="true"
-        style={{
-          position: "fixed",
-          top: 0,
-          left: "-100000px",
-          width: "1120px",
-          background: "#ffffff",
-          color: "#111827",
-          padding: "24px",
-          pointerEvents: "none",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, borderBottom: "2px solid #111827", paddingBottom: 14, marginBottom: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <img src={logoSrc(settings)} alt="AJN" style={{ width: 72, height: 56, objectFit: "contain" }} />
-            <div>
-              <h2 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>تقرير قيمة المخزون</h2>
-              <p style={{ margin: "6px 0 0", fontSize: 13 }}>مجموعة علي جان</p>
-            </div>
-          </div>
-          <div style={{ fontSize: 13, lineHeight: 1.8, textAlign: "left" }}>
-            <div>التصنيف: {categories.find((item) => item.value === appliedCategory)?.label ?? "كل التصنيفات"}</div>
-            <div>البحث: {appliedSearch || "كل المنتجات"}</div>
-            <div>تاريخ الإنشاء: {new Date().toLocaleString("ar-IQ-u-nu-latn")}</div>
-          </div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 18 }}>
-          <PdfTotal label="عدد المنتجات" value={totals.productCount.toLocaleString("ar-IQ-u-nu-latn")} />
-          <PdfTotal label="إجمالي الكميات" value={totals.totalQuantity.toLocaleString("ar-IQ-u-nu-latn")} />
-          <PdfTotal label="إجمالي الجملة" value={formatCurrency(totals.totalWholesaleValue)} />
-          <PdfTotal label="إجمالي البيع" value={formatCurrency(totals.totalSaleValue)} />
-          <PdfTotal label="الربح المتوقع" value={formatCurrency(totals.expectedProfit)} />
-        </div>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead>
-            <tr>
-              {["اسم المنتج", "التصنيف", "الكمية", "سعر الجملة", "سعر البيع", "قيمة الجملة", "قيمة البيع", "الربح المتوقع"].map((heading) => (
-                <th key={heading} style={pdfCellStyle(true)}>{heading}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={`pdf-${row.id}`}>
-                <td style={pdfCellStyle()}>{row.productName}</td>
-                <td style={pdfCellStyle()}>{row.categoryName}</td>
-                <td style={pdfCellStyle()}>{row.stock.toLocaleString("ar-IQ-u-nu-latn")}</td>
-                <td style={pdfCellStyle()}>{formatCurrency(row.wholesalePrice)}</td>
-                <td style={pdfCellStyle()}>{formatCurrency(row.salePrice)}</td>
-                <td style={pdfCellStyle()}>{formatCurrency(row.wholesaleValue)}</td>
-                <td style={pdfCellStyle()}>{formatCurrency(row.saleValue)}</td>
-                <td style={pdfCellStyle()}>{formatCurrency(row.expectedProfit)}</td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={2} style={pdfCellStyle(true)}>الإجمالي</td>
-              <td style={pdfCellStyle(true)}>{totals.totalQuantity.toLocaleString("ar-IQ-u-nu-latn")}</td>
-              <td style={pdfCellStyle(true)}>—</td>
-              <td style={pdfCellStyle(true)}>—</td>
-              <td style={pdfCellStyle(true)}>{formatCurrency(totals.totalWholesaleValue)}</td>
-              <td style={pdfCellStyle(true)}>{formatCurrency(totals.totalSaleValue)}</td>
-              <td style={pdfCellStyle(true)}>{formatCurrency(totals.expectedProfit)}</td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-
       <style>{`
         .admin-report-input {
           width: 100%;
@@ -398,26 +355,6 @@ function FilterField({ label, children }: { label: string; children: ReactNode }
       {children}
     </label>
   );
-}
-
-function PdfTotal({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={{ border: "1px solid #d1d5db", borderRadius: 8, padding: 10 }}>
-      <span style={{ display: "block", fontSize: 11, color: "#4b5563" }}>{label}</span>
-      <strong style={{ display: "block", marginTop: 4, fontSize: 14, color: "#111827" }}>{value}</strong>
-    </div>
-  );
-}
-
-function pdfCellStyle(header = false): CSSProperties {
-  return {
-    border: "1px solid #111827",
-    padding: "7px 8px",
-    textAlign: "right",
-    color: "#111827",
-    fontWeight: header ? 800 : 600,
-    background: "#ffffff",
-  };
 }
 
 function compactLinkedNames(value: string) {
