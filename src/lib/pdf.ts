@@ -26,9 +26,40 @@ async function waitForPdfAssets(element: HTMLElement) {
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
 
+/**
+ * html2canvas (bundled in html2pdf) cannot parse modern CSS color functions —
+ * `oklch()`, `oklab()`, `lab()`, `lch()`, `hwb()`, `color()`, `color-mix()` and
+ * relative colors (`hsl(from …)`). When one reaches it the whole export throws
+ * ("Attempting to parse an unsupported color function") and no PDF is produced.
+ * Detect any value that carries one of these so it can be replaced with a safe
+ * fallback before rendering.
+ */
+const UNSUPPORTED_COLOR = /(?:oklab|oklch|lab|lch|hwb|color-mix|color)\(|\(\s*from[\s)]/i;
+
+/**
+ * The AJN theme defines its `*-border` tokens with relative-color syntax
+ * (`hsl(from hsl(var(--x)) …)`), which resolves to `color(...)` at runtime and
+ * crashes html2canvas. These variables also feed pseudo-elements and gradients
+ * that inline-style sanitisation cannot reach, so the export must redefine them
+ * to plain, parseable colours at the source (in the cloned document). Values are
+ * visually near-identical (the base colour instead of a slightly lighter shade).
+ */
+const PDF_SAFE_VARIABLE_OVERRIDES = `
+  :root, .dark, [data-theme] {
+    --primary-border: hsl(var(--primary)) !important;
+    --secondary-border: hsl(var(--secondary)) !important;
+    --muted-border: hsl(var(--muted)) !important;
+    --accent-border: hsl(var(--accent)) !important;
+    --destructive-border: hsl(var(--destructive)) !important;
+    --sidebar-primary-border: hsl(var(--sidebar-primary)) !important;
+    --sidebar-accent-border: hsl(var(--sidebar-accent)) !important;
+  }
+`;
+
 function preparePdfClone(doc: Document) {
   const style = doc.createElement("style");
   style.textContent = `
+    ${PDF_SAFE_VARIABLE_OVERRIDES}
     * {
       color-scheme: light !important;
       box-shadow: none !important;
@@ -63,11 +94,10 @@ function preparePdfClone(doc: Document) {
   const win = doc.defaultView;
   if (!win?.getComputedStyle || !doc.body) return;
 
-  const unsupportedColor = /(oklab|lab|oklch|lch|color)\(/i;
   const safeColor = (value: string, fallback: string) => {
     const color = value?.trim();
     if (!color || color === "transparent" || color === "rgba(0, 0, 0, 0)") return color || fallback;
-    return unsupportedColor.test(color) ? fallback : color;
+    return UNSUPPORTED_COLOR.test(color) ? fallback : color;
   };
 
   const all = [doc.body, ...Array.from(doc.body.querySelectorAll<HTMLElement>("*"))];
@@ -82,6 +112,11 @@ function preparePdfClone(doc: Document) {
     el.style.outlineColor = safeColor(computed.outlineColor, "#d1d5db");
     el.style.setProperty("fill", safeColor(computed.fill, "#111827"));
     el.style.setProperty("stroke", safeColor(computed.stroke, "#111827"));
+    // A gradient carrying an unsupported colour function crashes html2canvas the
+    // same way a solid one does; drop only those, keeping safe hex/rgb gradients.
+    if (computed.backgroundImage && computed.backgroundImage !== "none" && UNSUPPORTED_COLOR.test(computed.backgroundImage)) {
+      el.style.backgroundImage = "none";
+    }
     el.style.boxShadow = "none";
     el.style.textShadow = "none";
   }
@@ -90,7 +125,7 @@ function preparePdfClone(doc: Document) {
 function safeCssColor(value: string, fallback: string) {
   const color = value?.trim();
   if (!color || color === "transparent" || color === "rgba(0, 0, 0, 0)") return color || fallback;
-  return /(oklab|lab|oklch|lch|color)\(/i.test(color) ? fallback : color;
+  return UNSUPPORTED_COLOR.test(color) ? fallback : color;
 }
 
 function createPdfSnapshot(element: HTMLElement) {
@@ -123,6 +158,9 @@ function createPdfSnapshot(element: HTMLElement) {
     target.style.outlineColor = safeCssColor(computed.outlineColor, "#d1d5db");
     target.style.setProperty("fill", safeCssColor(computed.fill, "#111827"));
     target.style.setProperty("stroke", safeCssColor(computed.stroke, "#111827"));
+    if (computed.backgroundImage && computed.backgroundImage !== "none" && UNSUPPORTED_COLOR.test(computed.backgroundImage)) {
+      target.style.backgroundImage = "none";
+    }
     target.style.boxShadow = "none";
     target.style.textShadow = "none";
   }
