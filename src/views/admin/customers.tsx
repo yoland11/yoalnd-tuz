@@ -274,7 +274,11 @@ export default function CustomersPage() {
                 <CustomerFinancialSummary customerId={detail.id} />
 
                 {/* Chronological كشف حساب — debit/credit/running balance. */}
-                <CustomerStatement customerId={detail.id} />
+                <CustomerStatement
+                  customerId={detail.id}
+                  customerName={detail.fullName || detail.name}
+                  customerPhone={formatIraqiPhone(detail.phone)}
+                />
 
                 <div className="rounded-xl border border-border/25 bg-background/40 p-4">
                   <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground"><Wallet className="h-4 w-4 text-primary" /> آخر دفعة</h4>
