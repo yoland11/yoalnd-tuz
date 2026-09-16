@@ -66,6 +66,8 @@
     "test:remote-printing": "node ./scripts/verify-remote-printing.mjs",
     "test:sales-invoice-print-template": "node ./scripts/verify-sales-invoice-print-template.mjs",
     "test:purchase-invoice-print": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-purchase-invoice-print.ts",
+    "test:booking-finance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-finance.ts",
+    "diagnose:booking-finance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/diagnose-booking-finance.ts",
     "test:sales-invoice-ui": "node ./scripts/test-sales-invoice-ui.cjs",
     "test:sales-product-search": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-sales-product-search.ts",
     "test:wedding-invoice-layout": "node ./scripts/verify-wedding-invoice-layout.mjs",
