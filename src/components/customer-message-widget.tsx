@@ -49,7 +49,7 @@ export function CustomerMessageWidget() {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="رسالة للمحل"
-        className="fixed bottom-[calc(9rem+env(safe-area-inset-bottom))] left-3 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-primary/30 bg-primary text-primary-foreground shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-20 md:left-4"
+        className="fixed bottom-[calc(10.5rem+env(safe-area-inset-bottom))] left-3 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-primary/30 bg-primary text-primary-foreground shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-[10.5rem] md:left-4 lg:bottom-20"
       >
         <MessageCircle className="h-6 w-6" />
       </button>
