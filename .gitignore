@@ -104,3 +104,6 @@ release/
 
 .vercel
 .env*
+
+# Booking-finance normalization row backups (local, never committed)
+scripts/normalize-backups/
