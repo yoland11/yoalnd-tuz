@@ -55,6 +55,7 @@ import {
 } from "./_lib";
 import { AssetSaleDialog } from "./asset-sale-dialog";
 import { LiveScanner } from "../staff/live-scanner";
+import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 
 type FinancialApprovalRow = {
   id: number;
@@ -814,6 +815,80 @@ export function AssetsPage() {
   const summary = data?.summary;
   const pagination = data?.pagination;
   const [removeTarget, setRemoveTarget] = useState<AssetRow | null>(null);
+  const [exporting, setExporting] = useState<null | "print" | "download">(null);
+  // Print/PDF the WHOLE filtered asset list (not just the current 25-row page):
+  // walk every page (limit 100 each) under the same active filters, read-only.
+  async function fetchAllAssetsForReport(): Promise<AssetRow[]> {
+    const base = new URLSearchParams({ quick: quickFilter, sort, order, limit: "100" });
+    if (deferredSearch.trim()) base.set("q", deferredSearch.trim());
+    for (const [key, value] of Object.entries(assetFilters)) if (value) base.set(key, value);
+    const all: AssetRow[] = [];
+    for (let pageNumber = 1; pageNumber <= 200; pageNumber++) {
+      const params = new URLSearchParams(base);
+      params.set("page", String(pageNumber));
+      const response = await adminFetch<AssetSearchResponse>(`/admin/assets?${params.toString()}`);
+      all.push(...(response.data ?? []));
+      if (pageNumber >= (response.pagination?.totalPages ?? 1)) break;
+    }
+    return all;
+  }
+  async function exportAssets(mode: "print" | "download") {
+    setExporting(mode);
+    try {
+      const assets = await fetchAllAssetsForReport();
+      if (!assets.length) {
+        toast({ title: "لا توجد أصول للطباعة", variant: "destructive" });
+        return;
+      }
+      const statusText = (row: AssetRow) =>
+        row.maintenanceDue
+          ? "صيانة"
+          : ASSET_AVAILABILITY_LABEL[row.availabilityStatus ?? ""] ?? ASSET_STATUS_LABEL[row.status] ?? "نشط";
+      const columns: ReportColumn<AssetRow>[] = [
+        { key: "assetCode", header: "رمز الأصل", width: 11, kind: "code", priority: "high", value: (row) => row.assetCode || `AJN-A${String(row.productId).padStart(5, "0")}` },
+        { key: "name", header: "الأصل", width: 16, priority: "high" },
+        { key: "serialNumber", header: "الرقم التسلسلي", width: 12, kind: "code", priority: "medium", value: (row) => row.serialNumber || "—" },
+        { key: "category", header: "الفئة / العلامة", width: 15, priority: "medium", value: (row) => [row.category, [row.brand, row.model].filter(Boolean).join(" · ")].filter(Boolean).join(" — ") || "—" },
+        { key: "responsibleName", header: "المسؤول / الموقع", width: 15, priority: "medium", value: (row) => [row.responsibleName, [row.warehouseName, row.storageLocation].filter(Boolean).join(" · ")].filter(Boolean).join(" — ") || "—" },
+        { key: "purchasePrice", header: "سعر الشراء", width: 10, kind: "money", priority: "high" },
+        { key: "usage", header: "الاستخدام / العمر", width: 9, kind: "number", align: "center", priority: "low", value: (row) => `${row.usageCount} / ${row.expectedLifeUses}` },
+        { key: "currentValue", header: "القيمة المتبقية", width: 10, kind: "money", priority: "high" },
+        { key: "status", header: "الحالة", width: 9, align: "center", priority: "high", value: statusText },
+      ];
+      const totalPurchase = assets.reduce((sum, row) => sum + (row.purchasePrice || 0), 0);
+      const totalCurrent = assets.reduce((sum, row) => sum + (row.currentValue || 0), 0);
+      const quickLabel = ASSET_QUICK_FILTERS.find(([value]) => value === quickFilter)?.[1] ?? "الكل";
+      const subtitleParts = [`التصفية: ${quickLabel}`];
+      if (deferredSearch.trim()) subtitleParts.push(`بحث: ${deferredSearch.trim()}`);
+      if (assetFilters.status) subtitleParts.push(`الحالة: ${ASSET_AVAILABILITY_LABEL[assetFilters.status] ?? ASSET_STATUS_LABEL[assetFilters.status] ?? assetFilters.status}`);
+      await exportReport<AssetRow>({
+        options: {
+          title: "تقرير الأصول",
+          subtitle: subtitleParts.join(" · "),
+          orientation: "landscape",
+          summary: [
+            { label: "إجمالي الأصول", value: assets.length.toLocaleString("en-US") },
+            { label: "قيمة الشراء", value: formatCurrency(totalPurchase) },
+            { label: "القيمة المتبقية", value: formatCurrency(totalCurrent) },
+          ],
+          totalsLabel: "الإجمالي",
+          totals: [
+            { key: "purchasePrice", text: formatCurrency(totalPurchase) },
+            { key: "currentValue", text: formatCurrency(totalCurrent) },
+          ],
+          footerNote: `عدد الأصول: ${assets.length.toLocaleString("en-US")} · تقرير الأصول · نظام AJN`,
+        },
+        columns,
+        rows: assets,
+        filename: "تقرير الأصول.pdf",
+        mode,
+      });
+    } catch (error) {
+      toast({ title: "تعذّرت الطباعة", description: apiErrorMessage(error), variant: "destructive" });
+    } finally {
+      setExporting(null);
+    }
+  }
   const bulkCategory = useMutation({
     mutationFn: (categoryId: number | null) => adminFetch("/admin/assets/bulk-category", { method: "POST", body: JSON.stringify({ productIds: selectedAssetIds, categoryId }) }),
     onSuccess: () => { setSelectedAssetIds([]); queryClient.invalidateQueries({ queryKey: ["admin", "assets"] }); toast({ title: "تم تغيير قسم الأصول المحددة" }); },
@@ -895,7 +970,13 @@ export function AssetsPage() {
         title="إدارة الأصول"
         description="ابحث فوراً بالاسم أو الرمز أو QR أو الباركود أو الحجز، ثم فرز النتائج ومتابعة حالة الأصل."
         action={(
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={() => exportAssets("print")} disabled={exporting !== null || (pagination?.total ?? 0) === 0} className="gap-1">
+              <Printer className="h-4 w-4" /> {exporting === "print" ? "يُحضّر…" : "طباعة"}
+            </Button>
+            <Button variant="outline" onClick={() => exportAssets("download")} disabled={exporting !== null || (pagination?.total ?? 0) === 0} className="gap-1">
+              <Download className="h-4 w-4" /> {exporting === "download" ? "يُحضّر…" : "PDF"}
+            </Button>
             <Link href="/admin/assets/new">
               <Button className="gap-1">
                 <Plus className="h-4 w-4" /> إضافة أصل جديد
