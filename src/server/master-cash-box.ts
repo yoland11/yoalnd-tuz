@@ -142,6 +142,9 @@ const ACCOUNT_SEEDS = [
   ["4040", "إيرادات الصوتيات", "revenue", "audio"],
   ["4050", "إيرادات الهدايا والتوزيعات", "revenue", "gifts"],
   ["4060", "إيرادات تجهيزات التخرج", "revenue", "graduation"],
+  // Collected booking penalties (damage/loss compensation) — a SEPARATE revenue
+  // classification, never mixed with normal sales/service revenue.
+  ["4070", "غرامات وتلفيات", "revenue", "penalties"],
   ["5000", "مصاريف عامة", "expense", "general"],
   ["5010", "مصاريف المتجر", "expense", "store"],
   ["5020", "مصاريف الكوشات", "expense", "koshas"],

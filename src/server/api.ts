@@ -718,6 +718,15 @@ export const ALL_PERMISSIONS = [
   "booking_payment_receive",
   "booking_finance_approve",
   "booking_payment_reverse",
+  // Booking damage & penalty system (money is classified separately as
+  // "غرامات وتلفيات"; every action is server-permission-checked).
+  "booking_penalty_view",
+  "booking_penalty_create",
+  "booking_penalty_review",
+  "booking_penalty_edit",
+  "booking_penalty_pay",
+  "booking_penalty_reverse",
+  "booking_penalty_report",
   "booking_tasks_manage",
   "booking_documents_manage",
   "booking_close",
