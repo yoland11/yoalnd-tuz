@@ -390,6 +390,12 @@ export const NAV: NavItem[] = [
     perm: "products",
   },
   {
+    href: "/admin/penalties-report",
+    label: "الغرامات والتلفيات",
+    icon: AlertTriangle,
+    perm: "booking_penalty_view",
+  },
+  {
     href: "/admin/pos",
     label: "نقطة البيع POS",
     icon: Monitor,
@@ -899,6 +905,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/reserved-stock"),
       navItem("/admin/inventory-alerts"),
       navItem("/admin/inventory-value"),
+      navItem("/admin/penalties-report"),
       navItem("/admin/barcodes"),
       navItem("/admin/print-labels"),
       navItem("/admin/warehouse-transfers"),

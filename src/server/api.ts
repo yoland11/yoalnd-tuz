@@ -33531,6 +33531,95 @@ function centralBookingDepartments(value: unknown) {
   return ["decorations"];
 }
 
+// Global damage & penalty reporting: KPIs + a filterable report across all
+// bookings. Read-only; paid/remaining are derived from executed cash movements.
+async function handlePenaltiesReport(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "penalties" || req.method !== "GET") return null;
+  const auth = await requireAnyPermission(req, ["booking_penalty_view", "booking_finance_view", "bookings", "accounting"]);
+  if (isResponse(auth)) return auth;
+  const exists = (await db.execute(sql`select to_regclass('public.booking_penalties') as t`)).rows?.[0]?.t;
+  const emptyKpi = { pendingReview: 0, unpaid: 0, partlyPaid: 0, paid: 0, thisMonthCount: 0, penaltyTotal: 0, collected: 0, remaining: 0 };
+  if (!exists) {
+    return parts[2] === "kpi" ? json(emptyKpi) : json({ rows: [], totals: { count: 0, penaltyTotal: 0, paid: 0, remaining: 0, pendingReview: 0 } });
+  }
+  const params = req.nextUrl.searchParams;
+  const from = params.get("from");
+  const to = params.get("to");
+  const search = (params.get("search") || "").trim();
+  const damageType = params.get("damageType") || "";
+  const statusFilter = params.get("status") || "";
+  const raw = (
+    await db.execute(sql`
+      SELECT bp.id, bp.penalty_no, bp.source_type, bp.source_id, bp.customer_name, bp.item_label,
+             bp.damage_type, bp.quantity::text AS quantity, bp.penalty_amount::text AS penalty_amount,
+             bp.status, bp.origin, bp.reason, bp.created_by_name, bp.created_at,
+             coalesce((SELECT sum(CASE WHEN ft.direction='revenue' THEN ft.amount::numeric ELSE -ft.amount::numeric END)
+                       FROM financial_transactions ft
+                       WHERE ft.source_type='booking_penalty' AND ft.source_id = bp.id::text AND ft.approval_status='executed'), 0)::text AS paid
+      FROM booking_penalties bp
+      WHERE (${from}::text IS NULL OR bp.created_at >= ${from}::timestamp)
+        AND (${to}::text IS NULL OR bp.created_at < (${to}::timestamp + interval '1 day'))
+        AND (${damageType} = '' OR bp.damage_type = ${damageType})
+        AND (${search} = '' OR bp.item_label ILIKE ${`%${search}%`} OR bp.customer_name ILIKE ${`%${search}%`} OR bp.penalty_no ILIKE ${`%${search}%`})
+      ORDER BY bp.id DESC
+      LIMIT 5000
+    `)
+  ).rows as any[];
+  const money2 = (value: unknown) => Math.round((Number(value) || 0) * 100) / 100;
+  const mapped = raw.map((row) => {
+    const penaltyAmount = money2(row.penalty_amount);
+    const paid = Math.max(0, money2(row.paid));
+    const remaining = row.status === "approved" ? Math.max(0, money2(penaltyAmount - paid)) : 0;
+    return {
+      id: Number(row.id),
+      penaltyNo: row.penalty_no,
+      sourceType: row.source_type,
+      sourceId: Number(row.source_id),
+      customerName: row.customer_name ?? "",
+      itemLabel: row.item_label ?? "",
+      damageType: row.damage_type,
+      quantity: Number(row.quantity) || 0,
+      penaltyAmount,
+      reason: row.reason ?? "",
+      status: row.status,
+      origin: row.origin,
+      createdByName: row.created_by_name ?? "",
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      paid,
+      remaining,
+      displayStatus: penaltyDisplayStatus(String(row.status ?? ""), penaltyAmount, paid),
+    };
+  });
+  if (parts[2] === "kpi") {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const kpi = {
+      pendingReview: mapped.filter((r) => r.displayStatus === "pending_review").length,
+      unpaid: mapped.filter((r) => r.displayStatus === "unpaid").length,
+      partlyPaid: mapped.filter((r) => r.displayStatus === "partly_paid").length,
+      paid: mapped.filter((r) => r.displayStatus === "paid").length,
+      thisMonthCount: mapped.filter((r) => r.createdAt && r.createdAt >= monthStart).length,
+      penaltyTotal: money2(mapped.filter((r) => r.status === "approved").reduce((s, r) => s + r.penaltyAmount, 0)),
+      collected: money2(mapped.reduce((s, r) => s + r.paid, 0)),
+      remaining: money2(mapped.filter((r) => r.status === "approved").reduce((s, r) => s + r.remaining, 0)),
+    };
+    return json(kpi);
+  }
+  const rows = statusFilter ? mapped.filter((r) => r.displayStatus === statusFilter) : mapped;
+  const totals = {
+    count: rows.length,
+    penaltyTotal: money2(rows.filter((r) => r.status === "approved").reduce((s, r) => s + r.penaltyAmount, 0)),
+    paid: money2(rows.reduce((s, r) => s + r.paid, 0)),
+    remaining: money2(rows.filter((r) => r.status === "approved").reduce((s, r) => s + r.remaining, 0)),
+    pendingReview: rows.filter((r) => r.displayStatus === "pending_review").length,
+  };
+  return json({ rows, totals });
+}
+
 async function handleCentralBookingCenter(
   req: NextRequest,
   parts: string[],
@@ -37599,6 +37688,9 @@ async function handleAdmin(
     section,
   );
   if (centralBookingCenter) return centralBookingCenter;
+
+  const penaltiesReport = await handlePenaltiesReport(req, parts, section);
+  if (penaltiesReport) return penaltiesReport;
 
   const soundCenter = await handleSoundCenter(req, parts, section);
   if (soundCenter) return soundCenter;

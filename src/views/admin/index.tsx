@@ -152,6 +152,7 @@ const WarehouseTransfersPage = lazy(() =>
 const AssetsPage = lazy(() =>
   import("./operations").then((module) => ({ default: module.AssetsPage })),
 );
+const PenaltiesReportPage = lazy(() => import("./penalties-report"));
 const AssetMovementsPage = lazy(() =>
   import("./operations").then((module) => ({
     default: module.AssetMovementsPage,
@@ -1038,6 +1039,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="products">
                 <AssetsPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/penalties-report">
+            {() => (
+              <Guard me={me} perm="booking_penalty_view">
+                <PenaltiesReportPage />
               </Guard>
             )}
           </Route>
