@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArchiveRestore,
   Banknote,
+  Camera,
   Barcode,
   Building2,
   Boxes,
@@ -39,6 +40,7 @@ import {
   ShoppingBag,
   Sparkles,
   TriangleAlert,
+  Trash2,
   Truck,
   UserRound,
   Users,
@@ -71,7 +73,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, compressImageFile, formatCurrency } from "./_lib";
 import { BookingThermalPrintAction } from "@/components/booking-thermal-print";
 import { BookingThermalReceiptAction } from "@/components/booking-thermal-receipt";
 import { AccountSummaryCard } from "./payment-collection";
@@ -826,6 +828,312 @@ function BookingDiscountControl({ base, currentDiscount, onChanged }: { base: st
   );
 }
 
+// ── Booking Damage & Penalty UI ───────────────────────────────────────────────
+const PENALTY_DAMAGE_OPTIONS: Array<[string, string]> = [
+  ["break", "كسر"],
+  ["loss", "فقدان"],
+  ["damage", "تلف"],
+  ["shortage", "نقص"],
+  ["not_returned", "عدم إرجاع"],
+  ["other", "ضرر آخر"],
+];
+const PENALTY_CONDITION_OPTIONS: Array<[string, string]> = [
+  ["broken", "مكسور"],
+  ["damaged", "تالف"],
+  ["lost", "مفقود"],
+  ["shortage", "ناقص"],
+  ["unusable", "غير صالح للاستخدام"],
+];
+const PENALTY_METHOD_OPTIONS: Array<[string, string]> = [
+  ["cash", "نقداً"],
+  ["transfer", "تحويل"],
+  ["card", "بطاقة"],
+];
+const PENALTY_STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
+  pending_review: { label: "قيد المراجعة", color: "#92400e", bg: "#fef3c7" },
+  unpaid: { label: "غير مدفوعة", color: "#991b1b", bg: "#fee2e2" },
+  partly_paid: { label: "مدفوعة جزئياً", color: "#92400e", bg: "#fef3c7" },
+  paid: { label: "مدفوعة بالكامل", color: "#065f46", bg: "#d1fae5" },
+  cancelled: { label: "ملغاة", color: "#6b7280", bg: "#f3f4f6" },
+  none: { label: "لا توجد غرامات", color: "#6b7280", bg: "#f3f4f6" },
+};
+const penaltyDamageLabelClient = (value: string) => PENALTY_DAMAGE_OPTIONS.find(([key]) => key === value)?.[1] ?? value;
+function PenaltyBadge({ status }: { status: string }) {
+  const meta = PENALTY_STATUS_META[status] ?? PENALTY_STATUS_META.none;
+  return <span style={{ display: "inline-block", borderRadius: 999, padding: "2px 10px", fontSize: 12, fontWeight: 700, color: meta.color, background: meta.bg }}>{meta.label}</span>;
+}
+
+function BookingPenaltiesSection({ base, booking, queryKey, onChanged }: { base: string; booking: BookingOperationsBooking; queryKey: unknown[]; onChanged: () => void }) {
+  const query = useQuery<any>({ queryKey: [...queryKey, "penalties"], queryFn: () => adminFetch(`${base}/penalties`) });
+  const data = query.data;
+  const penalties: any[] = data?.penalties ?? [];
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [paying, setPaying] = useState<any | null>(null);
+  const [details, setDetails] = useState<any | null>(null);
+  const [cancelling, setCancelling] = useState<any | null>(null);
+  const refresh = () => { void query.refetch(); onChanged(); };
+  const bookingRemaining = Number(booking.remaining ?? 0);
+  const penaltyRemaining = Number(data?.remaining ?? 0);
+  return (
+    <section className="ajn-op-penalties mt-4">
+      <div className="ajn-op-section-head">
+        <div><TriangleAlert /><span><small>أضرار وتلفيات — منفصلة تماماً عن إجمالي الحجز</small><h2>الغرامات والتلفيات</h2></span></div>
+        <div className="ajn-op-actions"><Button className="ajn-op-primary" onClick={() => setAdding(true)}><Plus /> إضافة غرامة</Button></div>
+      </div>
+      <QueryState loading={query.isLoading} error={query.error}>
+        <section className="ajn-op-finance-summary">
+          <div><span>إجمالي الغرامات</span><b>{formatCurrency(Number(data?.penaltyTotal ?? 0))}</b></div>
+          <div><span>المدفوع</span><b>{formatCurrency(Number(data?.paid ?? 0))}</b></div>
+          <div><span>المتبقي</span><b>{formatCurrency(penaltyRemaining)}</b></div>
+          <div><span>الحالة</span><b><PenaltyBadge status={data?.status ?? "none"} /></b></div>
+        </section>
+        <section className="ajn-op-finance-summary" style={{ marginTop: 8 }}>
+          <div><span>رصيد الحجز</span><b>{formatCurrency(bookingRemaining)}</b></div>
+          <div><span>رصيد الغرامات</span><b>{formatCurrency(penaltyRemaining)}</b></div>
+          <div style={{ borderColor: "#b45309" }}><span>إجمالي المستحق على العميل</span><b>{formatCurrency(bookingRemaining + penaltyRemaining)}</b></div>
+        </section>
+        {!penalties.length ? (
+          <p style={{ textAlign: "center", color: "#6b7280", padding: "18px 0" }}>لا توجد غرامات على هذا الحجز.</p>
+        ) : (
+          <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+            {penalties.map((penalty) => (
+              <div key={penalty.id} style={{ border: "1px solid var(--border, #e5e7eb)", borderRadius: 14, padding: 12, background: "var(--card, #fff)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+                  <div style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><TriangleAlert style={{ width: 16, height: 16, color: "#b45309" }} /> {penaltyDamageLabelClient(penalty.damageType)} — {penalty.itemLabel}</div>
+                  <PenaltyBadge status={penalty.displayStatus} />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(90px,1fr))", gap: 8, marginTop: 10 }}>
+                  <div><small style={{ color: "#6b7280" }}>الكمية</small><div style={{ fontWeight: 700 }}>{penalty.quantity}</div></div>
+                  <div><small style={{ color: "#6b7280" }}>الغرامة</small><div style={{ fontWeight: 700 }}>{formatCurrency(penalty.penaltyAmount)}</div></div>
+                  <div><small style={{ color: "#6b7280" }}>المدفوع</small><div style={{ fontWeight: 700 }}>{formatCurrency(penalty.paid)}</div></div>
+                  <div><small style={{ color: "#6b7280" }}>المتبقي</small><div style={{ fontWeight: 700 }}>{formatCurrency(penalty.remaining)}</div></div>
+                </div>
+                <div style={{ display: "flex", gap: 12, marginTop: 8, fontSize: 12, color: "#6b7280", flexWrap: "wrap" }}>
+                  <span dir="ltr">{penalty.penaltyNo}</span>
+                  {penalty.evidenceCount > 0 ? <span><Camera style={{ width: 13, height: 13, display: "inline" }} /> {penalty.evidenceCount} صور</span> : null}
+                  <span>سجّلها: {penalty.createdByName || "—"}</span>
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                  <Button variant="outline" size="sm" onClick={() => setDetails(penalty)}>التفاصيل</Button>
+                  {penalty.status === "approved" && penalty.remaining > 0 ? <Button size="sm" onClick={() => setPaying(penalty)}><Banknote /> تسديد</Button> : null}
+                  {penalty.status !== "cancelled" && penalty.paid <= 0 ? <Button variant="outline" size="sm" onClick={() => setEditing(penalty)}>تعديل</Button> : null}
+                  {penalty.status !== "cancelled" && penalty.paid <= 0 ? <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setCancelling(penalty)}>إلغاء</Button> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </QueryState>
+      {adding ? <PenaltyFormDialog base={base} booking={booking} penalty={null} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); refresh(); }} /> : null}
+      {editing ? <PenaltyFormDialog base={base} booking={booking} penalty={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} /> : null}
+      {paying ? <PenaltyPayDialog base={base} penalty={paying} onClose={() => setPaying(null)} onPaid={() => { setPaying(null); refresh(); }} /> : null}
+      {details ? <PenaltyDetailsDialog base={base} penalty={details} onClose={() => setDetails(null)} onChanged={refresh} /> : null}
+      {cancelling ? <PenaltyCancelDialog base={base} penalty={cancelling} onClose={() => setCancelling(null)} onCancelled={() => { setCancelling(null); refresh(); }} /> : null}
+    </section>
+  );
+}
+
+function EvidencePicker({ evidence, onChange }: { evidence: string[]; onChange: (next: string[]) => void }) {
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+        {evidence.map((src, index) => (
+          <div key={index} style={{ position: "relative", width: 64, height: 64, borderRadius: 8, overflow: "hidden", border: "1px solid #e5e7eb" }}>
+            <img src={src} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <button type="button" onClick={() => onChange(evidence.filter((_, i) => i !== index))} style={{ position: "absolute", top: 2, left: 2, background: "rgba(0,0,0,.6)", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", lineHeight: 1, padding: 2 }} aria-label="حذف الصورة"><Trash2 style={{ width: 12, height: 12 }} /></button>
+          </div>
+        ))}
+      </div>
+      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13, color: "#2563eb" }}>
+        <Camera style={{ width: 16, height: 16 }} /> إضافة صور
+        <input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={async (event) => {
+          const files = Array.from(event.target.files ?? []);
+          const next = [...evidence];
+          for (const file of files) {
+            if (next.length >= 20) break;
+            try { next.push(await compressImageFile(file, 1400, 0.8)); } catch { /* ignore a single bad image */ }
+          }
+          onChange(next);
+          event.target.value = "";
+        }} />
+      </label>
+    </div>
+  );
+}
+
+function PenaltyFormDialog({ base, booking, penalty, onClose, onSaved }: { base: string; booking: BookingOperationsBooking; penalty: any | null; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useToast();
+  const isEdit = Boolean(penalty);
+  const products = useQuery<any>({ queryKey: [base, "penalty-products"], queryFn: () => adminFetch(`${base}/products`).catch(() => null) });
+  const assets = useQuery<any>({ queryKey: [base, "penalty-assets"], queryFn: () => adminFetch(`${base}/assets`).catch(() => null) });
+  const items: Array<{ label: string; productId: number | null; unit: number }> = [
+    ...((products.data?.items ?? []) as any[]).filter((i) => i?.status !== "released").map((i) => ({ label: i.productName, productId: Number(i.productId) || null, unit: Number(i.unitPrice ?? 0) })),
+    ...((assets.data?.assets ?? []) as any[]).map((a) => ({ label: a.name, productId: Number(a.productId) || null, unit: Number(a.currentValue ?? a.purchaseValue ?? 0) })),
+  ];
+  const [damageType, setDamageType] = useState<string>(penalty?.damageType ?? "damage");
+  const [itemLabel, setItemLabel] = useState<string>(penalty?.itemLabel ?? "");
+  const [productId, setProductId] = useState<number | null>(penalty?.productId ?? null);
+  const [itemCondition, setItemCondition] = useState<string>(penalty?.itemCondition ?? "");
+  const [quantity, setQuantity] = useState<string>(String(penalty?.quantity ?? 1));
+  const [unitValue, setUnitValue] = useState<string>(String(penalty?.unitValue ?? 0));
+  const [penaltyAmount, setPenaltyAmount] = useState<string>(String(penalty?.penaltyAmount ?? 0));
+  const [reason, setReason] = useState<string>(penalty?.reason ?? "");
+  const [notes, setNotes] = useState<string>(penalty?.notes ?? "");
+  const [evidence, setEvidence] = useState<string[]>(Array.isArray(penalty?.evidence) ? penalty.evidence : []);
+  const suggested = Math.max(0, (Number(unitValue) || 0) * (Number(quantity) || 0));
+  const mutation = useMutation({
+    mutationFn: () => {
+      const payload = { damageType, itemLabel: itemLabel.trim(), productId, itemCondition: itemCondition || null, quantity: Number(quantity) || 1, unitValue: Number(unitValue) || 0, penaltyAmount: Number(penaltyAmount) || 0, reason: reason.trim(), notes: notes.trim() || null, evidence };
+      return isEdit
+        ? adminFetch(`${base}/penalties/${penalty.id}`, { method: "PATCH", body: JSON.stringify({ ...payload, editReason: "تعديل الغرامة" }) })
+        : adminFetch(`${base}/penalties`, { method: "POST", body: JSON.stringify(payload) });
+    },
+    onSuccess: () => { toast({ title: isEdit ? "تم تعديل الغرامة" : "تم تسجيل الغرامة" }); onSaved(); },
+    onError: (error: any) => toast({ title: "تعذّر الحفظ", description: error?.message, variant: "destructive" }),
+  });
+  const valid = itemLabel.trim() && reason.trim() && Number(penaltyAmount) >= 0;
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent dir="rtl" className="max-h-[92vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>{isEdit ? "تعديل الغرامة" : "إضافة غرامة على الحجز"}</DialogTitle><DialogDescription>لا تُضاف الغرامة إلى إجمالي الحجز — تُسجَّل كمستحق منفصل.</DialogDescription></DialogHeader>
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
+            <div><Label>نوع الحالة *</Label><select value={damageType} onChange={(e) => setDamageType(e.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{PENALTY_DAMAGE_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>
+            <div><Label>حالة العنصر</Label><select value={itemCondition} onChange={(e) => setItemCondition(e.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">—</option>{PENALTY_CONDITION_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>
+          </div>
+          <div>
+            <Label>العنصر *</Label>
+            {items.length ? (
+              <select value={productId != null && items.some((i) => i.productId === productId && i.label === itemLabel) ? `${productId}::${itemLabel}` : ""} onChange={(e) => { const found = items.find((i) => `${i.productId}::${i.label}` === e.target.value); if (found) { setItemLabel(found.label); setProductId(found.productId); if (!Number(unitValue)) setUnitValue(String(found.unit)); } }} className="mb-1 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
+                <option value="">اختر من عناصر الحجز أو اكتب يدوياً…</option>
+                {items.map((item, index) => <option key={index} value={`${item.productId}::${item.label}`}>{item.label}{item.unit ? ` — ${formatCurrency(item.unit)}` : ""}</option>)}
+              </select>
+            ) : null}
+            <Input value={itemLabel} onChange={(e) => setItemLabel(e.target.value)} placeholder="اسم العنصر (كرسي، سماعة، قطعة ديكور…)" />
+          </div>
+          <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
+            <div><Label>الكمية *</Label><Input type="number" min={1} value={quantity} onChange={(e) => setQuantity(e.target.value)} /></div>
+            <div><Label>قيمة العنصر (للوحدة)</Label><Input type="number" min={0} value={unitValue} onChange={(e) => setUnitValue(e.target.value)} /></div>
+          </div>
+          <div>
+            <Label>قيمة الغرامة *</Label>
+            <Input type="number" min={0} value={penaltyAmount} onChange={(e) => setPenaltyAmount(e.target.value)} />
+            {suggested > 0 ? <button type="button" onClick={() => setPenaltyAmount(String(suggested))} style={{ marginTop: 4, fontSize: 12, color: "#2563eb", background: "none", border: "none", cursor: "pointer" }}>القيمة المقترحة: {formatCurrency(suggested)} (قيمة العنصر × الكمية) — اضغط للاستخدام</button> : null}
+          </div>
+          <div><Label>سبب الغرامة *</Label><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="سبب فرض الغرامة" /></div>
+          <div><Label>ملاحظات</Label><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="ملاحظات إضافية (اختياري)" /></div>
+          <div><Label>صور / مرفقات</Label><EvidencePicker evidence={evidence} onChange={setEvidence} /></div>
+        </div>
+        <DialogFooter className="ajn-op-dialog-actions"><Button variant="outline" onClick={onClose}>إلغاء</Button><Button className="ajn-op-primary" disabled={!valid || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديل" : "تسجيل الغرامة"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PenaltyPayDialog({ base, penalty, onClose, onPaid }: { base: string; penalty: any; onClose: () => void; onPaid: () => void }) {
+  const { toast } = useToast();
+  const remaining = Number(penalty.remaining ?? Math.max(0, Number(penalty.penaltyAmount) - Number(penalty.paid ?? 0)));
+  const [amount, setAmount] = useState<string>(String(remaining));
+  const [method, setMethod] = useState<string>("cash");
+  const [note, setNote] = useState<string>("");
+  const [evidence, setEvidence] = useState<string[]>([]);
+  const value = Number(amount) || 0;
+  const overpay = value > remaining + 0.001;
+  const mutation = useMutation({
+    mutationFn: () => adminFetch(`${base}/penalties/${penalty.id}/pay`, { method: "POST", body: JSON.stringify({ amount: value, paymentMethod: method, note: note.trim() || null, evidence }) }),
+    onSuccess: (result: any) => { toast({ title: result?.executed ? "تم تسجيل التسديد ومسّ الصندوق" : "تم إنشاء طلب التسديد بانتظار اعتماد المدير الرئيسي" }); onPaid(); },
+    onError: (error: any) => toast({ title: "تعذّر التسديد", description: error?.message, variant: "destructive" }),
+  });
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent dir="rtl">
+        <DialogHeader><DialogTitle>تسديد غرامة — {penalty.penaltyNo}</DialogTitle></DialogHeader>
+        <section className="ajn-op-finance-summary"><div><span>إجمالي الغرامة</span><b>{formatCurrency(Number(penalty.penaltyAmount))}</b></div><div><span>المدفوع</span><b>{formatCurrency(Number(penalty.paid ?? 0))}</b></div><div><span>المتبقي</span><b>{formatCurrency(remaining)}</b></div></section>
+        <div style={{ display: "grid", gap: 12, marginTop: 8 }}>
+          <div><Label>مبلغ التسديد *</Label><Input type="number" min={0} max={remaining} value={amount} onChange={(e) => setAmount(e.target.value)} />{overpay ? <small style={{ color: "#b91c1c" }}>المبلغ يتجاوز المتبقّي</small> : null}</div>
+          <div><Label>طريقة الدفع</Label><select value={method} onChange={(e) => setMethod(e.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{PENALTY_METHOD_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>
+          <div><Label>ملاحظة</Label><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="اختياري" /></div>
+          <div><Label>مرفقات الإيصال</Label><EvidencePicker evidence={evidence} onChange={setEvidence} /></div>
+        </div>
+        <DialogFooter className="ajn-op-dialog-actions"><Button variant="outline" onClick={onClose}>إلغاء</Button><Button className="ajn-op-primary" disabled={mutation.isPending || value <= 0 || overpay} onClick={() => mutation.mutate()}>{mutation.isPending ? "جارٍ التسديد…" : "تأكيد التسديد"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PenaltyCancelDialog({ base, penalty, onClose, onCancelled }: { base: string; penalty: any; onClose: () => void; onCancelled: () => void }) {
+  const { toast } = useToast();
+  const [reason, setReason] = useState("");
+  const mutation = useMutation({
+    mutationFn: () => adminFetch(`${base}/penalties/${penalty.id}/cancel`, { method: "POST", body: JSON.stringify({ reason: reason.trim() }) }),
+    onSuccess: () => { toast({ title: "تم إلغاء الغرامة" }); onCancelled(); },
+    onError: (error: any) => toast({ title: "تعذّر الإلغاء", description: error?.message, variant: "destructive" }),
+  });
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent dir="rtl">
+        <DialogHeader><DialogTitle>إلغاء الغرامة — {penalty.penaltyNo}</DialogTitle><DialogDescription>لا يُحذف السجل؛ تُوسم كملغاة مع حفظ السبب.</DialogDescription></DialogHeader>
+        <div><Label>سبب الإلغاء *</Label><Textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="اكتب سبب الإلغاء" /></div>
+        <DialogFooter className="ajn-op-dialog-actions"><Button variant="outline" onClick={onClose}>تراجع</Button><Button variant="destructive" disabled={mutation.isPending || reason.trim().length < 3} onClick={() => mutation.mutate()}>تأكيد الإلغاء</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PenaltyDetailsDialog({ base, penalty, onClose, onChanged }: { base: string; penalty: any; onClose: () => void; onChanged: () => void }) {
+  const { toast } = useToast();
+  const detail = useQuery<any>({ queryKey: [base, "penalty", penalty.id], queryFn: () => adminFetch(`${base}/penalties/${penalty.id}`) });
+  const payments = useQuery<any>({ queryKey: [base, "penalty", penalty.id, "payments"], queryFn: () => adminFetch(`${base}/penalties/${penalty.id}/payments`) });
+  const row = detail.data ?? penalty;
+  const review = useMutation({
+    mutationFn: (action: "approve" | "reject") => adminFetch(`${base}/penalties/${penalty.id}/review`, { method: "POST", body: JSON.stringify({ action }) }),
+    onSuccess: () => { toast({ title: "تم تحديث البلاغ" }); onChanged(); onClose(); },
+    onError: (error: any) => toast({ title: "تعذّرت المراجعة", description: error?.message, variant: "destructive" }),
+  });
+  const reverse = useMutation({
+    mutationFn: (transactionId: number) => { const reason = window.prompt("سبب عكس التسديد:") ?? ""; if (reason.trim().length < 3) throw new Error("سبب العكس مطلوب"); return adminFetch(`${base}/penalties/${penalty.id}/reverse`, { method: "POST", body: JSON.stringify({ transactionId, reason: reason.trim() }) }); },
+    onSuccess: () => { toast({ title: "تم عكس التسديد" }); void detail.refetch(); void payments.refetch(); onChanged(); },
+    onError: (error: any) => toast({ title: "تعذّر العكس", description: error?.message, variant: "destructive" }),
+  });
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent dir="rtl" className="max-h-[92vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>تفاصيل الغرامة — {row.penaltyNo}</DialogTitle></DialogHeader>
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><b>{penaltyDamageLabelClient(row.damageType)} — {row.itemLabel}</b><PenaltyBadge status={row.displayStatus} /></div>
+          <section className="ajn-op-finance-summary"><div><span>الكمية</span><b>{row.quantity}</b></div><div><span>قيمة الغرامة</span><b>{formatCurrency(Number(row.penaltyAmount))}</b></div><div><span>المدفوع</span><b>{formatCurrency(Number(row.paid ?? 0))}</b></div><div><span>المتبقي</span><b>{formatCurrency(Number(row.remaining ?? 0))}</b></div></section>
+          {row.reason ? <div><small style={{ color: "#6b7280" }}>السبب</small><div>{row.reason}</div></div> : null}
+          {row.notes ? <div><small style={{ color: "#6b7280" }}>ملاحظات</small><div>{row.notes}</div></div> : null}
+          <div style={{ fontSize: 12, color: "#6b7280" }}>سجّلها: {row.createdByName || "—"}{row.reviewedByName ? ` · راجعها: ${row.reviewedByName}` : ""}{row.createdAt ? ` · ${new Date(row.createdAt).toLocaleString("ar-IQ-u-nu-latn")}` : ""}</div>
+          {Array.isArray(row.evidence) && row.evidence.length ? (
+            <div><small style={{ color: "#6b7280" }}>الأدلّة ({row.evidence.length})</small><div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>{row.evidence.map((src: string, index: number) => <a key={index} href={src} target="_blank" rel="noreferrer"><img src={src} alt="" style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 8, border: "1px solid #e5e7eb" }} /></a>)}</div></div>
+          ) : null}
+          {row.status === "pending_review" ? (
+            <div style={{ display: "flex", gap: 8, marginTop: 6 }}><Button size="sm" disabled={review.isPending} onClick={() => review.mutate("approve")}>اعتماد الغرامة</Button><Button size="sm" variant="outline" disabled={review.isPending} onClick={() => review.mutate("reject")}>رفض البلاغ</Button></div>
+          ) : null}
+          <div style={{ marginTop: 6 }}>
+            <small style={{ color: "#6b7280" }}>سجل التسديدات</small>
+            <QueryState loading={payments.isLoading} error={payments.error} empty={!payments.data?.payments?.length}>
+              <div style={{ display: "grid", gap: 6, marginTop: 4 }}>
+                {(payments.data?.payments ?? []).map((tx: any) => (
+                  <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid #e5e7eb", borderRadius: 8, padding: "6px 10px", fontSize: 13 }}>
+                    <span dir="ltr">{tx.transactionNo}</span>
+                    <span style={{ fontWeight: 700, color: tx.isReversal ? "#b91c1c" : "#065f46" }}>{tx.isReversal ? "−" : "+"}{formatCurrency(Math.abs(tx.amount))}</span>
+                    <span style={{ color: "#6b7280" }}>{tx.status === "executed" ? "منفّذة" : tx.status === "pending" ? "بانتظار الاعتماد" : tx.status}</span>
+                    {tx.status === "executed" && !tx.isReversal ? <Button size="sm" variant="ghost" className="text-destructive" disabled={reverse.isPending} onClick={() => reverse.mutate(tx.id)}><RotateCcw style={{ width: 14, height: 14 }} /> عكس</Button> : <span />}
+                  </div>
+                ))}
+              </div>
+            </QueryState>
+          </div>
+        </div>
+        <DialogFooter className="ajn-op-dialog-actions"><Button variant="outline" onClick={onClose}>إغلاق</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; queryKey: unknown[]; booking: BookingOperationsBooking; invoiceUrl: string; paymentUrl?: string }) {
   const queryClient = useQueryClient();
   const query = useQuery<any>({ queryKey: [...queryKey, "finance"], queryFn: () => adminFetch(`${base}/finance`) });
@@ -851,6 +1159,8 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
     <BookingDiscountControl base={base} currentDiscount={discount} onChanged={refetchFinance} />
     {/* 2) Customer-wide account — deliberately distinct from the booking balance. */}
     <div className="mt-4"><CustomerFinancialSummary customerId={booking.customerId} /></div>
+    {/* 2b) Damage & penalties — a SEPARATE due, never folded into the booking total. */}
+    <BookingPenaltiesSection base={base} booking={booking} queryKey={queryKey} onChanged={refetchFinance} />
     <QueryState loading={query.isLoading} error={query.error}>
       {/* 3) Booking financial breakdown. */}
       <section className="ajn-op-finance-summary mt-4">{summary.map(([label, value]) => <div key={String(label)}><span>{label}</span><b>{money(Number(value))}</b></div>)}</section>
