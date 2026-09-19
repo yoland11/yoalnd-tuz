@@ -436,6 +436,12 @@ function BookingDashboard() {
   const [serviceFilter, setServiceFilter] = useState<ServiceKey | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
   const centralBookingsQuery = useQuery({ queryKey: ["admin", "booking-center"], queryFn: () => adminFetch<any[]>("/admin/booking-center") });
+  // §15 — unresolved damage/penalty flags per booking for the list indicator.
+  const penaltyIndicators = useQuery<{ indicators: Record<string, { remaining: number; pendingReview: number; count: number }> }>({
+    queryKey: ["admin", "penalty-indicators"],
+    queryFn: () => adminFetch("/admin/penalties/indicators"),
+    staleTime: 30_000,
+  });
   const servicesQuery = useQuery({ queryKey: ["admin", "services", "booking-center"], queryFn: () => adminFetch<AdminService[]>("/admin/services") });
   const customersQuery = useQuery({ queryKey: ["admin", "customers", "booking-center"], queryFn: () => adminFetch<Customer[]>("/admin/customers") });
   const bookings = useMemo(() => (centralBookingsQuery.data ?? []).map((row) => {
@@ -585,7 +591,7 @@ function BookingDashboard() {
           <div className="ajn-empty"><CalendarDays /><h3>لا توجد حجوزات مطابقة</h3><p>غيّر البحث أو أنشئ أول حجز موحّد لهذه الخدمة.</p></div>
         ) : (
           <div className="ajn-booking-grid">
-            {filtered.map((booking) => <BookingPreview key={`${booking.source}-${booking.id}`} booking={booking} />)}
+            {filtered.map((booking) => <BookingPreview key={`${booking.source}-${booking.id}`} booking={booking} penalty={penaltyIndicators.data?.indicators?.[`${booking.source === "kosha" ? "kosha_booking" : "service_order"}:${booking.id}`]} />)}
           </div>
         )}
       </section>
@@ -593,7 +599,7 @@ function BookingDashboard() {
   );
 }
 
-function BookingPreview({ booking }: { booking: UnifiedBooking }) {
+function BookingPreview({ booking, penalty }: { booking: UnifiedBooking; penalty?: { remaining: number; pendingReview: number; count: number } }) {
   const readiness = getReadiness(booking);
   const transport = transportationSummary(booking);
   const editHref = booking.source === "service" || booking.source === "kosha"
@@ -608,6 +614,12 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
         <div><small>{booking.number}</small><h3>{booking.customerName}</h3><p>{booking.eventDate || "الموعد غير محدد"} {booking.eventTime && `· ${booking.eventTime}`}</p></div>
         <StatusBadge status={booking.status} />
       </div>
+      {penalty ? (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 6, borderRadius: 999, border: "1px solid #f59e0b", background: "rgba(245,158,11,.12)", color: "#b45309", padding: "2px 10px", fontSize: 12, fontWeight: 700 }} title="توجد غرامة/تلفيات غير محلولة على هذا الحجز">
+          <AlertTriangle style={{ width: 13, height: 13 }} />
+          {penalty.remaining > 0 ? `غرامة · ${formatCurrency(penalty.remaining)}` : "مشكلة تلف بانتظار المراجعة"}
+        </div>
+      ) : null}
       <div className="ajn-preview-services">{booking.services.slice(0, 5).map((service) => { const meta = SERVICE_META.find((item) => item.key === service.type)!; const Icon = meta.icon; return <span key={service.type} title={meta.label}><Icon /><small>{meta.short}</small></span>; })}</div>
       <div className="ajn-preview-progress"><span><i style={{ width: `${readiness}%` }} /></span><small>الجاهزية {readiness}%</small></div>
       <div className="ajn-preview-finance"><div><small>الإجمالي</small><Money value={booking.total} /></div><div><small>المتبقي</small><Money value={booking.remaining} className={booking.remaining > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600"} /></div></div>

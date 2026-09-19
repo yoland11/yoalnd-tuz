@@ -33544,7 +33544,9 @@ async function handlePenaltiesReport(
   const exists = (await db.execute(sql`select to_regclass('public.booking_penalties') as t`)).rows?.[0]?.t;
   const emptyKpi = { pendingReview: 0, unpaid: 0, partlyPaid: 0, paid: 0, thisMonthCount: 0, penaltyTotal: 0, collected: 0, remaining: 0 };
   if (!exists) {
-    return parts[2] === "kpi" ? json(emptyKpi) : json({ rows: [], totals: { count: 0, penaltyTotal: 0, paid: 0, remaining: 0, pendingReview: 0 } });
+    if (parts[2] === "kpi") return json(emptyKpi);
+    if (parts[2] === "indicators") return json({ indicators: {} });
+    return json({ rows: [], totals: { count: 0, penaltyTotal: 0, paid: 0, remaining: 0, pendingReview: 0 } });
   }
   const params = req.nextUrl.searchParams;
   const from = params.get("from");
@@ -33608,6 +33610,23 @@ async function handlePenaltiesReport(
       remaining: money2(mapped.filter((r) => r.status === "approved").reduce((s, r) => s + r.remaining, 0)),
     };
     return json(kpi);
+  }
+  if (parts[2] === "indicators") {
+    // Compact per-booking flag for the Booking Center list (§15): a booking is
+    // "unresolved" when it has a pending review or an approved penalty with a
+    // remaining balance. Keyed by "<entity>:<id>" (service_order / kosha_booking).
+    const map: Record<string, { remaining: number; pendingReview: number; count: number }> = {};
+    for (const r of mapped) {
+      const unresolved = r.displayStatus === "pending_review" || (r.status === "approved" && r.remaining > 0);
+      if (!unresolved) continue;
+      const key = `${r.sourceType}:${r.sourceId}`;
+      const entry = map[key] ?? { remaining: 0, pendingReview: 0, count: 0 };
+      if (r.displayStatus === "pending_review") entry.pendingReview += 1;
+      if (r.status === "approved" && r.remaining > 0) entry.remaining = money2(entry.remaining + r.remaining);
+      entry.count += 1;
+      map[key] = entry;
+    }
+    return json({ indicators: map });
   }
   const rows = statusFilter ? mapped.filter((r) => r.displayStatus === statusFilter) : mapped;
   const totals = {
