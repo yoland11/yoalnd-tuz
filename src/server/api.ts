@@ -315,6 +315,11 @@ import {
   type BookingPenaltySource,
 } from "@/server/booking-penalties";
 import {
+  getBookingPreparationSummary,
+  listPreparationCards,
+  type PreparationSource,
+} from "@/server/booking-preparation";
+import {
   assetSaleEligibility,
   calculateAssetSaleOutcome,
 } from "@/server/asset-sale-logic";
@@ -734,6 +739,10 @@ export const ALL_PERMISSIONS = [
   "booking_penalty_pay",
   "booking_penalty_reverse",
   "booking_penalty_report",
+  "preparation_view",
+  "preparation_manage",
+  "preparation_assign",
+  "preparation_execute",
   "booking_tasks_manage",
   "booking_documents_manage",
   "booking_close",
@@ -32566,6 +32575,13 @@ async function handleBookingOperations(
     }
   }
 
+  if (resource === "preparation" && method === "GET") {
+    if (!can("preparation_view", "booking_operations_view", "booking_finance_view"))
+      return error("ليس لديك صلاحية عرض التجهيز", 403);
+    const summary = await getBookingPreparationSummary(reference.source as PreparationSource, reference.id);
+    return json(summary ?? { source: reference.source, id: reference.id, items: [], rollup: { total: 0, ready: 0, preparing: 0, shortage: 0, needsPurchase: 0, completed: 0, progress: 0 } });
+  }
+
   if (resource === "penalties") {
     const penaltyId = parts[5] ? int(parts[5]) : 0;
     const subAction = parts[6] ?? "";
@@ -33637,6 +33653,29 @@ async function handlePenaltiesReport(
     pendingReview: rows.filter((r) => r.displayStatus === "pending_review").length,
   };
   return json({ rows, totals });
+}
+
+// قائمة التجهيز — read-only aggregation across bookings (cards + summary). Reuses
+// the same bookings + live stock reservations; never a parallel system.
+async function handlePreparation(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "preparation" || req.method !== "GET") return null;
+  const auth = await requireAnyPermission(req, ["preparation_view", "bookings", "orders", "koshas", "booking_operations_view"]);
+  if (isResponse(auth)) return auth;
+  const cards = await listPreparationCards();
+  const summary = {
+    bookings: cards.length,
+    totalItems: cards.reduce((sum, card) => sum + card.rollup.total, 0),
+    ready: cards.reduce((sum, card) => sum + card.rollup.ready, 0),
+    preparing: cards.reduce((sum, card) => sum + card.rollup.preparing, 0),
+    shortage: cards.reduce((sum, card) => sum + card.rollup.shortage, 0),
+    needsPurchase: cards.reduce((sum, card) => sum + card.rollup.needsPurchase, 0),
+    completed: cards.reduce((sum, card) => sum + card.rollup.completed, 0),
+  };
+  return json({ cards, summary });
 }
 
 async function handleCentralBookingCenter(
@@ -37710,6 +37749,9 @@ async function handleAdmin(
 
   const penaltiesReport = await handlePenaltiesReport(req, parts, section);
   if (penaltiesReport) return penaltiesReport;
+
+  const preparationCenter = await handlePreparation(req, parts, section);
+  if (preparationCenter) return preparationCenter;
 
   const soundCenter = await handleSoundCenter(req, parts, section);
   if (soundCenter) return soundCenter;
