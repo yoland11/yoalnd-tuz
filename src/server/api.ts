@@ -145,6 +145,7 @@ import {
   galleryTagsTable,
   graduationOrdersTable,
   koshaAddonsTable,
+  bookingPenaltiesTable,
   koshaAccessoriesTable,
   koshaCategoriesTable,
   koshaBookingsTable,
@@ -307,6 +308,12 @@ import {
   type FinancialActor,
 } from "@/server/master-cash-box";
 import { getCustomerAccountSummary, getCustomerStatement } from "@/server/customer-account";
+import {
+  getBookingPenaltySummary,
+  penaltyApprovedPaid,
+  penaltyDisplayStatus,
+  type BookingPenaltySource,
+} from "@/server/booking-penalties";
 import {
   assetSaleEligibility,
   calculateAssetSaleOutcome,
@@ -30455,6 +30462,91 @@ const BookingAssetActionSchema = z.object({
   confirmation: z.literal(true),
 });
 
+const PENALTY_DAMAGE_TYPES = ["break", "loss", "damage", "shortage", "not_returned", "other"] as const;
+const PENALTY_ITEM_CONDITIONS = ["broken", "damaged", "lost", "shortage", "unusable"] as const;
+const PENALTY_DAMAGE_LABELS: Record<string, string> = {
+  break: "كسر",
+  loss: "فقدان",
+  damage: "تلف",
+  shortage: "نقص",
+  not_returned: "عدم إرجاع",
+  other: "ضرر آخر",
+};
+const penaltyDamageLabel = (value: string) => PENALTY_DAMAGE_LABELS[value] ?? value;
+
+const BookingPenaltyCreateSchema = z.object({
+  damageType: z.enum(PENALTY_DAMAGE_TYPES),
+  productId: z.coerce.number().int().positive().optional().nullable(),
+  itemLabel: z.string().trim().min(1, "العنصر مطلوب").max(300),
+  itemCondition: z.enum(PENALTY_ITEM_CONDITIONS).optional().nullable(),
+  quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من صفر").max(1_000_000).default(1),
+  unitValue: z.coerce.number().min(0).max(1_000_000_000).default(0),
+  penaltyAmount: z.coerce.number().min(0, "قيمة الغرامة غير صحيحة").max(1_000_000_000),
+  reason: z.string().trim().min(1, "سبب الغرامة مطلوب").max(1000),
+  notes: z.string().trim().max(2000).optional().nullable(),
+  evidence: z.array(z.string().trim().max(2000)).max(20).default([]),
+});
+const BookingPenaltyEditSchema = z.object({
+  damageType: z.enum(PENALTY_DAMAGE_TYPES).optional(),
+  productId: z.coerce.number().int().positive().optional().nullable(),
+  itemLabel: z.string().trim().min(1).max(300).optional(),
+  itemCondition: z.enum(PENALTY_ITEM_CONDITIONS).optional().nullable(),
+  quantity: z.coerce.number().positive().max(1_000_000).optional(),
+  unitValue: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  penaltyAmount: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  reason: z.string().trim().min(1).max(1000).optional(),
+  notes: z.string().trim().max(2000).optional().nullable(),
+  evidence: z.array(z.string().trim().max(2000)).max(20).optional(),
+  editReason: z.string().trim().max(1000).optional(),
+});
+const BookingPenaltyReviewSchema = z.object({
+  action: z.enum(["approve", "reject"]),
+  penaltyAmount: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  note: z.string().trim().max(1000).optional().nullable(),
+});
+const BookingPenaltyCancelSchema = z.object({
+  reason: z.string().trim().min(3, "سبب الإلغاء مطلوب").max(1000),
+});
+
+function penaltyRowToJson(row: any, paid: number) {
+  const penaltyAmount = Number(row.penaltyAmount ?? 0);
+  return {
+    id: row.id,
+    penaltyNo: row.penaltyNo,
+    sourceType: row.sourceType,
+    sourceId: row.sourceId,
+    customerId: row.customerId ?? null,
+    customerName: row.customerName ?? "",
+    productId: row.productId ?? null,
+    itemLabel: row.itemLabel ?? "",
+    damageType: row.damageType,
+    damageLabel: penaltyDamageLabel(row.damageType),
+    itemCondition: row.itemCondition ?? null,
+    quantity: Number(row.quantity ?? 0),
+    unitValue: Number(row.unitValue ?? 0),
+    penaltyAmount,
+    reason: row.reason ?? "",
+    evidence: Array.isArray(row.evidence) ? row.evidence : [],
+    notes: row.notes ?? null,
+    status: row.status,
+    origin: row.origin,
+    correctionOf: row.correctionOf ?? null,
+    createdByName: row.createdByName ?? "",
+    reviewedByName: row.reviewedByName ?? null,
+    createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+    paid,
+    remaining: Math.max(0, Math.round((penaltyAmount - paid) * 100) / 100),
+    displayStatus: penaltyDisplayStatus(String(row.status ?? ""), penaltyAmount, paid),
+  };
+}
+
+/** Readable, collision-free penalty number (PEN-000123) allocated from the new id. */
+async function allocatePenaltyNo(id: number): Promise<string> {
+  const penaltyNo = `PEN-${String(id).padStart(6, "0")}`;
+  await db.update(bookingPenaltiesTable).set({ penaltyNo }).where(eq(bookingPenaltiesTable.id, id));
+  return penaltyNo;
+}
+
 function bookingOperationsState(details: Record<string, any>) {
   const current = details.bookingOperations;
   return current && typeof current === "object" && !Array.isArray(current)
@@ -31565,6 +31657,13 @@ async function handleBookingOperations(
     "booking_close",
     "booking_cancel",
     "booking_staff_assign",
+    "booking_penalty_view",
+    "booking_penalty_create",
+    "booking_penalty_review",
+    "booking_penalty_edit",
+    "booking_penalty_pay",
+    "booking_penalty_reverse",
+    "booking_penalty_report",
   ]);
   let auth: AdminUser;
   if (isResponse(authResult)) {
@@ -32450,6 +32549,173 @@ async function handleBookingOperations(
         return error("ليس لديك صلاحية اعتماد التلف أو النقص", 403);
       return executeBookingAssetAction(req, auth, reference, input);
     }
+  }
+
+  if (resource === "penalties") {
+    const penaltyId = parts[5] ? int(parts[5]) : 0;
+    const subAction = parts[6] ?? "";
+    const penaltySource = reference.source as BookingPenaltySource;
+
+    // LIST + rollup for the booking.
+    if (method === "GET" && !penaltyId) {
+      if (!can("booking_penalty_view", "booking_finance_view"))
+        return error("ليس لديك صلاحية عرض الغرامات", 403);
+      return json(await getBookingPenaltySummary(penaltySource, reference.id));
+    }
+
+    // CREATE — manager records a penalty (active obligation, unpaid).
+    if (method === "POST" && !penaltyId) {
+      if (!can("booking_penalty_create"))
+        return error("ليس لديك صلاحية إضافة غرامة", 403);
+      const parsed = BookingPenaltyCreateSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("booking-penalties.create", parsed);
+      const d = parsed.data;
+      const [inserted] = await db
+        .insert(bookingPenaltiesTable)
+        .values({
+          penaltyNo: `PEN-NEW-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          sourceType: reference.entityType,
+          sourceId: reference.id,
+          customerId: reference.customerId ?? null,
+          customerName: reference.customerName ?? "",
+          productId: d.productId ?? null,
+          itemLabel: d.itemLabel,
+          damageType: d.damageType,
+          itemCondition: d.itemCondition ?? null,
+          quantity: String(d.quantity),
+          unitValue: String(d.unitValue),
+          penaltyAmount: String(d.penaltyAmount),
+          reason: d.reason,
+          evidence: d.evidence,
+          notes: d.notes ?? null,
+          status: "approved",
+          origin: "manager",
+          createdBy: auth.id,
+          createdByName: (auth as any).fullName || auth.username,
+        })
+        .returning();
+      const penaltyNo = await allocatePenaltyNo(inserted.id);
+      await addEntityTimeline({
+        entityType: reference.entityType,
+        entityId: reference.id,
+        type: "penalty_created",
+        title: "تم تسجيل غرامة/تلفيات",
+        body: `${d.itemLabel} · ${money(d.penaltyAmount)} · ${penaltyDamageLabel(d.damageType)}`,
+        actor: erpActorFromAdmin(auth),
+        metadata: { penaltyId: inserted.id, penaltyNo, amount: d.penaltyAmount, damageType: d.damageType, quantity: d.quantity },
+      });
+      void logAdminActivity(req, "booking_penalty_created", reference.entityType, reference.id, { penaltyId: inserted.id, penaltyNo, amount: d.penaltyAmount });
+      return json({ ok: true, id: inserted.id, penaltyNo });
+    }
+
+    if (penaltyId) {
+      const penalty = await db.query.bookingPenaltiesTable.findFirst({
+        where: and(
+          eq(bookingPenaltiesTable.id, penaltyId),
+          eq(bookingPenaltiesTable.sourceType, reference.entityType),
+          eq(bookingPenaltiesTable.sourceId, reference.id),
+        ),
+      });
+      if (!penalty) return error("الغرامة غير موجودة", 404);
+      const paid = await penaltyApprovedPaid(penaltyId);
+
+      // DETAILS
+      if (method === "GET" && !subAction) {
+        if (!can("booking_penalty_view", "booking_finance_view"))
+          return error("ليس لديك صلاحية عرض الغرامات", 403);
+        return json(penaltyRowToJson(penalty, paid));
+      }
+
+      // EDIT before any payment exists.
+      if (method === "PATCH" && !subAction) {
+        if (!can("booking_penalty_edit"))
+          return error("ليس لديك صلاحية تعديل الغرامة", 403);
+        if (penalty.status === "cancelled") return error("لا يمكن تعديل غرامة ملغاة", 409);
+        if (paid > 0) return error("لا يمكن تعديل غرامة بعد وجود تسديد — استخدم التصحيح/التسوية", 409);
+        const parsed = BookingPenaltyEditSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("booking-penalties.edit", parsed);
+        const d = parsed.data;
+        await db
+          .update(bookingPenaltiesTable)
+          .set({
+            ...(d.damageType !== undefined ? { damageType: d.damageType } : {}),
+            ...(d.productId !== undefined ? { productId: d.productId ?? null } : {}),
+            ...(d.itemLabel !== undefined ? { itemLabel: d.itemLabel } : {}),
+            ...(d.itemCondition !== undefined ? { itemCondition: d.itemCondition ?? null } : {}),
+            ...(d.quantity !== undefined ? { quantity: String(d.quantity) } : {}),
+            ...(d.unitValue !== undefined ? { unitValue: String(d.unitValue) } : {}),
+            ...(d.penaltyAmount !== undefined ? { penaltyAmount: String(d.penaltyAmount) } : {}),
+            ...(d.reason !== undefined ? { reason: d.reason } : {}),
+            ...(d.notes !== undefined ? { notes: d.notes ?? null } : {}),
+            ...(d.evidence !== undefined ? { evidence: d.evidence } : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(bookingPenaltiesTable.id, penaltyId));
+        await addEntityTimeline({
+          entityType: reference.entityType,
+          entityId: reference.id,
+          type: "penalty_edited",
+          title: "تم تعديل الغرامة",
+          body: `${penalty.penaltyNo}${d.editReason ? ` · ${d.editReason}` : ""}`,
+          actor: erpActorFromAdmin(auth),
+          metadata: { penaltyId, before: { amount: Number(penalty.penaltyAmount), quantity: Number(penalty.quantity) }, after: { amount: d.penaltyAmount ?? Number(penalty.penaltyAmount) }, reason: d.editReason ?? null },
+        });
+        void logAdminActivity(req, "booking_penalty_edited", reference.entityType, reference.id, { penaltyId });
+        return json({ ok: true });
+      }
+
+      // REVIEW an employee report (approve → active penalty, or reject).
+      if (method === "POST" && subAction === "review") {
+        if (!can("booking_penalty_review"))
+          return error("ليس لديك صلاحية مراجعة البلاغ", 403);
+        if (penalty.status !== "pending_review")
+          return error("هذا البلاغ ليس بانتظار المراجعة", 409);
+        const parsed = BookingPenaltyReviewSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("booking-penalties.review", parsed);
+        const d = parsed.data;
+        if (d.action === "approve") {
+          await db
+            .update(bookingPenaltiesTable)
+            .set({
+              status: "approved",
+              ...(d.penaltyAmount !== undefined ? { penaltyAmount: String(d.penaltyAmount) } : {}),
+              reviewedBy: auth.id,
+              reviewedByName: (auth as any).fullName || auth.username,
+              reviewedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(bookingPenaltiesTable.id, penaltyId));
+          await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "penalty_approved", title: "تم اعتماد الغرامة", body: `${penalty.penaltyNo} · ${money(d.penaltyAmount ?? Number(penalty.penaltyAmount))}`, actor: erpActorFromAdmin(auth), metadata: { penaltyId, amount: d.penaltyAmount ?? Number(penalty.penaltyAmount) } });
+          void logAdminActivity(req, "booking_penalty_approved", reference.entityType, reference.id, { penaltyId });
+        } else {
+          await db
+            .update(bookingPenaltiesTable)
+            .set({ status: "cancelled", rejectedReason: d.note ?? null, reviewedBy: auth.id, reviewedByName: (auth as any).fullName || auth.username, reviewedAt: new Date(), updatedAt: new Date() })
+            .where(eq(bookingPenaltiesTable.id, penaltyId));
+          await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "penalty_rejected", title: "تم رفض البلاغ", body: `${penalty.penaltyNo}${d.note ? ` · ${d.note}` : ""}`, actor: erpActorFromAdmin(auth), metadata: { penaltyId, reason: d.note ?? null } });
+          void logAdminActivity(req, "booking_penalty_rejected", reference.entityType, reference.id, { penaltyId });
+        }
+        return json({ ok: true });
+      }
+
+      // CANCEL (only before any executed payment — a paid penalty needs a reversal first).
+      if (method === "POST" && subAction === "cancel") {
+        if (!can("booking_penalty_edit", "booking_penalty_review"))
+          return error("ليس لديك صلاحية إلغاء الغرامة", 403);
+        if (penalty.status === "cancelled") return json({ ok: true, alreadyCancelled: true });
+        if (paid > 0) return error("لا يمكن إلغاء غرامة لها تسديد — نفّذ عكس التسديد أولاً", 409);
+        const parsed = BookingPenaltyCancelSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("booking-penalties.cancel", parsed);
+        await db
+          .update(bookingPenaltiesTable)
+          .set({ status: "cancelled", cancelledReason: parsed.data.reason, cancelledBy: auth.id, cancelledAt: new Date(), updatedAt: new Date() })
+          .where(eq(bookingPenaltiesTable.id, penaltyId));
+        await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "penalty_cancelled", title: "تم إلغاء الغرامة", body: `${penalty.penaltyNo} · ${parsed.data.reason}`, actor: erpActorFromAdmin(auth), metadata: { penaltyId, reason: parsed.data.reason } });
+        void logAdminActivity(req, "booking_penalty_cancelled", reference.entityType, reference.id, { penaltyId });
+        return json({ ok: true });
+      }
+    }
+    return error("إجراء الغرامة غير مدعوم", 405);
   }
 
   if (resource === "workflow" && method === "PATCH") {
