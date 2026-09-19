@@ -30507,6 +30507,18 @@ const BookingPenaltyReviewSchema = z.object({
 const BookingPenaltyCancelSchema = z.object({
   reason: z.string().trim().min(3, "سبب الإلغاء مطلوب").max(1000),
 });
+const BookingPenaltyPaymentSchema = z.object({
+  amount: z.coerce.number().positive("مبلغ التسديد يجب أن يكون أكبر من صفر").max(1_000_000_000),
+  paymentMethod: z.enum(["cash", "transfer", "card", "pos", "other"]).default("cash"),
+  transactionDate: z.string().trim().max(40).optional(),
+  note: z.string().trim().max(1000).optional().nullable(),
+  evidence: z.array(z.string().trim().max(2000)).max(20).default([]),
+  idempotencyKey: z.string().trim().max(180).optional(),
+});
+const BookingPenaltyReverseSchema = z.object({
+  transactionId: z.coerce.number().int().positive(),
+  reason: z.string().trim().min(3, "سبب العكس مطلوب").max(1000),
+});
 
 function penaltyRowToJson(row: any, paid: number) {
   const penaltyAmount = Number(row.penaltyAmount ?? 0);
@@ -32713,6 +32725,136 @@ async function handleBookingOperations(
         await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "penalty_cancelled", title: "تم إلغاء الغرامة", body: `${penalty.penaltyNo} · ${parsed.data.reason}`, actor: erpActorFromAdmin(auth), metadata: { penaltyId, reason: parsed.data.reason } });
         void logAdminActivity(req, "booking_penalty_cancelled", reference.entityType, reference.id, { penaltyId });
         return json({ ok: true });
+      }
+
+      // PAY — record a penalty payment through the master cash box (approval-first:
+      // only an EXECUTED payment increases the cash box; overpayment is refused).
+      if (method === "POST" && subAction === "pay") {
+        if (!can("booking_penalty_pay"))
+          return error("ليس لديك صلاحية تسديد الغرامة", 403);
+        if (penalty.status !== "approved")
+          return error(penalty.status === "pending_review" ? "لا يمكن التسديد قبل اعتماد البلاغ" : "لا يمكن تسديد غرامة ملغاة", 409);
+        const parsed = BookingPenaltyPaymentSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("booking-penalties.pay", parsed);
+        const d = parsed.data;
+        const penaltyAmount = money(Number(penalty.penaltyAmount));
+        const remaining = money(Math.max(0, penaltyAmount - paid));
+        if (remaining <= 0) return error("الغرامة مسددة بالكامل", 409);
+        if (money(d.amount) > remaining) return error(`مبلغ التسديد يتجاوز المتبقّي (${remaining})`, 422);
+        const idempotencyKey = d.idempotencyKey?.trim() || `booking-penalty:${penaltyId}:pay:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+        const fActor = financialActor(auth);
+        const pending = await db.transaction((tx) =>
+          createAndExecuteSourceFinancialTransaction(
+            tx,
+            {
+              transactionDate: d.transactionDate || undefined,
+              direction: "revenue",
+              amount: d.amount,
+              department: "penalties",
+              transactionType: "غرامة وتلفيات",
+              description: `تسديد غرامة ${penalty.penaltyNo} · ${penalty.itemLabel}`,
+              paymentMethod: d.paymentMethod,
+              sourceType: "booking_penalty",
+              sourceId: penaltyId,
+              sourceEvent: "penalty_payment",
+              idempotencyKey,
+              customerId: penalty.customerId ?? reference.customerId ?? null,
+              customerName: penalty.customerName || reference.customerName || null,
+              attachments: d.evidence,
+              notes: d.note ?? null,
+            },
+            fActor,
+          ),
+        );
+        let executed = pending.approvalStatus === "executed";
+        if (!executed && canApproveFinancialTransactions(fActor)) {
+          await approveAndExecuteFinancialTransaction(pending.id, fActor, "تسديد غرامة");
+          executed = true;
+        }
+        await addEntityTimeline({
+          entityType: reference.entityType,
+          entityId: reference.id,
+          type: "penalty_payment",
+          title: executed ? "تم تسديد دفعة غرامة" : "طلب تسديد غرامة بانتظار الاعتماد",
+          body: `${penalty.penaltyNo} · ${money(d.amount)}`,
+          actor: erpActorFromAdmin(auth),
+          metadata: { penaltyId, transactionId: pending.id, amount: d.amount, executed },
+        });
+        void logAdminActivity(req, "booking_penalty_payment", reference.entityType, reference.id, { penaltyId, transactionId: pending.id, amount: d.amount, executed });
+        const newPaid = await penaltyApprovedPaid(penaltyId);
+        return json({ ok: true, transactionId: pending.id, executed, pending: !executed, paid: newPaid, remaining: money(Math.max(0, penaltyAmount - newPaid)) });
+      }
+
+      // Payment history for the details drawer (executed + pending + reversals).
+      if (method === "GET" && subAction === "payments") {
+        if (!can("booking_penalty_view", "booking_finance_view"))
+          return error("ليس لديك صلاحية عرض الغرامات", 403);
+        const rows = await db.query.financialTransactionsTable.findMany({
+          where: and(
+            eq(financialTransactionsTable.sourceType, "booking_penalty"),
+            eq(financialTransactionsTable.sourceId, String(penaltyId)),
+          ),
+          orderBy: [desc(financialTransactionsTable.transactionTime)],
+          limit: 200,
+        });
+        return json({
+          payments: rows.map((row) => ({
+            id: row.id,
+            transactionNo: row.transactionNo,
+            amount: Number(row.amount),
+            direction: row.direction,
+            status: row.approvalStatus,
+            paymentMethod: row.paymentMethod,
+            transactionDate: row.transactionDate,
+            transactionTime: row.transactionTime,
+            description: row.description,
+            isReversal: String(row.transactionType ?? "").endsWith("_reversal"),
+          })),
+        });
+      }
+
+      // REVERSE an executed penalty payment (admin only; never deletes the record).
+      if (method === "POST" && subAction === "reverse") {
+        if (!can("booking_penalty_reverse"))
+          return error("ليس لديك صلاحية عكس التسديد", 403);
+        const parsed = BookingPenaltyReverseSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("booking-penalties.reverse", parsed);
+        const d = parsed.data;
+        const txn = await db.query.financialTransactionsTable.findFirst({
+          where: and(
+            eq(financialTransactionsTable.id, d.transactionId),
+            eq(financialTransactionsTable.sourceType, "booking_penalty"),
+            eq(financialTransactionsTable.sourceId, String(penaltyId)),
+          ),
+        });
+        if (!txn) return error("حركة التسديد غير موجودة لهذه الغرامة", 404);
+        if (txn.approvalStatus !== "executed") return error("يمكن عكس التسديدات المنفّذة فقط", 409);
+        await reverseFinancialTransaction(
+          d.transactionId,
+          financialActor(auth),
+          d.reason,
+          undefined,
+          undefined,
+          {
+            idempotencyKey: `booking-penalty:${penaltyId}:reverse:${d.transactionId}`,
+            sourceType: "booking_penalty",
+            sourceId: penaltyId,
+            sourceEvent: "penalty_payment_reversal",
+            description: `عكس تسديد غرامة ${penalty.penaltyNo}: ${d.reason}`,
+          },
+        );
+        await addEntityTimeline({
+          entityType: reference.entityType,
+          entityId: reference.id,
+          type: "penalty_payment_reversed",
+          title: "تم عكس تسديد غرامة",
+          body: `${penalty.penaltyNo} · ${money(Number(txn.amount))} · ${d.reason}`,
+          actor: erpActorFromAdmin(auth),
+          metadata: { penaltyId, transactionId: d.transactionId, amount: Number(txn.amount) },
+        });
+        void logAdminActivity(req, "booking_penalty_payment_reversed", reference.entityType, reference.id, { penaltyId, transactionId: d.transactionId });
+        const newPaid = await penaltyApprovedPaid(penaltyId);
+        return json({ ok: true, paid: newPaid, remaining: money(Math.max(0, money(Number(penalty.penaltyAmount)) - newPaid)) });
       }
     }
     return error("إجراء الغرامة غير مدعوم", 405);
