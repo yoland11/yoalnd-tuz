@@ -613,15 +613,59 @@ function InventoryTab({ base, queryKey }: { base: string; queryKey: unknown[] })
   return <div className="ajn-op-tab-panel"><div className="ajn-op-section-head"><div><Boxes /><span><small>سجل المخزون الأصلي</small><h2>حركات المخزون</h2></span></div><Button variant="outline" asChild><Link href="/admin/inventory">فتح المخزون</Link></Button></div><QueryState loading={query.isLoading} error={query.error} empty={!query.data?.data.length}><div className="ajn-op-table-wrap"><table className="ajn-op-table"><thead><tr><th>رقم الحركة</th><th>التاريخ والوقت</th><th>المنتج</th><th>الكمية</th><th>الاتجاه</th><th>السبب</th><th>الموظف</th></tr></thead><tbody>{query.data?.data.map((row) => <tr key={row.id}><td>#{row.id}</td><td>{readableDate(row.createdAt)}</td><td>#{row.productId ?? "—"}</td><td className={Number(row.quantityChange) < 0 ? "is-danger" : "is-positive"}>{Number(row.quantityChange) > 0 ? "+" : ""}{row.quantityChange}</td><td>{Number(row.quantityChange) < 0 ? "صرف" : "إرجاع"}</td><td>{row.reason}</td><td>{row.createdByName || "النظام"}</td></tr>)}</tbody></table></div></QueryState></div>;
 }
 
+// Portal/department labels for the preparation sheet — mirror booking-center's
+// SERVICE_META keys so each booking service maps to a readable Arabic section.
+const PREP_DEPARTMENT_LABELS: Record<string, string> = {
+  kosha: "قسم الكوشة",
+  photography: "قسم التصوير",
+  sound: "قسم الصوتيات",
+  flowers: "قسم الورد",
+  gifts: "قسم الهدايا والتوزيعات",
+  graduation: "قسم التخرج",
+  led: "قسم شاشات LED",
+  transportation: "قسم النقل",
+  decorations: "قسم الديكورات",
+};
+const PREP_SERVICE_STATUS_LABELS: Record<string, string> = {
+  waiting: "بالانتظار",
+  pending: "بالانتظار",
+  in_progress: "قيد التنفيذ",
+  processing: "قيد التجهيز",
+  preparing: "قيد التجهيز",
+  ready: "جاهز",
+  done: "منجز",
+  completed: "مكتمل",
+  delivered: "مُسلّم",
+  cancelled: "ملغي",
+};
+const prepDepartmentLabel = (key: string) => PREP_DEPARTMENT_LABELS[key] ?? key;
+
 // Consolidated, printable preparation (picking) sheet: every product/material +
 // asset the crew must gather for the booking, with quantities and check boxes.
+// When `department` is set, the header + service summary are scoped to that
+// portal (e.g. الكوشة / المصوّرين); the materials and assets tables stay complete
+// so the crew always sees the full pick list for the booking.
 function buildPreparationListHtml(
   booking: BookingOperationsBooking,
   products: any[],
   assets: any[],
+  department: { key: string; label: string } | null = null,
 ): string {
   const esc = (value: unknown) =>
     String(value ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] ?? c));
+  const iqd = (value: unknown) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? `${Math.round(n).toLocaleString("en-US")} د.ع` : "—";
+  };
+  const services = Array.isArray(booking.services) ? booking.services : [];
+  const summaryRows = (department ? services.filter((s) => s.type === department.key) : services)
+    .map((s) => {
+      const label = prepDepartmentLabel(s.type);
+      const status = PREP_SERVICE_STATUS_LABELS[String(s.status ?? "")] ?? s.status ?? "—";
+      return `<tr><td>${esc(label)}</td><td>${esc(status)}</td><td class="num">${esc(iqd(s.amount))}</td><td>${esc(s.notes ?? "")}</td></tr>`;
+    })
+    .join("");
+  const summarySection = `<h2>ملخص الخدمة${department ? ` — ${esc(department.label)}` : ""}</h2><table><thead><tr><th>القسم / الخدمة</th><th>الحالة</th><th class="num">المبلغ</th><th>ملاحظات</th></tr></thead><tbody>${summaryRows || `<tr><td colspan="4" class="empty">${department ? "لا توجد تفاصيل خدمة مسجّلة لهذا القسم" : "لا توجد خدمات مسجّلة"}</td></tr>`}</tbody></table>`;
   const productRows = products
     .filter((item) => item?.status !== "released")
     .map((item) => {
@@ -636,7 +680,7 @@ function buildPreparationListHtml(
     )
     .join("");
   const empty = (cols: number, label: string) => `<tr><td colspan="${cols}" class="empty">${label}</td></tr>`;
-  return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>قائمة تجهيز ${esc(booking.number)}</title><style>
+  return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>قائمة تجهيز ${department ? `${esc(department.label)} · ` : ""}${esc(booking.number)}</title><style>
     @page { size: A4; margin: 12mm; }
     * { box-sizing: border-box; }
     body { font-family: Cairo, Tahoma, Arial, sans-serif; color: #000; direction: rtl; font-size: 12px; margin: 0; }
@@ -653,10 +697,11 @@ function buildPreparationListHtml(
     .empty { text-align: center; padding: 12px; }
     .sign { display: flex; justify-content: space-between; gap: 30px; margin-top: 34px; }
     .sign div { border-top: 1px dashed #000; padding-top: 6px; width: 30%; text-align: center; }
+    .dept-badge { display: inline-block; margin-top: 6px; border: 1.5px solid #000; border-radius: 6px; padding: 3px 12px; font-weight: 800; font-size: 13px; }
     @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
   </style></head><body>
     <div class="head">
-      <div><h1>AJN — قائمة التجهيز</h1><div class="meta">مجموعة علي جان نهاد · لتنظيم المناسبات</div></div>
+      <div><h1>AJN — قائمة التجهيز</h1><div class="meta">مجموعة علي جان نهاد · لتنظيم المناسبات</div><div class="dept-badge">${department ? esc(department.label) : "كل الأقسام"}</div></div>
       <div class="meta">
         <div><b>رقم الحجز:</b> ${esc(booking.number)}</div>
         <div><b>العميل:</b> ${esc(booking.customerName)}</div>
@@ -665,6 +710,7 @@ function buildPreparationListHtml(
         <div><b>الموقع:</b> ${esc(booking.hall ?? "")}</div>
       </div>
     </div>
+    ${summarySection}
     <h2>المنتجات والمواد</h2>
     <table><thead><tr><th class="chk">✓</th><th>المادة / المنتج</th><th class="num">المطلوب</th><th class="num">المُجهّز</th><th>الباركود</th><th>ملاحظة</th></tr></thead><tbody>${productRows || empty(6, "لا توجد منتجات أو مواد مرتبطة بالحجز")}</tbody></table>
     <h2>الأصول والمعدات</h2>
@@ -677,7 +723,26 @@ function buildPreparationListHtml(
 function PreparationListAction({ base, booking }: { base: string; booking: BookingOperationsBooking }) {
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
-  const openList = async () => {
+  // The portals/departments actually on this booking (deduplicated), each mapped
+  // to a readable Arabic label. "كل الأقسام" always prints the full sheet.
+  const departments = Array.from(
+    new Map(
+      (Array.isArray(booking.services) ? booking.services : [])
+        .filter((service) => service?.type)
+        .map((service) => [service.type, { key: service.type, label: prepDepartmentLabel(service.type) }]),
+    ).values(),
+  );
+  const printFor = async (department: { key: string; label: string } | null) => {
+    // Open the print window synchronously (inside the click gesture) so pop-up
+    // blockers don't stop it, then fill it once the data loads.
+    const popup = window.open("", "_blank", "width=900,height=800");
+    if (!popup) {
+      toast({ title: "تعذر فتح نافذة الطباعة", description: "اسمح بالنوافذ المنبثقة ثم حاول مجدداً.", variant: "destructive" });
+      return;
+    }
+    popup.document.write(
+      `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>قائمة التجهيز</title></head><body style="font-family:Cairo,Tahoma,Arial,sans-serif;direction:rtl;padding:24px;color:#111">جارٍ تحضير قائمة التجهيز…</body></html>`,
+    );
     setLoading(true);
     try {
       const [productsRes, assetsRes] = await Promise.all([
@@ -686,23 +751,33 @@ function PreparationListAction({ base, booking }: { base: string; booking: Booki
       ]);
       const products: any[] = productsRes?.items ?? [];
       const assets: any[] = assetsRes?.assets ?? [];
-      const popup = window.open("", "_blank", "width=900,height=800");
-      if (!popup) {
-        toast({ title: "تعذر فتح نافذة الطباعة", description: "اسمح بالنوافذ المنبثقة ثم حاول مجدداً.", variant: "destructive" });
-        return;
-      }
-      popup.document.write(buildPreparationListHtml(booking, products, assets));
+      popup.document.open();
+      popup.document.write(buildPreparationListHtml(booking, products, assets, department));
       popup.document.close();
     } catch (error: any) {
+      popup.close();
       toast({ title: "تعذر إنشاء قائمة التجهيز", description: error?.message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
   };
   return (
-    <Button variant="outline" onClick={openList} disabled={loading}>
-      <ClipboardCheck /> {loading ? "جارٍ التجهيز…" : "قائمة التجهيز"}
-    </Button>
+    <DropdownMenu dir="rtl">
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" disabled={loading}>
+          <ClipboardCheck /> {loading ? "جارٍ التجهيز…" : "قائمة التجهيز"} <ChevronDown />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => printFor(null)}><ClipboardCheck /> كل الأقسام</DropdownMenuItem>
+        {departments.length > 0 ? <DropdownMenuSeparator /> : null}
+        {departments.map((department) => (
+          <DropdownMenuItem key={department.key} onSelect={() => printFor(department)}>
+            {department.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
