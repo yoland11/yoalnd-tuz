@@ -981,13 +981,15 @@ function PenaltyFormDialog({ base, booking, penalty, onClose, onSaved }: { base:
   const [reason, setReason] = useState<string>(penalty?.reason ?? "");
   const [notes, setNotes] = useState<string>(penalty?.notes ?? "");
   const [evidence, setEvidence] = useState<string[]>(Array.isArray(penalty?.evidence) ? penalty.evidence : []);
+  const [reduceStock, setReduceStock] = useState(false);
   const suggested = Math.max(0, (Number(unitValue) || 0) * (Number(quantity) || 0));
+  const canReduceStock = !isEdit && productId != null && ["loss", "break", "not_returned", "damage"].includes(damageType);
   const mutation = useMutation({
     mutationFn: () => {
       const payload = { damageType, itemLabel: itemLabel.trim(), productId, itemCondition: itemCondition || null, quantity: Number(quantity) || 1, unitValue: Number(unitValue) || 0, penaltyAmount: Number(penaltyAmount) || 0, reason: reason.trim(), notes: notes.trim() || null, evidence };
       return isEdit
         ? adminFetch(`${base}/penalties/${penalty.id}`, { method: "PATCH", body: JSON.stringify({ ...payload, editReason: "تعديل الغرامة" }) })
-        : adminFetch(`${base}/penalties`, { method: "POST", body: JSON.stringify(payload) });
+        : adminFetch(`${base}/penalties`, { method: "POST", body: JSON.stringify({ ...payload, reduceStock: canReduceStock && reduceStock }) });
     },
     onSuccess: () => { toast({ title: isEdit ? "تم تعديل الغرامة" : "تم تسجيل الغرامة" }); onSaved(); },
     onError: (error: any) => toast({ title: "تعذّر الحفظ", description: error?.message, variant: "destructive" }),
@@ -1024,6 +1026,12 @@ function PenaltyFormDialog({ base, booking, penalty, onClose, onSaved }: { base:
           <div><Label>سبب الغرامة *</Label><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="سبب فرض الغرامة" /></div>
           <div><Label>ملاحظات</Label><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="ملاحظات إضافية (اختياري)" /></div>
           <div><Label>صور / مرفقات</Label><EvidencePicker evidence={evidence} onChange={setEvidence} /></div>
+          {canReduceStock ? (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+              <input type="checkbox" checked={reduceStock} onChange={(e) => setReduceStock(e.target.checked)} />
+              خصم الكمية من المخزون بحركة تلف/فقدان موثّقة (مرتبطة بهذا الحجز والغرامة)
+            </label>
+          ) : null}
         </div>
         <DialogFooter className="ajn-op-dialog-actions"><Button variant="outline" onClick={onClose}>إلغاء</Button><Button className="ajn-op-primary" disabled={!valid || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديل" : "تسجيل الغرامة"}</Button></DialogFooter>
       </DialogContent>

@@ -30485,6 +30485,9 @@ const BookingPenaltyCreateSchema = z.object({
   reason: z.string().trim().min(1, "سبب الغرامة مطلوب").max(1000),
   notes: z.string().trim().max(2000).optional().nullable(),
   evidence: z.array(z.string().trim().max(2000)).max(20).default([]),
+  // Opt-in: also record a traceable inventory movement (تلف/فقدان) for the linked
+  // product. Never silent — the manager explicitly ticks this.
+  reduceStock: z.boolean().optional().default(false),
 });
 const BookingPenaltyEditSchema = z.object({
   damageType: z.enum(PENALTY_DAMAGE_TYPES).optional(),
@@ -32575,6 +32578,53 @@ async function handleBookingOperations(
       return json(await getBookingPenaltySummary(penaltySource, reference.id));
     }
 
+    // EMPLOYEE REPORT — a staff member flags damage/loss. It is NOT a financial
+    // penalty yet: it lands as pending_review for a manager to approve or reject.
+    if (method === "POST" && parts[5] === "report") {
+      if (!can("booking_penalty_report", "booking_penalty_create"))
+        return error("ليس لديك صلاحية الإبلاغ عن تلف/فقدان", 403);
+      const parsed = BookingPenaltyCreateSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("booking-penalties.report", parsed);
+      const d = parsed.data;
+      const [inserted] = await db
+        .insert(bookingPenaltiesTable)
+        .values({
+          penaltyNo: `PEN-NEW-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          sourceType: reference.entityType,
+          sourceId: reference.id,
+          customerId: reference.customerId ?? null,
+          customerName: reference.customerName ?? "",
+          productId: d.productId ?? null,
+          itemLabel: d.itemLabel,
+          damageType: d.damageType,
+          itemCondition: d.itemCondition ?? null,
+          quantity: String(d.quantity),
+          unitValue: String(d.unitValue),
+          penaltyAmount: String(d.penaltyAmount || 0),
+          reason: d.reason,
+          evidence: d.evidence,
+          notes: d.notes ?? null,
+          status: "pending_review",
+          origin: "employee_report",
+          employeeReport: { by: auth.id, byName: (auth as any).fullName || auth.username, at: new Date().toISOString() },
+          createdBy: auth.id,
+          createdByName: (auth as any).fullName || auth.username,
+        })
+        .returning();
+      const penaltyNo = await allocatePenaltyNo(inserted.id);
+      await addEntityTimeline({
+        entityType: reference.entityType,
+        entityId: reference.id,
+        type: "penalty_reported",
+        title: "بلاغ تلف/فقدان من الكادر",
+        body: `${d.itemLabel} · ${penaltyDamageLabel(d.damageType)} — بانتظار مراجعة المدير`,
+        actor: erpActorFromAdmin(auth),
+        metadata: { penaltyId: inserted.id, penaltyNo, damageType: d.damageType },
+      });
+      void logAdminActivity(req, "booking_penalty_reported", reference.entityType, reference.id, { penaltyId: inserted.id, penaltyNo });
+      return json({ ok: true, id: inserted.id, penaltyNo, status: "pending_review" });
+    }
+
     // CREATE — manager records a penalty (active obligation, unpaid).
     if (method === "POST" && !penaltyId) {
       if (!can("booking_penalty_create"))
@@ -32607,6 +32657,26 @@ async function handleBookingOperations(
         })
         .returning();
       const penaltyNo = await allocatePenaltyNo(inserted.id);
+      // Optional, opt-in, traceable inventory movement for a lost/broken linked item
+      // (§24). Best-effort: it never blocks the penalty record, and it references the
+      // booking + penalty so the stock change is always auditable.
+      if (d.reduceStock && d.productId && ["loss", "break", "not_returned", "damage"].includes(d.damageType)) {
+        try {
+          const stockId = await adjustProductStock(d.productId, -Math.abs(d.quantity || 1), {
+            reason: `booking_penalty_${d.damageType}`,
+            relatedType: "booking_penalty",
+            relatedId: inserted.id,
+            movementType: d.damageType === "loss" || d.damageType === "not_returned" ? "loss" : "damage",
+            createdBy: auth.id,
+            createdByName: (auth as any).fullName || auth.username,
+            idempotencyKey: `booking-penalty:${inserted.id}:stock`,
+            metadata: { bookingId: reference.id, bookingType: reference.entityType, penaltyId: inserted.id, penaltyNo, damageType: d.damageType, itemLabel: d.itemLabel },
+          });
+          if (stockId) await db.update(bookingPenaltiesTable).set({ inventoryMovementId: stockId }).where(eq(bookingPenaltiesTable.id, inserted.id));
+        } catch {
+          /* stock adjustment is best-effort and must never block recording the penalty */
+        }
+      }
       await addEntityTimeline({
         entityType: reference.entityType,
         entityId: reference.id,

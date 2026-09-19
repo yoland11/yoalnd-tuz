@@ -226,6 +226,13 @@ export const staffApi = {
     adminFetch<{ ok: boolean; productId: number; name?: string }>(`${base}/bookings/${id}/assets${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(payload) }),
   scanAsset: (id: number, payload: { mode: "resolve" | "checkout" | "return"; code: string; problem?: "none" | "broken" | "lost"; note?: string; cost?: number; managerApproval?: boolean }, source: "kosha" | "service" = "kosha") =>
     adminFetch<{ ok: boolean; productId: number; name?: string; assetCode?: string; status?: string; imageUrl?: string | null; checkedOut?: boolean }>(`${base}/bookings/${id}/assets${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(payload) }),
+  // Report damage/loss to management (creates a "بلاغ" for manager review — never a
+  // direct financial penalty). Reuses the canonical booking-operations penalty store.
+  reportDamage: (
+    id: number,
+    payload: { damageType: string; itemLabel: string; quantity: number; itemCondition?: string | null; reason: string; evidence: string[]; productId?: number | null },
+    source: "kosha" | "service" = "kosha",
+  ) => adminFetch<{ ok: boolean; id: number; penaltyNo: string; status: string }>(`/admin/booking-operations/${source}/${id}/penalties/report`, { method: "POST", body: JSON.stringify({ ...payload, unitValue: 0, penaltyAmount: 0 }) }),
   notifications: () => adminFetch<Array<{ id: number; type: string; title: string; body: string | null; href: string | null; isRead: boolean; createdAt: string }>>(`${base}/notifications`),
   markAllRead: () => adminFetch(`${base}/notifications/read-all`, { method: "POST", body: "{}" }),
   reportMe: () => adminFetch<{ executed: number; delivered: number; breakage: number; loss: number; collected: number; collectedCount: number }>(`${base}/reports/me`),

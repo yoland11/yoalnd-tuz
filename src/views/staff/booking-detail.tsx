@@ -32,6 +32,77 @@ function Banner({ kind, children }: { kind: "info" | "error" | "ok"; children: R
   return <div className={`rounded-lg border px-3 py-2 text-sm ${c}`}>{children}</div>;
 }
 
+const DAMAGE_TYPE_OPTIONS: Array<[string, string]> = [
+  ["break", "كسر"], ["loss", "فقدان"], ["damage", "تلف"], ["shortage", "نقص"], ["not_returned", "عدم إرجاع"], ["other", "ضرر آخر"],
+];
+const DAMAGE_CONDITION_OPTIONS: Array<[string, string]> = [
+  ["broken", "مكسور"], ["damaged", "تالف"], ["lost", "مفقود"], ["shortage", "ناقص"], ["unusable", "غير صالح للاستخدام"],
+];
+function DamageReportSection({ id, source }: { id: number; source: "kosha" | "service" }) {
+  const [open, setOpen] = useState(false);
+  const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [damageType, setDamageType] = useState("damage");
+  const [itemLabel, setItemLabel] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  const [condition, setCondition] = useState("");
+  const [reason, setReason] = useState("");
+  const [photos, setPhotos] = useState<string[]>([]);
+  const submit = async () => {
+    if (!itemLabel.trim() || !reason.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      await staffApi.reportDamage(id, { damageType, itemLabel: itemLabel.trim(), quantity: Number(quantity) || 1, itemCondition: condition || null, reason: reason.trim(), evidence: photos }, source);
+      setDone(true); setOpen(false);
+      setItemLabel(""); setReason(""); setPhotos([]); setQuantity("1"); setCondition("");
+    } catch (e: any) { setError(e?.message || "تعذّر إرسال البلاغ"); }
+    finally { setBusy(false); }
+  };
+  const field = "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm";
+  return (
+    <section className="scroll-mt-20 space-y-3 rounded-xl border-2 border-amber-300/50 bg-amber-50/40 p-3 dark:bg-amber-500/5">
+      <div className="flex items-start gap-2">
+        <div className="rounded-lg bg-amber-100 p-2 text-amber-700 dark:bg-amber-500/15"><AlertTriangle className="h-4 w-4" /></div>
+        <div><h2 className="text-sm font-bold">التلفيات والبلاغات</h2><p className="mt-0.5 text-xs text-muted-foreground">إن لاحظت تلفاً أو فقداناً في معدات الحجز، أبلغ الإدارة. لا تُفرض أي غرامة إلا بعد مراجعة المدير.</p></div>
+      </div>
+      {done && <Banner kind="ok">تم إرسال البلاغ إلى الإدارة. سيقوم المدير بمراجعته.</Banner>}
+      {error && <Banner kind="error">{error}</Banner>}
+      {!open ? (
+        <button type="button" onClick={() => { setOpen(true); setDone(false); }} className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-400 bg-background py-2 text-sm font-semibold text-amber-700">
+          <AlertTriangle className="h-4 w-4" /> الإبلاغ عن تلف/فقدان
+        </button>
+      ) : (
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <select value={damageType} onChange={(e) => setDamageType(e.target.value)} className={field}>{DAMAGE_TYPE_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+            <select value={condition} onChange={(e) => setCondition(e.target.value)} className={field}><option value="">حالة العنصر…</option>{DAMAGE_CONDITION_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          </div>
+          <input value={itemLabel} onChange={(e) => setItemLabel(e.target.value)} placeholder="العنصر (سماعة، إضاءة، قطعة ديكور…)" className={field} />
+          <input type="number" min={1} value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="الكمية" className={field} />
+          <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="وصف الحالة" className={`${field} min-h-20`} />
+          <div className="flex flex-wrap items-center gap-2">
+            {photos.map((src, index) => (
+              <div key={index} className="relative h-16 w-16 overflow-hidden rounded-lg border border-border">
+                <img src={src} alt="" className="h-full w-full object-cover" />
+                <button type="button" onClick={() => setPhotos(photos.filter((_, i) => i !== index))} className="absolute right-1 top-1 rounded bg-black/60 p-0.5 text-white"><X className="h-3 w-3" /></button>
+              </div>
+            ))}
+            <label className="flex cursor-pointer items-center gap-1 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+              <Camera className="h-4 w-4" /> صور
+              <input type="file" accept="image/*" multiple className="hidden" onChange={async (e) => { const files = Array.from(e.target.files ?? []); const next = [...photos]; for (const f of files) { if (next.length >= 10) break; try { next.push(await fileToDataUrl(f)); } catch { /* ignore */ } } setPhotos(next); e.target.value = ""; }} />
+            </label>
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setOpen(false)} className="flex-1 rounded-lg border border-border py-2 text-sm">إلغاء</button>
+            <button type="button" disabled={busy || !itemLabel.trim() || !reason.trim()} onClick={submit} className="flex-1 rounded-lg bg-amber-600 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy ? "جارٍ الإرسال…" : "إرسال البلاغ"}</button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Progress({ label, value }: { label: string; value: number }) {
   return <div>
     <div className="mb-1 flex items-center justify-between gap-2"><span className="text-muted-foreground">{label}</span><b className="tabular-nums">{value}%</b></div>
@@ -467,6 +538,9 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
 
         {/* Booking assets — QR checkout / return */}
         <AssetsSection id={id} source={source} />
+
+        {/* Damage / loss report — a بلاغ for the manager, never a direct penalty. */}
+        <DamageReportSection id={id} source={source} />
 
         {panel === "before-install" && <StageMediaPanel title="قبل التركيب" label="ارفع صورة للموقع قبل بدء التركيب" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "executing", note, media, source))} />}
         {panel === "after-install" && <StageMediaPanel title="بعد التركيب" label="ارفع صوراً أو فيديو بعد اكتمال التركيب" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "executed", note, media, source))} />}
