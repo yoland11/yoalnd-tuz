@@ -1,10 +1,17 @@
 import { useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Download, FileText, Loader2 } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDownCircle, ArrowUpCircle, Download, FileText, Loader2, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { downloadElementPdf } from "@/lib/pdf";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+
+const VOUCHER_METHODS: Array<[string, string]> = [
+  ["cash", "نقداً"],
+  ["transfer", "تحويل"],
+  ["card", "بطاقة"],
+];
 
 /**
  * CustomerStatement — the shared كشف حساب العميل view. It renders the canonical
@@ -66,6 +73,60 @@ export function CustomerStatement({
 
   const printRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
+  const queryClient = useQueryClient();
+  const [voucherOpen, setVoucherOpen] = useState(false);
+  const [voucherType, setVoucherType] = useState<"receipt" | "payment">("receipt");
+  const [voucherAmount, setVoucherAmount] = useState("");
+  const [voucherMethod, setVoucherMethod] = useState("cash");
+  const [voucherNote, setVoucherNote] = useState("");
+
+  const submitVoucher = useMutation({
+    mutationFn: () => {
+      const amount = Number(voucherAmount) || 0;
+      const date = new Date().toISOString().slice(0, 10);
+      if (voucherType === "receipt") {
+        // سند قبض — money received from the customer (credits their statement,
+        // adds to the cash box). An unallocated receipt is saved as a customer credit.
+        return adminFetch("/admin/receipt-vouchers", {
+          method: "POST",
+          body: JSON.stringify({
+            date,
+            amount,
+            customerId,
+            accountType: "customer",
+            accountId: customerId,
+            payerName: customerName || "",
+            customerPhone: customerPhone || "",
+            method: voucherMethod,
+            saveRemainderAsCredit: true,
+            notes: voucherNote || undefined,
+          }),
+        });
+      }
+      // سند صرف — money paid out to the customer.
+      return adminFetch("/admin/payment-vouchers", {
+        method: "POST",
+        body: JSON.stringify({
+          date,
+          amount,
+          customerId,
+          payeeName: customerName || "",
+          customerPhone: customerPhone || "",
+          method: voucherMethod,
+          notes: voucherNote || undefined,
+        }),
+      });
+    },
+    onSuccess: () => {
+      toast.success(voucherType === "receipt" ? "تم تسجيل سند القبض" : "تم تسجيل سند الصرف");
+      setVoucherOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["admin", "customer-statement", customerId] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "customer-account"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "receipt-vouchers"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "payment-vouchers"] });
+    },
+    onError: (error) => toast.error(apiErrorMessage(error, "تعذّر حفظ السند")),
+  });
 
   if (!customerId) return null;
 
@@ -73,6 +134,14 @@ export function CustomerStatement({
   const closing = query.data?.statement.closingBalance ?? 0;
   const totalDebit = entries.reduce((sum, entry) => sum + (Number(entry.debit) || 0), 0);
   const totalCredit = entries.reduce((sum, entry) => sum + (Number(entry.credit) || 0), 0);
+
+  const openVoucher = (type: "receipt" | "payment" = "receipt") => {
+    setVoucherType(type);
+    setVoucherAmount(String(Math.max(0, Math.round(closing)) || ""));
+    setVoucherMethod("cash");
+    setVoucherNote("");
+    setVoucherOpen(true);
+  };
 
   const downloadPdf = async () => {
     if (!printRef.current || !entries.length) return;
@@ -98,16 +167,21 @@ export function CustomerStatement({
         <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
           <FileText className="h-4 w-4 text-primary" /> كشف حساب العميل
         </h4>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={downloadPdf}
-          disabled={exporting || !entries.length}
-        >
-          {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-          تحميل PDF
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => openVoucher("receipt")}>
+            <Wallet className="h-3.5 w-3.5" /> قبض / صرف
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={downloadPdf}
+            disabled={exporting || !entries.length}
+          >
+            {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            تحميل PDF
+          </Button>
+        </div>
       </div>
       {query.isLoading ? (
         <p className="text-xs text-muted-foreground">جارٍ تحميل كشف الحساب…</p>
@@ -137,8 +211,15 @@ export function CustomerStatement({
               ))}
             </tbody>
             <tfoot>
-              <tr className="border-t-2 border-border/40 font-bold">
-                <td className="p-2" colSpan={6}>الرصيد الحالي في الذمة</td>
+              <tr
+                className="cursor-pointer border-t-2 border-border/40 font-bold transition hover:bg-primary/5"
+                onClick={() => openVoucher("receipt")}
+                title="اضغط لتسجيل سند قبض أو صرف"
+              >
+                <td className="p-2" colSpan={6}>
+                  الرصيد الحالي في الذمة
+                  <span className="mr-2 text-[11px] font-normal text-primary">(اضغط للقبض/الصرف)</span>
+                </td>
                 <td className="p-2 tabular-nums text-status-danger">{formatCurrency(closing)}</td>
               </tr>
             </tfoot>
@@ -217,6 +298,80 @@ export function CustomerStatement({
           </div>
         </div>
       ) : null}
+
+      <Dialog open={voucherOpen} onOpenChange={(open) => !open && setVoucherOpen(false)}>
+        <DialogContent dir="rtl" className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{voucherType === "receipt" ? "سند قبض" : "سند صرف"}</DialogTitle>
+            <DialogDescription>
+              {voucherType === "receipt" ? "استلام مبلغ من العميل — يُضاف للصندوق ويقيَّد في كشف الحساب." : "صرف مبلغ للعميل — يخرج من الصندوق."}
+              {customerName ? ` · ${customerName}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-1">
+              <button
+                type="button"
+                onClick={() => setVoucherType("receipt")}
+                className={`flex items-center justify-center gap-1 rounded-md px-3 py-2 text-sm font-semibold transition ${voucherType === "receipt" ? "bg-status-success text-white" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                <ArrowDownCircle className="h-4 w-4" /> سند قبض
+              </button>
+              <button
+                type="button"
+                onClick={() => setVoucherType("payment")}
+                className={`flex items-center justify-center gap-1 rounded-md px-3 py-2 text-sm font-semibold transition ${voucherType === "payment" ? "bg-status-danger text-white" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                <ArrowUpCircle className="h-4 w-4" /> سند صرف
+              </button>
+            </div>
+            <div className="rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+              الرصيد الحالي في الذمة: <b className="text-foreground tabular-nums" dir="ltr">{formatCurrency(closing)}</b>
+            </div>
+            <label className="block text-sm">
+              <span className="mb-1 block font-medium">المبلغ (د.ع)</span>
+              <input
+                type="number"
+                min={0}
+                value={voucherAmount}
+                onChange={(event) => setVoucherAmount(event.target.value)}
+                className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm tabular-nums outline-none focus:border-primary"
+                dir="ltr"
+                autoFocus
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block font-medium">طريقة الدفع</span>
+              <select
+                value={voucherMethod}
+                onChange={(event) => setVoucherMethod(event.target.value)}
+                className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+              >
+                {VOUCHER_METHODS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block font-medium">ملاحظة (اختياري)</span>
+              <input
+                value={voucherNote}
+                onChange={(event) => setVoucherNote(event.target.value)}
+                className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                placeholder="بيان السند"
+              />
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setVoucherOpen(false)}>إلغاء</Button>
+            <Button
+              disabled={submitVoucher.isPending || !(Number(voucherAmount) > 0)}
+              onClick={() => submitVoucher.mutate()}
+              className={voucherType === "receipt" ? "bg-status-success text-white hover:bg-status-success/90" : "bg-status-danger text-white hover:bg-status-danger/90"}
+            >
+              {submitVoucher.isPending ? "جارٍ الحفظ…" : voucherType === "receipt" ? "تسجيل القبض" : "تسجيل الصرف"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
