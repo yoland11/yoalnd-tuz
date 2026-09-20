@@ -30543,6 +30543,7 @@ const PreparationItemUpdateSchema = z.object({
   priority: z.enum(["normal", "important", "urgent"]).optional(),
   deadline: z.string().trim().max(40).nullable().optional(),
   note: z.string().trim().max(2000).nullable().optional(),
+  purchaseRequested: z.boolean().optional(),
 });
 const PreparationBulkSchema = z.object({
   keys: z.array(z.string().trim().min(1).max(120)).min(1).max(300),
@@ -30561,7 +30562,7 @@ const PreparationBulkSchema = z.object({
 async function applyPreparationPatch(
   reference: BookingOperationsReference,
   productMeta: Record<string, any>,
-  patch: { key: string; itemName?: string; department?: string; status?: string; assigneeId?: number | null; assigneeName?: string | null; priority?: string; deadline?: string | null; note?: string | null },
+  patch: { key: string; itemName?: string; department?: string; status?: string; assigneeId?: number | null; assigneeName?: string | null; priority?: string; deadline?: string | null; note?: string | null; purchaseRequested?: boolean },
   auth: AdminUser,
 ): Promise<Record<string, any>> {
   const meta = { ...productMeta };
@@ -30571,6 +30572,10 @@ async function applyPreparationPatch(
   if (patch.priority !== undefined) prep.priority = patch.priority;
   if (patch.deadline !== undefined) prep.deadline = patch.deadline;
   if (patch.note !== undefined) prep.note = patch.note;
+  if (patch.purchaseRequested !== undefined) {
+    prep.purchaseRequested = patch.purchaseRequested;
+    prep.purchaseRequestedAt = patch.purchaseRequested ? new Date().toISOString() : null;
+  }
   if (patch.assigneeId !== undefined) {
     prep.assigneeId = patch.assigneeId ?? null;
     prep.assigneeName = patch.assigneeId ? (patch.assigneeName ?? null) : null;

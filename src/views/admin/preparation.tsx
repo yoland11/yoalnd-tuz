@@ -18,7 +18,7 @@ type PrepList = { cards: PrepCard[]; summary: { bookings: number; totalItems: nu
 type PrepItem = {
   key: string; kind: "product" | "asset"; productId: number | null; name: string; sku: string | null; department: string;
   required: number; totalStock: number; reservedByOthers: number; available: number; shortfall: number; status: string;
-  assigneeName: string | null; priority: string; deadline: string | null; note: string | null; evidenceCount: number;
+  assigneeName: string | null; priority: string; deadline: string | null; note: string | null; purchaseRequested: boolean; evidenceCount: number;
 };
 type PrepDetail = { source: string; id: number; items: PrepItem[]; rollup: Rollup };
 
@@ -130,7 +130,16 @@ function PreparationDetail({ card }: { card: PrepCard }) {
                     <td className="p-2"><div className="font-medium text-foreground">{item.name}</div>{item.sku ? <div className="font-mono text-[10px] text-muted-foreground" dir="ltr">{item.sku}</div> : null}</td>
                     <td className="p-2 tabular-nums">{item.required}</td>
                     <td className="p-2 tabular-nums">{item.available}<span className="text-muted-foreground"> / {item.totalStock}</span></td>
-                    <td className="p-2"><StatusBadge status={item.status} />{item.shortfall > 0 ? <span className="mr-1 text-[11px] text-status-danger">({item.shortfall})</span> : null}</td>
+                    <td className="p-2">
+                      <StatusBadge status={item.status} />{item.shortfall > 0 ? <span className="mr-1 text-[11px] text-status-danger">({item.shortfall})</span> : null}
+                      {(item.status === "needs_purchase" || item.status === "shortage") ? (
+                        item.purchaseRequested ? (
+                          <div className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700"><ShoppingCart className="h-2.5 w-2.5" /> طلب شراء قيد المعالجة</div>
+                        ) : (
+                          <button type="button" disabled={update.isPending} onClick={() => { update.mutate({ key: item.key, itemName: item.name, purchaseRequested: true }); window.open("/admin/inventory-alerts", "_blank", "noopener"); }} className="mt-1 flex items-center gap-1 rounded-md border border-orange-400 px-2 py-0.5 text-[11px] font-semibold text-orange-700"><ShoppingCart className="h-3 w-3" /> طلب شراء</button>
+                        )
+                      ) : null}
+                    </td>
                     <td className="p-2">
                       <select value={MANUAL_STATUS_OPTIONS.some(([v]) => v === item.status) ? item.status : ""} className={cell} disabled={update.isPending} onChange={(e) => e.target.value && update.mutate({ key: item.key, itemName: item.name, department: item.department, status: e.target.value })}>
                         <option value="">تلقائي</option>{MANUAL_STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}

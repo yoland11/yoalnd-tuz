@@ -49,6 +49,7 @@ export type PreparationItem = {
   priority: PreparationPriority;
   deadline: string | null;
   note: string | null;
+  purchaseRequested: boolean;
   evidenceCount: number;
 };
 
@@ -139,6 +140,7 @@ function readPrep(meta: Record<string, any>, key: string) {
     priority: (["normal", "important", "urgent"].includes(prep.priority) ? prep.priority : "normal") as PreparationPriority,
     deadline: prep.deadline ? String(prep.deadline) : null,
     note: prep.note ? String(prep.note) : null,
+    purchaseRequested: Boolean(prep.purchaseRequested),
   };
 }
 
@@ -214,6 +216,7 @@ export async function getBookingPreparationSummary(
       priority: prep.priority,
       deadline: prep.deadline,
       note: prep.note,
+      purchaseRequested: prep.purchaseRequested,
       evidenceCount: Array.isArray(productMeta?.[key]?.prep?.evidence) ? productMeta[key].prep.evidence.length : 0,
     };
   });
@@ -255,6 +258,7 @@ export async function getBookingPreparationSummary(
       priority: prep.priority,
       deadline: prep.deadline,
       note: prep.note,
+      purchaseRequested: prep.purchaseRequested,
       evidenceCount: 0,
     });
   }
