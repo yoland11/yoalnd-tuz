@@ -233,6 +233,9 @@ export const staffApi = {
     payload: { damageType: string; itemLabel: string; quantity: number; itemCondition?: string | null; reason: string; evidence: string[]; productId?: number | null },
     source: "kosha" | "service" = "kosha",
   ) => adminFetch<{ ok: boolean; id: number; penaltyNo: string; status: string }>(`/admin/booking-operations/${source}/${id}/penalties/report`, { method: "POST", body: JSON.stringify({ ...payload, unitValue: 0, penaltyAmount: 0 }) }),
+  // تجهيزاتي اليوم — the employee's assigned preparation tasks + a "تم التجهيز" action.
+  myPreparation: () => adminFetch<{ tasks: Array<{ taskId: number; title: string; priority: string; dueAt: string | null; source: "kosha" | "service"; bookingId: number; bookingNumber: string; customerName: string; eventDate: string | null }> }>(`${base}/preparation`),
+  completePreparation: (taskId: number) => adminFetch<{ ok: boolean }>(`${base}/preparation`, { method: "POST", body: JSON.stringify({ taskId }) }),
   notifications: () => adminFetch<Array<{ id: number; type: string; title: string; body: string | null; href: string | null; isRead: boolean; createdAt: string }>>(`${base}/notifications`),
   markAllRead: () => adminFetch(`${base}/notifications/read-all`, { method: "POST", body: "{}" }),
   reportMe: () => adminFetch<{ executed: number; delivered: number; breakage: number; loss: number; collected: number; collectedCount: number }>(`${base}/reports/me`),

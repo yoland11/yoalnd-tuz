@@ -64760,10 +64760,76 @@ async function handleStaffPortal(
   const koshaPortalAuth = await requirePortalAccess(req, "koshas", "kosha");
   if (isResponse(koshaPortalAuth)) return koshaPortalAuth;
   const method = req.method;
-  const resource = parts[2]; // dashboard | bookings | notifications | reports | payment-requests
+  const resource = parts[2]; // dashboard | bookings | notifications | reports | payment-requests | preparation
   const id = parts[3] ? int(parts[3]) : null;
   const action = parts[4];
   await ensureKoshaStaffTables();
+
+  // ── تجهيزاتي اليوم — the employee's assigned preparation tasks (from the shared
+  // `tasks`), plus a "تم التجهيز" action that completes the task AND the linked
+  // preparation item. No money, no stock writes.
+  if (resource === "preparation") {
+    const auth = await requirePermission(req, "koshas");
+    if (isResponse(auth)) return auth;
+    const myId = auth.id;
+    if (method === "GET") {
+      const taskRows = await db.execute(sql`
+        SELECT id, title, priority, due_at::text AS due_at, status, related_type, related_id
+        FROM tasks
+        WHERE task_type = 'preparation' AND archived_at IS NULL AND status <> 'completed'
+          AND assigned_staff_ids @> ${JSON.stringify([myId])}::jsonb
+        ORDER BY (priority = 'urgent') DESC, due_at ASC NULLS LAST, id DESC
+        LIMIT 500
+      `);
+      const rows = (taskRows.rows ?? []) as any[];
+      const serviceIds = rows.filter((r) => r.related_type === "service_order").map((r) => Number(r.related_id));
+      const koshaIds = rows.filter((r) => r.related_type === "kosha_booking").map((r) => Number(r.related_id));
+      const [svc, ksh] = await Promise.all([
+        serviceIds.length ? db.execute(sql`SELECT id, coalesce(tracking_code,'SRV-'||id) AS number, customer_name, event_date FROM service_orders WHERE id IN (${sql.join(serviceIds.map((i) => sql`${i}`), sql`,`)})`) : Promise.resolve({ rows: [] } as any),
+        koshaIds.length ? db.execute(sql`SELECT id, coalesce(tracking_code,'KOSHA-'||id) AS number, customer_name, event_date FROM kosha_bookings WHERE id IN (${sql.join(koshaIds.map((i) => sql`${i}`), sql`,`)})`) : Promise.resolve({ rows: [] } as any),
+      ]);
+      const info = new Map<string, any>();
+      for (const r of (svc.rows ?? []) as any[]) info.set(`service_order:${Number(r.id)}`, r);
+      for (const r of (ksh.rows ?? []) as any[]) info.set(`kosha_booking:${Number(r.id)}`, r);
+      return json({
+        tasks: rows.map((r) => {
+          const b = info.get(`${r.related_type}:${Number(r.related_id)}`);
+          return {
+            taskId: Number(r.id),
+            title: r.title,
+            priority: r.priority ?? "normal",
+            dueAt: r.due_at ?? null,
+            source: r.related_type === "kosha_booking" ? "kosha" : "service",
+            bookingId: Number(r.related_id),
+            bookingNumber: b?.number ?? `#${r.related_id}`,
+            customerName: b?.customer_name ?? "",
+            eventDate: b?.event_date ?? null,
+          };
+        }),
+      });
+    }
+    if (method === "POST") {
+      const parsed = z.object({ taskId: z.coerce.number().int().positive() }).safeParse(await body(req));
+      if (!parsed.success) return validationError("staff.preparation.done", parsed);
+      const task = await db.query.tasksTable.findFirst({ where: eq(tasksTable.id, parsed.data.taskId) });
+      if (!task || task.taskType !== "preparation") return error("المهمة غير موجودة", 404);
+      const mine = Array.isArray(task.assignedStaffIds) && (task.assignedStaffIds as number[]).includes(myId);
+      if (!mine && auth.role !== "admin" && auth.role !== "manager") return error("هذه المهمة غير مسندة إليك", 403);
+      await db.update(tasksTable).set({ status: "completed", completedBy: myId, completedAt: new Date(), updatedAt: new Date() }).where(eq(tasksTable.id, task.id));
+      const source = (task.relatedType === "kosha_booking" ? "kosha" : "service") as string;
+      const reference = task.relatedId ? await loadBookingOperationsReference(source, task.relatedId) : null;
+      if (reference) {
+        const meta = { ...((reference.operations.productMeta ?? {}) as Record<string, any>) };
+        for (const [k, v] of Object.entries(meta)) {
+          if ((v as any)?.prep?.taskId === task.id) meta[k] = { ...(v as any), prep: { ...(v as any).prep, status: "completed", completedAt: new Date().toISOString() } };
+        }
+        await saveBookingOperations(reference, { ...reference.operations, productMeta: meta });
+        await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "preparation_item_done", title: "تم تجهيز عنصر (الكادر)", body: task.title, actor: erpActorFromAdmin(auth), metadata: { taskId: task.id, staffId: myId } });
+      }
+      return json({ ok: true });
+    }
+    return error("إجراء التجهيز غير مدعوم", 405);
+  }
 
   // ── Field operations: checklist, stage log, damage reports, item scans ──
   // Layered on top of the existing booking; `kosha_bookings.execution_stage` stays the

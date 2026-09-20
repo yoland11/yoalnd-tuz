@@ -183,6 +183,7 @@ function Dashboard() {
           </button>
         ))}
       </div>
+      <MyPreparation />
       {data.todayBookings.length > 0 && (
         <section>
           <h2 className="mb-2 text-sm font-bold">حجوزات اليوم</h2>
@@ -199,6 +200,42 @@ function Dashboard() {
         <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">لا توجد حجوزات اليوم أو غدًا</div>
       )}
     </div>
+  );
+}
+
+function MyPreparation() {
+  const [tasks, setTasks] = useState<Awaited<ReturnType<typeof staffApi.myPreparation>>["tasks"] | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+  const load = useCallback(() => {
+    staffApi.myPreparation().then((r) => setTasks(r.tasks ?? [])).catch(() => setTasks([]));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!tasks || !tasks.length) return null;
+  const done = async (taskId: number) => {
+    setBusy(taskId);
+    try { await staffApi.completePreparation(taskId); load(); } catch { /* ignore */ } finally { setBusy(null); }
+  };
+  return (
+    <section>
+      <h2 className="mb-2 flex items-center gap-1 text-sm font-bold"><ClipboardList className="h-4 w-4 text-primary" /> تجهيزاتي اليوم <span className="text-muted-foreground">({tasks.length})</span></h2>
+      <div className="space-y-2">
+        {tasks.map((t) => (
+          <div key={t.taskId} className="rounded-xl border-2 border-primary/20 bg-card p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="font-bold text-foreground">{t.title}</div>
+                <div className="mt-0.5 text-xs text-muted-foreground" dir="ltr">{t.bookingNumber}</div>
+                <div className="text-xs text-muted-foreground">{t.customerName}{t.eventDate ? ` · ${t.eventDate.slice(0, 10)}` : ""}</div>
+              </div>
+              {t.priority === "urgent" ? <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700">🔴 عاجل</span> : t.priority === "important" ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700">🟠 مهم</span> : null}
+            </div>
+            <button disabled={busy === t.taskId} onClick={() => done(t.taskId)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-status-success py-2.5 text-sm font-bold text-white disabled:opacity-50">
+              <CheckCircle2 className="h-4 w-4" /> {busy === t.taskId ? "جارٍ…" : "تم التجهيز"}
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
