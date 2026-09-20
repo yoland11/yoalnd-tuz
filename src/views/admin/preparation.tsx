@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Link } from "wouter";
 import {
   AlertTriangle, CalendarDays, CheckCircle2, ChevronDown, ClipboardCheck, ClipboardList,
-  Loader2, Package, PackageSearch, Search, ShoppingCart, UserRound,
+  Loader2, Package, PackageSearch, Printer, Search, ShoppingCart, UserRound,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
 
@@ -55,39 +57,90 @@ const toneColor: Record<string, string> = { green: "#059669", amber: "#d97706", 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const addDays = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 
+const MANUAL_STATUS_OPTIONS: Array<[string, string]> = [
+  ["preparing", "قيد التجهيز"],
+  ["ready", "جاهز"],
+  ["completed", "مكتمل"],
+];
+
 function PreparationDetail({ card }: { card: PrepCard }) {
+  const queryClient = useQueryClient();
+  const base = `/admin/booking-operations/${card.source}/${card.id}`;
   const detail = useQuery<PrepDetail>({
     queryKey: ["admin", "preparation-detail", card.source, card.id],
-    queryFn: () => adminFetch(`/admin/booking-operations/${card.source}/${card.id}/preparation`),
-    staleTime: 15_000,
+    queryFn: () => adminFetch(`${base}/preparation`),
+    staleTime: 10_000,
   });
+  const staff = useQuery<{ eligibleStaff: Array<{ id: number; name: string }> }>({
+    queryKey: ["admin", "preparation-staff", card.source, card.id],
+    queryFn: () => adminFetch(`${base}/staff-assignment`).catch(() => ({ eligibleStaff: [] })),
+    staleTime: 60_000,
+  });
+  const staffList = staff.data?.eligibleStaff ?? [];
+  const staffName = (id: number) => staffList.find((s) => s.id === id)?.name ?? "";
+  const [selected, setSelected] = useState<string[]>([]);
+
+  const refresh = () => { void detail.refetch(); queryClient.invalidateQueries({ queryKey: ["admin", "preparation"] }); };
+  const update = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => adminFetch(`${base}/preparation`, { method: "PATCH", body: JSON.stringify(payload) }),
+    onSuccess: refresh,
+    onError: () => toast.error("تعذّر تحديث العنصر"),
+  });
+  const bulk = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => adminFetch(`${base}/preparation`, { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess: () => { setSelected([]); refresh(); toast.success("تم التحديث الجماعي"); },
+    onError: () => toast.error("تعذّر التحديث الجماعي"),
+  });
+
   if (detail.isLoading) return <div className="p-3"><Skeleton className="h-24 w-full" /></div>;
   if (detail.isError) return <p className="p-3 text-xs text-status-danger">تعذّر تحميل عناصر التجهيز.</p>;
   const items = detail.data?.items ?? [];
   if (!items.length) return <p className="p-3 text-xs text-muted-foreground">لا توجد عناصر تجهيز مرتبطة بهذا الحجز.</p>;
-  // Separate by department (§3).
   const groups = new Map<string, PrepItem[]>();
   for (const item of items) { if (!groups.has(item.department)) groups.set(item.department, []); groups.get(item.department)!.push(item); }
+  const toggle = (key: string) => setSelected((current) => current.includes(key) ? current.filter((k) => k !== key) : [...current, key]);
+  const cell = "rounded-md border border-border/40 bg-background px-2 py-1 text-xs";
+
   return (
     <div className="space-y-3 border-t border-border/30 bg-background/30 p-3">
+      {selected.length ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+          <strong>تم تحديد {selected.length}</strong>
+          <select defaultValue="" className={cell} disabled={bulk.isPending} onChange={(e) => { if (e.target.value) bulk.mutate({ keys: selected, status: e.target.value }); e.target.value = ""; }}>
+            <option value="">تغيير الحالة…</option>{MANUAL_STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select defaultValue="" className={cell} disabled={bulk.isPending || !staffList.length} onChange={(e) => { const id = Number(e.target.value); if (id) bulk.mutate({ keys: selected, assigneeId: id, assigneeName: staffName(id) }); e.target.value = ""; }}>
+            <option value="">تعيين موظف…</option>{staffList.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <Button size="sm" variant="ghost" onClick={() => setSelected([])}>إلغاء التحديد</Button>
+        </div>
+      ) : null}
       {[...groups.entries()].map(([dept, deptItems]) => (
         <div key={dept}>
           <div className="mb-1 flex items-center gap-2 text-xs font-bold text-primary"><Package className="h-3.5 w-3.5" /> {deptLabel(dept)} <span className="text-muted-foreground">({deptItems.length})</span></div>
           <div className="overflow-x-auto rounded-lg border border-border/30">
-            <table className="w-full min-w-[640px] text-right text-xs">
+            <table className="w-full min-w-[760px] text-right text-xs">
               <thead className="bg-muted/40 text-muted-foreground">
-                <tr>{["العنصر", "مطلوب", "متاح", "محجوز لآخرين", "الحالة", "المسؤول", "ملاحظات"].map((h) => <th key={h} className="p-2 font-semibold">{h}</th>)}</tr>
+                <tr><th className="w-8 p-2"></th>{["العنصر", "مطلوب", "متاح", "الحالة", "الحالة يدويًا", "المسؤول"].map((h) => <th key={h} className="p-2 font-semibold">{h}</th>)}</tr>
               </thead>
               <tbody>
                 {deptItems.map((item) => (
                   <tr key={item.key} className="border-t border-border/20">
+                    <td className="p-2"><input type="checkbox" checked={selected.includes(item.key)} onChange={() => toggle(item.key)} aria-label={`تحديد ${item.name}`} /></td>
                     <td className="p-2"><div className="font-medium text-foreground">{item.name}</div>{item.sku ? <div className="font-mono text-[10px] text-muted-foreground" dir="ltr">{item.sku}</div> : null}</td>
                     <td className="p-2 tabular-nums">{item.required}</td>
-                    <td className="p-2 tabular-nums">{item.available}</td>
-                    <td className="p-2 tabular-nums text-muted-foreground">{item.reservedByOthers}</td>
+                    <td className="p-2 tabular-nums">{item.available}<span className="text-muted-foreground"> / {item.totalStock}</span></td>
                     <td className="p-2"><StatusBadge status={item.status} />{item.shortfall > 0 ? <span className="mr-1 text-[11px] text-status-danger">({item.shortfall})</span> : null}</td>
-                    <td className="p-2">{item.assigneeName || "—"}</td>
-                    <td className="p-2 text-muted-foreground">{item.note || "—"}</td>
+                    <td className="p-2">
+                      <select value={MANUAL_STATUS_OPTIONS.some(([v]) => v === item.status) ? item.status : ""} className={cell} disabled={update.isPending} onChange={(e) => e.target.value && update.mutate({ key: item.key, itemName: item.name, department: item.department, status: e.target.value })}>
+                        <option value="">تلقائي</option>{MANUAL_STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                      </select>
+                    </td>
+                    <td className="p-2">
+                      <select value={item.assigneeName && staffList.find((s) => s.name === item.assigneeName)?.id ? String(staffList.find((s) => s.name === item.assigneeName)!.id) : ""} className={cell} disabled={update.isPending || !staffList.length} onChange={(e) => { const id = Number(e.target.value); update.mutate({ key: item.key, itemName: item.name, department: item.department, assigneeId: id || null, assigneeName: id ? staffName(id) : null }); }}>
+                        <option value="">{item.assigneeName || "بدون"}</option>{staffList.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -127,6 +180,44 @@ export default function PreparationPage() {
       return true;
     });
   }, [cards, search, department, quick]);
+
+  const [printingId, setPrintingId] = useState<string | null>(null);
+  async function printCard(card: PrepCard) {
+    const cardKey = `${card.source}-${card.id}`;
+    setPrintingId(cardKey);
+    try {
+      const detail = await adminFetch<PrepDetail>(`/admin/booking-operations/${card.source}/${card.id}/preparation`);
+      const items = detail.items ?? [];
+      const columns: ReportColumn<PrepItem>[] = [
+        { key: "department", header: "القسم", width: 12, priority: "high", value: (r) => deptLabel(r.department) },
+        { key: "name", header: "العنصر", width: 20, priority: "high" },
+        { key: "required", header: "الكمية", width: 8, kind: "number", align: "center", priority: "high" },
+        { key: "available", header: "المتاح", width: 8, kind: "number", align: "center", priority: "medium" },
+        { key: "status", header: "الحالة", width: 12, align: "center", priority: "high", value: (r) => STATUS_META[r.status]?.label ?? r.status },
+        { key: "assigneeName", header: "المسؤول", width: 12, priority: "medium", value: (r) => r.assigneeName || "—" },
+        { key: "note", header: "ملاحظات", width: 16, priority: "low", value: (r) => r.note || "" },
+      ];
+      const rollup = detail.rollup;
+      await exportReport<PrepItem>({
+        options: {
+          title: "قائمة تجهيز الحجز",
+          subtitle: `${card.number} · ${card.customerName}${card.location ? ` · ${card.location}` : ""}`,
+          orientation: "landscape",
+          meta: [{ label: "تاريخ المناسبة", value: card.eventDate?.slice(0, 10) || "—" }],
+          footerNote: `العناصر: ${rollup.total} · جاهز: ${rollup.ready + rollup.completed} · ناقص: ${rollup.shortage} · يحتاج شراء: ${rollup.needsPurchase} · قائمة تجهيز · نظام AJN`,
+          emptyText: "لا توجد عناصر تجهيز مرتبطة بهذا الحجز",
+        },
+        columns,
+        rows: items,
+        filename: `قائمة-تجهيز-${card.number}.pdf`,
+        mode: "print",
+      });
+    } catch {
+      toast.error("تعذّرت الطباعة");
+    } finally {
+      setPrintingId(null);
+    }
+  }
 
   const cardsList: Array<[string, string | number, string, typeof Package]> = [
     ["إجمالي التجهيزات", summary?.totalItems ?? 0, "#111827", ClipboardList],
@@ -199,7 +290,8 @@ export default function PreparationPage() {
                 <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/30 p-3">
                   <Button size="sm" variant="outline" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><ChevronDown className={`h-3.5 w-3.5 transition ${expanded === cardKey ? "rotate-180" : ""}`} /> عرض التجهيز</Button>
                   <Button size="sm" variant="ghost" asChild><Link href={`/admin/bookings/${card.source}/${card.id}`}>فتح الحجز</Link></Button>
-                  <Button size="sm" variant="ghost" className="text-muted-foreground" asChild><Link href={`/admin/bookings/${card.source}/${card.id}?tab=products`}><UserRound className="h-3.5 w-3.5" /> تعيين موظف</Link></Button>
+                  <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><UserRound className="h-3.5 w-3.5" /> تعيين موظف</Button>
+                  <Button size="sm" variant="ghost" className="text-muted-foreground" disabled={printingId === cardKey} onClick={() => printCard(card)}><Printer className="h-3.5 w-3.5" /> طباعة</Button>
                 </div>
                 {expanded === cardKey ? <PreparationDetail card={card} /> : null}
               </article>

@@ -30532,6 +30532,81 @@ const BookingPenaltyReverseSchema = z.object({
   reason: z.string().trim().min(3, "سبب العكس مطلوب").max(1000),
 });
 
+const PREPARATION_ITEM_STATUSES = ["ready", "preparing", "completed", "shortage", "needs_purchase", "reserved_elsewhere", "damaged", "lost", "unavailable"] as const;
+const PreparationItemUpdateSchema = z.object({
+  key: z.string().trim().min(1).max(120),
+  itemName: z.string().trim().max(300).optional(),
+  department: z.string().trim().max(40).optional(),
+  status: z.enum(PREPARATION_ITEM_STATUSES).optional(),
+  assigneeId: z.coerce.number().int().positive().nullable().optional(),
+  assigneeName: z.string().trim().max(200).nullable().optional(),
+  priority: z.enum(["normal", "important", "urgent"]).optional(),
+  deadline: z.string().trim().max(40).nullable().optional(),
+  note: z.string().trim().max(2000).nullable().optional(),
+});
+const PreparationBulkSchema = z.object({
+  keys: z.array(z.string().trim().min(1).max(120)).min(1).max(300),
+  status: z.enum(PREPARATION_ITEM_STATUSES).optional(),
+  assigneeId: z.coerce.number().int().positive().nullable().optional(),
+  assigneeName: z.string().trim().max(200).nullable().optional(),
+  priority: z.enum(["normal", "important", "urgent"]).optional(),
+});
+
+/**
+ * Apply a preparation-state patch to ONE item inside bookingOperations.productMeta
+ * (additive jsonb), and upsert its staff task so an assignment shows in the Staff
+ * Portal. Returns the next productMeta (caller saves once). Never touches stock,
+ * money, or the booking total.
+ */
+async function applyPreparationPatch(
+  reference: BookingOperationsReference,
+  productMeta: Record<string, any>,
+  patch: { key: string; itemName?: string; department?: string; status?: string; assigneeId?: number | null; assigneeName?: string | null; priority?: string; deadline?: string | null; note?: string | null },
+  auth: AdminUser,
+): Promise<Record<string, any>> {
+  const meta = { ...productMeta };
+  const existing = (meta[patch.key] ?? {}) as Record<string, any>;
+  const prep = { ...((existing.prep ?? {}) as Record<string, any>) };
+  if (patch.status !== undefined) prep.status = patch.status;
+  if (patch.priority !== undefined) prep.priority = patch.priority;
+  if (patch.deadline !== undefined) prep.deadline = patch.deadline;
+  if (patch.note !== undefined) prep.note = patch.note;
+  if (patch.assigneeId !== undefined) {
+    prep.assigneeId = patch.assigneeId ?? null;
+    prep.assigneeName = patch.assigneeId ? (patch.assigneeName ?? null) : null;
+    // Upsert the staff task so it appears under the employee's "مهامي".
+    if (patch.assigneeId) {
+      const title = `تجهيز: ${patch.itemName || patch.key}`;
+      const dueAt = patch.deadline ? new Date(patch.deadline) : null;
+      const priority = patch.priority ?? prep.priority ?? "normal";
+      if (prep.taskId) {
+        await db.update(tasksTable).set({ assignedStaffIds: [patch.assigneeId], title, dueAt: dueAt ?? undefined, priority, updatedAt: new Date() }).where(eq(tasksTable.id, Number(prep.taskId)));
+      } else {
+        const [task] = await db.insert(tasksTable).values({
+          title,
+          taskType: "preparation",
+          department: patch.department ?? null,
+          priority,
+          status: "new",
+          assignedStaffIds: [patch.assigneeId],
+          relatedType: reference.entityType,
+          relatedId: reference.id,
+          dueAt: dueAt ?? undefined,
+          createdBy: auth.id,
+        }).returning();
+        prep.taskId = task.id;
+      }
+    } else if (prep.taskId) {
+      // Unassigned: archive the task (never hard-delete).
+      await db.update(tasksTable).set({ archivedAt: new Date(), updatedAt: new Date() }).where(eq(tasksTable.id, Number(prep.taskId)));
+      prep.taskId = null;
+    }
+  }
+  prep.updatedAt = new Date().toISOString();
+  meta[patch.key] = { ...existing, prep };
+  return meta;
+}
+
 function penaltyRowToJson(row: any, paid: number) {
   const penaltyAmount = Number(row.penaltyAmount ?? 0);
   return {
@@ -32575,11 +32650,58 @@ async function handleBookingOperations(
     }
   }
 
-  if (resource === "preparation" && method === "GET") {
-    if (!can("preparation_view", "booking_operations_view", "booking_finance_view"))
-      return error("ليس لديك صلاحية عرض التجهيز", 403);
-    const summary = await getBookingPreparationSummary(reference.source as PreparationSource, reference.id);
-    return json(summary ?? { source: reference.source, id: reference.id, items: [], rollup: { total: 0, ready: 0, preparing: 0, shortage: 0, needsPurchase: 0, completed: 0, progress: 0 } });
+  if (resource === "preparation") {
+    if (method === "GET") {
+      if (!can("preparation_view", "booking_operations_view", "booking_finance_view"))
+        return error("ليس لديك صلاحية عرض التجهيز", 403);
+      const summary = await getBookingPreparationSummary(reference.source as PreparationSource, reference.id);
+      return json(summary ?? { source: reference.source, id: reference.id, items: [], rollup: { total: 0, ready: 0, preparing: 0, shortage: 0, needsPurchase: 0, completed: 0, progress: 0 } });
+    }
+    // Update one preparation item (status / assignee / priority / deadline / note).
+    if (method === "PATCH") {
+      if (!can("preparation_manage", "preparation_assign"))
+        return error("ليس لديك صلاحية تعديل التجهيز", 403);
+      const parsed = PreparationItemUpdateSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("preparation.item", parsed);
+      const d = parsed.data;
+      const nextMeta = await applyPreparationPatch(reference, (reference.operations.productMeta ?? {}) as Record<string, any>, d, auth);
+      await saveBookingOperations(reference, { ...reference.operations, productMeta: nextMeta });
+      await addEntityTimeline({
+        entityType: reference.entityType,
+        entityId: reference.id,
+        type: "preparation_item_updated",
+        title: "تحديث عنصر تجهيز",
+        body: `${d.itemName || d.key}${d.status ? ` · ${d.status}` : ""}${d.assigneeName ? ` · ${d.assigneeName}` : ""}`,
+        actor: erpActorFromAdmin(auth),
+        metadata: { key: d.key, status: d.status ?? null, assigneeId: d.assigneeId ?? null, priority: d.priority ?? null },
+      });
+      void logAdminActivity(req, "preparation_item_updated", reference.entityType, reference.id, { key: d.key });
+      return json({ ok: true });
+    }
+    // Bulk apply (assign / status / priority) to several items.
+    if (method === "POST") {
+      if (!can("preparation_manage", "preparation_assign"))
+        return error("ليس لديك صلاحية تعديل التجهيز", 403);
+      const parsed = PreparationBulkSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("preparation.bulk", parsed);
+      const d = parsed.data;
+      let meta = (reference.operations.productMeta ?? {}) as Record<string, any>;
+      for (const key of d.keys) {
+        meta = await applyPreparationPatch(reference, meta, { key, status: d.status, assigneeId: d.assigneeId, assigneeName: d.assigneeName, priority: d.priority }, auth);
+      }
+      await saveBookingOperations(reference, { ...reference.operations, productMeta: meta });
+      await addEntityTimeline({
+        entityType: reference.entityType,
+        entityId: reference.id,
+        type: "preparation_bulk_updated",
+        title: "تحديث جماعي للتجهيز",
+        body: `${d.keys.length} عنصر${d.status ? ` · ${d.status}` : ""}${d.assigneeName ? ` · ${d.assigneeName}` : ""}`,
+        actor: erpActorFromAdmin(auth),
+        metadata: { count: d.keys.length, status: d.status ?? null, assigneeId: d.assigneeId ?? null },
+      });
+      void logAdminActivity(req, "preparation_bulk_updated", reference.entityType, reference.id, { count: d.keys.length });
+      return json({ ok: true, updated: d.keys.length });
+    }
   }
 
   if (resource === "penalties") {
