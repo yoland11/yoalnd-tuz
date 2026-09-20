@@ -282,6 +282,12 @@ export const NAV: NavItem[] = [
     perm: "orders",
   },
   {
+    href: "/admin/preparation",
+    label: "قائمة التجهيز",
+    icon: CheckSquare,
+    perm: "preparation_view",
+  },
+  {
     href: "/admin/sound-center",
     label: "مركز حجوزات الصوتيات",
     icon: Speaker,
@@ -864,6 +870,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ShoppingBag,
     items: [
       navItem("/admin/bookings"),
+      navItem("/admin/preparation"),
       navItem("/admin/sound-center"),
       navItem("/admin/orders"),
       navItem("/admin/calendar"),

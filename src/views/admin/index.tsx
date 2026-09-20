@@ -153,6 +153,7 @@ const AssetsPage = lazy(() =>
   import("./operations").then((module) => ({ default: module.AssetsPage })),
 );
 const PenaltiesReportPage = lazy(() => import("./penalties-report"));
+const PreparationPage = lazy(() => import("./preparation"));
 const AssetMovementsPage = lazy(() =>
   import("./operations").then((module) => ({
     default: module.AssetMovementsPage,
@@ -1046,6 +1047,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="booking_penalty_view">
                 <PenaltiesReportPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/preparation">
+            {() => (
+              <Guard me={me} perm="preparation_view">
+                <PreparationPage />
               </Guard>
             )}
           </Route>
