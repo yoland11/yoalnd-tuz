@@ -270,7 +270,7 @@ export default function EmployeeSalariesPage() {
     const p = new URLSearchParams();
     const values = { search, month, year, department, paymentStatus, payrollStatus, origin, ...next };
     for (const [key, value] of Object.entries(values)) if (value && value !== "all") p.set(key, value);
-    navigate(`/admin/employee-salaries${p.size ? `?${p}` : ""}`, { replace: true });
+    navigate(`/admin/hr/salaries${p.size ? `?${p}` : ""}`, { replace: true });
   }
 
   const runAction = useMutation({
