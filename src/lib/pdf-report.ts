@@ -263,11 +263,32 @@ export async function exportReport<Row>(input: {
 }): Promise<void> {
   const columns = pickReportColumns(input.columns, input.maxColumns);
   const html = buildReportDocumentHtml(input.options, columns, input.rows);
-  if (input.mode === "print") {
+  // The download path rasterises an off-screen node with html2canvas, which
+  // reliably yields a BLANK canvas on mobile Safari (off-screen + canvas-size
+  // limits). On mobile, use the native paged-print path instead: it renders real
+  // vector text and lets the user "Save as PDF", so the file is never blank.
+  if (input.mode === "print" || isMobilePdfEnvironment()) {
     openReportPrintWindow(html);
     return;
   }
   await downloadReportPdf(html, input.filename, input.options.orientation ?? "portrait");
+}
+
+/** Mobile / touch-only browsers where html2canvas rasterisation is unreliable. */
+export function isMobilePdfEnvironment(): boolean {
+  if (typeof window === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  // iPadOS 13+ reports as a Mac; treat any multi-touch "Mac" as a tablet too.
+  const iPadOS = /Macintosh/.test(ua) && typeof navigator !== "undefined" && (navigator.maxTouchPoints ?? 0) > 1;
+  if (iPadOS || /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle/i.test(ua)) return true;
+  try {
+    const coarse = window.matchMedia?.("(pointer: coarse)")?.matches;
+    const noFine = !window.matchMedia?.("(any-pointer: fine)")?.matches;
+    if (coarse && noFine) return true; // pure touch device (not a touch laptop)
+  } catch {
+    /* matchMedia may be unavailable */
+  }
+  return false;
 }
 
 /** Minimal auto-print bootstrap (waits for images) for the print-window path. */
