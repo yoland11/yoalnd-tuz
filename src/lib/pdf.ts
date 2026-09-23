@@ -181,6 +181,52 @@ export type PdfExportOptions = {
   pagebreakMode?: string[];
 };
 
+/** Mobile / touch-only browsers where html2canvas rasterisation yields a blank page. */
+function isMobilePdf(): boolean {
+  if (typeof window === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const iPadOS = /Macintosh/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1;
+  if (iPadOS || /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle/i.test(ua)) return true;
+  try {
+    if (window.matchMedia?.("(pointer: coarse)")?.matches && !window.matchMedia?.("(any-pointer: fine)")?.matches) return true;
+  } catch {
+    /* matchMedia may be unavailable */
+  }
+  return false;
+}
+
+/**
+ * Mobile-safe path: instead of rasterising the node (which comes out blank on
+ * mobile Safari), open a print window that carries the element AND the page's
+ * stylesheets, then let the browser print real, vector-sharp content that the
+ * user saves as PDF. The page's own CSS renders it exactly as on screen (and the
+ * print engine handles modern colours that html2canvas cannot).
+ */
+function openElementPrintWindow(element: HTMLElement, options?: PdfExportOptions) {
+  const popup = window.open("", "_blank", "width=1024,height=800");
+  if (!popup) throw new Error("تعذّر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مرة أخرى.");
+  const orientation = options?.orientation ?? "portrait";
+  const size = Array.isArray(options?.format) ? `${options.format[0]}mm ${options.format[1]}mm` : `A4 ${orientation}`;
+  const margin = Array.isArray(options?.margin) ? `${options.margin.join("mm ")}mm` : `${options?.margin ?? 8}mm`;
+  const headStyles = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]')).map((node) => node.outerHTML).join("");
+  const dir = element.getAttribute("dir") || document.documentElement.getAttribute("dir") || "rtl";
+  // Neutralise any off-screen positioning the source node carried, so the printed
+  // document is on the page (not blank), and centre it.
+  const clone = element.cloneNode(true) as HTMLElement;
+  clone.style.position = "static";
+  clone.style.left = "auto";
+  clone.style.right = "auto";
+  clone.style.top = "auto";
+  clone.style.transform = "none";
+  clone.style.margin = "0 auto";
+  clone.style.pointerEvents = "auto";
+  clone.style.zIndex = "auto";
+  const autoPrint = `<script>(function(){function go(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},150);}var imgs=document.images;if(!imgs.length){window.onload=go;return;}var left=imgs.length;function one(){if(--left<=0)go();}window.onload=function(){for(var i=0;i<imgs.length;i++){var im=imgs[i];if(im.complete)one();else{im.onload=one;im.onerror=one;}}};})();<\/script>`;
+  popup.document.open();
+  popup.document.write(`<!doctype html><html dir="${dir}" lang="ar"><head><meta charset="utf-8"><meta name="color-scheme" content="light">${headStyles}<style>@page{size:${size};margin:${margin};}html,body{margin:0;padding:0;background:#fff;color-scheme:light;}:root{color-scheme:light !important;}</style></head><body>${clone.outerHTML}${autoPrint}</body></html>`);
+  popup.document.close();
+}
+
 export async function downloadElementPdf(
   element: HTMLElement | null,
   filename: string,
@@ -188,6 +234,13 @@ export async function downloadElementPdf(
 ) {
   if (!element || typeof window === "undefined") {
     throw new Error("العنصر غير جاهز للتصدير");
+  }
+
+  // On mobile the html2canvas rasteriser returns a blank canvas; use the native
+  // print-to-PDF path instead so the saved file always contains the document.
+  if (isMobilePdf()) {
+    openElementPrintWindow(element, options);
+    return;
   }
 
   await waitForPdfAssets(element);
