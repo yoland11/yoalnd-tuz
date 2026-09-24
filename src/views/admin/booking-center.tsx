@@ -765,6 +765,8 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   const [photographyShotsCount, setPhotographyShotsCount] = useState("");
   const [photographyReelsRequested, setPhotographyReelsRequested] = useState(false);
   const [soundItems, setSoundItems] = useState<SoundBookingItem[]>([]);
+  const [transportationMode, setTransportationMode] = useState<"ajn" | "customer" | null>(null);
+  const [transportationFee, setTransportationFee] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const soundSelected = selected.includes("sound");
   const soundProductsQuery = useQuery<any[]>({
@@ -836,7 +838,22 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             contractNumber,
             ...fieldsWithBookingPhotos({}, bookingPhotos),
             departments: selected,
-            bookingCenterServices: selected.map((type) => ({ type, status: "waiting", amount: 0 })),
+            bookingCenterServices: selected.map((type) =>
+              type === "transportation"
+                ? {
+                    type,
+                    status: "waiting",
+                    amount: transportationMode === "ajn" ? num(transportationFee) : 0,
+                    ...(transportationMode === "customer" ? { notes: "النقل من مسؤولية الزبون" } : {}),
+                  }
+                : { type, status: "waiting", amount: 0 },
+            ),
+            ...(selected.includes("transportation") && transportationMode
+              ? {
+                  transportationMode,
+                  transportationFee: transportationMode === "ajn" ? num(transportationFee) : 0,
+                }
+              : {}),
             ...(selected.includes("sound") && soundItems.length ? { soundItems } : {}),
             ...(selected.includes("photography")
               ? {
@@ -885,6 +902,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
     }
     setSelected((current) => current.filter((item) => item !== type));
     if (type === "sound") setSoundItems([]);
+    if (type === "transportation") { setTransportationMode(null); setTransportationFee(""); }
   };
   const toggle = (type: ServiceKey) => {
     if (selected.includes(type)) {
@@ -898,7 +916,9 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       ? "booking-photography-settings"
       : type === "sound"
         ? "booking-sound-items"
-        : "booking-service-picker";
+        : type === "transportation"
+          ? "booking-transportation-settings"
+          : "booking-service-picker";
     window.requestAnimationFrame(() => document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "center" }));
   };
   const photographySelected = selected.includes("photography");
@@ -952,7 +972,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
               const meta = SERVICE_META.find((item) => item.key === type);
               if (!meta) return null;
               const Icon = meta.icon;
-              const hasSettings = type === "photography" || type === "sound";
+              const hasSettings = type === "photography" || type === "sound" || type === "transportation";
               return <div key={type} className="flex min-h-11 items-center justify-between gap-2 rounded-lg border border-border/45 bg-muted/20 px-2.5 py-1.5">
                 <span className="flex min-w-0 items-center gap-2 text-sm font-medium"><Icon className="h-4 w-4 shrink-0 text-primary" /><span className="truncate">{meta.short}</span></span>
                 <span className="flex shrink-0 items-center gap-1">
@@ -972,6 +992,14 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             <label className="flex cursor-pointer items-center justify-between rounded-lg border border-border/45 bg-background/80 px-3 py-2 text-sm"><span>هل تريد ريلز معها؟</span><input type="checkbox" checked={photographyReelsRequested} onChange={(event) => setPhotographyReelsRequested(event.target.checked)} className="h-4 w-4 accent-rose-600" /><span className="sr-only">طلب ريلز</span></label>
           </section> : null}
           {soundSelected ? <SoundItemsSelector products={soundProductsQuery.data ?? []} categories={categoriesQuery.data ?? []} loading={soundProductsQuery.isLoading || categoriesQuery.isLoading} items={soundItems} onChange={setSoundItems} /> : null}
+          {selected.includes("transportation") ? <section id="booking-transportation-settings" className="mt-4 space-y-3 rounded-xl border border-amber-200/70 bg-amber-50/45 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
+            <div className="flex items-start gap-2"><span className="mt-0.5 text-amber-700"><Car className="h-5 w-5" /></span><div><h3 className="font-semibold text-foreground">خدمة النقل</h3><p className="mt-0.5 text-xs text-muted-foreground">تبقى أجرة النقل جزءاً من الحجز وتُنسب تحليلياً للسيارة بعد تنفيذ دفعة الزبون.</p></div></div>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => setTransportationMode("ajn")} className={`rounded-lg border px-3 py-3 text-center text-sm transition-colors ${transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل بواسطة AJN</button>
+              <button type="button" onClick={() => { setTransportationMode("customer"); setTransportationFee(""); }} className={`rounded-lg border px-3 py-3 text-center text-sm transition-colors ${transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل من مسؤولية الزبون</button>
+            </div>
+            {transportationMode === "ajn" ? <div className="space-y-1.5"><Label htmlFor="booking-transport-fee">أجرة النقل</Label><Input id="booking-transport-fee" inputMode="decimal" value={transportationFee} onChange={(event) => setTransportationFee(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" /><p className="text-xs text-muted-foreground">تأكد من تضمين أجرة النقل في المبلغ الكلي أعلاه. يمكن تحديد السيارة والسائق لاحقاً من مساحة تنفيذ الحجز.</p></div> : null}
+          </section> : null}
           <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending || imageUploading || depositTooHigh} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : "حفظ الحجز"}</Button></div>
         </div>
       </div>
