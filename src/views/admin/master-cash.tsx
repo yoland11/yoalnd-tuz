@@ -23,6 +23,7 @@ import {
   RotateCcw,
   Pencil,
   Trash2,
+  UserRound,
 } from "lucide-react";
 import {
   Bar,
@@ -111,7 +112,7 @@ type TransactionList = {
   page: number;
   limit: number;
   total: number;
-  totals: { revenue: number; expenses: number; net: number; pending: number };
+  totals: { revenue: number; expenses: number; net: number; pending: number; sumAmount: number };
 };
 
 type TransactionDetail = FinancialTransaction & {
@@ -392,7 +393,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   const [showForm, setShowForm] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState({ from: addDays(todayBaghdad(), -30), to: todayBaghdad(), status: "", direction: "", department: "", voucherType: "", search: "" });
+  const [filters, setFilters] = useState({ from: addDays(todayBaghdad(), -30), to: todayBaghdad(), status: "", direction: "", department: "", voucherType: "", requestedBy: "", search: "" });
   const isManager = me.role === "admin" || me.role === "manager";
   // Final Main Cash Box approval is reserved for the principal administrator.
   // UI visibility mirrors the server-side rule; the API enforces it too.
@@ -414,6 +415,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
     ...(filters.direction ? { direction: filters.direction } : {}),
     ...(filters.department ? { department: filters.department } : {}),
     ...(filters.voucherType ? { voucherType: filters.voucherType } : {}),
+    ...(filters.requestedBy ? { requestedBy: filters.requestedBy } : {}),
     ...(filters.search ? { search: filters.search } : {}),
   }).toString();
   const transactions = useQuery({
@@ -504,6 +506,16 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
     () => (approvalFilter === "all" ? allPending : allPending.filter((row) => sourceBucket(row.sourceType) === approvalFilter)),
     [allPending, approvalFilter],
   );
+  // Distinct requester names (from the current ledger page + all pending rows)
+  // power the "مقدم الطلب" search suggestions.
+  const requesterNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of [...rows, ...allPending]) {
+      const name = row.requestedByName?.trim();
+      if (name) names.add(name);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b, "ar"));
+  }, [rows, allPending]);
 
   if (dashboard.isLoading || !dashboard.data) {
     return <div className="space-y-4"><Skeleton className="h-24 rounded-xl" /><Skeleton className="h-64 rounded-xl" /><Skeleton className="h-80 rounded-xl" /></div>;
@@ -584,7 +596,8 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
         </TabsContent>
 
         <TabsContent value="ledger" className="space-y-3">
-          <div className="flex flex-wrap items-end gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden"><Filter className="mb-2 h-4 w-4 text-muted-foreground" /><input type="date" value={filters.from} onChange={(event) => { setFilters({ ...filters, from: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><input type="date" value={filters.to} onChange={(event) => { setFilters({ ...filters, to: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><select value={filters.status} onChange={(event) => { setFilters({ ...filters, status: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الحالات</option>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={filters.voucherType} onChange={(event) => { setFilters({ ...filters, voucherType: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل السندات</option>{VOUCHER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={filters.department} onChange={(event) => { setFilters({ ...filters, department: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الأقسام</option>{DEPARTMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><label className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input value={filters.search} onChange={(event) => { setFilters({ ...filters, search: event.target.value }); setPage(1); }} placeholder="رقم السند أو المرجع أو العميل" className={`${inputClass} pr-9`} /></label></div>
+          <div className="flex flex-wrap items-end gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden"><Filter className="mb-2 h-4 w-4 text-muted-foreground" /><input type="date" value={filters.from} onChange={(event) => { setFilters({ ...filters, from: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><input type="date" value={filters.to} onChange={(event) => { setFilters({ ...filters, to: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><select value={filters.status} onChange={(event) => { setFilters({ ...filters, status: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الحالات</option>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={filters.voucherType} onChange={(event) => { setFilters({ ...filters, voucherType: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل السندات</option>{VOUCHER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={filters.department} onChange={(event) => { setFilters({ ...filters, department: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الأقسام</option>{DEPARTMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><label className="relative min-w-44"><UserRound className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input value={filters.requestedBy} onChange={(event) => { setFilters({ ...filters, requestedBy: event.target.value }); setPage(1); }} list="mc-requester-names" placeholder="مقدم الطلب" className={`${inputClass} pr-9`} /><datalist id="mc-requester-names">{requesterNames.map((name) => <option key={name} value={name} />)}</datalist></label><label className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input value={filters.search} onChange={(event) => { setFilters({ ...filters, search: event.target.value }); setPage(1); }} placeholder="رقم السند أو المرجع أو العميل أو مقدم الطلب" className={`${inputClass} pr-9`} /></label></div>
+          {filters.requestedBy.trim() !== "" && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3"><p className="text-sm text-foreground">طلبات <span className="font-bold text-primary">{filters.requestedBy}</span> — عدد الطلبات: <span className="font-bold">{(transactions.data?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span></p><p className="text-sm text-foreground">المجموع الكلي: <span className="font-bold text-primary">{formatCurrency(transactions.data?.totals.sumAmount ?? 0)}</span></p></div>}
           <TransactionTable rows={rows} loading={transactions.isLoading} isManager={canApprove} onOpen={setSelectedId} onApprove={(id) => approve.mutate(id)} onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }} onRequestModification={requestModification} busy={approve.isPending || reject.isPending} />
           {(transactions.data?.total ?? 0) > 20 && <div className="flex items-center justify-between print:hidden"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>السابق</Button><span className="text-xs text-muted-foreground">صفحة {page.toLocaleString("ar-IQ-u-nu-latn")} من {Math.ceil((transactions.data?.total ?? 0) / 20).toLocaleString("ar-IQ-u-nu-latn")}</span><Button variant="outline" size="sm" disabled={page * 20 >= (transactions.data?.total ?? 0)} onClick={() => setPage((value) => value + 1)}>التالي</Button></div>}
         </TabsContent>

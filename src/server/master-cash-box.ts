@@ -118,6 +118,7 @@ export const financialTransactionListSchema = z.object({
   direction: z.enum(["revenue", "expense"]).optional(),
   department: z.string().trim().max(40).optional(),
   voucherType: z.string().trim().max(60).optional(),
+  requestedBy: z.string().trim().max(120).optional(),
   search: z.string().trim().max(120).optional().default(""),
   page: z.coerce.number().int().min(1).optional().default(1),
   // Approval feeds request a large single page so the displayed rows match
@@ -1718,6 +1719,10 @@ export async function listFinancialTransactions(input: unknown) {
     conditions.push(
       eq(financialTransactionsTable.transactionType, filters.voucherType),
     );
+  if (filters.requestedBy)
+    conditions.push(
+      ilike(financialTransactionsTable.requestedByName, `%${filters.requestedBy}%`),
+    );
   if (filters.search) {
     const value = `%${filters.search}%`;
     conditions.push(
@@ -1727,6 +1732,7 @@ export async function listFinancialTransactions(input: unknown) {
         ilike(financialTransactionsTable.customerName, value),
         ilike(financialTransactionsTable.referenceNo, value),
         ilike(financialTransactionsTable.sourceId, value),
+        ilike(financialTransactionsTable.requestedByName, value),
       ),
     );
   }
@@ -1752,6 +1758,7 @@ export async function listFinancialTransactions(input: unknown) {
         revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
         expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
         pending: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus} = 'pending' then ${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        sumAmount: sql<number>`coalesce(sum(${financialTransactionsTable.amount}::numeric),0)::float`,
       })
       .from(financialTransactionsTable)
       .where(where),
@@ -1766,6 +1773,7 @@ export async function listFinancialTransactions(input: unknown) {
       expenses: money(totals[0]?.expenses),
       net: money(money(totals[0]?.revenue) - money(totals[0]?.expenses)),
       pending: money(totals[0]?.pending),
+      sumAmount: money(totals[0]?.sumAmount),
     },
   };
 }
