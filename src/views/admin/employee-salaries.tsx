@@ -213,7 +213,7 @@ function flattenRuns(runs: PayrollRun[]): SalaryRow[] {
 
 type EditorState = { mode: "create" | "edit" | "movement"; row?: SalaryRow } | null;
 
-export default function EmployeeSalariesPage() {
+function EmployeeSalariesPageInner() {
   const qc = useQueryClient();
   const me = getCachedAdminMe();
   const settingsQuery = usePublicSettings();
@@ -550,7 +550,7 @@ export default function EmployeeSalariesPage() {
       {!runsQuery.isLoading && !filtered.length && <tr><td colSpan={16} className="p-14 text-center"><WalletCards className="mx-auto mb-3 h-8 w-8 text-muted-foreground" /><b>لا توجد رواتب مطابقة</b><p className="mt-1 text-sm text-muted-foreground">غيّر البحث أو الفلاتر لعرض سجلات أخرى.</p></td></tr>}
     </tbody><tfoot className="border-t-2 bg-muted/40 font-semibold"><tr><td colSpan={3} className="px-3 py-4">{filtered.length.toLocaleString("ar-IQ-u-nu-latn")} سجل راتب</td>{[totals.base, totals.additions, totals.bonuses, totals.allowances, totals.deductions, totals.advances, totals.gross, totals.net, totals.paid, totals.remaining].map((v, i) => <td key={i} className="whitespace-nowrap px-3 py-4 text-xs">{money.format(v)}</td>)}<td colSpan={3} /></tr></tfoot></table></div></Card>
 
-    <SalaryDetails row={selected} management={managementQuery.data} loading={managementQuery.isLoading} statementError={managementQuery.isError} savingStatementPdf={statementPdfRowId === selected?.id} onClose={() => setSelected(null)} onPrint={printSalary} onPrintStatement={printEmployeeStatement} onSaveStatementPdf={(row) => void saveEmployeeStatementPdf(row)} onReversePayment={(payment) => selected && setReversePayment({ row: selected, payment })} onAttach={() => selected && setAttachmentRow(selected)} onCancelMovement={(adjustment) => selected && setMovementToCancel({ row: selected, adjustment })} />
+    <DetailsBoundary key={`details-${selected?.id ?? "none"}`} onClose={() => setSelected(null)}><SalaryDetails row={selected} management={managementQuery.data} loading={managementQuery.isLoading} statementError={managementQuery.isError} savingStatementPdf={statementPdfRowId === selected?.id} onClose={() => setSelected(null)} onPrint={printSalary} onPrintStatement={printEmployeeStatement} onSaveStatementPdf={(row) => void saveEmployeeStatementPdf(row)} onReversePayment={(payment) => selected && setReversePayment({ row: selected, payment })} onAttach={() => selected && setAttachmentRow(selected)} onCancelMovement={(adjustment) => selected && setMovementToCancel({ row: selected, adjustment })} /></DetailsBoundary>
     <SalaryEditor state={editor} form={form} setForm={setForm} onClose={() => setEditor(null)} onSubmit={submitEditor} busy={editMutation.isPending || createMutation.isPending || movementMutation.isPending} employees={staffQuery.data || []} />
     {paymentRow && <PaymentDialog key={`pay-${paymentRow.id}`} row={paymentRow} busy={paymentMutation.isPending} onClose={() => setPaymentRow(null)} onSubmit={(payload) => paymentMutation.mutate({ row: paymentRow, payload })} />}
     {reconcileRow && <ReconciliationDialog key={`reconcile-${reconcileRow.id}`} row={reconcileRow} management={managementQuery.data} loading={managementQuery.isLoading} busy={reconcileMutation.isPending} onClose={() => setReconcileRow(null)} onSubmit={(payload) => reconcileMutation.mutate({ row: reconcileRow, payload })} />}
@@ -563,13 +563,41 @@ export default function EmployeeSalariesPage() {
   </main>;
 }
 
-class DetailsBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+// Page-level safety net: if anything on the salaries page throws during render,
+// show a recoverable in-app error (with the message) instead of letting the app
+// unmount into the host's blank "This page couldn't load" screen.
+class SalariesPageBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
   static getDerivedStateFromError(error: Error) { return { error }; }
-  componentDidCatch(error: Error) { console.error("[SALARY_DETAILS_CRASH]", error); }
+  componentDidCatch(error: Error, info: { componentStack?: string }) { console.error("[SALARIES_PAGE_CRASH]", error, info?.componentStack); }
   render() {
     if (this.state.error) {
-      return <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">تعذّر عرض هذا القسم من تفاصيل الراتب بسبب بيانات غير متوقعة. باقي التفاصيل والطباعة تعمل. ({this.state.error.message})</div>;
+      return <main dir="rtl" className="mx-auto max-w-xl p-6"><div className="rounded-xl border border-destructive/30 bg-destructive/5 p-5 text-center"><h1 className="text-lg font-bold text-destructive">تعذّر عرض صفحة الرواتب</h1><p className="mt-2 text-sm text-muted-foreground">حدث خطأ غير متوقع أثناء العرض. جرّب إعادة المحاولة؛ وإذا استمر صوّر الرسالة التالية وأرسلها.</p><pre dir="ltr" className="mt-3 overflow-auto rounded bg-background p-3 text-left text-xs text-destructive">{this.state.error.name}: {this.state.error.message}</pre><div className="mt-4 flex justify-center gap-2"><Button onClick={() => this.setState({ error: null })}>أعد المحاولة</Button><Button variant="outline" onClick={() => window.location.reload()}>إعادة تحميل الصفحة</Button></div></div></main>;
+    }
+    return this.props.children;
+  }
+}
+
+export default function EmployeeSalariesPage() {
+  return <SalariesPageBoundary><EmployeeSalariesPageInner /></SalariesPageBoundary>;
+}
+
+class DetailsBoundary extends Component<{ children: ReactNode; onClose?: () => void }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: { componentStack?: string }) { console.error("[SALARY_DETAILS_CRASH]", error, info?.componentStack); }
+  render() {
+    if (this.state.error) {
+      const detail = `${this.state.error.name || "Error"}: ${this.state.error.message}`;
+      // When this boundary wraps the whole details dialog (onClose given), keep
+      // the click-to-open behaviour by showing a dialog with the real error text,
+      // so a bad record can never take down the whole salaries page and the
+      // message is visible/screenshot-able. The inner (tab) usage keeps the
+      // inline notice so the rest of the dialog still works.
+      if (this.props.onClose) {
+        return <Dialog open onOpenChange={(open) => { if (!open) { this.setState({ error: null }); this.props.onClose?.(); } }}><DialogContent dir="rtl"><DialogHeader><DialogTitle>تعذّر فتح تفاصيل هذا الراتب</DialogTitle><DialogDescription>حدثت مشكلة أثناء عرض تفاصيل هذا السجل. باقي الصفحة والطباعة تعمل بشكل طبيعي.</DialogDescription></DialogHeader><div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive" dir="ltr" style={{ wordBreak: "break-word" }}>{detail}</div><DialogFooter><Button variant="outline" onClick={() => { this.setState({ error: null }); this.props.onClose?.(); }}>إغلاق</Button></DialogFooter></DialogContent></Dialog>;
+      }
+      return <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">تعذّر عرض هذا القسم من تفاصيل الراتب بسبب بيانات غير متوقعة. باقي التفاصيل والطباعة تعمل. ({detail})</div>;
     }
     return this.props.children;
   }
