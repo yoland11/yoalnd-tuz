@@ -196,15 +196,68 @@ function isMobilePdf(): boolean {
 }
 
 /**
+ * Reliable print-to-PDF for a standalone HTML document, on desktop AND mobile.
+ *
+ * The document is rendered inside a hidden, same-origin `<iframe srcdoc>` and we
+ * print that iframe's OWN window. This replaces the previous
+ * `window.open("") + document.write` approach, which on mobile Safari/Chrome is
+ * routinely defeated by popup blockers or renders an empty about:blank document,
+ * leaving the "saved PDF" blank. A srcdoc iframe has no popup to block, inherits
+ * the page origin/base URL (so relative stylesheet links still resolve), and
+ * always carries the content — so the print preview, and the saved PDF, contain
+ * the document. A `window.open` fallback keeps working if `print()` is refused.
+ */
+export function printStandaloneDocument(html: string, width = 1024): void {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    throw new Error("الطباعة غير متاحة في هذه البيئة");
+  }
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("aria-hidden", "true");
+  // Keep it in the layout at a desktop-ish width (off-screen) so the content
+  // lays out like the on-screen document instead of a squeezed mobile column; a
+  // zero-size frame can make some engines skip rendering before print.
+  iframe.style.cssText = `position:fixed;left:-100000px;top:0;width:${Math.max(width, 1)}px;height:1123px;border:0;background:#fff;`;
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    window.setTimeout(() => iframe.remove(), 1000);
+  };
+  iframe.onload = () => {
+    const frameWin = iframe.contentWindow;
+    if (!frameWin) {
+      cleanup();
+      return;
+    }
+    try {
+      frameWin.focus();
+      // Fires when the dialog closes (desktop) or right away (mobile save flow).
+      frameWin.addEventListener?.("afterprint", cleanup, { once: true });
+      frameWin.print();
+      // Mobile browsers may never fire afterprint; remove the frame eventually.
+      window.setTimeout(cleanup, 60_000);
+    } catch {
+      cleanup();
+      const popup = window.open("", "_blank", "width=1024,height=800");
+      if (popup) {
+        popup.document.open();
+        popup.document.write(html);
+        popup.document.close();
+      }
+    }
+  };
+  iframe.srcdoc = html;
+  document.body.appendChild(iframe);
+}
+
+/**
  * Mobile-safe path: instead of rasterising the node (which comes out blank on
- * mobile Safari), open a print window that carries the element AND the page's
- * stylesheets, then let the browser print real, vector-sharp content that the
- * user saves as PDF. The page's own CSS renders it exactly as on screen (and the
- * print engine handles modern colours that html2canvas cannot).
+ * mobile Safari), print a document that carries the element AND the page's
+ * stylesheets, so the browser prints real, vector-sharp content the user saves
+ * as PDF. The page's own CSS renders it exactly as on screen (and the print
+ * engine handles modern colours that html2canvas cannot).
  */
 function openElementPrintWindow(element: HTMLElement, options?: PdfExportOptions) {
-  const popup = window.open("", "_blank", "width=1024,height=800");
-  if (!popup) throw new Error("تعذّر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مرة أخرى.");
   const orientation = options?.orientation ?? "portrait";
   const size = Array.isArray(options?.format) ? `${options.format[0]}mm ${options.format[1]}mm` : `A4 ${orientation}`;
   const margin = Array.isArray(options?.margin) ? `${options.margin.join("mm ")}mm` : `${options?.margin ?? 8}mm`;
@@ -221,10 +274,13 @@ function openElementPrintWindow(element: HTMLElement, options?: PdfExportOptions
   clone.style.margin = "0 auto";
   clone.style.pointerEvents = "auto";
   clone.style.zIndex = "auto";
-  const autoPrint = `<script>(function(){function go(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},150);}var imgs=document.images;if(!imgs.length){window.onload=go;return;}var left=imgs.length;function one(){if(--left<=0)go();}window.onload=function(){for(var i=0;i<imgs.length;i++){var im=imgs[i];if(im.complete)one();else{im.onload=one;im.onerror=one;}}};})();<\/script>`;
-  popup.document.open();
-  popup.document.write(`<!doctype html><html dir="${dir}" lang="ar"><head><meta charset="utf-8"><meta name="color-scheme" content="light">${headStyles}<style>@page{size:${size};margin:${margin};}html,body{margin:0;padding:0;background:#fff;color-scheme:light;}:root{color-scheme:light !important;}</style></head><body>${clone.outerHTML}${autoPrint}</body></html>`);
-  popup.document.close();
+  const html = `<!doctype html><html dir="${dir}" lang="ar"><head><meta charset="utf-8"><meta name="color-scheme" content="light">${headStyles}<style>@page{size:${size};margin:${margin};}html,body{margin:0;padding:0;background:#fff;color-scheme:light;}:root{color-scheme:light !important;}</style></head><body>${clone.outerHTML}</body></html>`;
+  const width = Array.isArray(options?.format)
+    ? Math.round(Number(options.format[0]) * 3.78)
+    : orientation === "landscape"
+      ? 1122
+      : 794;
+  printStandaloneDocument(html, width);
 }
 
 export async function downloadElementPdf(

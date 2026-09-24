@@ -1,5 +1,5 @@
 import { formatCurrency } from "@/lib/money";
-import { downloadElementPdf } from "@/lib/pdf";
+import { downloadElementPdf, printStandaloneDocument } from "@/lib/pdf";
 
 /**
  * Shared, reusable foundation for PROFESSIONAL table-report PDFs / printable
@@ -291,24 +291,16 @@ export function isMobilePdfEnvironment(): boolean {
   return false;
 }
 
-/** Minimal auto-print bootstrap (waits for images) for the print-window path. */
-function autoPrintScript(): string {
-  return `<script>(function(){function go(){setTimeout(function(){window.focus();window.print();},80);}var imgs=document.images;if(!imgs.length){window.onload=go;return;}var left=imgs.length;function one(){if(--left<=0)go();}window.onload=function(){for(var i=0;i<imgs.length;i++){var im=imgs[i];if(im.complete)one();else{im.onload=one;im.onerror=one;}}};})();</script>`;
-}
-
 /**
- * Best-quality path: open the report in a new window and print it. Uses real
- * paged media, so the header repeats on every page, the page footer shows on
- * every page, text stays vector-sharp, and the user saves it as PDF.
+ * Best-quality path: render the report in a hidden srcdoc iframe and print it.
+ * Uses real paged media, so the header repeats on every page, the page footer
+ * shows on every page, text stays vector-sharp, and the user saves it as PDF.
+ * Delegates to the shared, mobile-safe printer (a srcdoc iframe rather than a
+ * `window.open` popup, which mobile browsers block or render blank).
  */
 export function openReportPrintWindow(html: string): void {
-  const popup = window.open("", "_blank", "width=1024,height=800");
-  if (!popup) {
-    throw new Error("تعذر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مرة أخرى.");
-  }
-  popup.document.open();
-  popup.document.write(html.includes("window.print") ? html : html.replace("</body>", `${autoPrintScript()}</body>`));
-  popup.document.close();
+  const width = /A4 landscape/i.test(html) ? 1122 : 794;
+  printStandaloneDocument(html, width);
 }
 
 /**
