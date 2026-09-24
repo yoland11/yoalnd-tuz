@@ -393,6 +393,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   const [showForm, setShowForm] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
   const [filters, setFilters] = useState({ from: addDays(todayBaghdad(), -30), to: todayBaghdad(), status: "", direction: "", department: "", voucherType: "", requestedBy: "", search: "" });
   const isManager = me.role === "admin" || me.role === "manager";
   // Final Main Cash Box approval is reserved for the principal administrator.
@@ -523,36 +524,70 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
 
   const data = dashboard.data;
   const exportPdf = async () => {
-    const columns: ReportColumn<FinancialTransaction>[] = [
-      { key: "transactionNo", header: "رقم الحركة", width: 9, kind: "code", priority: "high" },
-      { key: "transactionDate", header: "التاريخ", width: 8, kind: "code", priority: "high" },
-      { key: "department", header: "القسم", width: 9, priority: "medium", value: (row) => departmentLabel(row.department) },
-      { key: "direction", header: "الاتجاه", width: 7, align: "center", priority: "high", value: (row) => movementDisplay(row).direction },
-      { key: "classification", header: "التصنيف", width: 12, priority: "medium", value: (row) => movementDisplay(row).classification },
-      { key: "amount", header: "المبلغ", width: 10, kind: "money", priority: "high" },
-      { key: "approvalStatus", header: "الحالة", width: 9, align: "center", priority: "high", value: (row) => STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus },
-      { key: "requestedByName", header: "بواسطة", width: 11, priority: "medium" },
-      { key: "description", header: "الوصف", width: 15, priority: "low" },
-    ];
-    await exportReport<FinancialTransaction>({
-      options: {
-        title: "الصندوق الرئيسي — دفتر الحركات",
-        subtitle: "الموافقات المالية والحركات النقدية",
-        orientation: "landscape",
-        summary: [
-          { label: "الرصيد الحالي", value: formatCurrency(data.cashBox.currentBalance) },
-          { label: "الرصيد المتاح", value: formatCurrency(data.cashBox.availableBalance) },
-          { label: "إجمالي الإيرادات", value: formatCurrency(data.cashBox.totalRevenue), tone: "positive" },
-          { label: "إجمالي المصاريف", value: formatCurrency(data.cashBox.totalExpenses), tone: "negative" },
-          { label: "صافي الربح", value: formatCurrency(data.cashBox.netProfit), tone: data.cashBox.netProfit >= 0 ? "positive" : "negative" },
-        ],
-        footerNote: `عدد الحركات المعروضة: ${rows.length.toLocaleString("en-US")} · الصندوق الرئيسي · نظام AJN`,
-      },
-      columns,
-      rows,
-      filename: `master-cash-${todayBaghdad()}.pdf`,
-      mode: "download",
-    });
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const columns: ReportColumn<FinancialTransaction>[] = [
+        { key: "transactionNo", header: "رقم الحركة", width: 9, kind: "code", priority: "high" },
+        { key: "transactionDate", header: "التاريخ", width: 8, kind: "code", priority: "high" },
+        { key: "department", header: "القسم", width: 9, priority: "medium", value: (row) => departmentLabel(row.department) },
+        { key: "direction", header: "الاتجاه", width: 7, align: "center", priority: "high", value: (row) => movementDisplay(row).direction },
+        { key: "classification", header: "التصنيف", width: 12, priority: "medium", value: (row) => movementDisplay(row).classification },
+        { key: "amount", header: "المبلغ", width: 10, kind: "money", priority: "high" },
+        { key: "approvalStatus", header: "الحالة", width: 9, align: "center", priority: "high", value: (row) => STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus },
+        { key: "requestedByName", header: "بواسطة", width: 11, priority: "medium" },
+        { key: "description", header: "الوصف", width: 15, priority: "low" },
+      ];
+      // Export EVERY transaction that matches the current filters (the on-screen
+      // table is paginated to 20), so a requester search prints all of that
+      // person's requests. The grand total comes from the server aggregate over
+      // the full matching set, not just the visible page.
+      const exportQuery = new URLSearchParams({
+        from: filters.from,
+        to: filters.to,
+        page: "1",
+        limit: "5000",
+        ...(filters.status ? { status: filters.status } : {}),
+        ...(filters.direction ? { direction: filters.direction } : {}),
+        ...(filters.department ? { department: filters.department } : {}),
+        ...(filters.voucherType ? { voucherType: filters.voucherType } : {}),
+        ...(filters.requestedBy ? { requestedBy: filters.requestedBy } : {}),
+        ...(filters.search ? { search: filters.search } : {}),
+      }).toString();
+      const full = await adminFetch<TransactionList>(`/admin/master-cash/transactions?${exportQuery}`);
+      const exportRows = full.data ?? [];
+      const grandTotal = full.totals?.sumAmount ?? exportRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+      const requesterNote = filters.requestedBy.trim() ? `مقدم الطلب: ${filters.requestedBy.trim()} · ` : "";
+      await exportReport<FinancialTransaction>({
+        options: {
+          title: "الصندوق الرئيسي — دفتر الحركات",
+          subtitle: filters.requestedBy.trim() ? `طلبات مقدم الطلب: ${filters.requestedBy.trim()}` : "الموافقات المالية والحركات النقدية",
+          orientation: "landscape",
+          dateRange: { from: filters.from, to: filters.to },
+          summary: [
+            { label: "عدد الطلبات", value: (full.total ?? exportRows.length).toLocaleString("en-US") },
+            { label: "المجموع الكلي", value: formatCurrency(grandTotal), tone: "positive" },
+            { label: "إجمالي الإيرادات", value: formatCurrency(full.totals?.revenue ?? 0), tone: "positive" },
+            { label: "إجمالي المصاريف", value: formatCurrency(full.totals?.expenses ?? 0), tone: "negative" },
+            { label: "بانتظار الموافقة", value: formatCurrency(full.totals?.pending ?? 0) },
+          ],
+          totalsLabel: "المجموع الكلي",
+          totals: [{ key: "amount", text: formatCurrency(grandTotal) }],
+          footerNote: `${requesterNote}عدد الطلبات: ${(full.total ?? exportRows.length).toLocaleString("en-US")} · المجموع الكلي: ${formatCurrency(grandTotal)} · نظام AJN`,
+        },
+        columns,
+        rows: exportRows,
+        filename: `master-cash-${todayBaghdad()}.pdf`,
+        // Print path (native → "حفظ بصيغة PDF"): renders real vector text on both
+        // desktop and mobile, so the saved PDF always contains the data. The
+        // html2canvas raster path could come back blank and only held one page.
+        mode: "print",
+      });
+    } catch (error) {
+      toast({ title: "تعذّر تصدير PDF", description: error instanceof Error ? error.message : "حاول مرة أخرى", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
   };
   return (
     <div ref={reportRef} className="space-y-5" dir="rtl">
@@ -561,7 +596,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
         <div className="flex flex-wrap gap-2 print:hidden">
           <Button size="sm" onClick={() => setShowForm((value) => !value)} className="gap-1.5"><Plus className="h-4 w-4" /> طلب مالي</Button>
           <Button size="sm" variant="outline" onClick={() => window.print()} className="gap-1.5"><Printer className="h-4 w-4" /> طباعة</Button>
-          <Button size="sm" variant="outline" onClick={() => void exportPdf()} className="gap-1.5"><FileDown className="h-4 w-4" /> PDF</Button>
+          <Button size="sm" variant="outline" disabled={exporting} onClick={() => void exportPdf()} className="gap-1.5">{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />} PDF</Button>
           <Button size="sm" variant="outline" onClick={() => downloadCsv(rows)} className="gap-1.5"><FileSpreadsheet className="h-4 w-4" /> Excel</Button>
           {isManager && <Button size="icon" variant="outline" title="إعادة احتساب الصندوق" disabled={recalculate.isPending} onClick={() => recalculate.mutate()}>{recalculate.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}</Button>}
         </div>
