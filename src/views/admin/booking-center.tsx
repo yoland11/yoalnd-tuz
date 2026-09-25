@@ -812,6 +812,9 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       if (!selected.length) failField("serviceId", "اختر خدمة واحدة على الأقل");
       const primary = resolveUnifiedBookingService(selected, services);
       if (!primary) failField("serviceId", "لا توجد خدمة فعالة. أضف خدمة من إدارة الخدمات أولاً.");
+      // النقل بواسطة AJN يبقى ضمن إجمالي الحجز: يُضاف إلى المبلغ الكلي المرسل.
+      const transportFee = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
+      const grandTotal = num(totalAmount) + transportFee;
       return adminFetch("/admin/service-orders", {
         method: "POST",
         body: JSON.stringify({
@@ -820,12 +823,12 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
           phone: selectedCustomer.phone,
           eventDate,
           eventLocation: hallName,
-          totalAmount: num(totalAmount),
-          depositAmount: Math.min(num(depositAmount), num(totalAmount)),
+          totalAmount: grandTotal,
+          depositAmount: Math.min(num(depositAmount), grandTotal),
           paymentStatus:
             num(depositAmount) <= 0
               ? "unpaid"
-              : num(depositAmount) >= num(totalAmount) && num(totalAmount) > 0
+              : num(depositAmount) >= grandTotal && grandTotal > 0
                 ? "paid"
                 : "partial",
           notes,
@@ -882,7 +885,10 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       toast({ title: "تعذر حفظ الحجز", description: apiErrorMessage(error, "تحقق من البيانات وحاول مرة أخرى."), variant: "destructive" });
     },
   });
-  const totalValue = num(totalAmount);
+  // النقل بواسطة AJN جزء من إجمالي الحجز: تُضاف أجرته تلقائياً إلى المبلغ الكلي.
+  const transportFeeValue = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
+  const baseTotalValue = num(totalAmount);
+  const totalValue = baseTotalValue + transportFeeValue;
   const depositValue = num(depositAmount);
   const depositTooHigh = depositValue > totalValue;
   const remainingValue = Math.max(
@@ -934,7 +940,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             <div className="space-y-2"><Label htmlFor="booking-time">وقت المناسبة</Label><Input id="booking-time" type="time" value={eventTime} onChange={(event) => setEventTime(event.target.value)} /></div>
             <div className="space-y-2"><Label htmlFor="booking-hall">القاعة / الموقع</Label><Input id="booking-hall" value={hallName} onChange={(event) => setHallName(event.target.value)} placeholder="اسم القاعة والعنوان" /></div>
             <div className="space-y-2"><Label htmlFor="booking-map">رابط Google Maps</Label><Input id="booking-map" dir="ltr" value={mapUrl} onChange={(event) => setMapUrl(event.target.value)} placeholder="https://maps.google.com/..." /></div>
-            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الكلي</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}</div>
+            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الكلي</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}{transportFeeValue > 0 ? <p className="text-xs text-muted-foreground">+ أجرة النقل {formatCurrency(transportFeeValue)} = الإجمالي <b className="text-foreground">{formatCurrency(totalValue)}</b></p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-deposit">العربون</Label><Input id="booking-deposit" inputMode="decimal" aria-invalid={depositTooHigh} className={depositTooHigh ? "border-destructive" : ""} value={depositAmount} onChange={(event) => setDepositAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" />{depositTooHigh ? <p className="text-xs text-destructive">لا يمكن أن يتجاوز العربون المبلغ الكلي.</p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-remaining">المتبقي</Label><Input id="booking-remaining" value={formatCurrency(remainingValue)} readOnly className="bg-muted/35 tabular-nums" dir="ltr" /><p className="text-xs font-medium text-primary">{paymentStatusLabel}</p></div>
           </div>
@@ -998,7 +1004,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
               <button type="button" onClick={() => setTransportationMode("ajn")} className={`rounded-lg border px-3 py-3 text-center text-sm transition-colors ${transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل بواسطة AJN</button>
               <button type="button" onClick={() => { setTransportationMode("customer"); setTransportationFee(""); }} className={`rounded-lg border px-3 py-3 text-center text-sm transition-colors ${transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل من مسؤولية الزبون</button>
             </div>
-            {transportationMode === "ajn" ? <div className="space-y-1.5"><Label htmlFor="booking-transport-fee">أجرة النقل</Label><Input id="booking-transport-fee" inputMode="decimal" value={transportationFee} onChange={(event) => setTransportationFee(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" /><p className="text-xs text-muted-foreground">تأكد من تضمين أجرة النقل في المبلغ الكلي أعلاه. يمكن تحديد السيارة والسائق لاحقاً من مساحة تنفيذ الحجز.</p></div> : null}
+            {transportationMode === "ajn" ? <div className="space-y-1.5"><Label htmlFor="booking-transport-fee">أجرة النقل</Label><Input id="booking-transport-fee" inputMode="decimal" value={transportationFee} onChange={(event) => setTransportationFee(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" /><p className="text-xs text-muted-foreground">تُضاف أجرة النقل تلقائياً إلى المبلغ الكلي للحجز. يمكن تحديد السيارة والسائق لاحقاً من مساحة تنفيذ الحجز.</p></div> : null}
           </section> : null}
           <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending || imageUploading || depositTooHigh} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : "حفظ الحجز"}</Button></div>
         </div>
