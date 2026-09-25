@@ -599,9 +599,16 @@ function BookingDashboard() {
   );
 }
 
+function groupAttendeeCount(booking: UnifiedBooking): number {
+  const raw = booking.raw as any;
+  const ops = booking.source === "kosha" ? raw?.bookingDetails?.bookingOperations : raw?.customFields?.bookingOperations;
+  return Array.isArray(ops?.groupAttendees) ? ops.groupAttendees.length : 0;
+}
+
 function BookingPreview({ booking, penalty }: { booking: UnifiedBooking; penalty?: { remaining: number; pendingReview: number; count: number } }) {
   const readiness = getReadiness(booking);
   const transport = transportationSummary(booking);
+  const attendees = groupAttendeeCount(booking);
   const editHref = booking.source === "service" || booking.source === "kosha"
     ? `/admin/bookings/${booking.source}/${booking.id}?edit=1`
     : booking.source === "store"
@@ -624,6 +631,7 @@ function BookingPreview({ booking, penalty }: { booking: UnifiedBooking; penalty
       <div className="ajn-preview-progress"><span><i style={{ width: `${readiness}%` }} /></span><small>الجاهزية {readiness}%</small></div>
       <div className="ajn-preview-finance"><div><small>الإجمالي</small><Money value={booking.total} /></div><div><small>المتبقي</small><Money value={booking.remaining} className={booking.remaining > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600"} /></div></div>
       {transport ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Car className="h-3.5 w-3.5 text-amber-600" /><span>{transport}</span></div> : null}
+      {attendees > 0 ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Camera className="h-3.5 w-3.5 text-primary" /><span>{attendees.toLocaleString("ar-IQ-u-nu-latn")} مشارك · لقطات جماعية</span></div> : null}
       {booking.assignedStaff?.length ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Users className="h-3.5 w-3.5 text-primary" /><span className="truncate">{booking.assignedStaff.map((staff) => staff.name).join("، ")}</span></div> : null}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
         <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{booking.hall || "الموقع غير محدد"}</span></span>
