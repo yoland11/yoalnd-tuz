@@ -230,6 +230,7 @@ function EmployeeSalariesPageInner() {
   const [origin, setOrigin] = useState(params.get("origin") || "all");
   const [selected, setSelected] = useState<SalaryRow | null>(null);
   const [editor, setEditor] = useState<EditorState>(null);
+  const [editorError, setEditorError] = useState<string | null>(null);
   const [deleteRow, setDeleteRow] = useState<SalaryRow | null>(null);
   const [reverseRow, setReverseRow] = useState<SalaryRow | null>(null);
   const [paymentRow, setPaymentRow] = useState<SalaryRow | null>(null);
@@ -282,13 +283,13 @@ function EmployeeSalariesPageInner() {
   });
   const editMutation = useMutation({
     mutationFn: ({ row, payload }: { row: SalaryRow; payload: unknown }) => adminFetch(`/admin/hr/payroll/${row.runId}/lines/${row.id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-    onSuccess: () => { toast.success("تم تحديث الراتب وإعادة احتساب الإجماليات"); setEditor(null); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); },
-    onError: (error: Error) => toast.error(error.message),
+    onSuccess: () => { toast.success("تم تحديث الراتب وإعادة احتساب الإجماليات"); setEditorError(null); setEditor(null); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); },
+    onError: (error: Error) => { setEditorError(error.message); toast.error(error.message); },
   });
   const createMutation = useMutation({
     mutationFn: (payload: unknown) => adminFetch("/admin/hr/payroll", { method: "POST", body: JSON.stringify(payload) }),
-    onSuccess: () => { toast.success("تم إنشاء سجل الراتب كمسودة دون سحب من الصندوق"); setEditor(null); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); },
-    onError: (error: Error) => toast.error(error.message),
+    onSuccess: () => { toast.success("تم إنشاء سجل الراتب كمسودة دون سحب من الصندوق"); setEditorError(null); setEditor(null); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); },
+    onError: (error: Error) => { setEditorError(error.message); toast.error(error.message); },
   });
   const deleteMutation = useMutation({
     mutationFn: ({ row, reason }: { row: SalaryRow; reason: string }) => adminFetch(`/admin/hr/payroll/${row.runId}/lines/${row.id}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
@@ -307,8 +308,8 @@ function EmployeeSalariesPageInner() {
   });
   const movementMutation = useMutation({
     mutationFn: ({ row, payload }: { row: SalaryRow; payload: unknown }) => adminFetch(`/admin/hr/payroll/${row.runId}/lines/${row.id}/movements`, { method: "POST", body: JSON.stringify(payload) }),
-    onSuccess: () => { toast.success("تم حفظ حركة الراتب وسجل التدقيق"); setEditor(null); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); qc.invalidateQueries({ queryKey: ["employee-salary-management"] }); },
-    onError: (error: Error) => toast.error(error.message),
+    onSuccess: () => { toast.success("تم حفظ حركة الراتب وسجل التدقيق"); setEditorError(null); setEditor(null); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); qc.invalidateQueries({ queryKey: ["employee-salary-management"] }); },
+    onError: (error: Error) => { setEditorError(error.message); toast.error(error.message); },
   });
   const cancelMovementMutation = useMutation({
     mutationFn: ({ row, adjustment, reason }: { row: SalaryRow; adjustment: SalaryManagement["adjustments"][number]; reason: string }) => adminFetch(`/admin/hr/payroll/${row.runId}/lines/${row.id}/movements/${adjustment.id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }),
@@ -338,6 +339,7 @@ function EmployeeSalariesPageInner() {
 
   function openEditor(mode: NonNullable<EditorState>["mode"], row?: SalaryRow) {
     setEditor({ mode, row });
+    setEditorError(null);
     setForm(row ? {
       period: row.period, baseSalary: String(row.baseSalary), allowances: String(n(row.attendanceAllowance) + n(row.transportationAllowance) + n(row.foodAllowance) + n(row.phoneAllowance) + n(row.housingAllowance) + n(row.otherFixedAllowances)),
       bonusAmount: String(row.bonusAmount), overtimeAmount: String(row.overtimeAmount), otherEarnings: String(row.otherEarnings), manualDeduction: String(row.manualDeduction), advanceDeduction: String(row.advanceDeduction), paymentMethod: row.paymentMethod || "cash", paymentDate: row.paymentDate, notes: row.lineNotes || "", amount: "", movementType: "bonus", reason: "", effectiveDate: row.periodStart || `${row.period}-01`, attachment: "",
@@ -346,6 +348,7 @@ function EmployeeSalariesPageInner() {
 
   function submitEditor(): void {
     if (!editor) return;
+    setEditorError(null);
     if (editor.mode === "create") {
       const employeeId = Number(form.employeeIds);
       if (!employeeId) { toast.error("اختر الموظف بإدخال رقمه الوظيفي"); return; }
@@ -579,7 +582,7 @@ function EmployeeSalariesPageInner() {
     </tbody><tfoot className="border-t-2 bg-muted/40 font-semibold"><tr><td colSpan={3} className="px-3 py-4">{filtered.length.toLocaleString("ar-IQ-u-nu-latn")} سجل راتب</td>{[totals.base, totals.additions, totals.bonuses, totals.allowances, totals.deductions, totals.advances, totals.gross, totals.net, totals.paid, totals.remaining].map((v, i) => <td key={i} className="whitespace-nowrap px-3 py-4 text-xs">{money.format(v)}</td>)}<td colSpan={3} /></tr></tfoot></table></div></Card>
 
     <DetailsBoundary key={`details-${selected?.id ?? "none"}`} onClose={() => setSelected(null)}><SalaryDetails row={selected} management={managementQuery.data} loading={managementQuery.isLoading} statementError={managementQuery.isError} savingStatementPdf={statementPdfRowId === selected?.id} onClose={() => setSelected(null)} onPrint={printSalary} onPrintStatement={printEmployeeStatement} onSaveStatementPdf={(row) => void saveEmployeeStatementPdf(row)} onReversePayment={(payment) => selected && setReversePayment({ row: selected, payment })} onAttach={() => selected && setAttachmentRow(selected)} onCancelMovement={(adjustment) => selected && setMovementToCancel({ row: selected, adjustment })} /></DetailsBoundary>
-    <SalaryEditor state={editor} form={form} setForm={setForm} onClose={() => setEditor(null)} onSubmit={submitEditor} busy={editMutation.isPending || createMutation.isPending || movementMutation.isPending} employees={staffQuery.data || []} />
+    <SalaryEditor state={editor} form={form} setForm={setForm} error={editorError} onClose={() => { setEditor(null); setEditorError(null); }} onSubmit={submitEditor} busy={editMutation.isPending || createMutation.isPending || movementMutation.isPending} employees={staffQuery.data || []} />
     {paymentRow && <PaymentDialog key={`pay-${paymentRow.id}`} row={paymentRow} busy={paymentMutation.isPending} onClose={() => setPaymentRow(null)} onSubmit={(payload) => paymentMutation.mutate({ row: paymentRow, payload })} />}
     {reconcileRow && <ReconciliationDialog key={`reconcile-${reconcileRow.id}`} row={reconcileRow} management={managementQuery.data} loading={managementQuery.isLoading} busy={reconcileMutation.isPending} onClose={() => setReconcileRow(null)} onSubmit={(payload) => reconcileMutation.mutate({ row: reconcileRow, payload })} />}
     {correctionRow && <CorrectionDialog key={`correct-${correctionRow.id}`} row={correctionRow} management={managementQuery.data} loading={managementQuery.isLoading} busy={correctionMutation.isPending} onClose={() => setCorrectionRow(null)} onSubmit={(payload) => correctionMutation.mutate({ row: correctionRow, payload })} />}
@@ -736,7 +739,7 @@ function ReversePaymentDialog({ value, busy, onClose, onSubmit }: { value: { row
   return <Dialog open onOpenChange={(open) => !open && onClose()}><DialogContent dir="rtl"><DialogHeader><DialogTitle>عكس دفعة راتب</DialogTitle><DialogDescription>لن تُحذف الدفعة. سيُنشأ قيد عكسي وتُعاد أرصدة الراتب والصندوق والمحاسبة.</DialogDescription></DialogHeader><div className="rounded-xl bg-muted/40 p-3 text-sm"><b>{value.payment.transaction_no}</b><p>{value.row.employeeName} · {money.format(n(value.payment.amount))}</p></div><Field label="سبب العكس *"><Textarea value={reason} onChange={(e) => setReason(e.target.value)} /></Field><DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button variant="destructive" disabled={busy || reason.trim().length < 3} onClick={() => onSubmit(reason)}>{busy && <Loader2 className="ms-2 h-4 w-4 animate-spin" />}تأكيد العكس</Button></DialogFooter></DialogContent></Dialog>;
 }
 
-function SalaryEditor({ state, form, setForm, onClose, onSubmit, busy, employees }: { state: EditorState; form: Record<string, string>; setForm: React.Dispatch<React.SetStateAction<Record<string, string>>>; onClose: () => void; onSubmit: () => void; busy: boolean; employees: StaffOption[] }) {
+function SalaryEditor({ state, form, setForm, error, onClose, onSubmit, busy, employees }: { state: EditorState; form: Record<string, string>; setForm: React.Dispatch<React.SetStateAction<Record<string, string>>>; error?: string | null; onClose: () => void; onSubmit: () => void; busy: boolean; employees: StaffOption[] }) {
   if (!state) return null;
   const title = { create: "إضافة راتب موظف", edit: "تعديل الراتب", movement: "إضافة حركة راتب" }[state.mode];
   const uniqueEmployees = [...employees].sort((a, b) => String(a.fullName || a.username).localeCompare(String(b.fullName || b.username), "ar"));
@@ -757,6 +760,7 @@ function SalaryEditor({ state, form, setForm, onClose, onSubmit, busy, employees
       <Field label="مرفق اختياري"><Input type="file" accept="image/*,.pdf" onChange={(e) => { const file = e.target.files?.[0]; if (!file) return; if (file.size > 5_000_000) { toast.error("حجم المرفق يجب ألا يتجاوز 5 ميغابايت"); return; } const reader = new FileReader(); reader.onload = () => set("attachment", String(reader.result)); reader.onerror = () => toast.error("تعذر قراءة المرفق"); reader.readAsDataURL(file); }} /></Field>
     </div>
     : <div className="grid gap-4 sm:grid-cols-2"><Field label="الراتب الأساسي"><Input inputMode="decimal" value={form.baseSalary || ""} onChange={(e) => set("baseSalary", e.target.value)} /></Field><Field label="البدلات"><Input inputMode="decimal" value={form.allowances || ""} disabled title="البدلات الثابتة تُدار من إعدادات راتب الموظف" /></Field><Field label="المكافآت"><Input inputMode="decimal" value={form.bonusAmount || ""} onChange={(e) => set("bonusAmount", e.target.value)} /></Field><Field label="العمل الإضافي"><Input inputMode="decimal" value={form.overtimeAmount || ""} onChange={(e) => set("overtimeAmount", e.target.value)} /></Field><Field label="إضافة يدوية"><Input inputMode="decimal" value={form.otherEarnings || ""} onChange={(e) => set("otherEarnings", e.target.value)} /></Field><Field label="خصم يدوي"><Input inputMode="decimal" value={form.manualDeduction || ""} onChange={(e) => set("manualDeduction", e.target.value)} /></Field><Field label="خصم السلفة"><Input inputMode="decimal" value={form.advanceDeduction || ""} onChange={(e) => set("advanceDeduction", e.target.value)} /></Field><Field label="طريقة الدفع"><Select value={form.paymentMethod || "cash"} onValueChange={(v) => set("paymentMethod", v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent dir="rtl"><SelectItem value="cash">نقدي</SelectItem><SelectItem value="main_cash_box">الصندوق الرئيسي</SelectItem><SelectItem value="bank">مصرف</SelectItem><SelectItem value="transfer">تحويل</SelectItem></SelectContent></Select></Field><Field label="تاريخ الدفع"><Input type="date" value={form.paymentDate || ""} onChange={(e) => set("paymentDate", e.target.value)} /></Field><Field label="الملاحظات"><Textarea value={form.notes || ""} onChange={(e) => set("notes", e.target.value)} /></Field><div className="sm:col-span-2"><Field label="سبب التعديل *"><Textarea value={form.reason || ""} onChange={(e) => set("reason", e.target.value)} placeholder="سبب واضح يُحفظ مع القيم الأصلية والمعدلة في سجل التدقيق" /></Field></div><div className="sm:col-span-2 rounded-xl bg-primary/10 p-4"><span className="text-sm text-muted-foreground">معاينة صافي الراتب</span><b className="mt-1 block text-xl text-primary">{money.format(Math.max(0, preview))}</b></div></div>}
+    {error ? <div role="alert" className="mt-4 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"><ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" /><div><b className="block">تعذّر الحفظ</b><span>{error}</span></div></div> : null}
     <DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button disabled={busy || (state.mode === "edit" && String(form.reason || "").trim().length < 3) || movementInvalid} onClick={onSubmit}>{busy && <Loader2 className="ms-2 h-4 w-4 animate-spin" />}{state.mode === "movement" ? "حفظ الحركة" : "حفظ"}</Button></DialogFooter>
   </DialogContent></Dialog>;
 }
