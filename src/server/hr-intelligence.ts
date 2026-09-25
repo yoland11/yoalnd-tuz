@@ -81,6 +81,10 @@ const manualSalarySchema = z.object({
   advanceDeduction: z.coerce.number().min(0).max(1_000_000_000).default(0),
   paymentMethod: z.enum(["main_cash_box", "bank", "cash", "transfer", "card"]).default("cash"),
   notes: z.string().trim().max(2000).optional().nullable(),
+  // true (default): an independent per-employee salary in its own run, so it is
+  // never blocked by another employee's approved cycle. false: attach to the
+  // shared full monthly cycle (which locks once approved/paid).
+  standalone: z.coerce.boolean().optional().default(true),
 });
 
 export class PayrollConflictError extends Error {
@@ -732,17 +736,26 @@ export async function createManualSalaryRecord(input: unknown, actor: HrActor) {
   const manualDates = resolvePayrollPeriod({ period: data.period, periodType: "custom", periodStartDate: data.periodStartDate, periodEndDate: data.periodEndDate, paymentDate: data.paymentDate });
   const gross = num(data.baseSalary + data.allowances + data.bonusAmount + data.overtimeAmount + data.manualAddition);
   const net = Math.max(0, num(gross - data.manualDeduction - data.advanceDeduction));
+  const standalone = data.standalone !== false;
   const runId = await db.transaction(async (tx) => {
     const staff = rows<any>(await tx.execute(sql`select id,full_name,username,department from staff where id=${data.employeeId} and is_active=true limit 1`))[0];
     if (!staff) throw new Error("الموظف غير موجود أو غير نشط");
-    let run = rows<any>(await tx.execute(sql`select * from payroll_runs where (period_key=${manualDates.periodKey} or (period_start_date=${manualDates.start} and period_end_date=${manualDates.end})) and deleted_at is null for update`))[0];
-    if (!run) {
-      const runNo = `PAY-${data.period.replace("-", "")}-${randomUUID().slice(0, 6).toUpperCase()}`;
-      run = rows<any>(await tx.execute(sql`insert into payroll_runs(run_no,period,period_type,period_key,status,notes,period_start_date,period_end_date,payment_date,department,created_by,created_by_name) values(${runNo},${manualDates.period},'custom',${manualDates.periodKey},'draft',${data.notes || null},${manualDates.start},${manualDates.end},${manualDates.paymentDate},${staff.department || null},${actor.id},${actor.name}) returning *`))[0];
+    // One salary per employee per month, regardless of which run holds it.
+    const existing = rows<any>(await tx.execute(sql`select l.id from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id where l.staff_id=${data.employeeId} and r.period=${manualDates.period} and r.deleted_at is null limit 1`))[0];
+    if (existing) throw new Error("يوجد راتب مسجل لهذا الموظف في هذا الشهر");
+    let run: any = null;
+    if (!standalone) {
+      // Optional full monthly cycle: attach to the shared run for this period.
+      run = rows<any>(await tx.execute(sql`select * from payroll_runs where (period_key=${manualDates.periodKey} or (period_start_date=${manualDates.start} and period_end_date=${manualDates.end})) and deleted_at is null order by id limit 1 for update`))[0] ?? null;
+      if (run && !["draft", "calculated", "under_review", "rejected"].includes(String(run.status)))
+        throw new Error("دورة رواتب هذا الشهر معتمدة أو مصروفة؛ أعد فتحها أو أضف الراتب كسجل منفصل.");
     }
-    if (!["draft", "calculated", "under_review", "rejected"].includes(String(run.status))) throw new Error("لا يمكن إضافة راتب يدوي إلى دورة معتمدة أو مصروفة");
-    const existing = rows<any>(await tx.execute(sql`select id from payroll_lines where payroll_run_id=${run.id} and staff_id=${data.employeeId} limit 1`))[0];
-    if (existing) throw new Error("يوجد راتب مسجل لهذا الموظف في الشهر المحدد");
+    if (!run) {
+      // Default: a dedicated, independent run for this single employee's salary.
+      const runNo = `PAY-${data.period.replace("-", "")}-${randomUUID().slice(0, 6).toUpperCase()}`;
+      const periodKey = standalone ? `manual:${manualDates.period}:emp${data.employeeId}:${randomUUID().slice(0, 6)}` : manualDates.periodKey;
+      run = rows<any>(await tx.execute(sql`insert into payroll_runs(run_no,period,period_type,period_key,status,notes,period_start_date,period_end_date,payment_date,department,created_by,created_by_name) values(${runNo},${manualDates.period},'custom',${periodKey},'draft',${data.notes || null},${manualDates.start},${manualDates.end},${manualDates.paymentDate},${staff.department || null},${actor.id},${actor.name}) returning *`))[0];
+    }
     await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,payment_method,other_fixed_allowances,bonus_amount,overtime_amount,manual_earnings,manual_deduction,advance_deduction,gross_salary,net_salary,payment_status,line_notes,calculation_details) values(${run.id},${data.employeeId},${data.baseSalary},${data.paymentMethod},${data.allowances},${data.bonusAmount},${data.overtimeAmount},${data.manualAddition},${data.manualDeduction},${data.advanceDeduction},${gross},${net},'unpaid',${data.notes || null},${JSON.stringify({ origin: "manual", createdBy: actor.id, createdByName: actor.name, createdAt: new Date().toISOString() })}::jsonb)`);
     await tx.execute(sql`update payroll_runs set period_start_date=coalesce(period_start_date,${data.periodStartDate}),period_end_date=coalesce(period_end_date,${data.periodEndDate}),payment_date=coalesce(payment_date,${data.paymentDate || null}),status=case when status='rejected' then 'draft' else status end,total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${run.id}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${run.id}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${run.id}),updated_at=now() where id=${run.id}`);
     return Number(run.id);
