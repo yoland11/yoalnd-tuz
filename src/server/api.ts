@@ -30574,6 +30574,17 @@ const BookingTransportationSchema = z.object({
   fee: z.coerce.number().min(0).max(1_000_000_000).optional().default(0),
   note: z.string().trim().max(1000).nullable().optional(),
 });
+// Group photography: many individuals under ONE event booking, each a participant
+// with their own receipt. Stored additively in bookingOperations.groupAttendees;
+// it is operational and does not post cash on its own.
+const GroupAttendeeAddSchema = z.object({
+  action: z.literal("add-attendee"),
+  name: z.string().trim().min(1).max(200),
+  phone: z.string().trim().max(30).nullable().optional(),
+  amount: z.coerce.number().min(0).max(1_000_000_000).optional().default(0),
+  note: z.string().trim().max(500).nullable().optional(),
+});
+const GroupAttendeeRemoveSchema = z.object({ id: z.string().trim().min(1).max(60) });
 
 /**
  * Apply a preparation-state patch to ONE item inside bookingOperations.productMeta
@@ -32813,6 +32824,55 @@ async function handleBookingOperations(
       });
       void logAdminActivity(req, "transportation_set", reference.entityType, reference.id, { mode: d.mode ?? null });
       return json({ ok: true, transportation });
+    }
+  }
+
+  if (resource === "group-attendees") {
+    const attendees = Array.isArray((reference.operations as any).groupAttendees) ? (reference.operations as any).groupAttendees : [];
+    if (method === "GET") {
+      if (!can("booking_operations_view", "orders", "photography", "bookings"))
+        return error("ليس لديك صلاحية العرض", 403);
+      return json({ attendees });
+    }
+    if (method === "POST") {
+      if (!can("booking_edit", "orders", "photography", "bookings"))
+        return error("ليس لديك صلاحية تعديل الحجز", 403);
+      const parsed = GroupAttendeeAddSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("group-attendee", parsed);
+      const d = parsed.data;
+      const attendee = {
+        id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+        name: d.name,
+        phone: d.phone ?? null,
+        amount: d.amount,
+        note: d.note ?? null,
+        receiptNo: `PH-${reference.id}-${(attendees.length + 1).toString().padStart(3, "0")}`,
+        createdBy: auth.id,
+        createdByName: (auth as any).fullName || auth.username,
+        createdAt: new Date().toISOString(),
+      };
+      await saveBookingOperations(reference, { ...reference.operations, groupAttendees: [...attendees, attendee] });
+      await addEntityTimeline({
+        entityType: reference.entityType,
+        entityId: reference.id,
+        type: "group_attendee_added",
+        title: "إضافة مشارك (لقطات جماعية)",
+        body: `${d.name}${d.amount ? ` · ${d.amount}` : ""}`,
+        actor: erpActorFromAdmin(auth),
+        metadata: { name: d.name, amount: d.amount },
+      });
+      void logAdminActivity(req, "group_attendee_added", reference.entityType, reference.id, { name: d.name });
+      return json({ ok: true, attendee });
+    }
+    if (method === "DELETE") {
+      if (!can("booking_edit", "orders", "photography", "bookings"))
+        return error("ليس لديك صلاحية تعديل الحجز", 403);
+      const parsed = GroupAttendeeRemoveSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("group-attendee-remove", parsed);
+      const next = attendees.filter((a: any) => String(a?.id ?? "") !== parsed.data.id);
+      await saveBookingOperations(reference, { ...reference.operations, groupAttendees: next });
+      void logAdminActivity(req, "group_attendee_removed", reference.entityType, reference.id, { id: parsed.data.id });
+      return json({ ok: true });
     }
   }
 

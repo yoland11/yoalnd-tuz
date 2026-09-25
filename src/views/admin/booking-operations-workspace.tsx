@@ -74,6 +74,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, compressImageFile, formatCurrency } from "./_lib";
+import { printStandaloneDocument } from "@/lib/pdf";
+
+type GroupAttendee = { id: string; name: string; phone: string | null; amount: number; note: string | null; receiptNo: string; createdByName?: string; createdAt: string };
 import { BookingThermalPrintAction } from "@/components/booking-thermal-print";
 import { BookingThermalReceiptAction } from "@/components/booking-thermal-receipt";
 import { AccountSummaryCard } from "./payment-collection";
@@ -389,6 +392,21 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: [...key, "transportation"] }); queryClient.invalidateQueries({ queryKey: [...key, "overview"] }); toast({ title: "تم تحديث خدمة النقل" }); },
     onError: (error: any) => toast({ title: "تعذر تحديث خدمة النقل", description: error?.message, variant: "destructive" }),
   });
+  const attendees = useQuery<{ attendees: GroupAttendee[] }>({ queryKey: [...key, "group-attendees"], queryFn: () => adminFetch(`${base}/group-attendees`) });
+  const addAttendee = useMutation({
+    mutationFn: (payload: { name: string; phone: string | null; amount: number; note: string | null }) => adminFetch(`${base}/group-attendees`, { method: "POST", body: JSON.stringify({ action: "add-attendee", ...payload }) }),
+    onSuccess: () => { attendees.refetch(); toast({ title: "تمت إضافة المشارك" }); },
+    onError: (error: any) => toast({ title: "تعذر إضافة المشارك", description: error?.message, variant: "destructive" }),
+  });
+  const removeAttendee = useMutation({
+    mutationFn: (id: string) => adminFetch(`${base}/group-attendees`, { method: "DELETE", body: JSON.stringify({ id }) }),
+    onSuccess: () => { attendees.refetch(); toast({ title: "تم حذف المشارك" }); },
+    onError: (error: any) => toast({ title: "تعذر حذف المشارك", description: error?.message, variant: "destructive" }),
+  });
+  const printAttendeeReceipt = (a: GroupAttendee) => {
+    const html = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${a.receiptNo}</title><style>@page{size:80mm auto;margin:4mm}body{font-family:Tahoma,Arial,sans-serif;color:#111;margin:0}.r{width:72mm;font-size:12px}.c{text-align:center}.h{font-weight:800;font-size:15px}.line{border-top:1px dashed #999;margin:6px 0}.row{display:flex;justify-content:space-between;gap:8px;margin:3px 0}b{font-weight:700}</style></head><body><div class="r"><div class="c h">مجموعة علي جان نهاد</div><div class="c">وصل تصوير — لقطات جماعية</div><div class="line"></div><div class="row"><span>رقم الوصل</span><b>${a.receiptNo}</b></div><div class="row"><span>الحجز</span><b>${booking.number}</b></div><div class="row"><span>الاسم</span><b>${(a.name || "").replace(/[<>&]/g, "")}</b></div>${a.phone ? `<div class="row"><span>الهاتف</span><b>${a.phone}</b></div>` : ""}<div class="row"><span>المبلغ</span><b>${formatCurrency(Number(a.amount || 0))}</b></div><div class="row"><span>التاريخ</span><b>${new Date(a.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</b></div>${a.note ? `<div class="line"></div><div>${a.note.replace(/[<>&]/g, "")}</div>` : ""}<div class="line"></div><div class="c">شكراً لكم</div></div></body></html>`;
+    try { printStandaloneDocument(html, 320); } catch { toast({ title: "تعذّرت الطباعة", variant: "destructive" }); }
+  };
   const workflow = useMutation({
     mutationFn: ({ kind, stage }: { kind: "booking" | "warehouse"; stage: string }) => adminFetch(`${base}/${kind === "booking" ? "workflow" : "warehouse"}`, { method: "PATCH", body: JSON.stringify({ stage, confirmation: true }) }),
     onSuccess: (_, input) => {
@@ -470,6 +488,8 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <TransportationCard mode={transportationMode as any} fee={transportationFee} busy={setTransportation.isPending} onSave={(mode, fee) => setTransportation.mutate({ mode, fee })} />
 
+    <GroupAttendeesCard attendees={attendees.data?.attendees ?? []} adding={addAttendee.isPending} removingId={removeAttendee.isPending ? (removeAttendee.variables as string) : null} onAdd={(payload) => addAttendee.mutate(payload)} onRemove={(id) => removeAttendee.mutate(id)} onPrint={printAttendeeReceipt} />
+
     <div className="ajn-op-workspace-grid"><main><Tabs value={tab} onValueChange={changeTab} className="ajn-op-tabs">
       <TabsList>{TAB_LABELS.map(([value, label, Icon]) => <TabsTrigger key={value} value={value}><Icon /> {label}{overview.data && value in overview.data.counts && <em>{(overview.data.counts as any)[value]}</em>}</TabsTrigger>)}</TabsList>
       <TabsContent value="overview"><OverviewTab data={overview.data} loading={overview.isLoading} error={overview.error} booking={booking} onTab={changeTab} /></TabsContent>
@@ -500,6 +520,50 @@ function BookingFinancialCards({ booking, onFinance }: { booking: BookingOperati
     ["تاريخ المناسبة", readableDate(booking.eventDate), CalendarDays, "neutral"],
   ] as const;
   return <section className="ajn-op-financial-cards" aria-label="ملخص الحجز المالي">{cards.map(([label, value, Icon, tone]) => <button type="button" key={label} className={`is-${tone}`} onClick={onFinance}><span><Icon /></span><div><small>{label}</small><strong>{value}</strong></div></button>)}<button type="button" className="ajn-op-payment-card" onClick={onFinance}><span><CircleDollarSign /></span><div><small>حالة الدفع</small><strong>{status}</strong><i><em style={{ width: `${progress}%` }} /></i></div><b>{progress}%</b></button></section>;
+}
+
+function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, onPrint }: { attendees: GroupAttendee[]; adding: boolean; removingId: string | null; onAdd: (p: { name: string; phone: string | null; amount: number; note: string | null }) => void; onRemove: (id: string) => void; onPrint: (a: GroupAttendee) => void }) {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [amount, setAmount] = useState("");
+  const total = attendees.reduce((s, a) => s + Number(a.amount || 0), 0);
+  const inputCls = "min-w-0 rounded-md border border-border/40 bg-background px-2.5 py-2 text-sm";
+  const submit = () => {
+    if (!name.trim()) return;
+    onAdd({ name: name.trim(), phone: phone.trim() || null, amount: Number(amount) || 0, note: null });
+    setName(""); setPhone(""); setAmount("");
+  };
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-4" dir="rtl">
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2"><Camera className="h-4 w-4 text-primary" /><h2 className="text-sm font-bold text-foreground">لقطات جماعية — المشاركون</h2><span className="text-xs text-muted-foreground">({attendees.length})</span></div>
+        <div className="text-xs text-muted-foreground">الإجمالي: <b className="text-foreground">{formatCurrency(total)}</b></div>
+      </div>
+      <p className="mb-3 text-xs text-muted-foreground">كل شخص يأخذ صورته يُضاف هنا ضمن نفس الحجز ويستلم وصلاً خاصاً به — بدل فتح حجز منفصل لكل صورة.</p>
+      <div className="grid gap-2 sm:grid-cols-[1.4fr_1fr_1fr_auto]">
+        <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} placeholder="اسم المشارك" className={inputCls} />
+        <input value={phone} onChange={(e) => setPhone(e.target.value.replace(/[^0-9+]/g, ""))} placeholder="الهاتف (اختياري)" className={inputCls} dir="ltr" />
+        <input value={amount} inputMode="decimal" onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} placeholder="المبلغ" className={inputCls} />
+        <Button size="sm" disabled={adding} onClick={submit}>{adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} إضافة</Button>
+      </div>
+      {attendees.length ? (
+        <div className="mt-3 overflow-x-auto rounded-lg border border-border/30">
+          <table className="w-full min-w-[520px] text-right text-xs">
+            <thead className="bg-muted/40 text-muted-foreground"><tr>{["الوصل", "الاسم", "الهاتف", "المبلغ", ""].map((h) => <th key={h} className="p-2 font-semibold">{h}</th>)}</tr></thead>
+            <tbody>{attendees.map((a) => (
+              <tr key={a.id} className="border-t border-border/20">
+                <td className="p-2 font-mono text-[10px] text-muted-foreground" dir="ltr">{a.receiptNo}</td>
+                <td className="p-2 font-medium text-foreground">{a.name}</td>
+                <td className="p-2" dir="ltr">{a.phone || "—"}</td>
+                <td className="p-2 tabular-nums">{formatCurrency(Number(a.amount || 0))}</td>
+                <td className="p-2"><div className="flex justify-end gap-1"><button type="button" title="طباعة وصل" aria-label="طباعة وصل" onClick={() => onPrint(a)} className="rounded-md border border-border/40 p-1 hover:bg-muted"><Printer className="h-3.5 w-3.5" /></button><button type="button" title="حذف" aria-label="حذف" disabled={removingId === a.id} onClick={() => onRemove(a.id)} className="rounded-md border border-border/40 p-1 text-destructive hover:bg-destructive/10"><Trash2 className="h-3.5 w-3.5" /></button></div></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      ) : <p className="mt-3 rounded-lg border border-dashed border-border/40 p-3 text-center text-xs text-muted-foreground">لا مشاركون بعد. أضِف أول شخص من الأعلى.</p>}
+    </section>
+  );
 }
 
 function TransportationCard({ mode, fee, busy, onSave }: { mode: "ajn" | "customer" | null; fee: number; busy: boolean; onSave: (mode: "ajn" | "customer" | null, fee: number) => void }) {
