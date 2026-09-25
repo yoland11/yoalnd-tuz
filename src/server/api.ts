@@ -30552,6 +30552,20 @@ const PreparationBulkSchema = z.object({
   assigneeName: z.string().trim().max(200).nullable().optional(),
   priority: z.enum(["normal", "important", "urgent"]).optional(),
 });
+// Add a manual checklist item to a booking's preparation list. Additive only:
+// stored in bookingOperations.manualPrepItems; never reserves stock or money.
+const PreparationManualAddSchema = z.object({
+  action: z.literal("add-manual"),
+  name: z.string().trim().min(1).max(300),
+  department: z.string().trim().max(40).optional().default("other"),
+  quantity: z.coerce.number().int().min(1).max(100000).optional().default(1),
+  source: z.enum(["custom", "product", "asset"]).optional().default("custom"),
+  productId: z.coerce.number().int().positive().nullable().optional(),
+  sku: z.string().trim().max(120).nullable().optional(),
+  infoOnly: z.boolean().optional().default(false),
+  note: z.string().trim().max(2000).nullable().optional(),
+});
+const PreparationManualRemoveSchema = z.object({ key: z.string().trim().min(1).max(120) });
 
 /**
  * Apply a preparation-state patch to ONE item inside bookingOperations.productMeta
@@ -32683,11 +32697,44 @@ async function handleBookingOperations(
       void logAdminActivity(req, "preparation_item_updated", reference.entityType, reference.id, { key: d.key });
       return json({ ok: true });
     }
-    // Bulk apply (assign / status / priority) to several items.
+    // POST — add a manual item ({action:"add-manual",…}) or bulk-apply to several.
     if (method === "POST") {
       if (!can("preparation_manage", "preparation_assign"))
         return error("ليس لديك صلاحية تعديل التجهيز", 403);
-      const parsed = PreparationBulkSchema.safeParse(await body(req));
+      const raw = await body(req);
+      if (raw && (raw as any).action === "add-manual") {
+        const parsed = PreparationManualAddSchema.safeParse(raw);
+        if (!parsed.success) return validationError("preparation.manual", parsed);
+        const d = parsed.data;
+        const existingManual = Array.isArray((reference.operations as any).manualPrepItems) ? (reference.operations as any).manualPrepItems : [];
+        const item = {
+          id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+          name: d.name,
+          department: d.department || "other",
+          quantity: d.quantity,
+          source: d.source,
+          productId: d.source === "custom" ? null : (d.productId ?? null),
+          sku: d.sku ?? null,
+          infoOnly: d.infoOnly,
+          note: d.note ?? null,
+          createdBy: auth.id,
+          createdByName: (auth as any).fullName || auth.username,
+          createdAt: new Date().toISOString(),
+        };
+        await saveBookingOperations(reference, { ...reference.operations, manualPrepItems: [...existingManual, item] });
+        await addEntityTimeline({
+          entityType: reference.entityType,
+          entityId: reference.id,
+          type: "preparation_item_added",
+          title: "إضافة عنصر تجهيز يدوي",
+          body: `${d.name}${d.infoOnly ? " · للعلم" : ""} · ${d.quantity}`,
+          actor: erpActorFromAdmin(auth),
+          metadata: { source: d.source, infoOnly: d.infoOnly, productId: item.productId },
+        });
+        void logAdminActivity(req, "preparation_item_added", reference.entityType, reference.id, { source: d.source });
+        return json({ ok: true, id: item.id });
+      }
+      const parsed = PreparationBulkSchema.safeParse(raw);
       if (!parsed.success) return validationError("preparation.bulk", parsed);
       const d = parsed.data;
       let meta = (reference.operations.productMeta ?? {}) as Record<string, any>;
@@ -32706,6 +32753,22 @@ async function handleBookingOperations(
       });
       void logAdminActivity(req, "preparation_bulk_updated", reference.entityType, reference.id, { count: d.keys.length });
       return json({ ok: true, updated: d.keys.length });
+    }
+    // DELETE — remove a manually-added item (only manual: keys).
+    if (method === "DELETE") {
+      if (!can("preparation_manage"))
+        return error("ليس لديك صلاحية تعديل التجهيز", 403);
+      const parsed = PreparationManualRemoveSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("preparation.manual-remove", parsed);
+      const manualId = parsed.data.key.startsWith("manual:") ? parsed.data.key.slice("manual:".length) : "";
+      if (!manualId) return error("لا يمكن حذف إلا العناصر المُضافة يدويًا", 400);
+      const existingManual = Array.isArray((reference.operations as any).manualPrepItems) ? (reference.operations as any).manualPrepItems : [];
+      const nextManual = existingManual.filter((m: any) => String(m?.id ?? "") !== manualId);
+      const nextMeta = { ...((reference.operations.productMeta ?? {}) as Record<string, any>) };
+      delete nextMeta[parsed.data.key];
+      await saveBookingOperations(reference, { ...reference.operations, manualPrepItems: nextManual, productMeta: nextMeta });
+      void logAdminActivity(req, "preparation_item_removed", reference.entityType, reference.id, { key: parsed.data.key });
+      return json({ ok: true });
     }
   }
 

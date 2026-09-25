@@ -26,6 +26,7 @@ export type PreparationStatus =
   | "damaged" // تالف
   | "lost" // مفقود
   | "unavailable" // غير متوفر
+  | "note" // للعلم فقط (عنصر يدوي للتنبيه)
   | "completed"; // مكتمل
 
 export type PreparationPriority = "normal" | "important" | "urgent";
@@ -33,7 +34,11 @@ export type PreparationPriority = "normal" | "important" | "urgent";
 export type PreparationItem = {
   key: string; // productId:variantId
   reservationId: number | null;
-  kind: "product" | "asset";
+  kind: "product" | "asset" | "manual";
+  /** true for items added manually (custom / product-ref / asset-ref) to this list. */
+  manual?: boolean;
+  /** بس للعلم — a note item that is not counted toward preparation progress. */
+  infoOnly?: boolean;
   productId: number | null;
   name: string;
   sku: string | null;
@@ -263,7 +268,48 @@ export async function getBookingPreparationSummary(
     });
   }
 
-  return { source, id, items, rollup: rollupOf(items) };
+  // Manually-added items live additively on the same booking jsonb. They never
+  // reserve stock or touch inventory — they are checklist entries the team adds
+  // from a product, an asset, a custom name, or just as a note (بس للعلم).
+  const manualItems = Array.isArray(ops.manualPrepItems) ? ops.manualPrepItems : [];
+  for (const m of manualItems) {
+    const manualId = String(m?.id ?? "").trim();
+    if (!manualId) continue;
+    const key = `manual:${manualId}`;
+    const prep = readPrep(productMeta, key);
+    const infoOnly = Boolean(m?.infoOnly);
+    const kind: PreparationItem["kind"] = m?.source === "product" ? "product" : m?.source === "asset" ? "asset" : "manual";
+    const status: PreparationStatus = infoOnly
+      ? "note"
+      : ((["ready", "preparing", "completed", "damaged", "lost"].includes(String(prep.prepStatus)) ? prep.prepStatus : "preparing") as PreparationStatus);
+    items.push({
+      key,
+      reservationId: null,
+      kind,
+      manual: true,
+      infoOnly,
+      productId: m?.productId != null ? Number(m.productId) : null,
+      name: String(m?.name ?? "عنصر"),
+      sku: m?.sku ? String(m.sku) : null,
+      department: String(m?.department || "other"),
+      required: Math.max(1, num(m?.quantity ?? 1)),
+      totalStock: 0,
+      reservedByOthers: 0,
+      available: 0,
+      shortfall: 0,
+      status,
+      assigneeId: prep.assigneeId,
+      assigneeName: prep.assigneeName,
+      priority: prep.priority,
+      deadline: prep.deadline,
+      note: prep.note ?? (m?.note ? String(m.note) : null),
+      purchaseRequested: false,
+      evidenceCount: 0,
+    });
+  }
+
+  // Info-only items are notes; they never drag preparation progress up or down.
+  return { source, id, items, rollup: rollupOf(items.filter((i) => !i.infoOnly)) };
 }
 
 export type PreparationCard = {
