@@ -143,6 +143,37 @@ function productStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
 }
 
+// تشكيل تلقائي للأسماء الشائعة — يظهر كاقتراح على اسم الطالب في خطوة النصوص،
+// حتى يطلع التطريز بالحركات الصحيحة (مثل: علي ← عَلِيّ). المستخدم يختار التطبيق،
+// ويقدر يعدّل يدوياً. عرض فقط — بدون أي تأثير على السعر أو البيانات.
+const NAME_TASHKEEL: Record<string, string> = {
+  "علي": "عَلِيّ", "محمد": "مُحَمَّد", "احمد": "أَحْمَد", "أحمد": "أَحْمَد", "حسن": "حَسَن",
+  "حسين": "حُسَيْن", "عباس": "عَبَّاس", "حيدر": "حَيْدَر", "كرار": "كَرَّار", "مصطفى": "مُصْطَفَى",
+  "جعفر": "جَعْفَر", "هاشم": "هَاشِم", "يوسف": "يُوسُف", "ابراهيم": "إِبْرَاهِيم", "إبراهيم": "إِبْرَاهِيم",
+  "سجاد": "سَجَّاد", "مرتضى": "مُرْتَضَى", "امير": "أَمِير", "أمير": "أَمِير", "زيد": "زَيْد",
+  "عبدالله": "عَبْدُاللَّه", "عبد الله": "عَبْدُ اللَّه", "منتظر": "مُنْتَظَر", "تبارك": "تَبَارَك",
+  "فاطمة": "فَاطِمَة", "زينب": "زَيْنَب", "مريم": "مَرْيَم", "زهراء": "زَهْرَاء", "رقية": "رُقَيَّة",
+  "نور": "نُور", "سارة": "سَارَة", "ساره": "سَارَة", "ايه": "آيَة", "آية": "آيَة", "بتول": "بَتُول",
+  "هدى": "هُدَى", "دعاء": "دُعَاء", "رنا": "رَنَا", "شهد": "شَهْد", "غفران": "غُفْرَان", "رند": "رَنْد",
+};
+
+// يُعيد الاسم بالتشكيل إذا اختلف عن المُدخل، وإلا null (لا اقتراح).
+function vocalizeArabicName(input: string): string | null {
+  const raw = (input ?? "").trim();
+  if (!raw) return null;
+  let changed = false;
+  const out = raw
+    .split(/(\s+)/)
+    .map((token) => {
+      if (/^\s+$/.test(token) || !token) return token;
+      const hit = NAME_TASHKEEL[token];
+      if (hit && hit !== token) { changed = true; return hit; }
+      return token;
+    })
+    .join("");
+  return changed ? out : null;
+}
+
 const STEPS = [
   { label: "النوع", icon: GraduationCap },
   { label: "القياسات", icon: Ruler },
@@ -1669,6 +1700,21 @@ function GraduationConfigurator() {
                               }))
                             }
                           />
+                          {key === "studentName" && (() => {
+                            const suggestion = vocalizeArabicName(form.customText.studentName);
+                            return suggestion && suggestion !== form.customText.studentName ? (
+                              <button
+                                type="button"
+                                onClick={() => setForm((current) => ({ ...current, customText: { ...current.customText, studentName: suggestion } }))}
+                                className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs text-primary transition-colors hover:bg-primary/10"
+                                title="يطبّق حركات التشكيل على الاسم ليطلع التطريز صحيحاً"
+                              >
+                                <span>اقتراح بالتشكيل:</span>
+                                <b className="font-semibold">{suggestion}</b>
+                                <span className="text-muted-foreground">— تطبيق</span>
+                              </button>
+                            ) : null;
+                          })()}
                         </div>
                       ))}
                     </div>
