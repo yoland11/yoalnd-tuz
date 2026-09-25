@@ -383,6 +383,12 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
   };
 
   const overview = useQuery<OverviewData>({ queryKey: [...key, "overview"], queryFn: () => adminFetch(`${base}/overview`) });
+  const transportation = useQuery<{ transportation: { mode: "ajn" | "customer" | null; fee: number } | null }>({ queryKey: [...key, "transportation"], queryFn: () => adminFetch(`${base}/transportation`) });
+  const setTransportation = useMutation({
+    mutationFn: (payload: { mode: "ajn" | "customer" | null; fee: number }) => adminFetch(`${base}/transportation`, { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: [...key, "transportation"] }); queryClient.invalidateQueries({ queryKey: [...key, "overview"] }); toast({ title: "تم تحديث خدمة النقل" }); },
+    onError: (error: any) => toast({ title: "تعذر تحديث خدمة النقل", description: error?.message, variant: "destructive" }),
+  });
   const workflow = useMutation({
     mutationFn: ({ kind, stage }: { kind: "booking" | "warehouse"; stage: string }) => adminFetch(`${base}/${kind === "booking" ? "workflow" : "warehouse"}`, { method: "PATCH", body: JSON.stringify({ stage, confirmation: true }) }),
     onSuccess: (_, input) => {
@@ -401,9 +407,10 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
   const department = booking.raw?.departmentName || booking.raw?.department || booking.services[0]?.type || "تنظيم المناسبات";
   const responsibleTeam = booking.raw?.teamName || booking.raw?.assignedTeam || booking.raw?.assignedStaffName || "فريق العمليات";
   const whatsappNumber = String(booking.phone || "").replace(/\D/g, "").replace(/^0/, "964");
-  const transportationMode = booking.source === "kosha" ? booking.raw?.transportationMode : null;
+  const transportationMode = transportation.data?.transportation?.mode ?? (booking.source === "kosha" ? booking.raw?.transportationMode : null) ?? null;
+  const transportationFee = Number(transportation.data?.transportation?.fee ?? (booking.source === "kosha" ? booking.raw?.transportationFee : 0) ?? 0);
   const transportationLabel = transportationMode === "ajn"
-    ? `النقل بواسطة AJN${Number(booking.raw?.transportationFee ?? 0) > 0 ? ` — ${formatCurrency(Number(booking.raw.transportationFee))}` : ""}`
+    ? `النقل بواسطة AJN${transportationFee > 0 ? ` — ${formatCurrency(transportationFee)}` : ""}`
     : transportationMode === "customer" ? "النقل من مسؤولية الزبون" : null;
 
   // Read-only projection of the booking's authoritative values for the dedicated
@@ -459,7 +466,9 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <OperationsSummary data={overview.data} booking={booking} onTab={changeTab} />
 
-    <section className="ajn-op-quickbar"><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button className="ajn-op-add-item"><Plus /> إضافة عنصر <ChevronDown /></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="ajn-op-add-menu"><DropdownMenuItem onSelect={() => changeTab("products")}><span className="is-store"><ShoppingBag /></span><span><b>إضافة منتج من المتجر</b><small>اختر المنتجات والمتغيرات واحجز الكمية من المخزون.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("assets")}><span className="is-asset"><PackageCheck /></span><span><b>إضافة أصل من الأصول</b><small>اربط المعدات وتحقق من التوفر وحالة الأصل.</small></span><ChevronLeft /></DropdownMenuItem></DropdownMenuContent></DropdownMenu><div>{nextBooking && <Button variant="outline" onClick={() => setConfirm({ kind: "booking", stage: nextBooking[0], label: nextBooking[1] })}><Check /> {nextBooking[1]}</Button>}{nextWarehouse && <Button variant="outline" onClick={() => setConfirm({ kind: "warehouse", stage: nextWarehouse[0], label: nextWarehouse[1] })}><QrCode /> {nextWarehouse[1]}</Button>}<Button variant="outline" onClick={() => changeTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="outline" onClick={() => changeTab("documents")}><FileText /> رفع مستند</Button></div></section>
+    <section className="ajn-op-quickbar"><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button className="ajn-op-add-item"><Plus /> إضافة عنصر <ChevronDown /></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="ajn-op-add-menu"><DropdownMenuItem onSelect={() => changeTab("products")}><span className="is-store"><ShoppingBag /></span><span><b>إضافة منتج من المتجر</b><small>اختر المنتجات والمتغيرات واحجز الكمية من المخزون.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("assets")}><span className="is-asset"><PackageCheck /></span><span><b>إضافة أصل من الأصول</b><small>اربط المعدات وتحقق من التوفر وحالة الأصل.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => { window.requestAnimationFrame(() => document.getElementById("ajn-transport-card")?.scrollIntoView({ behavior: "smooth", block: "center" })); }}><span className="is-asset"><Truck /></span><span><b>إضافة خدمة نقل</b><small>حدّد النقل بواسطة AJN أو من مسؤولية الزبون لهذا الحجز.</small></span><ChevronLeft /></DropdownMenuItem></DropdownMenuContent></DropdownMenu><div>{nextBooking && <Button variant="outline" onClick={() => setConfirm({ kind: "booking", stage: nextBooking[0], label: nextBooking[1] })}><Check /> {nextBooking[1]}</Button>}{nextWarehouse && <Button variant="outline" onClick={() => setConfirm({ kind: "warehouse", stage: nextWarehouse[0], label: nextWarehouse[1] })}><QrCode /> {nextWarehouse[1]}</Button>}<Button variant="outline" onClick={() => changeTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="outline" onClick={() => changeTab("documents")}><FileText /> رفع مستند</Button></div></section>
+
+    <TransportationCard mode={transportationMode as any} fee={transportationFee} busy={setTransportation.isPending} onSave={(mode, fee) => setTransportation.mutate({ mode, fee })} />
 
     <div className="ajn-op-workspace-grid"><main><Tabs value={tab} onValueChange={changeTab} className="ajn-op-tabs">
       <TabsList>{TAB_LABELS.map(([value, label, Icon]) => <TabsTrigger key={value} value={value}><Icon /> {label}{overview.data && value in overview.data.counts && <em>{(overview.data.counts as any)[value]}</em>}</TabsTrigger>)}</TabsList>
@@ -491,6 +500,33 @@ function BookingFinancialCards({ booking, onFinance }: { booking: BookingOperati
     ["تاريخ المناسبة", readableDate(booking.eventDate), CalendarDays, "neutral"],
   ] as const;
   return <section className="ajn-op-financial-cards" aria-label="ملخص الحجز المالي">{cards.map(([label, value, Icon, tone]) => <button type="button" key={label} className={`is-${tone}`} onClick={onFinance}><span><Icon /></span><div><small>{label}</small><strong>{value}</strong></div></button>)}<button type="button" className="ajn-op-payment-card" onClick={onFinance}><span><CircleDollarSign /></span><div><small>حالة الدفع</small><strong>{status}</strong><i><em style={{ width: `${progress}%` }} /></i></div><b>{progress}%</b></button></section>;
+}
+
+function TransportationCard({ mode, fee, busy, onSave }: { mode: "ajn" | "customer" | null; fee: number; busy: boolean; onSave: (mode: "ajn" | "customer" | null, fee: number) => void }) {
+  const [m, setM] = useState<"ajn" | "customer" | null>(mode);
+  const [f, setF] = useState(fee ? String(fee) : "");
+  useEffect(() => { setM(mode); setF(fee ? String(fee) : ""); }, [mode, fee]);
+  const btn = (active: boolean) => `rounded-lg border px-3 py-3 text-center text-sm transition-colors ${active ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`;
+  return (
+    <section id="ajn-transport-card" className="rounded-2xl border border-border/40 bg-card p-4" dir="rtl">
+      <div className="mb-1 flex items-center gap-2"><Truck className="h-4 w-4 text-primary" /><h2 className="text-sm font-bold text-foreground">خدمة النقل</h2></div>
+      <p className="mb-3 text-xs text-muted-foreground">تُسجَّل تشغيلياً على الحجز ولا تغيّر إجماليه أو حالته المالية.</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button type="button" onClick={() => setM("ajn")} className={btn(m === "ajn")}>النقل بواسطة AJN</button>
+        <button type="button" onClick={() => { setM("customer"); setF(""); }} className={btn(m === "customer")}>النقل من مسؤولية الزبون</button>
+      </div>
+      {m === "ajn" ? (
+        <div className="mt-3 space-y-1">
+          <label className="text-xs text-muted-foreground">أجرة النقل (للعلم)</label>
+          <input inputMode="decimal" value={f} onChange={(e) => setF(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" className="w-full rounded-md border border-border/40 bg-background px-3 py-2 text-sm sm:max-w-xs" />
+        </div>
+      ) : null}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button size="sm" disabled={busy || !m} onClick={() => onSave(m, m === "ajn" ? Number(f) || 0 : 0)}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} حفظ خدمة النقل</Button>
+        {mode ? <Button size="sm" variant="ghost" disabled={busy} className="text-destructive" onClick={() => onSave(null, 0)}>إزالة</Button> : null}
+      </div>
+    </section>
+  );
 }
 
 function OperationsSummary({ data, booking, onTab }: { data?: OverviewData; booking: BookingOperationsBooking; onTab: (tab: string) => void }) {

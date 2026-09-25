@@ -30566,6 +30566,14 @@ const PreparationManualAddSchema = z.object({
   note: z.string().trim().max(2000).nullable().optional(),
 });
 const PreparationManualRemoveSchema = z.object({ key: z.string().trim().min(1).max(120) });
+// Operational transport service for a booking, managed from the workspace. Stored
+// additively in bookingOperations.transportation; it is informational and never
+// changes the booking total, so it is safe even after a payment is recorded.
+const BookingTransportationSchema = z.object({
+  mode: z.enum(["ajn", "customer"]).nullable().optional(),
+  fee: z.coerce.number().min(0).max(1_000_000_000).optional().default(0),
+  note: z.string().trim().max(1000).nullable().optional(),
+});
 
 /**
  * Apply a preparation-state patch to ONE item inside bookingOperations.productMeta
@@ -32769,6 +32777,42 @@ async function handleBookingOperations(
       await saveBookingOperations(reference, { ...reference.operations, manualPrepItems: nextManual, productMeta: nextMeta });
       void logAdminActivity(req, "preparation_item_removed", reference.entityType, reference.id, { key: parsed.data.key });
       return json({ ok: true });
+    }
+  }
+
+  if (resource === "transportation") {
+    // Read the booking's transport service. Prefer the workspace-managed value;
+    // fall back to a kosha booking's own transport columns for legacy records.
+    const opsTransport = (reference.operations as any).transportation ?? null;
+    const legacyMode = reference.source === "kosha" ? ((reference.row as any)?.transportationMode ?? (reference.row as any)?.transportation_mode ?? null) : null;
+    const legacyFee = reference.source === "kosha" ? Number((reference.row as any)?.transportationFee ?? (reference.row as any)?.transportation_fee ?? 0) : 0;
+    const current = opsTransport ?? (legacyMode ? { mode: legacyMode, fee: legacyFee } : null);
+    if (method === "GET") {
+      if (!can("booking_operations_view", "orders", "preparation_view", "booking_finance_view"))
+        return error("ليس لديك صلاحية العرض", 403);
+      return json({ transportation: current });
+    }
+    if (method === "POST" || method === "PATCH") {
+      if (!can("booking_edit", "orders", "bookings"))
+        return error("ليس لديك صلاحية تعديل الحجز", 403);
+      const parsed = BookingTransportationSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("transportation", parsed);
+      const d = parsed.data;
+      const transportation = d.mode
+        ? { mode: d.mode, fee: d.mode === "ajn" ? d.fee : 0, note: d.note ?? null, updatedBy: auth.id, updatedByName: (auth as any).fullName || auth.username, updatedAt: new Date().toISOString() }
+        : null;
+      await saveBookingOperations(reference, { ...reference.operations, transportation });
+      await addEntityTimeline({
+        entityType: reference.entityType,
+        entityId: reference.id,
+        type: "transportation_set",
+        title: "تحديث خدمة النقل",
+        body: d.mode === "ajn" ? `النقل بواسطة AJN${d.fee ? ` — ${d.fee}` : ""}` : d.mode === "customer" ? "النقل من مسؤولية الزبون" : "إزالة خدمة النقل",
+        actor: erpActorFromAdmin(auth),
+        metadata: { mode: d.mode ?? null, fee: d.fee ?? 0 },
+      });
+      void logAdminActivity(req, "transportation_set", reference.entityType, reference.id, { mode: d.mode ?? null });
+      return json({ ok: true, transportation });
     }
   }
 
