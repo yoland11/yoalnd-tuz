@@ -13,6 +13,7 @@ import {
   FileSpreadsheet,
   Link2,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Paperclip,
   Plus,
@@ -32,6 +33,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -544,7 +546,33 @@ function EmployeeSalariesPageInner() {
           <td className="px-3 py-3"><b>{periodLabel(row.period)}</b><div className="text-xs text-muted-foreground">{row.periodStart} — {row.periodEnd || "—"}</div></td>
           <MoneyCell value={row.baseSalary} /><MoneyCell value={n(row.otherEarnings) + n(row.commissionAmount)} /><MoneyCell value={row.bonusAmount} /><MoneyCell value={allowances} /><MoneyCell value={Math.max(0, n(row.totalDeductions) - n(row.advanceDeduction))} /><MoneyCell value={row.advanceDeduction} /><MoneyCell value={row.grossSalary} strong /><MoneyCell value={row.netSalary} strong /><MoneyCell value={row.amountPaid} tone="text-emerald-600" /><MoneyCell value={row.remainingSalary} tone="text-amber-600" />
           <td className="px-3 py-3"><Badge variant="outline" className={statusTone(row.paymentStatus)}>{paymentLabels[row.paymentStatus] || row.paymentStatus}</Badge></td><td className="px-3 py-3"><Badge variant="outline" className={statusTone(row.payrollStatus)}>{payrollLabels[row.payrollStatus] || row.payrollStatus}</Badge></td>
-          <td className="px-3 py-3"><div className="flex flex-wrap gap-1"><Button size="sm" variant="outline" onClick={() => setSelected(row)}><Eye className="ms-2 h-4 w-4" />تفاصيل احتساب الراتب</Button><Button size="sm" variant="outline" disabled={!canAdjust(row)} title={canAdjust(row) ? "إضافة مكافأة أو استقطاع أو تعديل راتب أساسي" : "لا يمكن تعديل راتب ملغي أو معكوس"} onClick={() => openEditor("movement", row)}><PlusCircle className="ms-2 h-4 w-4" />إضافة حركة راتب</Button><IconButton label="طباعة القسيمة" onClick={() => printSalary(row)}><Printer /></IconButton><IconButton label="إرفاق مستند" onClick={() => setAttachmentRow(row)}><Paperclip /></IconButton><IconButton label={canEdit(row) ? "تعديل الراتب" : "لا يمكن تعديل راتب مصروف أو مرحّل"} disabled={!canEdit(row)} onClick={() => openEditor("edit", row)}><Pencil /></IconButton>{["draft", "calculated"].includes(row.payrollStatus) && <IconButton label="إرسال الراتب لاعتماد المدير" onClick={() => runAction.mutate({ row, action: "submit" })}><FileClock /></IconButton>}{row.payrollStatus === "pending_manager_approval" && <IconButton label="اعتماد دورة الرواتب دون صرف" onClick={() => runAction.mutate({ row, action: "approve" })}><CheckCircle2 /></IconButton>}{row.paymentStatus === "paid" ? <Button size="sm" variant="outline" disabled><CheckCircle2 className="ms-2 h-4 w-4" />مدفوع بالكامل</Button> : ["approved", "partially_paid"].includes(row.payrollStatus) && row.remainingSalary > 0 ? <Button size="sm" onClick={() => setPaymentRow(row)}><Banknote className="ms-2 h-4 w-4" />تسديد جزء</Button> : null}{row.legacyIssues.some((issue) => issue.includes("غير مربوط ماليًا")) && <IconButton label="مطابقة الراتب القديم مع حركة مالية" onClick={() => setReconcileRow(row)}><Link2 /></IconButton>}{n(row.amountPaid) > 0 && <IconButton label="تصحيح راتب مصروف بأثر مالي واضح" onClick={() => setCorrectionRow(row)}><Wrench /></IconButton>}<IconButton label={canDelete(row) ? "حذف الراتب المسودة" : "لا يمكن حذف راتب مصروف؛ استخدم العكس المالي"} disabled={!canDelete(row)} onClick={() => setDeleteRow(row)} danger><Trash2 /></IconButton></div></td>
+          <td className="px-3 py-3">
+            <div className="flex items-center justify-start gap-1.5">
+              <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={() => setSelected(row)}><Eye className="h-4 w-4" />التفاصيل</Button>
+              {row.paymentStatus !== "paid" && ["approved", "partially_paid"].includes(row.payrollStatus) && row.remainingSalary > 0
+                ? <Button size="sm" className="h-8 gap-1.5" onClick={() => setPaymentRow(row)}><Banknote className="h-4 w-4" />تسديد</Button>
+                : null}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon" variant="ghost" className="h-8 w-8" aria-label={`إجراءات راتب ${row.employeeName}`}><MoreHorizontal className="h-4 w-4" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{row.salaryNumber}</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem disabled={!canAdjust(row)} onClick={() => openEditor("movement", row)}><PlusCircle />إضافة حركة راتب</DropdownMenuItem>
+                  <DropdownMenuItem disabled={!canEdit(row)} onClick={() => openEditor("edit", row)}><Pencil />تعديل الراتب</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setAttachmentRow(row)}><Paperclip />إرفاق مستند</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => printSalary(row)}><Printer />طباعة القسيمة</DropdownMenuItem>
+                  {["draft", "calculated"].includes(row.payrollStatus) && <DropdownMenuItem onClick={() => runAction.mutate({ row, action: "submit" })}><FileClock />إرسال لاعتماد المدير</DropdownMenuItem>}
+                  {row.payrollStatus === "pending_manager_approval" && <DropdownMenuItem onClick={() => runAction.mutate({ row, action: "approve" })}><CheckCircle2 />اعتماد الدورة دون صرف</DropdownMenuItem>}
+                  {row.legacyIssues.some((issue) => issue.includes("غير مربوط ماليًا")) && <DropdownMenuItem onClick={() => setReconcileRow(row)}><Link2 />مطابقة راتب قديم مع حركة</DropdownMenuItem>}
+                  {n(row.amountPaid) > 0 && <DropdownMenuItem onClick={() => setCorrectionRow(row)}><Wrench />تصحيح راتب مصروف</DropdownMenuItem>}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem disabled={!canDelete(row)} onClick={() => setDeleteRow(row)} className="text-destructive focus:text-destructive"><Trash2 />حذف الراتب</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </td>
         </tr>;
       })}
       {!runsQuery.isLoading && !filtered.length && <tr><td colSpan={16} className="p-14 text-center"><WalletCards className="mx-auto mb-3 h-8 w-8 text-muted-foreground" /><b>لا توجد رواتب مطابقة</b><p className="mt-1 text-sm text-muted-foreground">غيّر البحث أو الفلاتر لعرض سجلات أخرى.</p></td></tr>}
@@ -607,7 +635,6 @@ function Filter({ value, onValue, placeholder, items }: { value: string; onValue
   return <Select value={value} onValueChange={onValue}><SelectTrigger><SelectValue placeholder={placeholder} /></SelectTrigger><SelectContent dir="rtl"><SelectItem value="all">{placeholder}: الكل</SelectItem>{items.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}</SelectContent></Select>;
 }
 function MoneyCell({ value, strong, tone = "" }: { value: number; strong?: boolean; tone?: string }) { return <td className={`whitespace-nowrap px-3 py-3 tabular-nums ${strong ? "font-bold" : ""} ${tone}`}>{money.format(n(value))}</td>; }
-function IconButton({ label, onClick, disabled, danger, children }: { label: string; onClick: () => void; disabled?: boolean; danger?: boolean; children: React.ReactElement }) { return <Button type="button" size="icon" variant="ghost" className={`h-8 w-8 [&_svg]:h-4 [&_svg]:w-4 ${danger ? "text-destructive" : ""}`} title={label} aria-label={label} disabled={disabled} onClick={onClick}>{children}</Button>; }
 
 function SalaryDetails({ row, management, loading, statementError, savingStatementPdf, onClose, onPrint, onPrintStatement, onSaveStatementPdf, onReversePayment, onAttach, onCancelMovement }: { row: SalaryRow | null; management?: SalaryManagement; loading: boolean; statementError: boolean; savingStatementPdf: boolean; onClose: () => void; onPrint: (row: SalaryRow) => void; onPrintStatement: (row: SalaryRow) => void; onSaveStatementPdf: (row: SalaryRow) => void; onReversePayment: (payment: SalaryManagement["payments"][number]) => void; onAttach: () => void; onCancelMovement: (adjustment: SalaryManagement["adjustments"][number]) => void }) {
   if (!row) return null;
