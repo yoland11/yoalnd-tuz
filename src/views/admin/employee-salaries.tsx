@@ -579,6 +579,7 @@ function EmployeeSalariesPageInner() {
                   {row.payrollStatus === "pending_manager_approval" && <DropdownMenuItem onClick={() => runAction.mutate({ row, action: "approve" })}><CheckCircle2 />اعتماد الدورة دون صرف</DropdownMenuItem>}
                   {row.legacyIssues.some((issue) => issue.includes("غير مربوط ماليًا")) && <DropdownMenuItem onClick={() => setReconcileRow(row)}><Link2 />مطابقة راتب قديم مع حركة</DropdownMenuItem>}
                   {n(row.amountPaid) > 0 && <DropdownMenuItem onClick={() => setCorrectionRow(row)}><Wrench />تصحيح راتب مصروف</DropdownMenuItem>}
+                  {n(row.amountPaid) > 0 && !["reversed", "cancelled"].includes(row.payrollStatus) && (me?.role === "admin" || hasPerm(me ?? null, "employee_salaries_reverse")) && <DropdownMenuItem onClick={() => setReverseRow(row)} className="text-destructive focus:text-destructive"><Undo2 />عكس الصرف (الدورة كاملة)</DropdownMenuItem>}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem disabled={!canDelete(row)} onClick={() => setDeleteRow(row)} className="text-destructive focus:text-destructive"><Trash2 />حذف الراتب</DropdownMenuItem>
                 </DropdownMenuContent>
