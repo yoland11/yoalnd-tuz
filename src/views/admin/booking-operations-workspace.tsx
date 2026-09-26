@@ -412,6 +412,15 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
     const html = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${a.receiptNo}</title><style>@page{size:80mm auto;margin:4mm}body{font-family:Tahoma,Arial,sans-serif;color:#111;margin:0}.r{width:72mm;font-size:12px}.c{text-align:center}.h{font-weight:800;font-size:15px}.line{border-top:1px dashed #999;margin:6px 0}.row{display:flex;justify-content:space-between;gap:8px;margin:3px 0}b{font-weight:700}</style></head><body><div class="r"><div class="c h">مجموعة علي جان نهاد</div><div class="c">وصل تصوير — لقطات جماعية</div><div class="line"></div><div class="row"><span>رقم الوصل</span><b>${a.receiptNo}</b></div><div class="row"><span>الحجز</span><b>${booking.number}</b></div><div class="row"><span>الاسم</span><b>${(a.name || "").replace(/[<>&]/g, "")}</b></div>${a.phone ? `<div class="row"><span>الهاتف</span><b>${a.phone}</b></div>` : ""}<div class="row"><span>المبلغ</span><b>${formatCurrency(Number(a.amount || 0))}</b></div><div class="row"><span>التاريخ</span><b>${new Date(a.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</b></div>${a.note ? `<div class="line"></div><div>${a.note.replace(/[<>&]/g, "")}</div>` : ""}<div class="line"></div><div class="c">شكراً لكم</div></div></body></html>`;
     try { printStandaloneDocument(html, 320); } catch { toast({ title: "تعذّرت الطباعة", variant: "destructive" }); }
   };
+  const printAttendeesSheet = (list: GroupAttendee[]) => {
+    if (!list.length) { toast({ title: "لا مشاركون للطباعة" }); return; }
+    const esc = (v: unknown) => String(v ?? "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c] || c));
+    const total = list.reduce((s, a) => s + Number(a.amount || 0), 0);
+    const collected = list.reduce((s, a) => s + (a.collected ? Number(a.amount || 0) : 0), 0);
+    const rows = list.map((a, i) => `<tr><td>${i + 1}</td><td class="mono">${esc(a.receiptNo)}</td><td>${esc(a.name)}</td><td class="mono" dir="ltr">${esc(a.phone || "—")}</td><td class="num">${formatCurrency(Number(a.amount || 0))}</td><td>${a.collected ? "✔ محصّل" : "—"}</td></tr>`).join("");
+    const html = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>كشف المشاركين ${esc(booking.number)}</title><style>@page{size:A4;margin:12mm}body{font-family:Tahoma,Arial,sans-serif;color:#111;font-size:12px}.h{font-weight:800;font-size:16px}.sub{color:#555;margin:2px 0 10px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:right}th{background:#f1f5f9}.num{white-space:nowrap;direction:ltr;text-align:left}.mono{font-family:monospace;font-size:11px}tfoot td{font-weight:800;background:#f8fafc}.c{text-align:center}</style></head><body><div class="c h">مجموعة علي جان نهاد</div><div class="c sub">كشف المشاركين — لقطات جماعية · حجز ${esc(booking.number)} · ${esc(booking.customerName)}</div><table><thead><tr><th>#</th><th>الوصل</th><th>الاسم</th><th>الهاتف</th><th>المبلغ</th><th>التحصيل</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="4">الإجمالي (${list.length} مشارك)</td><td class="num">${formatCurrency(total)}</td><td></td></tr><tr><td colspan="4">المحصّل</td><td class="num">${formatCurrency(collected)}</td><td></td></tr><tr><td colspan="4">المتبقّي</td><td class="num">${formatCurrency(total - collected)}</td><td></td></tr></tfoot></table></body></html>`;
+    try { printStandaloneDocument(html, 794); } catch { toast({ title: "تعذّرت الطباعة", variant: "destructive" }); }
+  };
   const workflow = useMutation({
     mutationFn: ({ kind, stage }: { kind: "booking" | "warehouse"; stage: string }) => adminFetch(`${base}/${kind === "booking" ? "workflow" : "warehouse"}`, { method: "PATCH", body: JSON.stringify({ stage, confirmation: true }) }),
     onSuccess: (_, input) => {
@@ -493,7 +502,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <TransportationCard mode={transportationMode as any} fee={transportationFee} busy={setTransportation.isPending} onSave={(mode, fee) => setTransportation.mutate({ mode, fee })} />
 
-    <GroupAttendeesCard attendees={attendees.data?.attendees ?? []} adding={addAttendee.isPending} removingId={removeAttendee.isPending ? (removeAttendee.variables as string) : null} onAdd={(payload) => addAttendee.mutate(payload)} onRemove={(id) => removeAttendee.mutate(id)} onCollect={(id, collected) => collectAttendee.mutate({ id, collected })} onPrint={printAttendeeReceipt} />
+    <GroupAttendeesCard attendees={attendees.data?.attendees ?? []} adding={addAttendee.isPending} removingId={removeAttendee.isPending ? (removeAttendee.variables as string) : null} onAdd={(payload) => addAttendee.mutate(payload)} onRemove={(id) => removeAttendee.mutate(id)} onCollect={(id, collected) => collectAttendee.mutate({ id, collected })} onPrint={printAttendeeReceipt} onPrintSheet={printAttendeesSheet} />
 
     <div className="ajn-op-workspace-grid"><main><Tabs value={tab} onValueChange={changeTab} className="ajn-op-tabs">
       <TabsList>{TAB_LABELS.map(([value, label, Icon]) => <TabsTrigger key={value} value={value}><Icon /> {label}{overview.data && value in overview.data.counts && <em>{(overview.data.counts as any)[value]}</em>}</TabsTrigger>)}</TabsList>
@@ -527,7 +536,7 @@ function BookingFinancialCards({ booking, onFinance }: { booking: BookingOperati
   return <section className="ajn-op-financial-cards" aria-label="ملخص الحجز المالي">{cards.map(([label, value, Icon, tone]) => <button type="button" key={label} className={`is-${tone}`} onClick={onFinance}><span><Icon /></span><div><small>{label}</small><strong>{value}</strong></div></button>)}<button type="button" className="ajn-op-payment-card" onClick={onFinance}><span><CircleDollarSign /></span><div><small>حالة الدفع</small><strong>{status}</strong><i><em style={{ width: `${progress}%` }} /></i></div><b>{progress}%</b></button></section>;
 }
 
-function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, onCollect, onPrint }: { attendees: GroupAttendee[]; adding: boolean; removingId: string | null; onAdd: (p: { name: string; phone: string | null; amount: number; note: string | null }) => void; onRemove: (id: string) => void; onCollect: (id: string, collected: boolean) => void; onPrint: (a: GroupAttendee) => void }) {
+function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, onCollect, onPrint, onPrintSheet }: { attendees: GroupAttendee[]; adding: boolean; removingId: string | null; onAdd: (p: { name: string; phone: string | null; amount: number; note: string | null }) => void; onRemove: (id: string) => void; onCollect: (id: string, collected: boolean) => void; onPrint: (a: GroupAttendee) => void; onPrintSheet: (list: GroupAttendee[]) => void }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
@@ -542,7 +551,7 @@ function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, on
   return (
     <section className="rounded-2xl border border-border/40 bg-card p-4" dir="rtl">
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2"><Camera className="h-4 w-4 text-primary" /><h2 className="text-sm font-bold text-foreground">لقطات جماعية — المشاركون</h2><span className="text-xs text-muted-foreground">({attendees.length})</span></div>
+        <div className="flex items-center gap-2"><Camera className="h-4 w-4 text-primary" /><h2 className="text-sm font-bold text-foreground">لقطات جماعية — المشاركون</h2><span className="text-xs text-muted-foreground">({attendees.length})</span>{attendees.length ? <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onPrintSheet(attendees)}><Printer className="h-3.5 w-3.5" /> كشف</Button> : null}</div>
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
           <span>الإجمالي: <b className="text-foreground">{formatCurrency(total)}</b></span>
           <span>محصّل: <b className="text-emerald-600">{formatCurrency(collectedTotal)}</b></span>
