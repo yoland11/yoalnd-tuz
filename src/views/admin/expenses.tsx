@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileSpreadsheet, FileText, Pencil, Plus, Printer, Search, Trash2, X } from "lucide-react";
+import { FileSpreadsheet, FileText, Pencil, Plus, Printer, Search, Tags, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -28,6 +28,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
   const { toast } = useToast();
   const { data: settings } = usePublicSettings();
   const [filters, setFilters] = useState({ from: monthStart(), to: today(), categoryId: "", paymentMethod: "", search: "", user: "" });
+  const [showCategories, setShowCategories] = useState(false);
   const [form, setForm] = useState<ExpenseForm | null>(() => startNew ? blankForm() : null);
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -129,6 +130,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
         </div>
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => setForm(blankForm())} size="sm" className="gap-1.5"><Plus className="w-4 h-4" /> إضافة مصروف</Button>
+          <Button variant={showCategories ? "default" : "outline"} size="sm" onClick={() => setShowCategories((value) => !value)} className="gap-1.5"><Tags className="w-4 h-4" /> التصنيفات</Button>
           <Button variant="outline" size="sm" onClick={() => printReport(false)} className="gap-1.5"><Printer className="w-4 h-4" /> طباعة A4</Button>
           <Button variant="outline" size="sm" onClick={() => printReport(true)} className="gap-1.5"><Printer className="w-4 h-4" /> حراري</Button>
           <Button variant="outline" size="sm" onClick={exportPdf} className="gap-1.5"><FileText className="w-4 h-4" /> PDF</Button>
@@ -137,6 +139,15 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
       </div>
 
       {form && <ExpenseFormPanel form={form} categories={categories} saving={save.isPending} onChange={setForm} onClose={() => setForm(null)} onSave={() => save.mutate(form)} />}
+
+      {showCategories && (
+        <div className="bg-card rounded-xl border border-primary/30 p-4">
+          <div className="mb-2 flex justify-end">
+            <Button variant="ghost" size="sm" onClick={() => setShowCategories(false)} className="gap-1.5"><X className="w-4 h-4" /> إغلاق</Button>
+          </div>
+          <ExpenseCategoriesPage />
+        </div>
+      )}
 
       <div className="bg-card rounded-xl border border-border/30 p-4 grid grid-cols-1 md:grid-cols-6 gap-3">
         <input type="date" value={filters.from} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} className={inputCls} />
@@ -231,6 +242,7 @@ export function ExpenseCategoriesPage() {
   const save = useMutation({
     mutationFn: () => adminFetch(draft.id ? `/admin/expense-categories/${draft.id}` : "/admin/expense-categories", { method: draft.id ? "PATCH" : "POST", body: JSON.stringify(draft) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "expense-categories"] }); setDraft({ id: 0, nameAr: "", name: "", isActive: true }); toast({ title: "تم حفظ التصنيف" }); },
+    onError: (error: any) => toast({ title: "تعذر حفظ التصنيف", description: error?.message, variant: "destructive" }),
   });
   const remove = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/expense-categories/${id}`, { method: "DELETE" }),
