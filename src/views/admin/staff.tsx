@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Edit2, Archive, X, UserCog } from "lucide-react";
+import { Plus, Edit2, Archive, X, UserCog, Building2, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, ALL_PERMISSIONS, PERMISSION_LABELS } from "./_lib";
@@ -161,6 +161,27 @@ function roleLabel(role: string): string {
   return ROLES.find((r) => r.value === role)?.label ?? role;
 }
 
+const DEPARTMENT_LABELS: Record<string, string> = {
+  general: "عام",
+  management: "الإدارة",
+  sales: "المبيعات",
+  accounting: "المحاسبة",
+  hr: "الموارد البشرية",
+  warehouse: "المستودع",
+  inventory: "المخزون",
+  delivery: "التوصيل",
+  photography: "التصوير",
+  kosha: "الكوشات",
+  design: "التصميم",
+  production: "الإنتاج",
+  graduation: "التخرج",
+  support: "الدعم",
+};
+function departmentLabel(department?: string): string {
+  const key = String(department || "general").trim().toLowerCase();
+  return DEPARTMENT_LABELS[key] || department || "عام";
+}
+
 function cleanErrorMessage(err: any): string {
   return String(err?.message ?? "فشل الاتصال بالخادم").replace(
     /^HTTP\s+\d+:\s*/,
@@ -219,6 +240,28 @@ export default function StaffPage() {
   });
   const [editing, setEditing] = useState<Editing | null>(null);
   const [editorTab, setEditorTab] = useState<"profile" | "salary" | "devices">("profile");
+  // Group staff by department so each department renders as its own
+  // collapsible section (largest teams first, then alphabetical by label).
+  const groupedByDepartment = useMemo(() => {
+    const map = new Map<string, Staff[]>();
+    for (const member of data ?? []) {
+      const key = String(member.department || "general");
+      const bucket = map.get(key);
+      if (bucket) bucket.push(member);
+      else map.set(key, [member]);
+    }
+    return [...map.entries()]
+      .map(([department, members]) => ({
+        department,
+        label: departmentLabel(department),
+        members,
+      }))
+      .sort(
+        (a, b) =>
+          b.members.length - a.members.length ||
+          a.label.localeCompare(b.label, "ar"),
+      );
+  }, [data]);
 
   const save = useMutation({
     mutationFn: (e: Editing) => {
@@ -317,8 +360,25 @@ export default function StaffPage() {
       ) : !data || data.length === 0 ? (
         <EmptyState message="لا يوجد موظفون — أضف أول موظف" />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {data.map((s) => (
+        <div className="space-y-3">
+          {groupedByDepartment.map((group) => (
+            <details
+              key={group.department}
+              open={groupedByDepartment.length === 1}
+              className="group rounded-xl border border-border/30 bg-card/40 overflow-hidden"
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 hover:bg-muted/40">
+                <span className="flex items-center gap-2 font-semibold text-foreground">
+                  <Building2 className="h-4 w-4 text-primary" />
+                  {group.label}
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                    {group.members.length}
+                  </span>
+                </span>
+                <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="grid grid-cols-1 gap-3 p-3 pt-0 md:grid-cols-2">
+                {group.members.map((s) => (
             <div
               key={s.id}
               className="bg-card rounded-xl border border-border/30 p-4"
@@ -434,6 +494,9 @@ export default function StaffPage() {
                 )}
               </div>
             </div>
+                ))}
+              </div>
+            </details>
           ))}
         </div>
       )}
