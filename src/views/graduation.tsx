@@ -27,6 +27,7 @@ import {
   Scissors,
   Shirt,
   ShoppingBag,
+  MessageCircle,
   Sparkles,
   Trash2,
   Upload,
@@ -62,6 +63,8 @@ import { useToast } from "@/hooks/use-toast";
 import { processImageFile } from "@/lib/image-tools";
 import { formatCurrency } from "@/lib/money";
 import { formatIraqiPhoneInput } from "@/lib/phone";
+import { usePublicSettings } from "@/lib/public-settings";
+import { buildWhatsAppLink } from "@/lib/order-stages";
 import {
   GRADUATION_STAGE_LABELS,
   customPackagePriceSummary,
@@ -221,6 +224,18 @@ const MEASUREMENTS = [
   ["sleeveLength", "طول الكم (سم)"],
   ["neck", "محيط الرقبة (سم)"],
 ] as const;
+
+// إرشادات «كيف أقيس؟» لكل قياس — نص مساعد يظهر تحت الحقل بضغطة.
+const MEASUREMENT_HELP: Record<string, string> = {
+  height: "قف مستقيماً بدون حذاء، وقِس من أعلى الرأس إلى الأرض.",
+  weight: "وزنك بالكيلوغرام — يساعد في اقتراح المقاس الأنسب.",
+  shoulder: "من نهاية عظمة الكتف إلى الكتف الثاني، مستقيماً على الظهر.",
+  chest: "لِفّ الشريط حول أعرض نقطة في الصدر تحت الإبط، أفقياً وبدون شد.",
+  waist: "حول الخصر عند أضيق نقطة (فوق السرّة غالباً)، بدون شدّ الشريط.",
+  hip: "حول أعرض نقطة في الورك والمقعدة، والشريط أفقي.",
+  sleeveLength: "من نهاية الكتف إلى عظمة المعصم والذراع مسترخية بجانبك.",
+  neck: "حول قاعدة الرقبة حيث تستقر ياقة القميص، مع ترك فسحة إصبع.",
+};
 
 const DECORATION_POSITIONS = [
   ["front", "الواجهة الأمامية"],
@@ -710,6 +725,7 @@ function PreviewPanel({
 
 function GraduationConfigurator() {
   const { toast } = useToast();
+  const publicSettings = usePublicSettings();
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(initialForm);
   const [completed, setCompleted] = useState<any>(null);
@@ -1413,6 +1429,12 @@ function GraduationConfigurator() {
                             }
                             className="mt-2"
                           />
+                          {MEASUREMENT_HELP[key] ? (
+                            <details className="mt-1">
+                              <summary className="cursor-pointer list-none text-xs text-primary hover:underline">كيف أقيس؟</summary>
+                              <p className="mt-1 text-xs leading-5 text-muted-foreground">{MEASUREMENT_HELP[key]}</p>
+                            </details>
+                          ) : null}
                         </div>
                       ))}
                     </div>
@@ -2057,6 +2079,18 @@ function GraduationConfigurator() {
                           )}
                           إرسال الطلب
                         </Button>
+                        <a
+                          href={buildWhatsAppLink(
+                            publicSettings.data?.whatsapp || publicSettings.data?.phone || "9647765004000",
+                            `مرحباً، أريد طلب تجهيز تخرّج:\nالنوع: ${selectedStyle?.name || "—"}\nالمقاس: ${form.measurements.suggestedSize || "غير محدّد"}${form.customText.studentName ? `\nالاسم على القطعة: ${form.customText.studentName}` : ""}\nالإجمالي التقديري: ${formatCurrency(pricing.total)}\nالاسم: ${form.customerName || "—"}${form.phone ? ` · ${form.phone}` : ""}`,
+                          )}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-3 flex w-full items-center justify-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 py-2.5 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-300"
+                        >
+                          <MessageCircle className="h-4 w-4" /> اطلب عبر واتساب
+                        </a>
+                        <p className="mt-2 text-center text-xs text-muted-foreground">تصميمك محفوظ — بضغطة نكمل الطلب معك بالمحادثة.</p>
                       </div>
                     </div>
                   </div>
