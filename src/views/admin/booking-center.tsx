@@ -49,6 +49,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import { printStandaloneDocument } from "@/lib/pdf";
 import { formatIraqiPhone } from "@/lib/phone";
 import { CustomerQuickAddDialog } from "./customer-quick-add";
 import { BookingOperationsWorkspace } from "./booking-operations-workspace";
@@ -422,6 +423,142 @@ function transportationSummary(booking: UnifiedBooking) {
   return null;
 }
 
+function escapeReportHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// Builds a self-contained printable report. `target === "all"` emits one
+// section per department plus a grand total; a single key emits just that
+// department. Read-only — no data is mutated and no failure is masked.
+function buildBookingDepartmentReport(
+  target: ServiceKey | "all",
+  bookings: UnifiedBooking[],
+): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const month = today.slice(0, 7);
+  const generatedAt = new Date().toLocaleString("ar-IQ");
+  const depts =
+    target === "all"
+      ? SERVICE_META
+      : SERVICE_META.filter((meta) => meta.key === target);
+  const grand = { total: 0, paid: 0, remaining: 0, count: 0 };
+
+  const sections = depts
+    .map((meta) => {
+      const rows = bookings
+        .filter((booking) =>
+          booking.services.some((service) => service.type === meta.key),
+        )
+        .sort((a, b) =>
+          String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? "")),
+        );
+      const sum = rows.reduce(
+        (acc, booking) => {
+          acc.total += booking.total;
+          acc.paid += booking.paid;
+          acc.remaining += booking.remaining;
+          if (String(booking.eventDate ?? "").startsWith(month))
+            acc.monthRevenue += booking.total;
+          return acc;
+        },
+        { total: 0, paid: 0, remaining: 0, monthRevenue: 0 },
+      );
+      grand.total += sum.total;
+      grand.paid += sum.paid;
+      grand.remaining += sum.remaining;
+      grand.count += rows.length;
+      const count = (statuses: string[]) =>
+        rows.filter((booking) => statuses.includes(booking.status)).length;
+      const body = rows.length
+        ? rows
+            .map(
+              (booking) => `<tr>
+                <td>${escapeReportHtml(booking.number)}</td>
+                <td>${escapeReportHtml(booking.customerName)}</td>
+                <td>${escapeReportHtml(booking.phone)}</td>
+                <td>${escapeReportHtml(booking.eventDate || "—")}</td>
+                <td>${escapeReportHtml(STATUS_LABELS[booking.status] || booking.status)}</td>
+                <td class="num">${formatCurrency(booking.total)}</td>
+                <td class="num">${formatCurrency(booking.paid)}</td>
+                <td class="num rem">${formatCurrency(booking.remaining)}</td>
+              </tr>`,
+            )
+            .join("")
+        : `<tr><td colspan="8" class="empty">لا توجد حجوزات في هذا القسم</td></tr>`;
+      return `<section class="dept">
+        <h2>${escapeReportHtml(meta.label)}</h2>
+        <div class="chips">
+          <span>الحجوزات: <b>${rows.length}</b></span>
+          <span>معلّق: <b>${count(["new", "pending", "waiting"])}</b></span>
+          <span>جاري: <b>${count(["processing", "preparing", "active", "confirmed"])}</b></span>
+          <span>مكتمل: <b>${count(["completed", "delivered", "finished", "returned"])}</b></span>
+          <span>إيراد الشهر: <b>${formatCurrency(sum.monthRevenue)}</b></span>
+        </div>
+        <table>
+          <thead><tr><th>رقم الحجز</th><th>العميل</th><th>الهاتف</th><th>التاريخ</th><th>الحالة</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقّي</th></tr></thead>
+          <tbody>${body}</tbody>
+          <tfoot><tr><td colspan="5">إجمالي القسم</td><td class="num">${formatCurrency(sum.total)}</td><td class="num">${formatCurrency(sum.paid)}</td><td class="num rem">${formatCurrency(sum.remaining)}</td></tr></tfoot>
+        </table>
+      </section>`;
+    })
+    .join("");
+
+  const grandBlock =
+    target === "all"
+      ? `<section class="grand">
+          <h2>الإجمالي العام لكل الأقسام</h2>
+          <div class="chips">
+            <span>إجمالي الحجوزات: <b>${grand.count}</b></span>
+            <span>الإجمالي: <b>${formatCurrency(grand.total)}</b></span>
+            <span>المدفوع: <b>${formatCurrency(grand.paid)}</b></span>
+            <span>المتبقّي: <b>${formatCurrency(grand.remaining)}</b></span>
+          </div>
+        </section>`
+      : "";
+
+  const titleLabel =
+    target === "all"
+      ? "كل الأقسام"
+      : SERVICE_META.find((meta) => meta.key === target)?.label ?? "";
+
+  return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><meta name="color-scheme" content="light">
+    <title>تقرير الحجوزات — ${escapeReportHtml(titleLabel)}</title>
+    <style>
+      @page{size:A4;margin:12mm;}
+      *{box-sizing:border-box;}
+      body{font-family:'Segoe UI',Tahoma,sans-serif;color:#111;background:#fff;margin:0;padding:16px;}
+      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:8px;margin-bottom:16px;}
+      .head h1{margin:0;font-size:20px;}
+      .head small{color:#555;}
+      .dept,.grand{margin-bottom:22px;}
+      .dept h2,.grand h2{font-size:16px;margin:0 0 8px;padding:6px 10px;background:#f3f4f6;border-right:4px solid #111;}
+      .grand h2{background:#111;color:#fff;}
+      .chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;font-size:12px;}
+      .chips span{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:3px 8px;}
+      table{width:100%;border-collapse:collapse;font-size:12px;}
+      th,td{border:1px solid #e5e7eb;padding:5px 6px;text-align:right;}
+      thead th{background:#111;color:#fff;font-weight:600;}
+      tfoot td{background:#f3f4f6;font-weight:700;}
+      .num{text-align:left;font-variant-numeric:tabular-nums;white-space:nowrap;}
+      .rem{color:#b91c1c;}
+      .empty{text-align:center;color:#777;padding:12px;}
+      tr{page-break-inside:avoid;}
+      @media print{body{padding:0;}}
+    </style></head>
+    <body>
+      <div class="head">
+        <div><h1>تقرير الحجوزات — ${escapeReportHtml(titleLabel)}</h1><small>مركز حجوزات AJN</small></div>
+        <div style="text-align:left"><small>تاريخ التقرير</small><br><b>${escapeReportHtml(generatedAt)}</b></div>
+      </div>
+      ${sections}
+      ${grandBlock}
+    </body></html>`;
+}
+
 export default function BookingCenterPage() {
   const [location] = useLocation();
   const detailMatch = location.match(/^\/admin\/bookings\/(service|kosha)\/(\d+)/);
@@ -526,6 +663,13 @@ function BookingDashboard() {
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" asChild><Link href="/admin/calendar"><CalendarDays className="h-4 w-4" /> التقويم</Link></Button>
           <Button
+            variant="outline"
+            onClick={() => printStandaloneDocument(buildBookingDepartmentReport("all", bookings))}
+            title="تقرير مطبوع لكل قسم مع الإجمالي العام"
+          >
+            <Printer className="h-4 w-4" /> تقرير الأقسام
+          </Button>
+          <Button
             className="ajn-rose-button"
             onClick={openCreateBooking}
             aria-controls="booking-create-form"
@@ -564,7 +708,10 @@ function BookingDashboard() {
               </button>
               <div className="ajn-service-stats"><span>معلق <b>{card.pending}</b></span><span>جاري <b>{card.inProgress}</b></span><span>مكتمل <b>{card.completed}</b></span></div>
               <div className="ajn-service-revenue"><small>إيراد الشهر</small><Money value={card.revenue} /></div>
-              <Button variant="ghost" size="sm" onClick={() => showServiceBookings(card.key)}>فتح <ChevronLeft className="h-4 w-4" /></Button>
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" size="sm" onClick={() => showServiceBookings(card.key)}>فتح <ChevronLeft className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="sm" onClick={() => printStandaloneDocument(buildBookingDepartmentReport(card.key, bookings))} title={`تقرير قسم ${card.label}`}><Printer className="h-4 w-4" /> تقرير</Button>
+              </div>
             </article>
           );
         })}
