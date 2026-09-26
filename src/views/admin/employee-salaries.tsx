@@ -281,6 +281,16 @@ function EmployeeSalariesPageInner() {
     onSuccess: (_, variables) => { toast.success(variables.action === "approve" ? "تم اعتماد دورة الرواتب دون سحب من الصندوق" : variables.action === "pay" ? "تم صرف دورة الرواتب وتسجيل الحركة المالية" : "تم تنفيذ الإجراء بنجاح"); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); },
     onError: (error: Error) => toast.error(error.message),
   });
+  // Approve a draft/calculated salary in one step (submit → approve). Uses the
+  // existing endpoints and their server-side role checks; no cash is moved.
+  const approveDirect = useMutation({
+    mutationFn: async (row: SalaryRow) => {
+      await adminFetch(`/admin/hr/payroll/${row.runId}/submit`, { method: "POST", body: JSON.stringify({}) });
+      return adminFetch(`/admin/hr/payroll/${row.runId}/approve`, { method: "POST", body: JSON.stringify({}) });
+    },
+    onSuccess: () => { toast.success("تم اعتماد الراتب"); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); },
+    onError: (error: Error) => toast.error(error.message),
+  });
   const editMutation = useMutation({
     mutationFn: ({ row, payload }: { row: SalaryRow; payload: unknown }) => adminFetch(`/admin/hr/payroll/${row.runId}/lines/${row.id}`, { method: "PATCH", body: JSON.stringify(payload) }),
     onSuccess: () => { toast.success("تم تحديث الراتب وإعادة احتساب الإجماليات"); setEditorError(null); setEditor(null); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); },
@@ -564,6 +574,7 @@ function EmployeeSalariesPageInner() {
                   <DropdownMenuItem disabled={!canEdit(row)} onClick={() => openEditor("edit", row)}><Pencil />تعديل الراتب</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setAttachmentRow(row)}><Paperclip />إرفاق مستند</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => printSalary(row)}><Printer />طباعة القسيمة</DropdownMenuItem>
+                  {(me?.role === "admin" || me?.role === "manager") && ["draft", "calculated"].includes(row.payrollStatus) && <DropdownMenuItem onClick={() => approveDirect.mutate(row)}><CheckCircle2 />اعتماد الراتب (مباشر)</DropdownMenuItem>}
                   {["draft", "calculated"].includes(row.payrollStatus) && <DropdownMenuItem onClick={() => runAction.mutate({ row, action: "submit" })}><FileClock />إرسال لاعتماد المدير</DropdownMenuItem>}
                   {row.payrollStatus === "pending_manager_approval" && <DropdownMenuItem onClick={() => runAction.mutate({ row, action: "approve" })}><CheckCircle2 />اعتماد الدورة دون صرف</DropdownMenuItem>}
                   {row.legacyIssues.some((issue) => issue.includes("غير مربوط ماليًا")) && <DropdownMenuItem onClick={() => setReconcileRow(row)}><Link2 />مطابقة راتب قديم مع حركة</DropdownMenuItem>}
