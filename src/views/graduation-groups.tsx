@@ -1376,7 +1376,7 @@ function GroupColorVotePanel({
   const scope = String(group?.groupNo || token);
   const [voterKey] = useState(() => readColorVoterKey(scope));
   const [myChoice, setMyChoice] = useState(() => readColorChoice(scope));
-  const isRep = Boolean(group?.joinToken && token === group.joinToken);
+  const [repPhone, setRepPhone] = useState("");
 
   const castVote = useMutation({
     mutationFn: (optionId: string) =>
@@ -1404,7 +1404,7 @@ function GroupColorVotePanel({
     mutationFn: () =>
       graduationFetch(`/groups/${encodeURIComponent(token)}/color-vote`, {
         method: "POST",
-        body: JSON.stringify({ action: "close" }),
+        body: JSON.stringify({ action: "close", repPhone }),
       }),
     onSuccess: () => {
       onRefetch();
@@ -1511,20 +1511,44 @@ function GroupColorVotePanel({
       <p className="mt-3 text-xs text-muted-foreground">
         إجمالي الأصوات: {total}
       </p>
-      {isRep && !vote.closed ? (
-        <Button
-          variant="outline"
-          className="mt-3"
-          disabled={closeVote.isPending || total === 0}
-          onClick={() => closeVote.mutate()}
-        >
-          {closeVote.isPending ? (
-            <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-          ) : (
-            <LockKeyhole className="ml-2 h-4 w-4" />
-          )}
-          إغلاق التصويت واعتماد الأعلى
-        </Button>
+      {!vote.closed ? (
+        <details className="mt-4 rounded-lg border border-border bg-card p-3">
+          <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium text-muted-foreground">
+            <LockKeyhole className="h-4 w-4" />
+            أنا ممثل المجموعة — إغلاق التصويت
+          </summary>
+          <p className="mt-2 text-xs text-muted-foreground">
+            أدخل رقم هاتف ممثل المجموعة لاعتماد اللون الأعلى تصويتاً وقفله لكل
+            الطلبة.
+          </p>
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+            <Input
+              inputMode="tel"
+              placeholder="هاتف الممثل"
+              value={repPhone}
+              onChange={(event) =>
+                setRepPhone(formatIraqiPhoneInput(event.target.value))
+              }
+            />
+            <Button
+              variant="outline"
+              className="shrink-0"
+              disabled={
+                closeVote.isPending ||
+                total === 0 ||
+                repPhone.replace(/\D/g, "").length < 10
+              }
+              onClick={() => closeVote.mutate()}
+            >
+              {closeVote.isPending ? (
+                <Loader2 className="ml-2 h-4 w-4 animate-spin" />
+              ) : (
+                <LockKeyhole className="ml-2 h-4 w-4" />
+              )}
+              إغلاق واعتماد الأعلى
+            </Button>
+          </div>
+        </details>
       ) : null}
     </section>
   );

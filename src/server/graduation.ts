@@ -2852,7 +2852,7 @@ export async function handleGraduationPublic(
           ),
           eq(graduationGroupsTable.status, "open"),
         ),
-        columns: { id: true, joinToken: true },
+        columns: { id: true, representativePhone: true },
       });
       if (!found)
         return { error: "رابط الطلب الجماعي غير صالح أو مغلق", status: 404 };
@@ -2866,9 +2866,15 @@ export async function handleGraduationPublic(
       `);
       const baseConfig = safeJson((locked.rows?.[0] as any)?.cfg);
       const state = normalizeColorVote(baseConfig.colorVote);
-      // Managing options / closing requires the representative's private join
-      // link (the long token), not the short group code students use to vote.
-      const isRep = identifier === found.joinToken;
+      // Managing options / closing is a representative action. The join link and
+      // QR both embed the join token, so it is not a secret — we verify the
+      // representative's phone instead (never exposed by the public group read).
+      const claimedPhone = normalizeIraqiPhone(String(payload?.repPhone ?? ""));
+      const isRep = Boolean(
+        claimedPhone &&
+          found.representativePhone &&
+          claimedPhone === found.representativePhone,
+      );
 
       if (action === "vote") {
         if (!state.enabled)
@@ -2892,7 +2898,7 @@ export async function handleGraduationPublic(
       } else if (action === "set-options") {
         if (!isRep)
           return {
-            error: "إدارة خيارات الألوان تتطلب رابط ممثل المجموعة",
+            error: "إدارة خيارات الألوان تتطلب هاتف ممثل المجموعة",
             status: 403,
           };
         const options = normalizeColorVoteOptions(payload?.options);
@@ -2909,7 +2915,7 @@ export async function handleGraduationPublic(
       } else if (action === "close") {
         if (!isRep)
           return {
-            error: "إغلاق التصويت يتطلب رابط ممثل المجموعة",
+            error: "إغلاق التصويت يتطلب هاتف ممثل المجموعة",
             status: 403,
           };
         if (!state.options.length)
@@ -2929,7 +2935,7 @@ export async function handleGraduationPublic(
       } else if (action === "reopen") {
         if (!isRep)
           return {
-            error: "إعادة فتح التصويت تتطلب رابط ممثل المجموعة",
+            error: "إعادة فتح التصويت تتطلب هاتف ممثل المجموعة",
             status: 403,
           };
         state.closed = false;
