@@ -11,8 +11,12 @@ import {
   GraduationCap,
   Loader2,
   LockKeyhole,
+  Palette,
+  Plus,
   QrCode,
   Ruler,
+  Trash2,
+  Vote,
   Shirt,
   UserRound,
   Users,
@@ -181,6 +185,16 @@ const initialGroup = {
     tassel: "#D4B15A",
     embroidery: "#D4B15A",
   },
+  // Optional color voting: the representative proposes candidate palettes and
+  // classmates vote; the winner is locked into `colors` when voting closes.
+  colorVoting: {
+    enabled: false,
+    options: [] as Array<{
+      id: string;
+      label: string;
+      colors: Record<string, string>;
+    }>,
+  },
   decorationType: "none",
   universityLogo: "",
   collegeLogo: "",
@@ -272,6 +286,16 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
             styleKey: form.styleKey,
             packageKey: form.packageKey || undefined,
             colors: form.colors,
+            colorVote:
+              form.colorVoting.enabled && form.colorVoting.options.length >= 2
+                ? {
+                    enabled: true,
+                    closed: false,
+                    winnerId: null,
+                    options: form.colorVoting.options,
+                    votes: {},
+                  }
+                : undefined,
             fabric: { key: form.fabricKey },
             decoration: {
               type: form.decorationType,
@@ -568,6 +592,169 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                   />
                 </label>
               ))}
+            </div>
+            <div className="mt-5 rounded-lg border border-primary/30 bg-primary/[0.03] p-4">
+              <label className="flex cursor-pointer items-start gap-3">
+                <Checkbox
+                  checked={form.colorVoting.enabled}
+                  onCheckedChange={(checked) =>
+                    setForm((current) => {
+                      const enabled = checked === true;
+                      // Seed the first option from the palette above so the rep
+                      // starts from a concrete scheme rather than a blank row.
+                      const options =
+                        enabled && current.colorVoting.options.length === 0
+                          ? [
+                              {
+                                id: "opt-1",
+                                label: "الخيار الأول",
+                                colors: { ...current.colors },
+                              },
+                            ]
+                          : current.colorVoting.options;
+                      return {
+                        ...current,
+                        colorVoting: { ...current.colorVoting, enabled, options },
+                      };
+                    })
+                  }
+                />
+                <span className="text-sm">
+                  <span className="flex items-center gap-2 font-semibold">
+                    <Vote className="h-4 w-4 text-primary" />
+                    دع الطلبة يصوّتون على الألوان
+                  </span>
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    اقترح مجموعتَي ألوان أو أكثر؛ يصوّت الطلبة والأعلى تصويتاً
+                    يُعتمد لكل الدفعة. الألوان أعلاه تبقى الافتراضية حتى إغلاق
+                    التصويت.
+                  </span>
+                </span>
+              </label>
+              {form.colorVoting.enabled ? (
+                <div className="mt-4 space-y-3">
+                  {form.colorVoting.options.map((option, index) => (
+                    <div
+                      key={option.id}
+                      className="rounded-lg border border-border bg-card p-3"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={option.label}
+                          placeholder={`الخيار ${index + 1}`}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              colorVoting: {
+                                ...current.colorVoting,
+                                options: current.colorVoting.options.map((item, itemIndex) =>
+                                  itemIndex === index
+                                    ? { ...item, label: event.target.value }
+                                    : item,
+                                ),
+                              },
+                            }))
+                          }
+                        />
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="shrink-0 text-destructive"
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              colorVoting: {
+                                ...current.colorVoting,
+                                options: current.colorVoting.options.filter(
+                                  (_item, itemIndex) => itemIndex !== index,
+                                ),
+                              },
+                            }))
+                          }
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-3">
+                        {[
+                          ["robe", "الروب"],
+                          ["sash", "الوشاح"],
+                          ["cap", "القبعة"],
+                          ["tassel", "الشرابة"],
+                          ["embroidery", "التطريز"],
+                        ].map(([key, label]) => (
+                          <label
+                            key={key}
+                            className="flex items-center gap-2 text-xs text-muted-foreground"
+                          >
+                            <input
+                              type="color"
+                              value={option.colors[key] || "#111111"}
+                              onChange={(event) =>
+                                setForm((current) => ({
+                                  ...current,
+                                  colorVoting: {
+                                    ...current.colorVoting,
+                                    options: current.colorVoting.options.map(
+                                      (item, itemIndex) =>
+                                        itemIndex === index
+                                          ? {
+                                              ...item,
+                                              colors: {
+                                                ...item.colors,
+                                                [key]: event.target.value,
+                                              },
+                                            }
+                                          : item,
+                                    ),
+                                  },
+                                }))
+                              }
+                              className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {form.colorVoting.options.length < 6 ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          colorVoting: {
+                            ...current.colorVoting,
+                            options: [
+                              ...current.colorVoting.options,
+                              {
+                                id: `opt-${current.colorVoting.options.length + 1}-${Date.now()
+                                  .toString(36)
+                                  .slice(-4)}`,
+                                label: `الخيار ${current.colorVoting.options.length + 1}`,
+                                colors: { ...current.colors },
+                              },
+                            ],
+                          },
+                        }))
+                      }
+                    >
+                      <Plus className="ml-2 h-4 w-4" />
+                      أضف خيار لون
+                    </Button>
+                  ) : null}
+                  {form.colorVoting.options.length < 2 ? (
+                    <p className="text-xs text-status-warning">
+                      أضف خيارين على الأقل لتفعيل التصويت (وإلا يُعتمد اللون
+                      الافتراضي أعلاه).
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </section>
         );
@@ -1142,6 +1329,207 @@ const emptyMeasurements = {
   suggestedSize: "",
 };
 
+// Per-device voter identity for color voting. Stored in localStorage so a
+// student casts one vote per device without any login; wrapped in try/catch so
+// private mode or blocked storage degrades to a session-only key instead of
+// throwing (voting still works, it just is not remembered across reloads).
+function readColorVoterKey(scope: string): string {
+  const storageKey = `graduation-color-voter:${scope}`;
+  try {
+    const existing = localStorage.getItem(storageKey);
+    if (existing) return existing;
+    const generated =
+      globalThis.crypto?.randomUUID?.() ??
+      `v-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(storageKey, generated);
+    return generated;
+  } catch {
+    return `v-${Math.random().toString(36).slice(2)}`;
+  }
+}
+function readColorChoice(scope: string): string {
+  try {
+    return localStorage.getItem(`graduation-color-choice:${scope}`) || "";
+  } catch {
+    return "";
+  }
+}
+function rememberColorChoice(scope: string, optionId: string) {
+  try {
+    localStorage.setItem(`graduation-color-choice:${scope}`, optionId);
+  } catch {
+    /* storage unavailable — highlight is best-effort only */
+  }
+}
+
+function GroupColorVotePanel({
+  token,
+  group,
+  onRefetch,
+}: {
+  token: string;
+  group: any;
+  onRefetch: () => void;
+}) {
+  const { toast } = useToast();
+  const vote = group?.colorVote;
+  const scope = String(group?.groupNo || token);
+  const [voterKey] = useState(() => readColorVoterKey(scope));
+  const [myChoice, setMyChoice] = useState(() => readColorChoice(scope));
+  const isRep = Boolean(group?.joinToken && token === group.joinToken);
+
+  const castVote = useMutation({
+    mutationFn: (optionId: string) =>
+      graduationFetch<{ colorVote: any }>(
+        `/groups/${encodeURIComponent(token)}/color-vote`,
+        {
+          method: "POST",
+          body: JSON.stringify({ action: "vote", optionId, voterKey }),
+        },
+      ),
+    onSuccess: (_data, optionId) => {
+      rememberColorChoice(scope, optionId);
+      setMyChoice(optionId);
+      onRefetch();
+      toast({ title: "تم تسجيل صوتك" });
+    },
+    onError: (error: Error) =>
+      toast({
+        title: "تعذر التصويت",
+        description: error.message,
+        variant: "destructive",
+      }),
+  });
+  const closeVote = useMutation({
+    mutationFn: () =>
+      graduationFetch(`/groups/${encodeURIComponent(token)}/color-vote`, {
+        method: "POST",
+        body: JSON.stringify({ action: "close" }),
+      }),
+    onSuccess: () => {
+      onRefetch();
+      toast({ title: "تم إغلاق التصويت واعتماد اللون الأعلى" });
+    },
+    onError: (error: Error) =>
+      toast({
+        title: "تعذر إغلاق التصويت",
+        description: error.message,
+        variant: "destructive",
+      }),
+  });
+
+  if (
+    !vote?.enabled ||
+    !Array.isArray(vote.options) ||
+    vote.options.length < 2
+  )
+    return null;
+  const total = Number(vote.totalVotes || 0);
+  const winner = vote.winnerId
+    ? vote.options.find((option: any) => option.id === vote.winnerId)
+    : null;
+
+  return (
+    <section className="rounded-xl border border-primary/30 bg-primary/[0.03] p-4 sm:p-5">
+      <div className="flex items-center gap-2">
+        <Palette className="h-5 w-5 text-primary" />
+        <div>
+          <h2 className="font-bold">تصويت الألوان</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {vote.closed
+              ? "انتهى التصويت واعتُمد اللون الفائز لجميع الطلبة."
+              : "اختر مجموعة الألوان المفضّلة — الأعلى تصويتاً يُعتمد للدفعة."}
+          </p>
+        </div>
+      </div>
+      {vote.closed && winner ? (
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-primary/40 bg-primary/10 px-3 py-2 text-sm">
+          <BadgeCheck className="h-4 w-4 text-primary" />
+          <span>
+            اللون الفائز: <strong>{winner.label}</strong>
+          </span>
+        </div>
+      ) : null}
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        {vote.options.map((option: any) => {
+          const count = Number(vote.tally?.[option.id] || 0);
+          const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+          const mine = myChoice === option.id;
+          const isWinner = vote.winnerId === option.id;
+          return (
+            <div
+              key={option.id}
+              className={`rounded-lg border p-3 ${
+                isWinner
+                  ? "border-primary bg-primary/[0.06]"
+                  : mine
+                    ? "border-primary/60"
+                    : "border-border bg-card"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold">{option.label}</span>
+                <span className="text-xs text-muted-foreground">
+                  {count} صوت · {pct}%
+                </span>
+              </div>
+              <div className="mt-2 flex items-center gap-1.5">
+                {["robe", "sash", "cap", "tassel", "embroidery"].map((key) => (
+                  <span
+                    key={key}
+                    className="h-6 w-6 rounded-full border border-border"
+                    style={{ backgroundColor: option.colors?.[key] || "#111111" }}
+                  />
+                ))}
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full bg-primary transition-[width] duration-300"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              {!vote.closed ? (
+                <Button
+                  size="sm"
+                  variant={mine ? "default" : "outline"}
+                  className="mt-3 w-full"
+                  disabled={castVote.isPending}
+                  onClick={() => castVote.mutate(option.id)}
+                >
+                  {castVote.isPending && castVote.variables === option.id ? (
+                    <Loader2 className="ml-2 h-4 w-4 animate-spin" />
+                  ) : mine ? (
+                    <Check className="ml-2 h-4 w-4" />
+                  ) : null}
+                  {mine ? "صوتك الحالي" : "صوّت لهذا"}
+                </Button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-3 text-xs text-muted-foreground">
+        إجمالي الأصوات: {total}
+      </p>
+      {isRep && !vote.closed ? (
+        <Button
+          variant="outline"
+          className="mt-3"
+          disabled={closeVote.isPending || total === 0}
+          onClick={() => closeVote.mutate()}
+        >
+          {closeVote.isPending ? (
+            <Loader2 className="ml-2 h-4 w-4 animate-spin" />
+          ) : (
+            <LockKeyhole className="ml-2 h-4 w-4" />
+          )}
+          إغلاق التصويت واعتماد الأعلى
+        </Button>
+      ) : null}
+    </section>
+  );
+}
+
 export function GraduationGroupStudentRegistration({
   token,
   onBack,
@@ -1338,7 +1726,15 @@ export function GraduationGroupStudentRegistration({
               </div>
             </div>
           </aside>
-          <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+          <div className="space-y-5">
+            <GroupColorVotePanel
+              token={token}
+              group={group}
+              onRefetch={() => {
+                void groupQuery.refetch();
+              }}
+            />
+            <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
             <div className="mb-5 flex items-center gap-2">
               <ClipboardList className="h-5 w-5 text-primary" />
               <div>
@@ -1479,7 +1875,8 @@ export function GraduationGroupStudentRegistration({
                 تسجيل طلب الطالب
               </Button>
             </div>
-          </section>
+            </section>
+          </div>
         </div>
       </div>
     </main>

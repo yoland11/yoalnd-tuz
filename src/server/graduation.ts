@@ -236,6 +236,128 @@ function groupMeta(row: { defaultConfiguration?: unknown }) {
   return safeJson(safeJson(row.defaultConfiguration).groupMeta);
 }
 
+// ---------------------------------------------------------------------------
+// Graduation group color voting (additive — stored inside
+// graduation_groups.default_configuration.colorVote, so no schema/migration).
+// The representative proposes candidate palettes; classmates vote; the winning
+// palette is locked into the group's inherited `colors` when voting closes.
+// Legacy groups without this key simply have voting disabled.
+// ---------------------------------------------------------------------------
+const COLOR_VOTE_KEYS = [
+  "robe",
+  "sash",
+  "cap",
+  "tassel",
+  "embroidery",
+] as const;
+
+type ColorVoteOption = {
+  id: string;
+  label: string;
+  colors: Record<string, string>;
+};
+type ColorVoteState = {
+  enabled: boolean;
+  closed: boolean;
+  winnerId: string | null;
+  options: ColorVoteOption[];
+  votes: Record<string, { optionId: string; name?: string; at: string }>;
+};
+
+function sanitizeHexColor(value: unknown, fallback = "#111111"): string {
+  const raw = String(value ?? "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : fallback;
+}
+
+function normalizeColorVoteOptions(input: unknown): ColorVoteOption[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const options: ColorVoteOption[] = [];
+  for (const item of input) {
+    if (options.length >= 6) break;
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    let id = String(raw.id ?? "").trim().slice(0, 40);
+    if (!id || seen.has(id)) id = `opt-${options.length + 1}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const colorsRaw = safeJson(raw.colors);
+    const colors: Record<string, string> = {};
+    for (const key of COLOR_VOTE_KEYS) colors[key] = sanitizeHexColor(colorsRaw[key]);
+    options.push({
+      id,
+      label:
+        String(raw.label ?? "").trim().slice(0, 60) ||
+        `خيار ${options.length + 1}`,
+      colors,
+    });
+  }
+  return options;
+}
+
+function normalizeColorVote(input: unknown): ColorVoteState {
+  const raw = safeJson(input);
+  const options = normalizeColorVoteOptions(raw.options);
+  const optionIds = new Set(options.map((option) => option.id));
+  const votes: ColorVoteState["votes"] = {};
+  const rawVotes = safeJson(raw.votes);
+  for (const [voter, value] of Object.entries(rawVotes)) {
+    const vote = safeJson(value);
+    const optionId = String(vote.optionId ?? "");
+    if (!optionIds.has(optionId)) continue;
+    votes[String(voter).slice(0, 120)] = {
+      optionId,
+      name: vote.name ? String(vote.name).slice(0, 60) : undefined,
+      at: typeof vote.at === "string" ? vote.at : new Date().toISOString(),
+    };
+  }
+  const winnerRaw = String(raw.winnerId ?? "");
+  return {
+    enabled: Boolean(raw.enabled),
+    closed: Boolean(raw.closed),
+    winnerId: optionIds.has(winnerRaw) ? winnerRaw : null,
+    options,
+    votes,
+  };
+}
+
+function colorVoteTally(state: ColorVoteState): Record<string, number> {
+  const tally: Record<string, number> = {};
+  for (const option of state.options) tally[option.id] = 0;
+  for (const vote of Object.values(state.votes)) {
+    if (tally[vote.optionId] !== undefined) tally[vote.optionId] += 1;
+  }
+  return tally;
+}
+
+function colorVoteLeader(state: ColorVoteState): string {
+  const tally = colorVoteTally(state);
+  let leader = state.options[0]?.id ?? "";
+  let best = -1;
+  for (const option of state.options) {
+    const count = tally[option.id] ?? 0;
+    if (count > best) {
+      best = count;
+      leader = option.id;
+    }
+  }
+  return leader;
+}
+
+// Public projection — exposes aggregate counts only, never raw voter identities.
+function publicColorVote(state: ColorVoteState) {
+  const tally = colorVoteTally(state);
+  const totalVotes = Object.values(tally).reduce((sum, n) => sum + n, 0);
+  return {
+    enabled: state.enabled,
+    closed: state.closed,
+    winnerId: state.winnerId,
+    options: state.options,
+    tally,
+    totalVotes,
+  };
+}
+
 function tailorAssignment(row: { productionEstimate?: unknown }) {
   return safeJson(safeJson(row.productionEstimate).tailorAssignment);
 }
@@ -2686,6 +2808,15 @@ export async function handleGraduationPublic(
       ),
     });
     if (!group) return error("رابط الطلب الجماعي غير صالح أو مغلق", 404);
+    // Never expose the raw votes map publicly; return an aggregate projection.
+    const groupConfig = safeJson(group.defaultConfiguration);
+    const voteState = normalizeColorVote(groupConfig.colorVote);
+    const publicVote = voteState.options.length
+      ? publicColorVote(voteState)
+      : null;
+    const safeConfig = publicVote
+      ? { ...groupConfig, colorVote: publicVote }
+      : groupConfig;
     return json({
       group: {
         title: group.title,
@@ -2694,13 +2825,132 @@ export async function handleGraduationPublic(
         department: group.department,
         graduationYear: group.graduationYear,
         eventDate: group.eventDate,
-        defaultConfiguration: group.defaultConfiguration,
+        defaultConfiguration: safeConfig,
+        colorVote: publicVote,
         joinToken: group.joinToken,
         groupNo: group.groupNo,
         representativeName: group.representativeName,
         groupMeta: groupMeta(group),
       },
     });
+  }
+  if (
+    method === "POST" &&
+    resource === "groups" &&
+    parts[2] &&
+    parts[3] === "color-vote"
+  ) {
+    const identifier = decodeURIComponent(parts[2]);
+    const payload = await requestBody(req);
+    const action = String(payload?.action ?? "vote");
+    const result = await db.transaction(async (tx) => {
+      const found = await tx.query.graduationGroupsTable.findFirst({
+        where: and(
+          or(
+            eq(graduationGroupsTable.joinToken, identifier),
+            eq(graduationGroupsTable.groupNo, identifier.toUpperCase()),
+          ),
+          eq(graduationGroupsTable.status, "open"),
+        ),
+        columns: { id: true, joinToken: true },
+      });
+      if (!found)
+        return { error: "رابط الطلب الجماعي غير صالح أو مغلق", status: 404 };
+      // Lock the row and re-read the authoritative configuration so concurrent
+      // votes/edits serialize instead of clobbering each other.
+      const locked = await tx.execute(sql`
+        SELECT default_configuration AS cfg
+        FROM graduation_groups
+        WHERE id = ${found.id}
+        FOR UPDATE
+      `);
+      const baseConfig = safeJson((locked.rows?.[0] as any)?.cfg);
+      const state = normalizeColorVote(baseConfig.colorVote);
+      // Managing options / closing requires the representative's private join
+      // link (the long token), not the short group code students use to vote.
+      const isRep = identifier === found.joinToken;
+
+      if (action === "vote") {
+        if (!state.enabled)
+          return {
+            error: "التصويت على الألوان غير مُفعّل لهذه المجموعة",
+            status: 409,
+          };
+        if (state.closed)
+          return { error: "انتهى التصويت على الألوان لهذه المجموعة", status: 409 };
+        const optionId = String(payload?.optionId ?? "");
+        if (!state.options.some((option) => option.id === optionId))
+          return { error: "خيار اللون غير صالح", status: 400 };
+        const voterKey = String(payload?.voterKey ?? "").trim().slice(0, 120);
+        if (!voterKey)
+          return { error: "تعذّر تحديد هوية الناخب", status: 400 };
+        state.votes[voterKey] = {
+          optionId,
+          name: String(payload?.voterName ?? "").trim().slice(0, 60) || undefined,
+          at: new Date().toISOString(),
+        };
+      } else if (action === "set-options") {
+        if (!isRep)
+          return {
+            error: "إدارة خيارات الألوان تتطلب رابط ممثل المجموعة",
+            status: 403,
+          };
+        const options = normalizeColorVoteOptions(payload?.options);
+        if (options.length < 2)
+          return { error: "أضف خيارين لونيين على الأقل للتصويت", status: 400 };
+        state.options = options;
+        state.enabled = payload?.enabled !== false;
+        state.closed = false;
+        state.winnerId = null;
+        const ids = new Set(options.map((option) => option.id));
+        for (const key of Object.keys(state.votes)) {
+          if (!ids.has(state.votes[key].optionId)) delete state.votes[key];
+        }
+      } else if (action === "close") {
+        if (!isRep)
+          return {
+            error: "إغلاق التصويت يتطلب رابط ممثل المجموعة",
+            status: 403,
+          };
+        if (!state.options.length)
+          return { error: "لا توجد خيارات للتصويت", status: 400 };
+        const requested = String(payload?.winnerId ?? "");
+        const winnerId = state.options.some((option) => option.id === requested)
+          ? requested
+          : colorVoteLeader(state);
+        const winner = state.options.find((option) => option.id === winnerId);
+        if (!winner)
+          return { error: "تعذّر تحديد اللون الفائز", status: 400 };
+        state.closed = true;
+        state.winnerId = winnerId;
+        // Lock the winning palette as the group's inherited colors so every
+        // student order (existing individual flow) picks it up automatically.
+        baseConfig.colors = { ...safeJson(baseConfig.colors), ...winner.colors };
+      } else if (action === "reopen") {
+        if (!isRep)
+          return {
+            error: "إعادة فتح التصويت تتطلب رابط ممثل المجموعة",
+            status: 403,
+          };
+        state.closed = false;
+        state.winnerId = null;
+      } else {
+        return { error: "إجراء غير معروف", status: 400 };
+      }
+
+      baseConfig.colorVote = state;
+      await tx
+        .update(graduationGroupsTable)
+        .set({ defaultConfiguration: baseConfig as any, updatedAt: new Date() })
+        .where(eq(graduationGroupsTable.id, found.id));
+      return {
+        colorVote: publicColorVote(state),
+        colors: baseConfig.colors ?? {},
+      };
+    });
+    if ("error" in result)
+      return error(String(result.error), (result as any).status ?? 400);
+    return json(result);
   }
   if (method === "POST" && resource === "ai" && parts[2] === "size") {
     const data = await requestBody(req);
