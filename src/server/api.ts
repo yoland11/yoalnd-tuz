@@ -32840,7 +32840,53 @@ async function handleBookingOperations(
     if (method === "POST") {
       if (!can("booking_edit", "orders", "photography", "bookings"))
         return error("ليس لديك صلاحية تعديل الحجز", 403);
-      const parsed = GroupAttendeeAddSchema.safeParse(await body(req));
+      const raw = await body(req);
+      // Post every collected-but-unposted participant's amount to the Main Cash
+      // Box. This ONLY creates approval-first PENDING requests via the canonical
+      // engine (idempotent per participant); no cash moves until the principal
+      // admin approves them in the Master Cash Box, exactly like any other source.
+      if (raw && (raw as any).action === "post-collected") {
+        if (!can("accounting"))
+          return error("ليس لديك صلاحية الترحيل للصندوق", 403);
+        const eligible = attendees.filter((a: any) => a?.collected && Number(a?.amount || 0) > 0 && !a?.financialTxId);
+        if (!eligible.length) return json({ ok: true, posted: 0 });
+        const bookingRef = String((reference.row as any)?.trackingCode ?? (reference.row as any)?.tracking_code ?? reference.id);
+        const linked: Record<string, number> = {};
+        await db.transaction(async (tx) => {
+          for (const a of eligible) {
+            const financial = await createAndExecuteSourceFinancialTransaction(tx, {
+              direction: "revenue",
+              amount: money(Number(a.amount)),
+              department: "photography",
+              transactionType: "group_photo_income",
+              referenceNo: String(a.receiptNo || ""),
+              description: `لقطات جماعية · ${a.name} · حجز ${bookingRef}`,
+              paymentMethod: "cash",
+              sourceType: "group_photo",
+              sourceId: reference.id,
+              sourceEvent: "group_photo_participant",
+              idempotencyKey: `group-photo-attendee:${reference.entityType}:${reference.id}:${a.id}`,
+              customerName: String(a.name || ""),
+              customerPhone: a.phone || null,
+            }, financialActor(auth));
+            linked[String(a.id)] = financial.id;
+          }
+        });
+        const nextAttendees = attendees.map((a: any) => linked[String(a.id)] ? { ...a, financialTxId: linked[String(a.id)], postedAt: new Date().toISOString() } : a);
+        await saveBookingOperations(reference, { ...reference.operations, groupAttendees: nextAttendees });
+        await addEntityTimeline({
+          entityType: reference.entityType,
+          entityId: reference.id,
+          type: "group_photo_posted",
+          title: "ترحيل تحصيل لقطات جماعية للصندوق",
+          body: `${eligible.length} مشارك · بانتظار اعتماد المدير`,
+          actor: erpActorFromAdmin(auth),
+          metadata: { count: eligible.length },
+        });
+        void logAdminActivity(req, "group_photo_posted", reference.entityType, reference.id, { count: eligible.length });
+        return json({ ok: true, posted: eligible.length });
+      }
+      const parsed = GroupAttendeeAddSchema.safeParse(raw);
       if (!parsed.success) return validationError("group-attendee", parsed);
       const d = parsed.data;
       const attendee = {
@@ -32872,6 +32918,9 @@ async function handleBookingOperations(
         return error("ليس لديك صلاحية تعديل الحجز", 403);
       const parsed = GroupAttendeeRemoveSchema.safeParse(await body(req));
       if (!parsed.success) return validationError("group-attendee-remove", parsed);
+      const target = attendees.find((a: any) => String(a?.id ?? "") === parsed.data.id);
+      if (target?.financialTxId)
+        return error("هذا المشارك مُرحّل للصندوق الرئيسي؛ اعكس حركته المالية من الصندوق أولاً قبل الحذف", 409);
       const next = attendees.filter((a: any) => String(a?.id ?? "") !== parsed.data.id);
       await saveBookingOperations(reference, { ...reference.operations, groupAttendees: next });
       void logAdminActivity(req, "group_attendee_removed", reference.entityType, reference.id, { id: parsed.data.id });
@@ -32883,6 +32932,9 @@ async function handleBookingOperations(
         return error("ليس لديك صلاحية تعديل الحجز", 403);
       const parsed = GroupAttendeeCollectSchema.safeParse(await body(req));
       if (!parsed.success) return validationError("group-attendee-collect", parsed);
+      const target = attendees.find((a: any) => String(a?.id ?? "") === parsed.data.id);
+      if (target?.financialTxId && !parsed.data.collected)
+        return error("هذا المبلغ مُرحّل للصندوق الرئيسي؛ اعكس حركته المالية من الصندوق أولاً", 409);
       const next = attendees.map((a: any) =>
         String(a?.id ?? "") === parsed.data.id
           ? { ...a, collected: parsed.data.collected, collectedAt: parsed.data.collected ? new Date().toISOString() : null, collectedBy: parsed.data.collected ? auth.id : null }

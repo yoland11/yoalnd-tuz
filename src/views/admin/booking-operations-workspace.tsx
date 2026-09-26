@@ -76,7 +76,7 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, compressImageFile, formatCurrency } from "./_lib";
 import { printStandaloneDocument } from "@/lib/pdf";
 
-type GroupAttendee = { id: string; name: string; phone: string | null; amount: number; note: string | null; receiptNo: string; collected?: boolean; createdByName?: string; createdAt: string };
+type GroupAttendee = { id: string; name: string; phone: string | null; amount: number; note: string | null; receiptNo: string; collected?: boolean; financialTxId?: number | null; postedAt?: string | null; createdByName?: string; createdAt: string };
 import { BookingThermalPrintAction } from "@/components/booking-thermal-print";
 import { BookingThermalReceiptAction } from "@/components/booking-thermal-receipt";
 import { AccountSummaryCard } from "./payment-collection";
@@ -408,6 +408,11 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
     onSuccess: () => attendees.refetch(),
     onError: (error: any) => toast({ title: "تعذر تحديث حالة التحصيل", description: error?.message, variant: "destructive" }),
   });
+  const postCollected = useMutation({
+    mutationFn: () => adminFetch<{ posted: number }>(`${base}/group-attendees`, { method: "POST", body: JSON.stringify({ action: "post-collected" }) }),
+    onSuccess: (r: any) => { attendees.refetch(); queryClient.invalidateQueries({ queryKey: ["admin", "master-cash"] }); toast({ title: r?.posted ? `تم ترحيل ${r.posted} مشارك للصندوق — بانتظار اعتماد المدير` : "لا مبالغ محصّلة جديدة للترحيل" }); },
+    onError: (error: any) => toast({ title: "تعذر الترحيل للصندوق", description: error?.message, variant: "destructive" }),
+  });
   const printAttendeeReceipt = (a: GroupAttendee) => {
     const html = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${a.receiptNo}</title><style>@page{size:80mm auto;margin:4mm}body{font-family:Tahoma,Arial,sans-serif;color:#111;margin:0}.r{width:72mm;font-size:12px}.c{text-align:center}.h{font-weight:800;font-size:15px}.line{border-top:1px dashed #999;margin:6px 0}.row{display:flex;justify-content:space-between;gap:8px;margin:3px 0}b{font-weight:700}</style></head><body><div class="r"><div class="c h">مجموعة علي جان نهاد</div><div class="c">وصل تصوير — لقطات جماعية</div><div class="line"></div><div class="row"><span>رقم الوصل</span><b>${a.receiptNo}</b></div><div class="row"><span>الحجز</span><b>${booking.number}</b></div><div class="row"><span>الاسم</span><b>${(a.name || "").replace(/[<>&]/g, "")}</b></div>${a.phone ? `<div class="row"><span>الهاتف</span><b>${a.phone}</b></div>` : ""}<div class="row"><span>المبلغ</span><b>${formatCurrency(Number(a.amount || 0))}</b></div><div class="row"><span>التاريخ</span><b>${new Date(a.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</b></div>${a.note ? `<div class="line"></div><div>${a.note.replace(/[<>&]/g, "")}</div>` : ""}<div class="line"></div><div class="c">شكراً لكم</div></div></body></html>`;
     try { printStandaloneDocument(html, 320); } catch { toast({ title: "تعذّرت الطباعة", variant: "destructive" }); }
@@ -502,7 +507,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <TransportationCard mode={transportationMode as any} fee={transportationFee} busy={setTransportation.isPending} onSave={(mode, fee) => setTransportation.mutate({ mode, fee })} />
 
-    <GroupAttendeesCard attendees={attendees.data?.attendees ?? []} adding={addAttendee.isPending} removingId={removeAttendee.isPending ? (removeAttendee.variables as string) : null} onAdd={(payload) => addAttendee.mutate(payload)} onRemove={(id) => removeAttendee.mutate(id)} onCollect={(id, collected) => collectAttendee.mutate({ id, collected })} onPrint={printAttendeeReceipt} onPrintSheet={printAttendeesSheet} />
+    <GroupAttendeesCard attendees={attendees.data?.attendees ?? []} adding={addAttendee.isPending} removingId={removeAttendee.isPending ? (removeAttendee.variables as string) : null} onAdd={(payload) => addAttendee.mutate(payload)} onRemove={(id) => removeAttendee.mutate(id)} onCollect={(id, collected) => collectAttendee.mutate({ id, collected })} onPrint={printAttendeeReceipt} onPrintSheet={printAttendeesSheet} onPostCollected={() => postCollected.mutate()} posting={postCollected.isPending} />
 
     <div className="ajn-op-workspace-grid"><main><Tabs value={tab} onValueChange={changeTab} className="ajn-op-tabs">
       <TabsList>{TAB_LABELS.map(([value, label, Icon]) => <TabsTrigger key={value} value={value}><Icon /> {label}{overview.data && value in overview.data.counts && <em>{(overview.data.counts as any)[value]}</em>}</TabsTrigger>)}</TabsList>
@@ -536,12 +541,13 @@ function BookingFinancialCards({ booking, onFinance }: { booking: BookingOperati
   return <section className="ajn-op-financial-cards" aria-label="ملخص الحجز المالي">{cards.map(([label, value, Icon, tone]) => <button type="button" key={label} className={`is-${tone}`} onClick={onFinance}><span><Icon /></span><div><small>{label}</small><strong>{value}</strong></div></button>)}<button type="button" className="ajn-op-payment-card" onClick={onFinance}><span><CircleDollarSign /></span><div><small>حالة الدفع</small><strong>{status}</strong><i><em style={{ width: `${progress}%` }} /></i></div><b>{progress}%</b></button></section>;
 }
 
-function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, onCollect, onPrint, onPrintSheet }: { attendees: GroupAttendee[]; adding: boolean; removingId: string | null; onAdd: (p: { name: string; phone: string | null; amount: number; note: string | null }) => void; onRemove: (id: string) => void; onCollect: (id: string, collected: boolean) => void; onPrint: (a: GroupAttendee) => void; onPrintSheet: (list: GroupAttendee[]) => void }) {
+function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, onCollect, onPrint, onPrintSheet, onPostCollected, posting }: { attendees: GroupAttendee[]; adding: boolean; removingId: string | null; onAdd: (p: { name: string; phone: string | null; amount: number; note: string | null }) => void; onRemove: (id: string) => void; onCollect: (id: string, collected: boolean) => void; onPrint: (a: GroupAttendee) => void; onPrintSheet: (list: GroupAttendee[]) => void; onPostCollected: () => void; posting: boolean }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
   const total = attendees.reduce((s, a) => s + Number(a.amount || 0), 0);
   const collectedTotal = attendees.reduce((s, a) => s + (a.collected ? Number(a.amount || 0) : 0), 0);
+  const unpostedCollected = attendees.filter((a) => a.collected && Number(a.amount || 0) > 0 && !a.financialTxId);
   const inputCls = "min-w-0 rounded-md border border-border/40 bg-background px-2.5 py-2 text-sm";
   const submit = () => {
     if (!name.trim()) return;
@@ -551,7 +557,7 @@ function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, on
   return (
     <section className="rounded-2xl border border-border/40 bg-card p-4" dir="rtl">
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2"><Camera className="h-4 w-4 text-primary" /><h2 className="text-sm font-bold text-foreground">لقطات جماعية — المشاركون</h2><span className="text-xs text-muted-foreground">({attendees.length})</span>{attendees.length ? <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onPrintSheet(attendees)}><Printer className="h-3.5 w-3.5" /> كشف</Button> : null}</div>
+        <div className="flex items-center gap-2"><Camera className="h-4 w-4 text-primary" /><h2 className="text-sm font-bold text-foreground">لقطات جماعية — المشاركون</h2><span className="text-xs text-muted-foreground">({attendees.length})</span>{attendees.length ? <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onPrintSheet(attendees)}><Printer className="h-3.5 w-3.5" /> كشف</Button> : null}{unpostedCollected.length ? <Button size="sm" className="h-7 px-2 text-xs" disabled={posting} onClick={onPostCollected}>{posting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Banknote className="h-3.5 w-3.5" />} ترحيل المحصّل للصندوق ({unpostedCollected.length})</Button> : null}</div>
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
           <span>الإجمالي: <b className="text-foreground">{formatCurrency(total)}</b></span>
           <span>محصّل: <b className="text-emerald-600">{formatCurrency(collectedTotal)}</b></span>
@@ -575,8 +581,8 @@ function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, on
                 <td className="p-2 font-medium text-foreground">{a.name}</td>
                 <td className="p-2" dir="ltr">{a.phone || "—"}</td>
                 <td className="p-2 tabular-nums">{formatCurrency(Number(a.amount || 0))}</td>
-                <td className="p-2"><button type="button" onClick={() => onCollect(a.id, !a.collected)} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-colors ${a.collected ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700" : "border-border/50 bg-background text-muted-foreground hover:border-emerald-500/40"}`}>{a.collected ? <><Check className="h-3 w-3" /> محصّل</> : "غير محصّل"}</button></td>
-                <td className="p-2"><div className="flex justify-end gap-1"><button type="button" title="طباعة وصل" aria-label="طباعة وصل" onClick={() => onPrint(a)} className="rounded-md border border-border/40 p-1 hover:bg-muted"><Printer className="h-3.5 w-3.5" /></button><button type="button" title="حذف" aria-label="حذف" disabled={removingId === a.id} onClick={() => onRemove(a.id)} className="rounded-md border border-border/40 p-1 text-destructive hover:bg-destructive/10"><Trash2 className="h-3.5 w-3.5" /></button></div></td>
+                <td className="p-2">{a.financialTxId ? <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary" title="مُرحّل للصندوق الرئيسي بانتظار الاعتماد"><Banknote className="h-3 w-3" /> مُرحّل للصندوق</span> : <button type="button" onClick={() => onCollect(a.id, !a.collected)} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-colors ${a.collected ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700" : "border-border/50 bg-background text-muted-foreground hover:border-emerald-500/40"}`}>{a.collected ? <><Check className="h-3 w-3" /> محصّل</> : "غير محصّل"}</button>}</td>
+                <td className="p-2"><div className="flex justify-end gap-1"><button type="button" title="طباعة وصل" aria-label="طباعة وصل" onClick={() => onPrint(a)} className="rounded-md border border-border/40 p-1 hover:bg-muted"><Printer className="h-3.5 w-3.5" /></button><button type="button" title={a.financialTxId ? "مُرحّل للصندوق — اعكسه من الصندوق أولاً" : "حذف"} aria-label="حذف" disabled={removingId === a.id || !!a.financialTxId} onClick={() => onRemove(a.id)} className="rounded-md border border-border/40 p-1 text-destructive hover:bg-destructive/10 disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /></button></div></td>
               </tr>
             ))}</tbody>
           </table>

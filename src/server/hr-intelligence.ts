@@ -752,12 +752,14 @@ export async function createManualSalaryRecord(input: unknown, actor: HrActor) {
     }
     if (!run) {
       // Default: a dedicated, independent run for this single employee's salary.
-      // The principal admin's individual entries are finalized (approved) on
-      // creation so the salary is immediately payable; no cash moves until تسديد.
-      // Non-admin entries stay draft and still require the admin's approval.
+      // An approver's individual entry is finalized (approved) on creation so the
+      // salary is immediately payable; no cash moves until تسديد. "Approver" is the
+      // same authority the manual approve endpoint already grants (admin/manager);
+      // anyone else's entry stays draft and still needs that approval.
       const runNo = `PAY-${data.period.replace("-", "")}-${randomUUID().slice(0, 6).toUpperCase()}`;
       const periodKey = standalone ? `manual:${manualDates.period}:emp${data.employeeId}:${randomUUID().slice(0, 6)}` : manualDates.periodKey;
-      const approveNow = standalone && isMainFinancialAdministrator(actor);
+      const canApproveNow = ["admin", "manager"].includes(String(actor.role ?? "").toLowerCase());
+      const approveNow = standalone && canApproveNow;
       run = rows<any>(await tx.execute(sql`insert into payroll_runs(run_no,period,period_type,period_key,status,notes,period_start_date,period_end_date,payment_date,department,created_by,created_by_name,approved_by,approved_by_name,approved_at) values(${runNo},${manualDates.period},'custom',${periodKey},${approveNow ? "approved" : "draft"},${data.notes || null},${manualDates.start},${manualDates.end},${manualDates.paymentDate},${staff.department || null},${actor.id},${actor.name},${approveNow ? actor.id : null},${approveNow ? actor.name : null},${approveNow ? sql`now()` : sql`null`}) returning *`))[0];
     }
     await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,payment_method,other_fixed_allowances,bonus_amount,overtime_amount,manual_earnings,manual_deduction,advance_deduction,gross_salary,net_salary,payment_status,line_notes,calculation_details) values(${run.id},${data.employeeId},${data.baseSalary},${data.paymentMethod},${data.allowances},${data.bonusAmount},${data.overtimeAmount},${data.manualAddition},${data.manualDeduction},${data.advanceDeduction},${gross},${net},'unpaid',${data.notes || null},${JSON.stringify({ origin: "manual", createdBy: actor.id, createdByName: actor.name, createdAt: new Date().toISOString() })}::jsonb)`);
