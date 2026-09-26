@@ -39,6 +39,7 @@ import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/money";
 import { processImageFile } from "@/lib/image-tools";
 import { formatIraqiPhoneInput } from "@/lib/phone";
+import { GraduationRobePreview } from "@/components/graduation-robe-preview";
 import type { GraduationConfig } from "@/lib/graduation";
 import {
   GRADUATION_STEPS,
@@ -664,11 +665,18 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
       case 2:
         return (
           <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
-            <div className="mb-5">
-              <h2 className="font-bold">الألوان المشتركة</h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                تطبّق هذه الألوان على جميع تجهيزات المجموعة.
-              </p>
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-bold">الألوان المشتركة</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  تطبّق هذه الألوان على جميع تجهيزات المجموعة.
+                </p>
+              </div>
+              <GraduationRobePreview
+                colors={form.colors}
+                size={72}
+                className="shrink-0"
+              />
             </div>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
               {[
@@ -1452,14 +1460,23 @@ function GroupColorVotePanel({
                   {count} صوت · {pct}%
                 </span>
               </div>
-              <div className="mt-2 flex items-center gap-1.5">
-                {["robe", "sash", "cap", "tassel", "embroidery"].map((key) => (
-                  <span
-                    key={key}
-                    className="h-6 w-6 rounded-full border border-border"
-                    style={{ backgroundColor: option.colors?.[key] || "#111111" }}
-                  />
-                ))}
+              <div className="mt-2 flex items-center gap-3">
+                <GraduationRobePreview
+                  colors={option.colors || {}}
+                  size={52}
+                  className="shrink-0"
+                />
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {["robe", "sash", "cap", "tassel", "embroidery"].map((key) => (
+                    <span
+                      key={key}
+                      className="h-5 w-5 rounded-full border border-border"
+                      style={{
+                        backgroundColor: option.colors?.[key] || "#111111",
+                      }}
+                    />
+                  ))}
+                </div>
               </div>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
@@ -1802,6 +1819,12 @@ export function GraduationGroupStudentRegistration({
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
               هذه التفاصيل اختارها ممثل المجموعة وهي مقفلة لجميع الطلبة.
             </p>
+            <div className="mt-4 flex justify-center rounded-lg border border-border bg-card p-3">
+              <GraduationRobePreview
+                colors={(locked.colors as Record<string, string>) || {}}
+                size={110}
+              />
+            </div>
             <div className="mt-4 space-y-2 text-sm">
               {[
                 ["نوع الروب", locked.styleKey],
