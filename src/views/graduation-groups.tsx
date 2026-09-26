@@ -239,6 +239,113 @@ type PhotographyService = {
   price: number | null;
 };
 
+type ColorVoteOption = {
+  id: string;
+  label: string;
+  colors: Record<string, string>;
+};
+
+const COLOR_VOTE_FIELDS: Array<[string, string]> = [
+  ["robe", "الروب"],
+  ["sash", "الوشاح"],
+  ["cap", "القبعة"],
+  ["tassel", "الشرابة"],
+  ["embroidery", "التطريز"],
+];
+
+// Shared candidate-palette editor used by both the group builder (create-time
+// setup) and the representative's live management panel on the join page.
+function ColorVoteOptionsEditor({
+  value,
+  onChange,
+  seedColors,
+}: {
+  value: ColorVoteOption[];
+  onChange: (next: ColorVoteOption[]) => void;
+  seedColors: Record<string, string>;
+}) {
+  const patch = (index: number, changes: Partial<ColorVoteOption>) =>
+    onChange(
+      value.map((option, itemIndex) =>
+        itemIndex === index ? { ...option, ...changes } : option,
+      ),
+    );
+  return (
+    <div className="space-y-3">
+      {value.map((option, index) => (
+        <div
+          key={option.id}
+          className="rounded-lg border border-border bg-card p-3"
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              value={option.label}
+              placeholder={`الخيار ${index + 1}`}
+              onChange={(event) => patch(index, { label: event.target.value })}
+            />
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="shrink-0 text-destructive"
+              onClick={() =>
+                onChange(value.filter((_item, itemIndex) => itemIndex !== index))
+              }
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-3">
+            {COLOR_VOTE_FIELDS.map(([key, label]) => (
+              <label
+                key={key}
+                className="flex items-center gap-2 text-xs text-muted-foreground"
+              >
+                <input
+                  type="color"
+                  value={option.colors[key] || "#111111"}
+                  onChange={(event) =>
+                    patch(index, {
+                      colors: { ...option.colors, [key]: event.target.value },
+                    })
+                  }
+                  className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </div>
+      ))}
+      {value.length < 6 ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            onChange([
+              ...value,
+              {
+                id: `opt-${value.length + 1}-${Date.now().toString(36).slice(-4)}`,
+                label: `الخيار ${value.length + 1}`,
+                colors: { ...seedColors },
+              },
+            ])
+          }
+        >
+          <Plus className="ml-2 h-4 w-4" />
+          أضف خيار لون
+        </Button>
+      ) : null}
+      {value.length < 2 ? (
+        <p className="text-xs text-status-warning">
+          أضف خيارين على الأقل لتفعيل التصويت.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
   const { toast } = useToast();
   const [form, setForm] = useState(initialGroup);
@@ -632,127 +739,17 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                 </span>
               </label>
               {form.colorVoting.enabled ? (
-                <div className="mt-4 space-y-3">
-                  {form.colorVoting.options.map((option, index) => (
-                    <div
-                      key={option.id}
-                      className="rounded-lg border border-border bg-card p-3"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Input
-                          value={option.label}
-                          placeholder={`الخيار ${index + 1}`}
-                          onChange={(event) =>
-                            setForm((current) => ({
-                              ...current,
-                              colorVoting: {
-                                ...current.colorVoting,
-                                options: current.colorVoting.options.map((item, itemIndex) =>
-                                  itemIndex === index
-                                    ? { ...item, label: event.target.value }
-                                    : item,
-                                ),
-                              },
-                            }))
-                          }
-                        />
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="shrink-0 text-destructive"
-                          onClick={() =>
-                            setForm((current) => ({
-                              ...current,
-                              colorVoting: {
-                                ...current.colorVoting,
-                                options: current.colorVoting.options.filter(
-                                  (_item, itemIndex) => itemIndex !== index,
-                                ),
-                              },
-                            }))
-                          }
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-3">
-                        {[
-                          ["robe", "الروب"],
-                          ["sash", "الوشاح"],
-                          ["cap", "القبعة"],
-                          ["tassel", "الشرابة"],
-                          ["embroidery", "التطريز"],
-                        ].map(([key, label]) => (
-                          <label
-                            key={key}
-                            className="flex items-center gap-2 text-xs text-muted-foreground"
-                          >
-                            <input
-                              type="color"
-                              value={option.colors[key] || "#111111"}
-                              onChange={(event) =>
-                                setForm((current) => ({
-                                  ...current,
-                                  colorVoting: {
-                                    ...current.colorVoting,
-                                    options: current.colorVoting.options.map(
-                                      (item, itemIndex) =>
-                                        itemIndex === index
-                                          ? {
-                                              ...item,
-                                              colors: {
-                                                ...item.colors,
-                                                [key]: event.target.value,
-                                              },
-                                            }
-                                          : item,
-                                    ),
-                                  },
-                                }))
-                              }
-                              className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
-                            />
-                            {label}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                  {form.colorVoting.options.length < 6 ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setForm((current) => ({
-                          ...current,
-                          colorVoting: {
-                            ...current.colorVoting,
-                            options: [
-                              ...current.colorVoting.options,
-                              {
-                                id: `opt-${current.colorVoting.options.length + 1}-${Date.now()
-                                  .toString(36)
-                                  .slice(-4)}`,
-                                label: `الخيار ${current.colorVoting.options.length + 1}`,
-                                colors: { ...current.colors },
-                              },
-                            ],
-                          },
-                        }))
-                      }
-                    >
-                      <Plus className="ml-2 h-4 w-4" />
-                      أضف خيار لون
-                    </Button>
-                  ) : null}
-                  {form.colorVoting.options.length < 2 ? (
-                    <p className="text-xs text-status-warning">
-                      أضف خيارين على الأقل لتفعيل التصويت (وإلا يُعتمد اللون
-                      الافتراضي أعلاه).
-                    </p>
-                  ) : null}
+                <div className="mt-4">
+                  <ColorVoteOptionsEditor
+                    value={form.colorVoting.options}
+                    seedColors={form.colors}
+                    onChange={(options) =>
+                      setForm((current) => ({
+                        ...current,
+                        colorVoting: { ...current.colorVoting, options },
+                      }))
+                    }
+                  />
                 </div>
               ) : null}
             </div>
@@ -1376,7 +1373,6 @@ function GroupColorVotePanel({
   const scope = String(group?.groupNo || token);
   const [voterKey] = useState(() => readColorVoterKey(scope));
   const [myChoice, setMyChoice] = useState(() => readColorChoice(scope));
-  const [repPhone, setRepPhone] = useState("");
 
   const castVote = useMutation({
     mutationFn: (optionId: string) =>
@@ -1396,23 +1392,6 @@ function GroupColorVotePanel({
     onError: (error: Error) =>
       toast({
         title: "تعذر التصويت",
-        description: error.message,
-        variant: "destructive",
-      }),
-  });
-  const closeVote = useMutation({
-    mutationFn: () =>
-      graduationFetch(`/groups/${encodeURIComponent(token)}/color-vote`, {
-        method: "POST",
-        body: JSON.stringify({ action: "close", repPhone }),
-      }),
-    onSuccess: () => {
-      onRefetch();
-      toast({ title: "تم إغلاق التصويت واعتماد اللون الأعلى" });
-    },
-    onError: (error: Error) =>
-      toast({
-        title: "تعذر إغلاق التصويت",
         description: error.message,
         variant: "destructive",
       }),
@@ -1511,46 +1490,152 @@ function GroupColorVotePanel({
       <p className="mt-3 text-xs text-muted-foreground">
         إجمالي الأصوات: {total}
       </p>
-      {!vote.closed ? (
-        <details className="mt-4 rounded-lg border border-border bg-card p-3">
-          <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium text-muted-foreground">
-            <LockKeyhole className="h-4 w-4" />
-            أنا ممثل المجموعة — إغلاق التصويت
-          </summary>
-          <p className="mt-2 text-xs text-muted-foreground">
-            أدخل رقم هاتف ممثل المجموعة لاعتماد اللون الأعلى تصويتاً وقفله لكل
-            الطلبة.
-          </p>
-          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-            <Input
-              inputMode="tel"
-              placeholder="هاتف الممثل"
-              value={repPhone}
-              onChange={(event) =>
-                setRepPhone(formatIraqiPhoneInput(event.target.value))
-              }
-            />
-            <Button
-              variant="outline"
-              className="shrink-0"
-              disabled={
-                closeVote.isPending ||
-                total === 0 ||
-                repPhone.replace(/\D/g, "").length < 10
-              }
-              onClick={() => closeVote.mutate()}
-            >
-              {closeVote.isPending ? (
-                <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-              ) : (
-                <LockKeyhole className="ml-2 h-4 w-4" />
-              )}
-              إغلاق واعتماد الأعلى
-            </Button>
-          </div>
-        </details>
-      ) : null}
     </section>
+  );
+}
+
+// Representative-only live management of the color vote, shown collapsed on the
+// join page. Every action is authorized server-side by the representative's
+// phone (never exposed by the public group read), so revealing the form leaks
+// nothing — the options and tally shown here are already public.
+function GroupVoteManager({
+  token,
+  group,
+  onRefetch,
+}: {
+  token: string;
+  group: any;
+  onRefetch: () => void;
+}) {
+  const { toast } = useToast();
+  const vote = group?.colorVote;
+  const closed = Boolean(vote?.closed);
+  const [repPhone, setRepPhone] = useState("");
+  const seedColors =
+    (group?.defaultConfiguration?.colors as Record<string, string>) || {
+      robe: "#111111",
+      sash: "#D4B15A",
+      cap: "#111111",
+      tassel: "#D4B15A",
+      embroidery: "#D4B15A",
+    };
+  // Local editable copy seeded once from the current server options.
+  const [options, setOptions] = useState<ColorVoteOption[]>(() =>
+    Array.isArray(vote?.options)
+      ? vote.options.map((option: any) => ({
+          id: String(option.id),
+          label: String(option.label ?? ""),
+          colors: { ...(option.colors ?? {}) },
+        }))
+      : [],
+  );
+  const phoneReady = repPhone.replace(/\D/g, "").length >= 10;
+
+  const post = (body: Record<string, unknown>, successTitle: string) =>
+    graduationFetch(`/groups/${encodeURIComponent(token)}/color-vote`, {
+      method: "POST",
+      body: JSON.stringify({ ...body, repPhone }),
+    }).then((result) => {
+      onRefetch();
+      toast({ title: successTitle });
+      return result;
+    });
+
+  const saveOptions = useMutation({
+    mutationFn: () =>
+      post({ action: "set-options", options, enabled: true }, "تم حفظ الخيارات وتفعيل التصويت"),
+    onError: (error: Error) =>
+      toast({ title: "تعذر الحفظ", description: error.message, variant: "destructive" }),
+  });
+  const closeVote = useMutation({
+    mutationFn: () => post({ action: "close" }, "تم إغلاق التصويت واعتماد اللون الأعلى"),
+    onError: (error: Error) =>
+      toast({ title: "تعذر الإغلاق", description: error.message, variant: "destructive" }),
+  });
+  const reopenVote = useMutation({
+    mutationFn: () => post({ action: "reopen" }, "تم إعادة فتح التصويت"),
+    onError: (error: Error) =>
+      toast({ title: "تعذر إعادة الفتح", description: error.message, variant: "destructive" }),
+  });
+
+  const busy = saveOptions.isPending || closeVote.isPending || reopenVote.isPending;
+
+  return (
+    <details className="rounded-xl border border-border bg-card p-4">
+      <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-muted-foreground">
+        <LockKeyhole className="h-4 w-4" />
+        إدارة الممثل — التصويت على الألوان
+      </summary>
+      <p className="mt-2 text-xs text-muted-foreground">
+        خاصة بممثل المجموعة. أدخل هاتف الممثل لتفعيل/تعديل خيارات الألوان أو
+        إغلاق التصويت.
+      </p>
+      <div className="mt-3">
+        <Label>هاتف الممثل</Label>
+        <Input
+          className="mt-1"
+          inputMode="tel"
+          placeholder="07XXXXXXXXX"
+          value={repPhone}
+          onChange={(event) => setRepPhone(formatIraqiPhoneInput(event.target.value))}
+        />
+      </div>
+      <div className="mt-4">
+        <Label className="mb-2 block">خيارات الألوان</Label>
+        <ColorVoteOptionsEditor
+          value={options}
+          seedColors={seedColors}
+          onChange={setOptions}
+        />
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button
+          disabled={!phoneReady || options.length < 2 || busy}
+          onClick={() => saveOptions.mutate()}
+        >
+          {saveOptions.isPending ? (
+            <Loader2 className="ml-2 h-4 w-4 animate-spin" />
+          ) : (
+            <Check className="ml-2 h-4 w-4" />
+          )}
+          حفظ الخيارات وتفعيل التصويت
+        </Button>
+        {vote?.enabled && !closed ? (
+          <Button
+            variant="outline"
+            disabled={!phoneReady || Number(vote?.totalVotes || 0) === 0 || busy}
+            onClick={() => closeVote.mutate()}
+          >
+            {closeVote.isPending ? (
+              <Loader2 className="ml-2 h-4 w-4 animate-spin" />
+            ) : (
+              <LockKeyhole className="ml-2 h-4 w-4" />
+            )}
+            إغلاق واعتماد الأعلى
+          </Button>
+        ) : null}
+        {closed ? (
+          <Button
+            variant="outline"
+            disabled={!phoneReady || busy}
+            onClick={() => reopenVote.mutate()}
+          >
+            {reopenVote.isPending ? (
+              <Loader2 className="ml-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Vote className="ml-2 h-4 w-4" />
+            )}
+            إعادة فتح التصويت
+          </Button>
+        ) : null}
+      </div>
+      {closed ? (
+        <p className="mt-3 text-xs text-status-warning">
+          التصويت مغلق حالياً واللون الفائز مُعتمد. أعد الفتح إذا رغبت بتعديل
+          الاختيار.
+        </p>
+      ) : null}
+    </details>
   );
 }
 
@@ -1752,6 +1837,13 @@ export function GraduationGroupStudentRegistration({
           </aside>
           <div className="space-y-5">
             <GroupColorVotePanel
+              token={token}
+              group={group}
+              onRefetch={() => {
+                void groupQuery.refetch();
+              }}
+            />
+            <GroupVoteManager
               token={token}
               group={group}
               onRefetch={() => {
