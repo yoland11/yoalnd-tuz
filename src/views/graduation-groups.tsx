@@ -1559,6 +1559,16 @@ function GroupVoteManager({
   const vote = group?.colorVote;
   const closed = Boolean(vote?.closed);
   const [repPhone, setRepPhone] = useState("");
+  // "" = adopt the current leader (server decides); otherwise force this option.
+  const [winnerChoice, setWinnerChoice] = useState("");
+  const serverOptions: any[] = Array.isArray(vote?.options) ? vote.options : [];
+  const leaderId = serverOptions.reduce(
+    (best: { id: string; n: number }, option: any) => {
+      const n = Number(vote?.tally?.[option.id] || 0);
+      return n > best.n ? { id: String(option.id), n } : best;
+    },
+    { id: serverOptions[0]?.id ? String(serverOptions[0].id) : "", n: -1 },
+  ).id;
   const seedColors =
     (group?.defaultConfiguration?.colors as Record<string, string>) || {
       robe: "#111111",
@@ -1596,7 +1606,11 @@ function GroupVoteManager({
       toast({ title: "تعذر الحفظ", description: error.message, variant: "destructive" }),
   });
   const closeVote = useMutation({
-    mutationFn: () => post({ action: "close" }, "تم إغلاق التصويت واعتماد اللون الأعلى"),
+    mutationFn: () =>
+      post(
+        { action: "close", winnerId: winnerChoice || undefined },
+        "تم إغلاق التصويت واعتماد اللون",
+      ),
     onError: (error: Error) =>
       toast({ title: "تعذر الإغلاق", description: error.message, variant: "destructive" }),
   });
@@ -1654,6 +1668,25 @@ function GroupVoteManager({
           onChange={setOptions}
         />
       </div>
+      {vote?.enabled && !closed && serverOptions.length >= 2 ? (
+        <div className="mt-4">
+          <Label className="mb-1 block">اللون المعتمد عند الإغلاق</Label>
+          <Select value={winnerChoice || "__leader__"} onValueChange={(value) => setWinnerChoice(value === "__leader__" ? "" : value)}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__leader__">الأعلى تصويتاً (تلقائي)</SelectItem>
+              {serverOptions.map((option: any) => (
+                <SelectItem key={option.id} value={String(option.id)}>
+                  {option.label}
+                  {String(option.id) === leaderId ? " — الأعلى حالياً" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
       <div className="mt-4 flex flex-wrap gap-2">
         <Button
           disabled={!phoneReady || options.length < 2 || busy}
@@ -1752,6 +1785,12 @@ export function GraduationGroupStudentRegistration({
     queryKey: ["graduation", "group", token],
     queryFn: () =>
       graduationFetch<{ group: any }>(`/groups/${encodeURIComponent(token)}`),
+    // While a color vote is open, refresh so the live tally reflects classmates'
+    // votes without a manual reload. Stops once voting closes.
+    refetchInterval: (query) => {
+      const cv = (query.state.data as any)?.group?.colorVote;
+      return cv?.enabled && !cv?.closed ? 15000 : false;
+    },
   });
   const group = groupQuery.data?.group;
   const locked = group?.defaultConfiguration ?? {};
