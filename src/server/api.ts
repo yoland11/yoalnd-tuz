@@ -30585,6 +30585,9 @@ const GroupAttendeeAddSchema = z.object({
   note: z.string().trim().max(500).nullable().optional(),
 });
 const GroupAttendeeRemoveSchema = z.object({ id: z.string().trim().min(1).max(60) });
+// Toggle whether a participant's amount was collected at the event. Operational
+// only — it does NOT post to the cash box; it just tracks collected vs remaining.
+const GroupAttendeeCollectSchema = z.object({ id: z.string().trim().min(1).max(60), collected: z.boolean() });
 
 /**
  * Apply a preparation-state patch to ONE item inside bookingOperations.productMeta
@@ -32872,6 +32875,21 @@ async function handleBookingOperations(
       const next = attendees.filter((a: any) => String(a?.id ?? "") !== parsed.data.id);
       await saveBookingOperations(reference, { ...reference.operations, groupAttendees: next });
       void logAdminActivity(req, "group_attendee_removed", reference.entityType, reference.id, { id: parsed.data.id });
+      return json({ ok: true });
+    }
+    // Mark a participant's amount as collected/uncollected (operational; no cash box).
+    if (method === "PATCH") {
+      if (!can("booking_edit", "orders", "photography", "bookings"))
+        return error("ليس لديك صلاحية تعديل الحجز", 403);
+      const parsed = GroupAttendeeCollectSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("group-attendee-collect", parsed);
+      const next = attendees.map((a: any) =>
+        String(a?.id ?? "") === parsed.data.id
+          ? { ...a, collected: parsed.data.collected, collectedAt: parsed.data.collected ? new Date().toISOString() : null, collectedBy: parsed.data.collected ? auth.id : null }
+          : a,
+      );
+      await saveBookingOperations(reference, { ...reference.operations, groupAttendees: next });
+      void logAdminActivity(req, "group_attendee_collected", reference.entityType, reference.id, { id: parsed.data.id, collected: parsed.data.collected });
       return json({ ok: true });
     }
   }
