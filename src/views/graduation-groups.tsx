@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -11,6 +11,7 @@ import {
   GraduationCap,
   Loader2,
   LockKeyhole,
+  MessageCircle,
   Palette,
   Plus,
   QrCode,
@@ -40,6 +41,7 @@ import { formatCurrency } from "@/lib/money";
 import { processImageFile } from "@/lib/image-tools";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { GraduationRobePreview } from "@/components/graduation-robe-preview";
+import { buildWhatsAppLink } from "@/lib/order-stages";
 import type { GraduationConfig } from "@/lib/graduation";
 import {
   GRADUATION_STEPS,
@@ -1367,6 +1369,35 @@ function rememberColorChoice(scope: string, optionId: string) {
   }
 }
 
+// Student registration draft — kept only in this device's localStorage so a
+// half-filled form survives an accidental reload/close. Cleared on successful
+// submit. All accessors swallow storage errors (private mode / blocked).
+function studentDraftKey(scope: string) {
+  return `graduation-student-draft:${scope}`;
+}
+function readStudentDraft(scope: string): any {
+  try {
+    const raw = localStorage.getItem(studentDraftKey(scope));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+function writeStudentDraft(scope: string, value: unknown) {
+  try {
+    localStorage.setItem(studentDraftKey(scope), JSON.stringify(value));
+  } catch {
+    /* storage unavailable — draft persistence is best-effort only */
+  }
+}
+function clearStudentDraft(scope: string) {
+  try {
+    localStorage.removeItem(studentDraftKey(scope));
+  } catch {
+    /* storage unavailable — nothing to clear */
+  }
+}
+
 function GroupColorVotePanel({
   token,
   group,
@@ -1577,6 +1608,24 @@ function GroupVoteManager({
 
   const busy = saveOptions.isPending || closeVote.isPending || reopenVote.isPending;
 
+  const winnerLabel =
+    closed && vote?.winnerId
+      ? String(
+          (vote.options || []).find(
+            (option: any) => option.id === vote.winnerId,
+          )?.label ?? "",
+        )
+      : "";
+  const whatsappShareLink = buildWhatsAppLink(
+    "",
+    [
+      `🎓 نتيجة تصويت ألوان التخرج — ${group?.title ?? ""}`,
+      `اللون المعتمد: ${winnerLabel}`,
+      `رمز المجموعة: ${group?.groupNo ?? ""}`,
+      "تم اعتماد هذا اللون لجميع طلبات الدفعة.",
+    ].join("\n"),
+  );
+
   return (
     <details className="rounded-xl border border-border bg-card p-4">
       <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-muted-foreground">
@@ -1645,6 +1694,14 @@ function GroupVoteManager({
             إعادة فتح التصويت
           </Button>
         ) : null}
+        {closed && winnerLabel ? (
+          <Button variant="outline" asChild>
+            <a href={whatsappShareLink} target="_blank" rel="noopener noreferrer">
+              <MessageCircle className="ml-2 h-4 w-4" />
+              مشاركة النتيجة عبر واتساب
+            </a>
+          </Button>
+        ) : null}
       </div>
       {closed ? (
         <p className="mt-3 text-xs text-status-warning">
@@ -1664,7 +1721,7 @@ export function GraduationGroupStudentRegistration({
   onBack: () => void;
 }) {
   const { toast } = useToast();
-  const [form, setForm] = useState({
+  const emptyForm = {
     customerName: "",
     phone: "",
     department: "",
@@ -1673,7 +1730,23 @@ export function GraduationGroupStudentRegistration({
     studentId: "",
     notes: "",
     measurements: emptyMeasurements,
+  };
+  const [form, setForm] = useState<typeof emptyForm>(() => {
+    const saved = readStudentDraft(token);
+    return saved
+      ? {
+          ...emptyForm,
+          ...saved,
+          measurements: { ...emptyMeasurements, ...(saved.measurements || {}) },
+        }
+      : emptyForm;
   });
+  const [draftRestored, setDraftRestored] = useState<boolean>(() =>
+    Boolean(readStudentDraft(token)),
+  );
+  useEffect(() => {
+    writeStudentDraft(token, form);
+  }, [form, token]);
   const [completed, setCompleted] = useState<any>(null);
   const groupQuery = useQuery({
     queryKey: ["graduation", "group", token],
@@ -1720,7 +1793,11 @@ export function GraduationGroupStudentRegistration({
             group?.groupMeta?.deliveryDate || group?.eventDate || undefined,
         }),
       }),
-    onSuccess: ({ order }) => setCompleted(order),
+    onSuccess: ({ order }) => {
+      clearStudentDraft(token);
+      setDraftRestored(false);
+      setCompleted(order);
+    },
     onError: (error: Error) =>
       toast({
         title: "تعذر تسجيل الطالب",
@@ -1883,6 +1960,24 @@ export function GraduationGroupStudentRegistration({
                 </p>
               </div>
             </div>
+            {draftRestored ? (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/30 bg-primary/[0.04] px-3 py-2 text-xs">
+                <span className="text-muted-foreground">
+                  تمت استعادة مسودتك المحفوظة على هذا الجهاز.
+                </span>
+                <button
+                  type="button"
+                  className="font-medium text-primary underline"
+                  onClick={() => {
+                    clearStudentDraft(token);
+                    setForm(emptyForm);
+                    setDraftRestored(false);
+                  }}
+                >
+                  مسح المسودة والبدء من جديد
+                </button>
+              </div>
+            ) : null}
             <div className="grid gap-4 sm:grid-cols-2">
               {[
                 ["customerName", "الاسم الكامل"],
