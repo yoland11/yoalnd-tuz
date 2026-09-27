@@ -1259,7 +1259,9 @@ function KoshaCatalogSection({ mode, onMode, catalog, loading, error, onRetry, s
     { key: "packages" as const, label: "الباقات الجاهزة", hint: loading ? "…" : `${packages.length} باقة`, Icon: Layers3 },
     { key: "custom" as const, label: "اختياري", hint: loading ? "…" : `${koshas.length} كوشة`, Icon: SlidersHorizontal },
   ];
-  const row = (item: { id: number; name: string; price: number; mainImage: string | null }, sub: string, pickMode: KoshaPick["mode"]) => {
+  // Image cards in a 3-column grid; the list shows three rows (3×3) and
+  // scrolls for more.
+  const card = (item: { id: number; name: string; price: number; mainImage: string | null }, sub: string, pickMode: KoshaPick["mode"]) => {
     const active = pick?.mode === pickMode && pick.id === item.id;
     return (
       <button
@@ -1267,18 +1269,21 @@ function KoshaCatalogSection({ mode, onMode, catalog, loading, error, onRetry, s
         type="button"
         onClick={() => onPick({ mode: pickMode, id: item.id, name: item.name, price: item.price })}
         aria-pressed={active}
-        className={`flex w-full items-center gap-2 rounded-lg border p-1.5 text-right transition-colors ${active ? "border-primary bg-primary/10" : "border-border/40 bg-background hover:border-primary/40"}`}
+        className={`group flex min-w-0 flex-col overflow-hidden rounded-lg border bg-background text-right transition-colors ${active ? "border-primary ring-2 ring-primary/30" : "border-border/40 hover:border-primary/40"}`}
       >
-        <img src={item.mainImage || "/images/kosha.png"} alt="" className="h-11 w-11 shrink-0 rounded-md bg-muted object-cover" loading="lazy" decoding="async" />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-semibold text-foreground">{item.name}</span>
-          {sub ? <span className="block truncate text-[11px] text-muted-foreground">{sub}</span> : null}
+        <span className="relative block aspect-[4/3] w-full overflow-hidden bg-muted">
+          <img src={item.mainImage || "/images/kosha.png"} alt={item.name} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]" loading="lazy" decoding="async" />
+          {active ? <span className="absolute left-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground shadow"><CheckCircle2 className="h-4 w-4" /></span> : null}
         </span>
-        <span className="shrink-0 text-xs font-bold text-primary">{item.price > 0 ? formatCurrency(item.price) : "حسب الاتفاق"}</span>
-        {active ? <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" /> : null}
+        <span className="block min-w-0 space-y-0.5 p-2">
+          <span className="block truncate text-xs font-semibold text-foreground">{item.name}</span>
+          <span className="block text-[11px] font-bold text-primary">{item.price > 0 ? formatCurrency(item.price) : "حسب الاتفاق"}</span>
+          {sub ? <span className="block truncate text-[10px] text-muted-foreground">{sub}</span> : null}
+        </span>
       </button>
     );
   };
+  const grid = "grid max-h-[39rem] grid-cols-3 gap-2 overflow-y-auto pe-1";
   return (
     <section id="booking-kosha-settings" className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
       <div className="flex items-start gap-2">
@@ -1312,19 +1317,19 @@ function KoshaCatalogSection({ mode, onMode, catalog, loading, error, onRetry, s
             <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={onRetry}>إعادة المحاولة</Button>
           </div>
         ) : loading ? (
-          <div className="space-y-1.5">{[0, 1, 2].map((index) => <Skeleton key={index} className="h-14 rounded-lg" />)}</div>
+          <div className="grid grid-cols-3 gap-2">{[0, 1, 2, 3, 4, 5].map((index) => <Skeleton key={index} className="aspect-[4/5] rounded-lg" />)}</div>
         ) : mode === "packages" ? (
           packages.length ? (
-            <div className="max-h-64 space-y-1.5 overflow-y-auto pe-1">
-              {packages.map((item) => row(item, item.badgeText || item.features[0] || "", "package"))}
+            <div className={grid}>
+              {packages.map((item) => card(item, item.badgeText || item.features[0] || "", "package"))}
             </div>
           ) : <p className="rounded-lg border border-dashed border-border/60 p-3 text-center text-xs text-muted-foreground">لا توجد باقات جاهزة مفعّلة حالياً.</p>
         ) : (
           <div className="space-y-2">
             <div className="relative"><Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="ابحث باسم الكوشة" className="h-9 pr-9 text-sm" /></div>
             {visibleKoshas.length ? (
-              <div className="max-h-64 space-y-1.5 overflow-y-auto pe-1">
-                {visibleKoshas.map((item) => row(item, KOSHA_AVAILABILITY_NOTE[item.availabilityStatus ?? ""] ?? "", "custom"))}
+              <div className={grid}>
+                {visibleKoshas.map((item) => card(item, KOSHA_AVAILABILITY_NOTE[item.availabilityStatus ?? ""] ?? "", "custom"))}
               </div>
             ) : <p className="rounded-lg border border-dashed border-border/60 p-3 text-center text-xs text-muted-foreground">{koshas.length ? "لا توجد كوشة بهذا الاسم." : "لا توجد كوشات مفعّلة حالياً."}</p>}
           </div>
