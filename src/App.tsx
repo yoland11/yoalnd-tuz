@@ -183,6 +183,13 @@ function Router() {
           <StaffPortal />
         </Suspense>
       </Route>
+      {/* "راتبي" in the kosha staff portal links here; the portal renders the
+          salary page from its own router, so it must be mounted for this path. */}
+      <Route path="/staff/salary">
+        <Suspense fallback={<AdminSpinner />}>
+          <StaffPortal />
+        </Suspense>
+      </Route>
       <Route path="/staff/tailors/*">
         <Suspense fallback={<AdminSpinner />}>
           <TailorsStaffPortal />
