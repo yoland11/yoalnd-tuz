@@ -51,12 +51,60 @@ const SALES_AND_INVOICE_PERMISSION_IDS = new Set<string>([
   "sales_invoice.customer.relink",
   "sales_invoice.customer.repair",
 ]);
-const SALES_AND_INVOICE_PERMISSIONS = PERMISSIONS.filter(({ id }) =>
-  SALES_AND_INVOICE_PERMISSION_IDS.has(id),
-);
-const OTHER_PERMISSIONS = PERMISSIONS.filter(
-  ({ id }) => !SALES_AND_INVOICE_PERMISSION_IDS.has(id),
-);
+const startsWithAny = (id: string, prefixes: string[]) =>
+  prefixes.some((prefix) => id.startsWith(prefix));
+
+// Permission sections shown as collapsible groups in the staff editor. Each
+// permission lands in the first section that matches; anything unmatched falls
+// into "صلاحيات أخرى", so no permission is ever hidden from the editor.
+const PERMISSION_CATEGORIES: Array<{
+  key: string;
+  title: string;
+  match: (id: string) => boolean;
+}> = [
+  { key: "system", title: "لوحة التحكم والإعدادات العامة", match: (id) => ["dashboard", "settings", "backup", "system_health", "reconciliation_repair", "whatsapp", "gallery"].includes(id) || id.startsWith("recycle_bin_") },
+  { key: "bookings", title: "الحجوزات والتجهيز", match: (id) => id === "bookings" || startsWithAny(id, ["booking_", "preparation_"]) || ["inventory_shortage_override", "warehouse_issue"].includes(id) },
+  { key: "assets", title: "الأصول والعهدة والإهلاك", match: (id) => startsWithAny(id, ["asset_", "asset.", "custody_groups_", "depreciation_"]) },
+  { key: "sales", title: "المبيعات والفواتير والطباعة", match: (id) => SALES_AND_INVOICE_PERMISSION_IDS.has(id) || id.startsWith("print.") },
+  { key: "catalog", title: "العملاء والخدمات والمنتجات", match: (id) => ["customers", "services", "products"].includes(id) },
+  { key: "accounting", title: "المحاسبة والسندات", match: (id) => id === "accounting" || id.startsWith("voucher_") },
+  { key: "approvals", title: "الموافقات", match: (id) => id.startsWith("approvals.") },
+  { key: "hr", title: "الموظفون والرواتب", match: (id) => ["staff", "hr"].includes(id) || startsWithAny(id, ["payroll_", "employee_salaries_", "bonus_", "salary_settings_"]) },
+  { key: "tasks", title: "المهام", match: (id) => id === "tasks" || id.startsWith("task_") },
+  { key: "koshas", title: "الكوشات", match: (id) => id === "koshas" || id.startsWith("koshat_tasks.") },
+  { key: "photography", title: "التصوير", match: (id) => id.startsWith("photography") },
+  { key: "graduation", title: "التخرج", match: (id) => id.startsWith("graduation") },
+  { key: "representative", title: "بوابة الممثلين", match: (id) => id.startsWith("representative.") },
+  { key: "installments", title: "الأقساط", match: (id) => id.startsWith("installments") },
+  { key: "tailoring", title: "الخياطة", match: (id) => id.startsWith("tailoring") },
+  { key: "research", title: "البحوث", match: (id) => id.startsWith("research") },
+  { key: "delivery", title: "التوصيل", match: (id) => id.startsWith("delivery") },
+  { key: "catering", title: "الضيافة", match: (id) => id.startsWith("catering_") },
+  { key: "bouquet", title: "الباقات والورد", match: (id) => id.startsWith("bouquet.") },
+  { key: "production", title: "الإنتاج", match: (id) => id.startsWith("production_") },
+  { key: "executive", title: "الإدارة التنفيذية والذكاء الاصطناعي", match: (id) => id === "executive" || id.startsWith("ai_") },
+  { key: "documents", title: "ماسح المستندات", match: (id) => id.startsWith("doc_scanner_") },
+];
+
+const PERMISSION_SECTIONS = (() => {
+  const seen = new Set<string>();
+  const unique = PERMISSIONS.filter(({ id }) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  const sections = PERMISSION_CATEGORIES.map((category) => ({
+    key: category.key,
+    title: category.title,
+    permissions: [] as typeof PERMISSIONS,
+  }));
+  const other = { key: "other", title: "صلاحيات أخرى", permissions: [] as typeof PERMISSIONS };
+  for (const permission of unique) {
+    const index = PERMISSION_CATEGORIES.findIndex((category) => category.match(permission.id));
+    (index === -1 ? other : sections[index]).permissions.push(permission);
+  }
+  return [...sections, other].filter((section) => section.permissions.length > 0);
+})();
 
 const ROLES = [
   { value: "admin", label: "مدير رئيسي" },
@@ -189,45 +237,94 @@ function cleanErrorMessage(err: any): string {
   );
 }
 
-function PermissionGroup({
-  title,
-  description,
-  permissions,
+// Each permission section is a collapsible button showing how many of its
+// permissions are granted; expanding it lists the checkboxes. Toggling only
+// adds/removes the given ids, so legacy permissions outside ALL_PERMISSIONS
+// that a staff member already holds are preserved.
+function PermissionSections({
   selected,
   disabled,
-  onToggle,
+  onChange,
 }: {
-  title: string;
-  description: string;
-  permissions: typeof PERMISSIONS;
   selected: string[];
   disabled: boolean;
-  onToggle: (permission: string, enabled: boolean) => void;
+  onChange: (next: string[]) => void;
 }) {
+  const granted = new Set(selected);
+  const toggle = (ids: string[], enabled: boolean) => {
+    const next = new Set(selected);
+    for (const id of ids) {
+      if (enabled) next.add(id);
+      else next.delete(id);
+    }
+    onChange([...next]);
+  };
   return (
-    <section className="space-y-3 rounded-xl border border-border/50 bg-muted/20 p-3">
-      <div>
-        <h5 className="font-semibold text-primary">{title}</h5>
-        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-      </div>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {permissions.map((permission) => (
-          <label
-            key={permission.id}
-            className="flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 text-sm"
+    <div className="space-y-2">
+      {PERMISSION_SECTIONS.map((section) => {
+        const ids = section.permissions.map((permission) => permission.id);
+        const count = ids.filter((id) => granted.has(id)).length;
+        return (
+          <details
+            key={section.key}
+            className="group rounded-xl border border-border/50 bg-muted/20"
           >
-            <input
-              type="checkbox"
-              checked={selected.includes(permission.id)}
-              disabled={disabled}
-              onChange={(event) => onToggle(permission.id, event.target.checked)}
-              className="mt-1 accent-primary disabled:opacity-70"
-            />
-            <span>{permission.label}</span>
-          </label>
-        ))}
-      </div>
-    </section>
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-3 py-2.5 hover:bg-muted/40">
+              <span className="text-sm font-semibold text-foreground">
+                {section.title}
+              </span>
+              <span className="flex items-center gap-2">
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs tabular-nums ${count ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}
+                >
+                  {count} / {ids.length}
+                </span>
+                <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />
+              </span>
+            </summary>
+            <div className="border-t border-border/40 p-3">
+              <div className="mb-2 flex gap-3">
+                <button
+                  type="button"
+                  disabled={disabled || count === ids.length}
+                  onClick={() => toggle(ids, true)}
+                  className="text-xs text-primary underline disabled:no-underline disabled:opacity-50"
+                >
+                  تحديد الكل
+                </button>
+                <button
+                  type="button"
+                  disabled={disabled || count === 0}
+                  onClick={() => toggle(ids, false)}
+                  className="text-xs text-muted-foreground underline disabled:no-underline disabled:opacity-50"
+                >
+                  إلغاء الكل
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {section.permissions.map((permission) => (
+                  <label
+                    key={permission.id}
+                    className="flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={granted.has(permission.id)}
+                      disabled={disabled}
+                      onChange={(event) =>
+                        toggle([permission.id], event.target.checked)
+                      }
+                      className="mt-1 accent-primary disabled:opacity-70"
+                    />
+                    <span>{permission.label ?? permission.id}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </details>
+        );
+      })}
+    </div>
   );
 }
 
@@ -586,46 +683,17 @@ export default function StaffPage() {
               <label className="block text-xs text-muted-foreground mb-2">
                 الصلاحيات
               </label>
-              <div className="space-y-3">
-                <PermissionGroup
-                  title="المبيعات والفواتير"
-                  description="نقطة البيع، فواتير المبيعات، الطباعة، الإلغاء، وربط العميل بالفاتورة."
-                  permissions={SALES_AND_INVOICE_PERMISSIONS}
-                  selected={editing.permissions}
-                  disabled={editing.role === "admin"}
-                  onToggle={(permission, enabled) =>
-                    setEditing((current) => ({
-                      ...current!,
-                      permissions: enabled
-                        ? Array.from(
-                            new Set([...current!.permissions, permission]),
-                          )
-                        : current!.permissions.filter(
-                            (value) => value !== permission,
-                          ),
-                    }))
-                  }
-                />
-                <PermissionGroup
-                  title="الصلاحيات الأخرى"
-                  description="بقية صلاحيات النظام، بما فيها المحاسبة والمشتريات والتقارير."
-                  permissions={OTHER_PERMISSIONS}
-                  selected={editing.permissions}
-                  disabled={editing.role === "admin"}
-                  onToggle={(permission, enabled) =>
-                    setEditing((current) => ({
-                      ...current!,
-                      permissions: enabled
-                        ? Array.from(
-                            new Set([...current!.permissions, permission]),
-                          )
-                        : current!.permissions.filter(
-                            (value) => value !== permission,
-                          ),
-                    }))
-                  }
-                />
-              </div>
+              <p className="mb-2 text-xs text-muted-foreground">
+                اضغط على القسم لعرض صلاحياته واختيارها · المحدد:{" "}
+                <b className="text-foreground">{editing.permissions.length}</b>
+              </p>
+              <PermissionSections
+                selected={editing.permissions}
+                disabled={editing.role === "admin"}
+                onChange={(permissions) =>
+                  setEditing((current) => ({ ...current!, permissions }))
+                }
+              />
             </div>
             {editing.id && <ApprovalPermissionsPanel staff={editing} />}
             <label
