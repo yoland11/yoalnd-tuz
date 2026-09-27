@@ -459,7 +459,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
               href={`/staff/koshas/expenses?booking=${b.id}`}
               className="mt-2 flex items-center justify-center gap-2 rounded-lg border border-border py-2 text-sm font-medium"
             >
-              <Banknote className="h-4 w-4 text-primary" /> طلب مصروف لهذا الحجز
+              <Banknote className="h-4 w-4 text-primary" /> إضافة مصروف لهذا الحجز
             </Link>
           ) : null}
         </div>

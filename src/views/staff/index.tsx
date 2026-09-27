@@ -184,8 +184,8 @@ function Dashboard() {
         <span className="flex items-center gap-2">
           <WalletCards className="h-5 w-5 text-primary" />
           <span>
-            <span className="block text-sm font-bold">طلب مصروف</span>
-            <span className="block text-[11px] text-muted-foreground">اكتب التفاصيل والمبلغ ويوصل للمدير للموافقة</span>
+            <span className="block text-sm font-bold">إضافة مصروف</span>
+            <span className="block text-[11px] text-muted-foreground">يظهر بمصاريف الإدارة معلّقاً لحد موافقة المدير</span>
           </span>
         </span>
         <span className="text-xs font-bold text-primary">فتح</span>

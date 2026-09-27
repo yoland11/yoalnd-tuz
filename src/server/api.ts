@@ -65109,72 +65109,123 @@ async function handleStaffPortal(
   const action = parts[4];
   await ensureKoshaStaffTables();
 
-  // ── طلب مصروف — a kosha staff member asks for money from the main cash box.
-  // The request is created as a PENDING financial transaction through the
-  // canonical approval-first engine (createFinancialTransaction): nothing leaves
-  // the cash box until the principal administrator approves it in the Main Cash
-  // Box, which executes it. Staff can only create expense requests (never
-  // revenue, drafts or executed rows) and only ever see their own requests.
+  // ── مصاريف الكوشات — kosha staff file expenses from the portal with the same
+  // fields as /admin/expenses. They are created by the SAME code path as the
+  // admin screen (createExpenseWithFinancialRequest), so each one appears in
+  // /admin/expenses and as a PENDING request in the main cash box: nothing is
+  // paid until an administrator approves it (the expense then shows executed;
+  // a rejection shows rejected). Staff only ever see their own expenses.
+  if (resource === "expense-categories") {
+    const auth = await requirePermission(req, "koshas");
+    if (isResponse(auth)) return auth;
+    if (method !== "GET") return error("المسار غير موجود", 404);
+    await ensureExpenseManagementTables();
+    await ensureExpenseCategoriesSeeded();
+    const rows = await db.query.expenseCategoriesTable.findMany({
+      where: eq(expenseCategoriesTable.isActive, 1),
+      orderBy: (c, { asc }) => [asc(c.id)],
+    });
+    return json({ data: rows.map((row) => ({ id: row.id, name: row.nameAr || row.name })) });
+  }
+
   if (resource === "expense-requests") {
     const auth = await requirePermission(req, "koshas");
     if (isResponse(auth)) return auth;
-    await ensureMasterCashBoxTables();
-    const KOSHA_STAFF_EXPENSE_SOURCE = "kosha_staff_expense";
+    await ensureExpenseManagementTables();
     const iso = (value: unknown) =>
       value instanceof Date ? value.toISOString() : value ? String(value) : null;
 
     if (method === "GET" && !id) {
-      const rows = await db
+      const expenseRows = await db
+        .select({
+          id: expensesTable.id,
+          date: expensesTable.date,
+          name: expensesTable.name,
+          amount: expensesTable.amount,
+          categoryName: expensesTable.categoryName,
+          paymentMethod: expensesTable.paymentMethod,
+          notes: expensesTable.notes,
+          receiptImage: expensesTable.receiptImage,
+          status: expensesTable.approvalStatus,
+          createdAt: expensesTable.createdAt,
+          transactionNo: financialTransactionsTable.transactionNo,
+          executedAt: financialTransactionsTable.executedAt,
+          rejectionReason: financialTransactionsTable.rejectionReason,
+        })
+        .from(expensesTable)
+        .leftJoin(
+          financialTransactionsTable,
+          eq(financialTransactionsTable.id, expensesTable.financialTransactionId),
+        )
+        .where(and(eq(expensesTable.createdBy, auth.id), isNull(expensesTable.deletedAt)))
+        .orderBy(desc(expensesTable.createdAt))
+        .limit(50);
+      // Requests filed through the short-lived first version of this screen
+      // were cash-box requests without an expense row; keep showing them.
+      await ensureMasterCashBoxTables();
+      const legacyRows = await db
         .select({
           id: financialTransactionsTable.id,
-          transactionNo: financialTransactionsTable.transactionNo,
+          name: financialTransactionsTable.description,
           amount: financialTransactionsTable.amount,
-          description: financialTransactionsTable.description,
           notes: financialTransactionsTable.notes,
-          bookingId: financialTransactionsTable.sourceId,
           status: financialTransactionsTable.approvalStatus,
-          rejectionReason: financialTransactionsTable.rejectionReason,
-          executedAt: financialTransactionsTable.executedAt,
-          executedByName: financialTransactionsTable.executedByName,
-          reversedAt: financialTransactionsTable.reversedAt,
           createdAt: financialTransactionsTable.createdAt,
+          transactionNo: financialTransactionsTable.transactionNo,
+          executedAt: financialTransactionsTable.executedAt,
+          rejectionReason: financialTransactionsTable.rejectionReason,
         })
         .from(financialTransactionsTable)
         .where(
           and(
             eq(financialTransactionsTable.requestedBy, auth.id),
-            eq(financialTransactionsTable.sourceType, KOSHA_STAFF_EXPENSE_SOURCE),
+            eq(financialTransactionsTable.sourceType, "kosha_staff_expense"),
           ),
         )
         .orderBy(desc(financialTransactionsTable.createdAt))
         .limit(50);
-      return json({
-        data: rows.map((row) => ({
-          ...row,
+      const data = [
+        ...expenseRows.map((row) => ({
+          key: `expense-${row.id}`,
+          date: row.date,
+          name: row.name,
           amount: Number(row.amount),
+          categoryName: row.categoryName || null,
+          paymentMethod: row.paymentMethod,
+          notes: row.notes,
+          receiptImage: row.receiptImage,
+          status: row.status ?? "pending",
+          transactionNo: row.transactionNo ?? null,
           executedAt: iso(row.executedAt),
-          reversedAt: iso(row.reversedAt),
+          rejectionReason: row.rejectionReason ?? null,
           createdAt: iso(row.createdAt),
         })),
-      });
+        ...legacyRows.map((row) => ({
+          key: `request-${row.id}`,
+          date: null,
+          name: row.name,
+          amount: Number(row.amount),
+          categoryName: null,
+          paymentMethod: "cash",
+          notes: row.notes,
+          receiptImage: null,
+          status: row.status,
+          transactionNo: row.transactionNo,
+          executedAt: iso(row.executedAt),
+          rejectionReason: row.rejectionReason ?? null,
+          createdAt: iso(row.createdAt),
+        })),
+      ].sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+      return json({ data });
     }
 
     if (method === "POST" && !id) {
-      const parsed = z
-        .object({
-          amount: z.coerce
-            .number()
-            .positive("المبلغ يجب أن يكون أكبر من صفر")
-            .max(100_000_000, "المبلغ كبير جداً"),
-          description: z.string().trim().min(3, "اكتب تفاصيل المصروف").max(400),
-          notes: z.string().trim().max(1000).optional().default(""),
-          bookingId: z.coerce.number().int().positive().optional().nullable(),
-          requestKey: z.string().trim().min(8).max(80).regex(/^[A-Za-z0-9-]+$/),
-        })
+      const parsed = expenseMutationSchema
+        .extend({ bookingId: z.coerce.number().int().positive().optional().nullable() })
         .safeParse(await body(req));
       if (!parsed.success)
         return validationError("staff.koshas.expense-requests", parsed);
-      const { amount, description, notes, bookingId, requestKey } = parsed.data;
+      const { bookingId, ...expenseInput } = parsed.data;
       let bookingLabel = "";
       if (bookingId) {
         const booking = await db.query.koshaBookingsTable.findFirst({
@@ -65185,52 +65236,64 @@ async function handleStaffPortal(
           shortBookingNumber("kosha", booking.id, booking.trackingCode) ||
           `KB-${booking.id}`;
       }
-      const staffName = auth.fullName || auth.username;
-      const row = await createFinancialTransaction(
-        {
-          direction: "expense",
-          amount,
-          department: "koshas",
-          transactionType: "payment_voucher",
-          description,
-          notes: [bookingLabel ? `مرتبط بحجز ${bookingLabel}` : "", notes]
-            .filter(Boolean)
-            .join(" · "),
-          paymentMethod: "cash",
-          sourceType: KOSHA_STAFF_EXPENSE_SOURCE,
-          sourceId: bookingId ?? null,
-          sourceEvent: "staff_request",
-          idempotencyKey: `kosha-staff-expense:${auth.id}:${requestKey}`,
-          approvalStatus: "pending",
-          responsibleUserId: auth.id,
-          responsibleUserName: staffName,
-        },
-        financialActor(auth),
-      );
-      void createNotificationOnce({
-        type: "kosha_staff_expense_request",
-        title: "طلب مصروف من كادر الكوشات",
-        body: `${staffName} · ${Number(row.amount).toLocaleString("en-US")} د.ع · ${description}`,
-        entityType: "financial_transaction",
-        entityId: row.id,
-        href: "/admin/finance/master-cash",
+      // Duplicate guard without schema changes: an identical submission a few
+      // seconds apart (double tap) is refused atomically, and an identical
+      // expense already filed by this employee in the last 10 minutes (a retry
+      // after a dropped response) is returned instead of being filed twice.
+      const fingerprint = [
+        expenseInput.date,
+        expenseInput.amount,
+        expenseInput.categoryId,
+        String(expenseInput.name ?? "").trim(),
+      ].join("|");
+      const inFlight = await consumeRateLimit({
+        action: "kosha-staff-expense-submit",
+        keyParts: [String(auth.id), fingerprint],
+        limit: 1,
+        windowMs: 15_000,
       });
-      void logAdminActivity(
-        req,
-        "kosha_staff_expense_requested",
-        "financial_transaction",
-        row.id,
-        { amount: Number(row.amount), bookingId: bookingId ?? null },
-      );
-      return json(
-        {
-          id: row.id,
-          transactionNo: row.transactionNo,
-          amount: Number(row.amount),
-          status: row.approvalStatus,
-        },
-        201,
-      );
+      const [recent] = await db
+        .select()
+        .from(expensesTable)
+        .where(
+          and(
+            eq(expensesTable.createdBy, auth.id),
+            isNull(expensesTable.deletedAt),
+            eq(expensesTable.date, expenseInput.date),
+            eq(expensesTable.amount, String(expenseInput.amount)),
+            eq(expensesTable.categoryId, expenseInput.categoryId),
+            sql`${expensesTable.createdAt} > now() - interval '10 minutes'`,
+          ),
+        )
+        .orderBy(desc(expensesTable.createdAt))
+        .limit(1);
+      const sameName =
+        recent &&
+        String(recent.name ?? "").trim() ===
+          String(expenseInput.name ?? "").trim();
+      if (recent && sameName) return json({ ...recent, duplicate: true });
+      if (!inFlight.allowed)
+        return error("جارٍ حفظ نفس المصروف، انتظر لحظة", 409);
+      const created = await createExpenseWithFinancialRequest(expenseInput, auth, {
+        notesPrefix: ["من بوابة الكوشات", bookingLabel ? `حجز ${bookingLabel}` : ""]
+          .filter(Boolean)
+          .join(" · "),
+      });
+      if (!created.ok) return created.response;
+      const staffName = auth.fullName || auth.username;
+      void createNotificationOnce({
+        type: "kosha_staff_expense",
+        title: "مصروف جديد من كادر الكوشات بانتظار الموافقة",
+        body: `${staffName} · ${Number(created.row.amount).toLocaleString("en-US")} د.ع · ${created.row.name}`,
+        entityType: "expense",
+        entityId: created.row.id,
+        href: "/admin/expenses",
+      });
+      void logAdminActivity(req, "expense_created", "expense", created.row.id, {
+        source: "kosha_staff_portal",
+        bookingId: bookingId ?? null,
+      });
+      return json(created.row, 201);
     }
     return error("المسار غير موجود", 404);
   }
@@ -68404,6 +68467,93 @@ const expenseMutationSchema = z.object({
   receiptImage: z.string().nullish(),
 });
 
+/**
+ * Creates an expense row plus its PENDING cash-box request (approval-first):
+ * nothing leaves the main cash box until an administrator approves the
+ * request, which marks the expense executed (a rejection marks it rejected).
+ * Shared by the admin expenses screen and the kosha staff portal so both land
+ * in the same /admin/expenses list awaiting approval. `notesPrefix` is only
+ * used by the staff portal; without it the admin behaviour is unchanged.
+ */
+async function createExpenseWithFinancialRequest(
+  b: z.infer<typeof expenseMutationSchema>,
+  auth: AdminUser,
+  options: { notesPrefix?: string } = {},
+): Promise<{ ok: true; row: typeof expensesTable.$inferSelect } | { ok: false; response: NextResponse }> {
+  let categoryName = "";
+  if (b?.categoryId) {
+    const cat = await db.query.expenseCategoriesTable.findFirst({
+      where: eq(expenseCategoriesTable.id, b.categoryId),
+    });
+    categoryName = cat?.nameAr ?? "";
+  }
+  const a = actor(auth);
+  const receiptImage = b?.receiptImage
+    ? await persistMediaValue(b.receiptImage, "expenses")
+    : null;
+  const [row] = await db
+    .insert(expensesTable)
+    .values({
+      date: b?.date || new Date().toISOString().slice(0, 10),
+      name: textFallback(b?.name, categoryName || "مصروف"),
+      amount: String(b.amount),
+      categoryId: b?.categoryId ?? null,
+      categoryName,
+      paymentMethod: normMethod(b?.paymentMethod),
+      receiptImage,
+      notes: options.notesPrefix
+        ? [options.notesPrefix, b?.notes].filter(Boolean).join(" · ")
+        : (b?.notes ?? null),
+      createdBy: a.id,
+      createdByName: a.name,
+      approvalStatus: "pending",
+    })
+    .returning();
+  let financialTransaction;
+  try {
+    financialTransaction = await createSourceFinancialRequest(
+      {
+        transactionDate: row.date,
+        direction: "expense",
+        amount: Number(row.amount),
+        department: "general",
+        transactionType: "expense",
+        description: row.name || row.categoryName || "مصروف",
+        paymentMethod: normMethod(row.paymentMethod),
+        sourceType: "expense",
+        sourceId: row.id,
+        sourceEvent: "payment",
+        idempotencyKey: `expense:${row.id}:payment`,
+        notes: row.notes,
+        attachments: row.receiptImage ? [row.receiptImage] : [],
+      },
+      financialActor(auth),
+    );
+  } catch (err: any) {
+    await db
+      .update(expensesTable)
+      .set({ deletedAt: new Date() })
+      .where(eq(expensesTable.id, row.id));
+    console.error("expense financial request failed", {
+      expenseId: row.id,
+      message: err?.message,
+    });
+    return {
+      ok: false,
+      response: error("تعذر إنشاء الطلب المالي للمصروف، لم يتم حفظ المصروف", 500),
+    };
+  }
+  const [savedRow] = await db
+    .update(expensesTable)
+    .set({
+      financialTransactionId: financialTransaction.id,
+      approvalStatus: financialTransaction.approvalStatus,
+    })
+    .where(eq(expensesTable.id, row.id))
+    .returning();
+  return { ok: true, row: savedRow };
+}
+
 const expenseCategoryMutationSchema = z.object({
   name: z.string().optional(),
   nameAr: z.string().min(1, "اسم التصنيف مطلوب"),
@@ -69653,78 +69803,10 @@ async function handleAccounting(
     if (method === "POST") {
       const parsed = expenseMutationSchema.safeParse(await body(req));
       if (!parsed.success) return validationError("expenses.create", parsed);
-      const b = parsed.data;
-      let categoryName = "";
-      if (b?.categoryId) {
-        const cat = await db.query.expenseCategoriesTable.findFirst({
-          where: eq(expenseCategoriesTable.id, b.categoryId),
-        });
-        categoryName = cat?.nameAr ?? "";
-      }
-      const a = actor(auth);
-      const receiptImage = b?.receiptImage
-        ? await persistMediaValue(b.receiptImage, "expenses")
-        : null;
-      const [row] = await db
-        .insert(expensesTable)
-        .values({
-          date: b?.date || new Date().toISOString().slice(0, 10),
-          name: textFallback(b?.name, categoryName || "مصروف"),
-          amount: String(b.amount),
-          categoryId: b?.categoryId ?? null,
-          categoryName,
-          paymentMethod: normMethod(b?.paymentMethod),
-          receiptImage,
-          notes: b?.notes ?? null,
-          createdBy: a.id,
-          createdByName: a.name,
-          approvalStatus: "pending",
-        })
-        .returning();
-      let financialTransaction;
-      try {
-        financialTransaction = await createSourceFinancialRequest(
-          {
-            transactionDate: row.date,
-            direction: "expense",
-            amount: Number(row.amount),
-            department: "general",
-            transactionType: "expense",
-            description: row.name || row.categoryName || "مصروف",
-            paymentMethod: normMethod(row.paymentMethod),
-            sourceType: "expense",
-            sourceId: row.id,
-            sourceEvent: "payment",
-            idempotencyKey: `expense:${row.id}:payment`,
-            notes: row.notes,
-            attachments: row.receiptImage ? [row.receiptImage] : [],
-          },
-          financialActor(auth),
-        );
-      } catch (err: any) {
-        await db
-          .update(expensesTable)
-          .set({ deletedAt: new Date() })
-          .where(eq(expensesTable.id, row.id));
-        console.error("expense financial request failed", {
-          expenseId: row.id,
-          message: err?.message,
-        });
-        return error(
-          "تعذر إنشاء الطلب المالي للمصروف، لم يتم حفظ المصروف",
-          500,
-        );
-      }
-      const [savedRow] = await db
-        .update(expensesTable)
-        .set({
-          financialTransactionId: financialTransaction.id,
-          approvalStatus: financialTransaction.approvalStatus,
-        })
-        .where(eq(expensesTable.id, row.id))
-        .returning();
-      void logAdminActivity(req, "expense_created", "expense", row.id);
-      return json(savedRow, 201);
+      const created = await createExpenseWithFinancialRequest(parsed.data, auth);
+      if (!created.ok) return created.response;
+      void logAdminActivity(req, "expense_created", "expense", created.row.id);
+      return json(created.row, 201);
     }
     if ((method === "PATCH" || method === "PUT") && parts[2]) {
       const id = int(parts[2]);

@@ -4,12 +4,12 @@ import { FileSpreadsheet, FileText, Pencil, Plus, Printer, Search, Tags, Trash2,
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { fileToDataUrl, adminFetch, formatCurrency } from "./_lib";
+import { fileToDataUrl, adminFetch, formatCurrency, getCachedAdminMe } from "./_lib";
 import { EmptyState } from "./_layout";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
-type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; createdByName: string; createdAt: string };
+type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; financialTransactionId?: number | null; createdByName: string; createdAt: string };
 type Category = { id: number; name: string; nameAr: string; isActive: number };
 type ExpenseForm = { id?: number; date: string; name: string; categoryId: string; amount: string; paymentMethod: string; notes: string; receiptImage: string };
 
@@ -75,6 +75,37 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
       toast({ title: "تم حذف المصروف" });
     },
   });
+  // Approve / reject a pending expense right here. Both go through the Main
+  // Cash Box's own endpoints (the server allows only the principal
+  // administrator); approving executes the payment and marks the expense
+  // executed, rejecting marks it rejected. No separate financial logic.
+  const canApproveExpenses = getCachedAdminMe()?.role === "admin";
+  const refreshAfterDecision = () => {
+    qc.invalidateQueries({ queryKey: ["admin", "expenses"] });
+    qc.invalidateQueries({ queryKey: ["admin", "dashboard"] });
+    qc.invalidateQueries({ queryKey: ["admin", "master-cash"] });
+  };
+  const approveExpense = useMutation({
+    mutationFn: (expense: Expense) =>
+      adminFetch(`/admin/master-cash/transactions/${expense.financialTransactionId}/approve`, { method: "POST", body: JSON.stringify({}) }),
+    onSuccess: () => { refreshAfterDecision(); toast({ title: "تم اعتماد المصروف وصرفه من الصندوق" }); },
+    onError: (error: any) => toast({ title: "تعذر اعتماد المصروف", description: error?.message, variant: "destructive" }),
+  });
+  const rejectExpense = useMutation({
+    mutationFn: ({ expense, reason }: { expense: Expense; reason: string }) =>
+      adminFetch(`/admin/master-cash/transactions/${expense.financialTransactionId}/reject`, { method: "POST", body: JSON.stringify({ reason }) }),
+    onSuccess: () => { refreshAfterDecision(); toast({ title: "تم رفض المصروف" }); },
+    onError: (error: any) => toast({ title: "تعذر رفض المصروف", description: error?.message, variant: "destructive" }),
+  });
+  const decideExpense = (expense: Expense, decision: "approve" | "reject") => {
+    if (decision === "approve") {
+      if (confirm(`اعتماد مصروف «${expense.name}» بمبلغ ${formatCurrency(expense.amount)} وصرفه من الصندوق؟`)) approveExpense.mutate(expense);
+      return;
+    }
+    const reason = prompt("سبب رفض المصروف (3 أحرف على الأقل):")?.trim() ?? "";
+    if (reason.length < 3) { if (reason) toast({ title: "سبب الرفض قصير جداً", variant: "destructive" }); return; }
+    rejectExpense.mutate({ expense, reason });
+  };
 
   async function exportPdf() {
     void recordReportAudit("report_pdf_exported", "تقرير المصاريف", "pdf");
@@ -191,6 +222,10 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
                       <td className="px-3 py-2.5 text-muted-foreground text-xs">{expense.createdByName || "—"}</td>
                       <td className="px-3 py-2.5">
                         <div className="flex gap-1">
+                          {canApproveExpenses && expense.approvalStatus === "pending" && expense.financialTransactionId ? <>
+                            <button onClick={() => decideExpense(expense, "approve")} disabled={approveExpense.isPending || rejectExpense.isPending} className="rounded px-2 py-1 text-xs font-bold text-status-success hover:bg-status-success/10 disabled:opacity-50">اعتماد</button>
+                            <button onClick={() => decideExpense(expense, "reject")} disabled={approveExpense.isPending || rejectExpense.isPending} className="rounded px-2 py-1 text-xs font-bold text-status-danger hover:bg-status-danger/10 disabled:opacity-50">رفض</button>
+                          </> : null}
                           {(expense.approvalStatus ?? "executed") !== "executed" ? <>
                             <button onClick={() => setForm({ id: expense.id, date: expense.date, name: expense.name ?? "", categoryId: expense.categoryId ? String(expense.categoryId) : "", amount: String(expense.amount ?? ""), paymentMethod: expense.paymentMethod ?? "cash", notes: expense.notes ?? "", receiptImage: expense.receiptImage ?? "" })} className="p-1.5 rounded text-primary hover:bg-primary/10"><Pencil className="w-4 h-4" /></button>
                             <button onClick={() => confirm("حذف المصروف؟") && remove.mutate(expense.id)} className="p-1.5 rounded text-status-danger hover:bg-status-danger/10"><Trash2 className="w-4 h-4" /></button>
