@@ -111,6 +111,39 @@ type KoshaCatalogKosha = { id: number; name: string; price: number; mainImage: s
 type KoshaCatalog = { packages: KoshaCatalogPackage[]; koshas: KoshaCatalogKosha[] };
 type KoshaPick = { mode: "package" | "custom"; id: number; name: string; price: number };
 
+// Flowers section of the unified booking form: the same catalogue and sections
+// as the public bouquet studio (/design, /api/products/designer-catalog).
+type FlowerSection = "flowers" | "bridal_bouquets" | "ready_bouquets" | "wrapping" | "ribbons" | "extras";
+const FLOWER_SECTIONS: Array<{ key: FlowerSection; label: string }> = [
+  { key: "flowers", label: "الورود" },
+  { key: "bridal_bouquets", label: "المسكات" },
+  { key: "ready_bouquets", label: "الباقات الجاهزة" },
+  { key: "wrapping", label: "التغليف" },
+  { key: "ribbons", label: "الأشرطة" },
+  { key: "extras", label: "إكسسوارات الباقة" },
+];
+type FlowerCatalogVariant = { id: number; color: string | null; colorHex: string | null; image?: string | null; price: number | null; available?: number; stock: number; isActive?: boolean };
+type FlowerCatalogProduct = { id: number; name: string; nameAr: string; price: number; stock: number; designerSection: FlowerSection; images: string[]; variants: FlowerCatalogVariant[] };
+type FlowerBookingItem = { key: string; productId: number; variantId: number | null; name: string; variantLabel: string | null; section: FlowerSection; quantity: number; unitPrice: number };
+
+function flowerItemsTotal(items: FlowerBookingItem[]): number {
+  return items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+}
+
+function flowerItemsSummary(items: FlowerBookingItem[]): string {
+  const lines = items.map((item) => `${item.name}${item.variantLabel ? ` (${item.variantLabel})` : ""} × ${item.quantity}`).join("، ");
+  const text = `${lines} · المجموع ${formatCurrency(flowerItemsTotal(items))}`;
+  return text.length > 500 ? `${text.slice(0, 497)}…` : text;
+}
+
+async function fetchFlowerCatalog(): Promise<FlowerCatalogProduct[]> {
+  const response = await fetch("/api/products/designer-catalog", { credentials: "include" });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(payload?.error || "تعذر تحميل منتجات الورد");
+  const products = Array.isArray(payload?.products) ? payload.products : [];
+  return products.filter((product: any) => FLOWER_SECTIONS.some((section) => section.key === product.designerSection));
+}
+
 // Informational only — catalogue availability is not date-specific, so it never blocks a pick.
 const KOSHA_AVAILABILITY_NOTE: Record<string, string> = {
   unavailable: "غير متاحة حالياً",
@@ -1142,6 +1175,14 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   const [koshaPick, setKoshaPick] = useState<KoshaPick | null>(null);
   const [koshaSearch, setKoshaSearch] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [flowerItems, setFlowerItems] = useState<FlowerBookingItem[]>([]);
+  const flowersSelected = selected.includes("flowers");
+  const flowerCatalogQuery = useQuery({
+    queryKey: ["booking-center", "flower-catalog"],
+    queryFn: fetchFlowerCatalog,
+    enabled: flowersSelected,
+    staleTime: 60_000,
+  });
   const koshaSelected = selected.includes("kosha");
   const koshaCatalogQuery = useQuery<KoshaCatalog>({
     queryKey: ["admin", "booking-center", "kosha-catalog"],
@@ -1201,7 +1242,9 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       if (!primary) failField("serviceId", "لا توجد خدمة فعالة. أضف خدمة من إدارة الخدمات أولاً.");
       // النقل بواسطة AJN يبقى ضمن إجمالي الحجز: يُضاف إلى المبلغ الكلي المرسل.
       const transportFee = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
-      const grandTotal = num(totalAmount) + transportFee;
+      // Chosen flower products are part of the booking total, like AJN transport.
+      const flowersTotal = selected.includes("flowers") ? flowerItemsTotal(flowerItems) : 0;
+      const grandTotal = num(totalAmount) + transportFee + flowersTotal;
       return adminFetch("/admin/service-orders", {
         method: "POST",
         body: JSON.stringify({
@@ -1238,8 +1281,13 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
                   }
                 : type === "kosha" && koshaPick
                   ? { type, status: "waiting", amount: 0, notes: koshaPickLabel(koshaPick) }
-                  : { type, status: "waiting", amount: 0 },
+                  : type === "flowers" && flowerItems.length
+                    ? { type, status: "waiting", amount: flowersTotal, notes: flowerItemsSummary(flowerItems) }
+                    : { type, status: "waiting", amount: 0 },
             ),
+            ...(selected.includes("flowers") && flowerItems.length
+              ? { flowerItems: flowerItems.map(({ key: _key, ...item }) => item) }
+              : {}),
             ...(koshaSelected && koshaPick ? { koshaSelection: koshaPick } : {}),
             ...(selected.includes("transportation") && transportationMode
               ? {
@@ -1277,8 +1325,9 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   });
   // النقل بواسطة AJN جزء من إجمالي الحجز: تُضاف أجرته تلقائياً إلى المبلغ الكلي.
   const transportFeeValue = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
+  const flowersTotalValue = flowersSelected ? flowerItemsTotal(flowerItems) : 0;
   const baseTotalValue = num(totalAmount);
-  const totalValue = baseTotalValue + transportFeeValue;
+  const totalValue = baseTotalValue + transportFeeValue + flowersTotalValue;
   const depositValue = num(depositAmount);
   const depositTooHigh = depositValue > totalValue;
   const remainingValue = Math.max(
@@ -1300,6 +1349,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
     if (type === "sound") setSoundItems([]);
     if (type === "transportation") { setTransportationMode(null); setTransportationFee(""); }
     if (type === "kosha") { setKoshaMode(null); setKoshaPick(null); setKoshaSearch(""); }
+    if (type === "flowers") setFlowerItems([]);
   };
   const toggle = (type: ServiceKey) => {
     if (selected.includes(type)) {
@@ -1317,7 +1367,9 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
           ? "booking-transportation-settings"
           : type === "kosha"
             ? "booking-kosha-settings"
-            : "booking-service-picker";
+            : type === "flowers"
+              ? "booking-flowers-settings"
+              : "booking-service-picker";
     window.requestAnimationFrame(() => document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "center" }));
   };
   const photographySelected = selected.includes("photography");
@@ -1333,7 +1385,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             <div className="space-y-2"><Label htmlFor="booking-time">وقت المناسبة</Label><Input id="booking-time" type="time" value={eventTime} onChange={(event) => setEventTime(event.target.value)} /></div>
             <div className="space-y-2"><Label htmlFor="booking-hall">القاعة / الموقع</Label><Input id="booking-hall" value={hallName} onChange={(event) => setHallName(event.target.value)} placeholder="اسم القاعة والعنوان" /></div>
             <div className="space-y-2"><Label htmlFor="booking-map">رابط Google Maps</Label><Input id="booking-map" dir="ltr" value={mapUrl} onChange={(event) => setMapUrl(event.target.value)} placeholder="https://maps.google.com/..." /></div>
-            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الكلي</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}{transportFeeValue > 0 ? <p className="text-xs text-muted-foreground">+ أجرة النقل {formatCurrency(transportFeeValue)} = الإجمالي <b className="text-foreground">{formatCurrency(totalValue)}</b></p> : null}</div>
+            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الكلي</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}{transportFeeValue > 0 || flowersTotalValue > 0 ? <p className="text-xs text-muted-foreground">{transportFeeValue > 0 ? `+ أجرة النقل ${formatCurrency(transportFeeValue)} ` : ""}{flowersTotalValue > 0 ? `+ الورد ${formatCurrency(flowersTotalValue)} ` : ""}= الإجمالي <b className="text-foreground">{formatCurrency(totalValue)}</b></p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-deposit">العربون</Label><Input id="booking-deposit" inputMode="decimal" aria-invalid={depositTooHigh} className={depositTooHigh ? "border-destructive" : ""} value={depositAmount} onChange={(event) => setDepositAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" />{depositTooHigh ? <p className="text-xs text-destructive">لا يمكن أن يتجاوز العربون المبلغ الكلي.</p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-remaining">المتبقي</Label><Input id="booking-remaining" value={formatCurrency(remainingValue)} readOnly className="bg-muted/35 tabular-nums" dir="ltr" /><p className="text-xs font-medium text-primary">{paymentStatusLabel}</p></div>
           </div>
@@ -1371,7 +1423,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
               const meta = SERVICE_META.find((item) => item.key === type);
               if (!meta) return null;
               const Icon = meta.icon;
-              const hasSettings = type === "photography" || type === "sound" || type === "transportation" || type === "kosha";
+              const hasSettings = type === "photography" || type === "sound" || type === "transportation" || type === "kosha" || type === "flowers";
               return <div key={type} className="flex min-h-11 items-center justify-between gap-2 rounded-lg border border-border/45 bg-muted/20 px-2.5 py-1.5">
                 <span className="flex min-w-0 items-center gap-2 text-sm font-medium"><Icon className="h-4 w-4 shrink-0 text-primary" /><span className="truncate">{meta.short}</span></span>
                 <span className="flex shrink-0 items-center gap-1">
@@ -1395,6 +1447,14 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             onClear={() => setKoshaPick(null)}
             totalAmount={num(totalAmount)}
             onUsePrice={(price) => setTotalAmount(String(price))}
+          /> : null}
+          {flowersSelected ? <FlowerCatalogSection
+            catalog={flowerCatalogQuery.data}
+            loading={flowerCatalogQuery.isLoading}
+            error={flowerCatalogQuery.isError ? apiErrorMessage(flowerCatalogQuery.error) : ""}
+            onRetry={() => void flowerCatalogQuery.refetch()}
+            items={flowerItems}
+            onChange={setFlowerItems}
           /> : null}
           {photographySelected ? <section id="booking-photography-settings" className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
             <div><h3 className="font-semibold text-foreground">تفاصيل التصوير</h3><p className="mt-1 text-xs text-muted-foreground">تُحفظ هذه التفاصيل مع الحجز لتظهر لفريق التصوير.</p></div>
@@ -1532,6 +1592,162 @@ function KoshaCatalogSection({ mode, onMode, catalog, loading, error, onRetry, s
             ) : null}
             <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-destructive hover:text-destructive" onClick={onClear} aria-label="إلغاء اختيار الكوشة"><X className="h-3.5 w-3.5" /></Button>
           </span>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+// Flowers section: the bouquet studio (/design) catalogue inside the booking
+// form — section tabs, search, 3-column image cards with colour choice, and the
+// chosen items with quantities. Their total is added to the booking total.
+function FlowerCatalogSection({ catalog, loading, error, onRetry, items, onChange }: {
+  catalog: FlowerCatalogProduct[] | undefined;
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  items: FlowerBookingItem[];
+  onChange: (items: FlowerBookingItem[]) => void;
+}) {
+  const [section, setSection] = useState<FlowerSection>("flowers");
+  const [search, setSearch] = useState("");
+  const [variantChoice, setVariantChoice] = useState<Record<number, number>>({});
+  const products = catalog ?? [];
+  const sections = FLOWER_SECTIONS.filter((item) => products.some((product) => product.designerSection === item.key));
+  const activeSection = sections.some((item) => item.key === section) ? section : sections[0]?.key ?? section;
+  const needle = search.trim().toLowerCase();
+  const visible = products.filter((product) =>
+    product.designerSection === activeSection &&
+    (!needle || `${product.nameAr} ${product.name}`.toLowerCase().includes(needle)),
+  );
+  const activeVariants = (product: FlowerCatalogProduct) => product.variants.filter((variant) => variant.isActive !== false);
+  const chosenVariant = (product: FlowerCatalogProduct) => {
+    const variants = activeVariants(product);
+    return variants.find((variant) => variant.id === variantChoice[product.id]) ?? variants[0] ?? null;
+  };
+  const add = (product: FlowerCatalogProduct) => {
+    const variant = chosenVariant(product);
+    const key = variant ? `v:${variant.id}` : `p:${product.id}`;
+    const existing = items.find((item) => item.key === key);
+    if (existing) {
+      onChange(items.map((item) => (item.key === key ? { ...item, quantity: item.quantity + 1 } : item)));
+      return;
+    }
+    onChange([
+      ...items,
+      {
+        key,
+        productId: product.id,
+        variantId: variant?.id ?? null,
+        name: product.nameAr || product.name,
+        variantLabel: variant?.color ?? null,
+        section: product.designerSection,
+        quantity: 1,
+        unitPrice: Number(variant?.price ?? product.price ?? 0),
+      },
+    ]);
+  };
+  const setQuantity = (key: string, quantity: number) =>
+    onChange(quantity <= 0 ? items.filter((item) => item.key !== key) : items.map((item) => (item.key === key ? { ...item, quantity } : item)));
+  const subtotal = flowerItemsTotal(items);
+
+  return (
+    <section id="booking-flowers-settings" className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start gap-2">
+          <span className="mt-0.5 text-rose-600"><Flower2 className="h-5 w-5" /></span>
+          <div>
+            <h3 className="font-semibold text-foreground">الورد</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">نفس منتجات استوديو تصميم الباقة. يُضاف مجموع الورد تلقائياً إلى المبلغ الكلي.</p>
+          </div>
+        </div>
+        <a href="/design" target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-primary hover:underline">
+          <ExternalLink className="h-3.5 w-3.5" /> فتح الاستوديو
+        </a>
+      </div>
+      {error ? (
+        <div role="alert" className="flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <span>تعذر تحميل منتجات الورد: {error}</span>
+          <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={onRetry}>إعادة المحاولة</Button>
+        </div>
+      ) : loading ? (
+        <div className="grid grid-cols-3 gap-2">{[0, 1, 2, 3, 4, 5].map((index) => <Skeleton key={index} className="aspect-[4/5] rounded-lg" />)}</div>
+      ) : !products.length ? (
+        <p className="rounded-lg border border-dashed border-border/60 p-3 text-center text-xs text-muted-foreground">لا توجد منتجات ورد مفعّلة في استوديو التصميم.</p>
+      ) : (
+        <>
+          <div className="flex gap-1.5 overflow-x-auto pb-1">
+            {sections.map((item) => {
+              const count = products.filter((product) => product.designerSection === item.key).length;
+              const active = item.key === activeSection;
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setSection(item.key)}
+                  aria-pressed={active}
+                  className={`shrink-0 rounded-full border px-3 py-1 text-xs transition-colors ${active ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background hover:border-primary/40"}`}
+                >
+                  {item.label} <span className="opacity-70">({count})</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="relative"><Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث باسم المنتج" className="h-9 pr-9 text-sm" /></div>
+          {visible.length ? (
+            <div className="grid max-h-[39rem] grid-cols-3 gap-2 overflow-y-auto pe-1">
+              {visible.map((product) => {
+                const variants = activeVariants(product);
+                const variant = chosenVariant(product);
+                const price = Number(variant?.price ?? product.price ?? 0);
+                const stock = variant ? Number(variant.available ?? variant.stock ?? 0) : Number(product.stock ?? 0);
+                const inCart = items.filter((item) => item.productId === product.id).reduce((sum, item) => sum + item.quantity, 0);
+                return (
+                  <div key={product.id} className={`flex min-w-0 flex-col overflow-hidden rounded-lg border bg-background ${inCart ? "border-primary ring-2 ring-primary/30" : "border-border/40"}`}>
+                    <span className="relative block aspect-[4/3] w-full overflow-hidden bg-muted">
+                      <img src={variant?.image || product.images?.[0] || "/images/kosha.png"} alt={product.nameAr || product.name} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                      {inCart ? <span className="absolute left-1.5 top-1.5 rounded-full bg-primary px-2 py-0.5 text-[11px] font-bold text-primary-foreground shadow">× {inCart}</span> : null}
+                    </span>
+                    <div className="flex flex-1 flex-col gap-1 p-2">
+                      <span className="block truncate text-xs font-semibold text-foreground" title={product.nameAr || product.name}>{product.nameAr || product.name}</span>
+                      <span className="block text-[11px] font-bold text-primary">{price > 0 ? formatCurrency(price) : "حسب الاتفاق"}</span>
+                      {stock <= 0 ? <span className="block text-[10px] text-muted-foreground">غير متوفر بالمخزون حالياً</span> : null}
+                      {variants.length > 1 ? (
+                        <select
+                          value={variant?.id ?? ""}
+                          onChange={(event) => setVariantChoice((current) => ({ ...current, [product.id]: Number(event.target.value) }))}
+                          className="h-7 w-full rounded-md border border-input bg-background px-1 text-[11px]"
+                          aria-label={`لون ${product.nameAr || product.name}`}
+                        >
+                          {variants.map((option) => <option key={option.id} value={option.id}>{option.color || `نوع ${option.id}`}</option>)}
+                        </select>
+                      ) : null}
+                      <Button type="button" size="sm" variant={inCart ? "default" : "outline"} className="mt-auto h-7 w-full gap-1 px-1 text-[11px]" onClick={() => add(product)}>
+                        <Plus className="h-3.5 w-3.5" /> إضافة
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : <p className="rounded-lg border border-dashed border-border/60 p-3 text-center text-xs text-muted-foreground">لا توجد منتجات بهذا الاسم في هذا القسم.</p>}
+        </>
+      )}
+      {items.length ? (
+        <div className="space-y-1.5 rounded-lg border border-primary/30 bg-background/80 p-2">
+          <div className="flex items-center justify-between text-xs font-semibold"><span>الورد المختار</span><span className="text-primary">{formatCurrency(subtotal)}</span></div>
+          {items.map((item) => (
+            <div key={item.key} className="flex items-center justify-between gap-2 text-xs">
+              <span className="min-w-0 truncate">{item.name}{item.variantLabel ? ` · ${item.variantLabel}` : ""}</span>
+              <span className="flex shrink-0 items-center gap-1">
+                <button type="button" onClick={() => setQuantity(item.key, item.quantity - 1)} className="grid h-6 w-6 place-items-center rounded border border-border/60" aria-label={`إنقاص ${item.name}`}>−</button>
+                <span className="w-6 text-center tabular-nums">{item.quantity}</span>
+                <button type="button" onClick={() => setQuantity(item.key, item.quantity + 1)} className="grid h-6 w-6 place-items-center rounded border border-border/60" aria-label={`زيادة ${item.name}`}>+</button>
+                <span className="w-20 text-left tabular-nums text-muted-foreground">{formatCurrency(item.unitPrice * item.quantity)}</span>
+                <button type="button" onClick={() => setQuantity(item.key, 0)} className="text-destructive" aria-label={`إزالة ${item.name}`}><X className="h-3.5 w-3.5" /></button>
+              </span>
+            </div>
+          ))}
         </div>
       ) : null}
     </section>
