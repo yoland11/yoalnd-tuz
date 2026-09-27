@@ -65109,6 +65109,132 @@ async function handleStaffPortal(
   const action = parts[4];
   await ensureKoshaStaffTables();
 
+  // ── طلب مصروف — a kosha staff member asks for money from the main cash box.
+  // The request is created as a PENDING financial transaction through the
+  // canonical approval-first engine (createFinancialTransaction): nothing leaves
+  // the cash box until the principal administrator approves it in the Main Cash
+  // Box, which executes it. Staff can only create expense requests (never
+  // revenue, drafts or executed rows) and only ever see their own requests.
+  if (resource === "expense-requests") {
+    const auth = await requirePermission(req, "koshas");
+    if (isResponse(auth)) return auth;
+    await ensureMasterCashBoxTables();
+    const KOSHA_STAFF_EXPENSE_SOURCE = "kosha_staff_expense";
+    const iso = (value: unknown) =>
+      value instanceof Date ? value.toISOString() : value ? String(value) : null;
+
+    if (method === "GET" && !id) {
+      const rows = await db
+        .select({
+          id: financialTransactionsTable.id,
+          transactionNo: financialTransactionsTable.transactionNo,
+          amount: financialTransactionsTable.amount,
+          description: financialTransactionsTable.description,
+          notes: financialTransactionsTable.notes,
+          bookingId: financialTransactionsTable.sourceId,
+          status: financialTransactionsTable.approvalStatus,
+          rejectionReason: financialTransactionsTable.rejectionReason,
+          executedAt: financialTransactionsTable.executedAt,
+          executedByName: financialTransactionsTable.executedByName,
+          reversedAt: financialTransactionsTable.reversedAt,
+          createdAt: financialTransactionsTable.createdAt,
+        })
+        .from(financialTransactionsTable)
+        .where(
+          and(
+            eq(financialTransactionsTable.requestedBy, auth.id),
+            eq(financialTransactionsTable.sourceType, KOSHA_STAFF_EXPENSE_SOURCE),
+          ),
+        )
+        .orderBy(desc(financialTransactionsTable.createdAt))
+        .limit(50);
+      return json({
+        data: rows.map((row) => ({
+          ...row,
+          amount: Number(row.amount),
+          executedAt: iso(row.executedAt),
+          reversedAt: iso(row.reversedAt),
+          createdAt: iso(row.createdAt),
+        })),
+      });
+    }
+
+    if (method === "POST" && !id) {
+      const parsed = z
+        .object({
+          amount: z.coerce
+            .number()
+            .positive("المبلغ يجب أن يكون أكبر من صفر")
+            .max(100_000_000, "المبلغ كبير جداً"),
+          description: z.string().trim().min(3, "اكتب تفاصيل المصروف").max(400),
+          notes: z.string().trim().max(1000).optional().default(""),
+          bookingId: z.coerce.number().int().positive().optional().nullable(),
+          requestKey: z.string().trim().min(8).max(80).regex(/^[A-Za-z0-9-]+$/),
+        })
+        .safeParse(await body(req));
+      if (!parsed.success)
+        return validationError("staff.koshas.expense-requests", parsed);
+      const { amount, description, notes, bookingId, requestKey } = parsed.data;
+      let bookingLabel = "";
+      if (bookingId) {
+        const booking = await db.query.koshaBookingsTable.findFirst({
+          where: eq(koshaBookingsTable.id, bookingId),
+        });
+        if (!booking) return error("الحجز المرتبط غير موجود", 404);
+        bookingLabel =
+          shortBookingNumber("kosha", booking.id, booking.trackingCode) ||
+          `KB-${booking.id}`;
+      }
+      const staffName = auth.fullName || auth.username;
+      const row = await createFinancialTransaction(
+        {
+          direction: "expense",
+          amount,
+          department: "koshas",
+          transactionType: "payment_voucher",
+          description,
+          notes: [bookingLabel ? `مرتبط بحجز ${bookingLabel}` : "", notes]
+            .filter(Boolean)
+            .join(" · "),
+          paymentMethod: "cash",
+          sourceType: KOSHA_STAFF_EXPENSE_SOURCE,
+          sourceId: bookingId ?? null,
+          sourceEvent: "staff_request",
+          idempotencyKey: `kosha-staff-expense:${auth.id}:${requestKey}`,
+          approvalStatus: "pending",
+          responsibleUserId: auth.id,
+          responsibleUserName: staffName,
+        },
+        financialActor(auth),
+      );
+      void createNotificationOnce({
+        type: "kosha_staff_expense_request",
+        title: "طلب مصروف من كادر الكوشات",
+        body: `${staffName} · ${Number(row.amount).toLocaleString("en-US")} د.ع · ${description}`,
+        entityType: "financial_transaction",
+        entityId: row.id,
+        href: "/admin/finance/master-cash",
+      });
+      void logAdminActivity(
+        req,
+        "kosha_staff_expense_requested",
+        "financial_transaction",
+        row.id,
+        { amount: Number(row.amount), bookingId: bookingId ?? null },
+      );
+      return json(
+        {
+          id: row.id,
+          transactionNo: row.transactionNo,
+          amount: Number(row.amount),
+          status: row.approvalStatus,
+        },
+        201,
+      );
+    }
+    return error("المسار غير موجود", 404);
+  }
+
   // ── تجهيزاتي اليوم — the employee's assigned preparation tasks (from the shared
   // `tasks`), plus a "تم التجهيز" action that completes the task AND the linked
   // preparation item. No money, no stock writes.

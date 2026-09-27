@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "wouter";
 import { ArrowRight, Camera, CheckCircle2, ChevronLeft, MapPin, Phone, Upload, Loader2, AlertTriangle, Banknote, ImageIcon, Video, RotateCcw, X } from "lucide-react";
 import {
   WORKFLOW_STAGES, STAGE_LABEL, isKoshaPendingPricing, workflowStageRank, nextWorkflowStage, money, mapsUrl, staffApi,
@@ -453,6 +454,14 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
           <a href={mapsUrl(b)} target="_blank" rel="noreferrer" className="mt-3 flex items-center justify-center gap-2 rounded-lg border border-primary/40 py-2 text-sm font-medium text-primary">
             <MapPin className="h-4 w-4" /> فتح بالخرائط
           </a>
+          {source === "kosha" ? (
+            <Link
+              href={`/staff/koshas/expenses?booking=${b.id}`}
+              className="mt-2 flex items-center justify-center gap-2 rounded-lg border border-border py-2 text-sm font-medium"
+            >
+              <Banknote className="h-4 w-4 text-primary" /> طلب مصروف لهذا الحجز
+            </Link>
+          ) : null}
         </div>
 
         {/* Money */}

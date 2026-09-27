@@ -8,6 +8,7 @@ import { KoshaOpsBoardPage, KoshaOpsReportsPage } from "./operations";
 import { countOps, flushQueue } from "./offline";
 import StaffBookingDetail from "./booking-detail";
 import { KoshatWorkOrderDetail, MyKoshatWorkOrders } from "./work-orders";
+import StaffExpenseRequests from "./expense-requests";
 
 const STAGE_BADGE: Record<string, string> = {
   booked: "bg-muted text-muted-foreground",
@@ -175,6 +176,20 @@ function Dashboard() {
   const order: Bucket[] = ["today", "tomorrow", "upcoming", "late", "completed"];
   return (
     <div className="space-y-4 p-4">
+      <button
+        type="button"
+        onClick={() => nav("/staff/koshas/expenses")}
+        className="flex w-full items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/5 p-3 text-right"
+      >
+        <span className="flex items-center gap-2">
+          <WalletCards className="h-5 w-5 text-primary" />
+          <span>
+            <span className="block text-sm font-bold">طلب مصروف</span>
+            <span className="block text-[11px] text-muted-foreground">اكتب التفاصيل والمبلغ ويوصل للمدير للموافقة</span>
+          </span>
+        </span>
+        <span className="text-xs font-bold text-primary">فتح</span>
+      </button>
       <div className="grid grid-cols-2 gap-2">
         {order.map((bk) => (
           <button key={bk} onClick={() => nav(`/staff/koshas/list/${bk}`)} className="rounded-xl border border-border bg-card p-3 text-right">
@@ -580,6 +595,7 @@ function StaffPortalContent() {
           <Route path="/staff/koshas/list/:bucket">{(p) => <BookingsList bucket={(p.bucket as Bucket | "all") ?? "all"} showOperations={canSeeAllOperations} />}</Route>
           <Route path="/staff/koshas/list"><BookingsList bucket="all" showOperations={canSeeAllOperations} /></Route>
           <Route path="/staff/koshas/notifications"><Notifications /></Route>
+          <Route path="/staff/koshas/expenses"><StaffExpenseRequests /></Route>
           <Route path="/staff/koshas/ops-board"><KoshaOpsBoardPage /></Route>
           <Route path="/staff/koshas/ops-reports"><KoshaOpsReportsPage /></Route>
           <Route path="/staff/koshas/reports"><Reports /></Route>
