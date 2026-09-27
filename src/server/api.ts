@@ -34191,6 +34191,11 @@ async function handleCentralBookingCenter(
   }
   const auth = await requirePermission(req, "orders");
   if (isResponse(auth)) return auth;
+  // The on-screen list keeps the newest 500 per source. Printed reports
+  // (?scope=report) need every booking — a remaining-balance report must not
+  // silently drop older debts — so they lift the cap and say if one is hit.
+  const reportScope = req.nextUrl.searchParams.get("scope") === "report";
+  const rowCap = reportScope ? 20_000 : 500;
 
   const [
     serviceOrders,
@@ -34204,30 +34209,30 @@ async function handleCentralBookingCenter(
     db.query.serviceOrdersTable.findMany({
       where: sql`${serviceOrdersTable.archivedAt} is null`,
       orderBy: [desc(serviceOrdersTable.createdAt)],
-      limit: 500,
+      limit: rowCap,
     }),
     db.query.servicesTable.findMany(),
     db.query.koshaBookingsTable.findMany({
       where: sql`${koshaBookingsTable.archivedAt} is null`,
       orderBy: [desc(koshaBookingsTable.createdAt)],
-      limit: 500,
+      limit: rowCap,
     }),
     db.query.ordersTable.findMany({
       where: sql`${ordersTable.archivedAt} is null`,
       orderBy: [desc(ordersTable.createdAt)],
-      limit: 500,
+      limit: rowCap,
     }),
     db.query.graduationOrdersTable.findMany({
       orderBy: [desc(graduationOrdersTable.createdAt)],
-      limit: 500,
+      limit: rowCap,
     }),
     db.query.photographyOrdersTable.findMany({
       orderBy: [desc(photographyOrdersTable.createdAt)],
-      limit: 500,
+      limit: rowCap,
     }),
     db.query.rentalOrdersTable.findMany({
       orderBy: [desc(rentalOrdersTable.createdAt)],
-      limit: 500,
+      limit: rowCap,
     }),
   ]);
   const serviceMap = new Map(services.map((service) => [service.id, service]));
@@ -34437,6 +34442,11 @@ async function handleCentralBookingCenter(
         detailHref: `/admin/orders?order=${order.id}`,
       })),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (reportScope) {
+    const truncated = [serviceOrders, koshas, storeOrders, graduationOrders, photographyOrders, rentals]
+      .some((list) => list.length >= rowCap);
+    return json({ rows, truncated });
+  }
   return json(rows);
 }
 

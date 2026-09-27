@@ -21,6 +21,7 @@ import {
   GraduationCap,
   Layers3,
   ListChecks,
+  Loader2,
   MapPin,
   MessageCircle,
   MonitorPlay,
@@ -49,6 +50,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { printStandaloneDocument } from "@/lib/pdf";
@@ -459,132 +461,331 @@ function escapeReportHtml(value: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
-// Builds a self-contained printable report. `target === "all"` emits one
-// section per department plus a grand total; a single key emits just that
-// department. Read-only — no data is mutated and no failure is masked.
-function buildBookingDepartmentReport(
-  target: ServiceKey | "all",
-  bookings: UnifiedBooking[],
-): string {
-  const today = new Date().toISOString().slice(0, 10);
-  const month = today.slice(0, 7);
-  const generatedAt = new Date().toLocaleString("ar-IQ");
-  const depts =
-    target === "all"
-      ? SERVICE_META
-      : SERVICE_META.filter((meta) => meta.key === target);
-  const grand = { total: 0, paid: 0, remaining: 0, count: 0 };
+type BookingReportType = "summary" | "remaining" | "pending_work" | "upcoming" | "collected" | "completed";
 
-  const sections = depts
-    .map((meta) => {
-      const rows = bookings
-        .filter((booking) =>
-          booking.services.some((service) => service.type === meta.key),
-        )
-        .sort((a, b) =>
-          String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? "")),
-        );
-      const sum = rows.reduce(
-        (acc, booking) => {
-          acc.total += booking.total;
-          acc.paid += booking.paid;
-          acc.remaining += booking.remaining;
-          if (String(booking.eventDate ?? "").startsWith(month))
-            acc.monthRevenue += booking.total;
-          return acc;
-        },
-        { total: 0, paid: 0, remaining: 0, monthRevenue: 0 },
-      );
-      grand.total += sum.total;
-      grand.paid += sum.paid;
-      grand.remaining += sum.remaining;
-      grand.count += rows.length;
-      const count = (statuses: string[]) =>
-        rows.filter((booking) => statuses.includes(booking.status)).length;
-      const body = rows.length
-        ? rows
-            .map(
-              (booking) => `<tr>
-                <td>${escapeReportHtml(booking.number)}</td>
-                <td>${escapeReportHtml(booking.customerName)}</td>
-                <td>${escapeReportHtml(booking.phone)}</td>
-                <td>${escapeReportHtml(booking.eventDate || "—")}</td>
-                <td>${escapeReportHtml(STATUS_LABELS[booking.status] || booking.status)}</td>
-                <td class="num">${formatCurrency(booking.total)}</td>
-                <td class="num">${formatCurrency(booking.paid)}</td>
-                <td class="num rem">${formatCurrency(booking.remaining)}</td>
-              </tr>`,
-            )
-            .join("")
-        : `<tr><td colspan="8" class="empty">لا توجد حجوزات في هذا القسم</td></tr>`;
-      return `<section class="dept">
-        <h2>${escapeReportHtml(meta.label)}</h2>
-        <div class="chips">
-          <span>الحجوزات: <b>${rows.length}</b></span>
-          <span>معلّق: <b>${count(["new", "pending", "waiting"])}</b></span>
-          <span>جاري: <b>${count(["processing", "preparing", "active", "confirmed"])}</b></span>
-          <span>مكتمل: <b>${count(["completed", "delivered", "finished", "returned"])}</b></span>
-          <span>إيراد الشهر: <b>${formatCurrency(sum.monthRevenue)}</b></span>
-        </div>
-        <table>
-          <thead><tr><th>رقم الحجز</th><th>العميل</th><th>الهاتف</th><th>التاريخ</th><th>الحالة</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقّي</th></tr></thead>
-          <tbody>${body}</tbody>
-          <tfoot><tr><td colspan="5">إجمالي القسم</td><td class="num">${formatCurrency(sum.total)}</td><td class="num">${formatCurrency(sum.paid)}</td><td class="num rem">${formatCurrency(sum.remaining)}</td></tr></tfoot>
-        </table>
-      </section>`;
-    })
-    .join("");
+const BOOKING_REPORT_TYPES: Array<{ key: BookingReportType; label: string; hint: string }> = [
+  { key: "summary", label: "تقرير شامل", hint: "كل الحجوزات مقسّمة حسب القسم" },
+  { key: "remaining", label: "المبالغ المتبقية", hint: "الحجوزات التي عليها مبالغ غير مسددة" },
+  { key: "pending_work", label: "الأعمال المتبقية", hint: "حجوزات لم تُنجز بعد (المتأخرة مميّزة)" },
+  { key: "upcoming", label: "المناسبات القادمة", hint: "حسب تاريخ المناسبة — افتراضياً 7 أيام" },
+  { key: "collected", label: "المبالغ المستلمة", hint: "الحجوزات التي دُفع منها مبلغ" },
+  { key: "completed", label: "الحجوزات المنجزة", hint: "المكتملة والمسلّمة" },
+];
 
-  const grandBlock =
-    target === "all"
-      ? `<section class="grand">
-          <h2>الإجمالي العام لكل الأقسام</h2>
-          <div class="chips">
-            <span>إجمالي الحجوزات: <b>${grand.count}</b></span>
-            <span>الإجمالي: <b>${formatCurrency(grand.total)}</b></span>
-            <span>المدفوع: <b>${formatCurrency(grand.paid)}</b></span>
-            <span>المتبقّي: <b>${formatCurrency(grand.remaining)}</b></span>
-          </div>
-        </section>`
-      : "";
+const REPORT_PENDING_STATUSES = ["new", "pending", "waiting"];
+const REPORT_IN_PROGRESS_STATUSES = ["processing", "preparing", "active", "confirmed"];
+const REPORT_COMPLETED_STATUSES = ["completed", "delivered", "finished", "returned"];
 
-  const titleLabel =
-    target === "all"
+type BookingReportOptions = {
+  type: BookingReportType;
+  department: ServiceKey | "all";
+  from: string;
+  to: string;
+  truncated?: boolean;
+};
+
+function isoDateOffset(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+/** Event-date window actually applied; "upcoming" defaults to today → +7 days. */
+function bookingReportWindow(options: BookingReportOptions): { from: string; to: string } {
+  if (options.type === "upcoming")
+    return { from: options.from || isoDateOffset(0), to: options.to || isoDateOffset(7) };
+  return { from: options.from, to: options.to };
+}
+
+function reportDepartmentLabels(booking: UnifiedBooking): string {
+  return booking.services
+    .map((service) => SERVICE_META.find((meta) => meta.key === service.type)?.short ?? service.type)
+    .join("، ");
+}
+
+type ReportColumn = {
+  label: string;
+  cell: (booking: UnifiedBooking) => string;
+  money?: keyof Pick<UnifiedBooking, "total" | "paid" | "remaining">;
+  remaining?: boolean;
+};
+
+// Builds a self-contained printable booking report. Read-only: works on the
+// rows it is given (fetched with ?scope=report so nothing is capped) and never
+// hides a failure — an empty result is shown as "لا توجد حجوزات مطابقة".
+function buildBookingReport(options: BookingReportOptions, all: UnifiedBooking[]): string {
+  const today = isoDateOffset(0);
+  const { from, to } = bookingReportWindow(options);
+  const inDepartment = (booking: UnifiedBooking) =>
+    options.department === "all" || booking.services.some((service) => service.type === options.department);
+  const inWindow = (booking: UnifiedBooking) => {
+    if (!from && !to) return true;
+    const date = String(booking.eventDate ?? "");
+    if (!date) return false;
+    return (!from || date >= from) && (!to || date <= to);
+  };
+  const scoped = all.filter((booking) => inDepartment(booking) && inWindow(booking));
+  const departmentLabel =
+    options.department === "all"
       ? "كل الأقسام"
-      : SERVICE_META.find((meta) => meta.key === target)?.label ?? "";
+      : SERVICE_META.find((meta) => meta.key === options.department)?.label ?? "";
+  const typeLabel = BOOKING_REPORT_TYPES.find((item) => item.key === options.type)?.label ?? "تقرير";
+  const byDateAsc = (a: UnifiedBooking, b: UnifiedBooking) =>
+    String(a.eventDate || "9999").localeCompare(String(b.eventDate || "9999"));
+  const byDateDesc = (a: UnifiedBooking, b: UnifiedBooking) =>
+    String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? ""));
+  const total = (rows: UnifiedBooking[], key: "total" | "paid" | "remaining") =>
+    rows.reduce((sum, booking) => sum + (Number(booking[key]) || 0), 0);
+  const notCancelled = (booking: UnifiedBooking) => booking.status !== "cancelled";
+  const isLate = (booking: UnifiedBooking) => Boolean(booking.eventDate) && booking.eventDate < today;
+
+  const col = {
+    number: { label: "رقم الحجز", cell: (b: UnifiedBooking) => `<span dir="ltr">${escapeReportHtml(b.number)}</span>` },
+    customer: { label: "العميل", cell: (b: UnifiedBooking) => escapeReportHtml(b.customerName) },
+    phone: { label: "الهاتف", cell: (b: UnifiedBooking) => `<span dir="ltr">${escapeReportHtml(b.phone)}</span>` },
+    department: { label: "القسم", cell: (b: UnifiedBooking) => escapeReportHtml(reportDepartmentLabels(b)) },
+    date: {
+      label: "تاريخ المناسبة",
+      cell: (b: UnifiedBooking) =>
+        `<span dir="ltr">${escapeReportHtml(b.eventDate || "—")}</span>${options.type === "pending_work" && isLate(b) ? ' <span class="late-tag">متأخر</span>' : ""}`,
+    },
+    time: { label: "الوقت", cell: (b: UnifiedBooking) => escapeReportHtml(b.eventTime || "—") },
+    hall: { label: "القاعة", cell: (b: UnifiedBooking) => escapeReportHtml(b.hall || "—") },
+    status: { label: "الحالة", cell: (b: UnifiedBooking) => escapeReportHtml(STATUS_LABELS[b.status] || b.status) },
+    readiness: { label: "الجاهزية", cell: (b: UnifiedBooking) => `${getReadiness(b)}%` },
+    total: { label: "الإجمالي", money: "total" as const, cell: (b: UnifiedBooking) => formatCurrency(b.total) },
+    paid: { label: "المدفوع", money: "paid" as const, cell: (b: UnifiedBooking) => formatCurrency(b.paid) },
+    remaining: { label: "المتبقّي", money: "remaining" as const, remaining: true, cell: (b: UnifiedBooking) => formatCurrency(b.remaining) },
+  } satisfies Record<string, ReportColumn>;
+
+  const table = (rows: UnifiedBooking[], columns: ReportColumn[], rowClass?: (b: UnifiedBooking) => string) => {
+    const head = columns.map((column) => `<th>${column.label}</th>`).join("");
+    const bodyRows = rows.length
+      ? rows
+          .map((booking) => `<tr class="${rowClass?.(booking) ?? ""}">${columns
+            .map((column) => `<td class="${column.money ? "num" : ""}${column.remaining ? " rem" : ""}">${column.cell(booking)}</td>`)
+            .join("")}</tr>`)
+          .join("")
+      : `<tr><td colspan="${columns.length}" class="empty">لا توجد حجوزات مطابقة</td></tr>`;
+    const firstMoney = columns.findIndex((column) => column.money);
+    const foot = firstMoney >= 0 && rows.length
+      ? `<tfoot><tr><td colspan="${firstMoney}">الإجمالي (${rows.length})</td>${columns
+          .slice(firstMoney)
+          .map((column) => `<td class="${column.money ? "num" : ""}${column.remaining ? " rem" : ""}">${column.money ? formatCurrency(total(rows, column.money)) : ""}</td>`)
+          .join("")}</tr></tfoot>`
+      : "";
+    return `<table><thead><tr>${head}</tr></thead><tbody>${bodyRows}</tbody>${foot}</table>`;
+  };
+  const chip = (label: string, value: string) => `<span>${label}: <b>${value}</b></span>`;
+
+  let chips: string[] = [];
+  let body = "";
+  if (options.type === "summary") {
+    const departments = options.department === "all" ? SERVICE_META : SERVICE_META.filter((meta) => meta.key === options.department);
+    const grand = { total: 0, paid: 0, remaining: 0, count: 0 };
+    body = departments
+      .map((meta) => {
+        const rows = scoped.filter((booking) => booking.services.some((service) => service.type === meta.key)).sort(byDateDesc);
+        grand.total += total(rows, "total");
+        grand.paid += total(rows, "paid");
+        grand.remaining += total(rows, "remaining");
+        grand.count += rows.length;
+        const count = (statuses: string[]) => rows.filter((booking) => statuses.includes(booking.status)).length;
+        return `<section class="dept"><h2>${escapeReportHtml(meta.label)}</h2><div class="chips">${[
+          chip("الحجوزات", String(rows.length)),
+          chip("معلّق", String(count(REPORT_PENDING_STATUSES))),
+          chip("جاري", String(count(REPORT_IN_PROGRESS_STATUSES))),
+          chip("مكتمل", String(count(REPORT_COMPLETED_STATUSES))),
+        ].join("")}</div>${table(rows, [col.number, col.customer, col.phone, col.date, col.status, col.total, col.paid, col.remaining])}</section>`;
+      })
+      .join("");
+    chips = [
+      chip("الحجوزات", String(options.department === "all" ? scoped.length : grand.count)),
+      chip("الإجمالي", formatCurrency(grand.total)),
+      chip("المدفوع", formatCurrency(grand.paid)),
+      chip("المتبقّي", formatCurrency(grand.remaining)),
+    ];
+    if (options.department === "all")
+      body += `<p class="note">الحجز متعدد الخدمات يظهر ضمن كل قسم من أقسامه، لذا قد يتجاوز مجموع الأقسام عدد الحجوزات.</p>`;
+  } else {
+    let rows: UnifiedBooking[] = [];
+    let columns: ReportColumn[] = [];
+    let rowClass: ((booking: UnifiedBooking) => string) | undefined;
+    if (options.type === "remaining") {
+      rows = scoped.filter((booking) => notCancelled(booking) && booking.remaining > 0.005).sort(byDateAsc);
+      columns = [col.number, col.customer, col.phone, col.department, col.date, col.total, col.paid, col.remaining];
+      chips = [chip("الحجوزات", String(rows.length)), chip("مجموع المتبقّي", formatCurrency(total(rows, "remaining")))];
+    } else if (options.type === "pending_work") {
+      rows = scoped.filter((booking) => notCancelled(booking) && !REPORT_COMPLETED_STATUSES.includes(booking.status)).sort(byDateAsc);
+      columns = [col.number, col.customer, col.phone, col.department, col.date, col.time, col.hall, col.status, col.readiness, col.remaining];
+      rowClass = (booking) => (isLate(booking) ? "late" : "");
+      chips = [
+        chip("الحجوزات", String(rows.length)),
+        chip("متأخرة", String(rows.filter(isLate).length)),
+        chip("مجموع المتبقّي", formatCurrency(total(rows, "remaining"))),
+      ];
+    } else if (options.type === "upcoming") {
+      rows = scoped.filter(notCancelled).sort(byDateAsc);
+      columns = [col.date, col.time, col.number, col.customer, col.phone, col.hall, col.department, col.status, col.remaining];
+      chips = [chip("المناسبات", String(rows.length)), chip("مجموع المتبقّي", formatCurrency(total(rows, "remaining")))];
+    } else if (options.type === "collected") {
+      rows = scoped.filter((booking) => booking.paid > 0.005).sort(byDateDesc);
+      columns = [col.number, col.customer, col.department, col.date, col.total, col.paid, col.remaining];
+      chips = [chip("الحجوزات", String(rows.length)), chip("مجموع المستلم", formatCurrency(total(rows, "paid")))];
+    } else {
+      rows = scoped.filter((booking) => REPORT_COMPLETED_STATUSES.includes(booking.status)).sort(byDateDesc);
+      columns = [col.number, col.customer, col.department, col.date, col.total, col.paid, col.remaining];
+      chips = [chip("الحجوزات", String(rows.length)), chip("الإجمالي", formatCurrency(total(rows, "total")))];
+    }
+    body = table(rows, columns, rowClass);
+  }
+
+  const period = from || to
+    ? `تاريخ المناسبة: ${from ? `من ${escapeReportHtml(from)}` : ""} ${to ? `إلى ${escapeReportHtml(to)}` : ""}`
+    : "كل الفترات";
+  const title = `${typeLabel} — ${departmentLabel}`;
+  const warning = options.truncated
+    ? `<div class="warn">تنبيه: عدد الحجوزات تجاوز حد التقرير (20,000 لكل نوع)، لذلك قد لا تظهر أقدم الحجوزات.</div>`
+    : "";
 
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><meta name="color-scheme" content="light">
-    <title>تقرير الحجوزات — ${escapeReportHtml(titleLabel)}</title>
+    <title>${escapeReportHtml(title)}</title>
     <style>
       @page{size:A4;margin:12mm;}
       *{box-sizing:border-box;}
       body{font-family:'Segoe UI',Tahoma,sans-serif;color:#111;background:#fff;margin:0;padding:16px;}
-      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:8px;margin-bottom:16px;}
-      .head h1{margin:0;font-size:20px;}
+      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:8px;margin-bottom:12px;}
+      .head h1{margin:0;font-size:19px;}
       .head small{color:#555;}
-      .dept,.grand{margin-bottom:22px;}
-      .dept h2,.grand h2{font-size:16px;margin:0 0 8px;padding:6px 10px;background:#f3f4f6;border-right:4px solid #111;}
-      .grand h2{background:#111;color:#fff;}
-      .chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;font-size:12px;}
+      .chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;font-size:12px;}
       .chips span{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:3px 8px;}
-      table{width:100%;border-collapse:collapse;font-size:12px;}
-      th,td{border:1px solid #e5e7eb;padding:5px 6px;text-align:right;}
+      .dept{margin-bottom:22px;}
+      .dept h2{font-size:15px;margin:0 0 8px;padding:6px 10px;background:#f3f4f6;border-right:4px solid #111;}
+      table{width:100%;border-collapse:collapse;font-size:11.5px;}
+      th,td{border:1px solid #e5e7eb;padding:5px 6px;text-align:right;vertical-align:top;}
       thead th{background:#111;color:#fff;font-weight:600;}
       tfoot td{background:#f3f4f6;font-weight:700;}
       .num{text-align:left;font-variant-numeric:tabular-nums;white-space:nowrap;}
       .rem{color:#b91c1c;}
       .empty{text-align:center;color:#777;padding:12px;}
+      tr.late td{background:#fff5f5;}
+      .late-tag{display:inline-block;margin-right:4px;padding:0 5px;border-radius:4px;background:#b91c1c;color:#fff;font-size:10px;}
+      .warn{margin-bottom:10px;padding:6px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e;border-radius:6px;font-size:12px;}
+      .note{margin-top:8px;color:#666;font-size:11px;}
       tr{page-break-inside:avoid;}
       @media print{body{padding:0;}}
     </style></head>
     <body>
       <div class="head">
-        <div><h1>تقرير الحجوزات — ${escapeReportHtml(titleLabel)}</h1><small>مركز حجوزات AJN</small></div>
-        <div style="text-align:left"><small>تاريخ التقرير</small><br><b>${escapeReportHtml(generatedAt)}</b></div>
+        <div><h1>${escapeReportHtml(title)}</h1><small>مركز حجوزات AJN · ${period}</small></div>
+        <div style="text-align:left"><small>تاريخ التقرير</small><br><b>${escapeReportHtml(new Date().toLocaleString("ar-IQ"))}</b></div>
       </div>
-      ${sections}
-      ${grandBlock}
+      ${warning}
+      <div class="chips">${chips.join("")}</div>
+      ${body}
     </body></html>`;
+}
+
+// "التقارير" dialog: pick a report type, a department (or all) and an optional
+// event-date window, then print. Always fetches the uncapped report dataset.
+function BookingReportsDialog({ initialDepartment, onClose }: { initialDepartment: ServiceKey | "all"; onClose: () => void }) {
+  const [type, setType] = useState<BookingReportType>("summary");
+  const [department, setDepartment] = useState<ServiceKey | "all">(initialDepartment);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const window7 = type === "upcoming" && !from && !to;
+
+  async function print() {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await adminFetch<{ rows: any[]; truncated: boolean }>("/admin/booking-center?scope=report");
+      const rows = (Array.isArray(data?.rows) ? data.rows : []).map(toUnifiedBooking);
+      printStandaloneDocument(buildBookingReport({ type, department, from, to, truncated: Boolean(data?.truncated) }, rows));
+    } catch (cause) {
+      setError(apiErrorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent dir="rtl" className="max-h-[92vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>التقارير</DialogTitle>
+          <DialogDescription>اختر نوع التقرير والقسم والفترة، ثم اطبعه أو احفظه PDF.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label className="mb-2 block">نوع التقرير</Label>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {BOOKING_REPORT_TYPES.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setType(item.key)}
+                  aria-pressed={type === item.key}
+                  className={`rounded-lg border p-2.5 text-right transition-colors ${type === item.key ? "border-primary bg-primary/10" : "border-border/50 hover:border-primary/40"}`}
+                >
+                  <span className={`block text-sm ${type === item.key ? "font-semibold text-primary" : "font-medium"}`}>{item.label}</span>
+                  <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{item.hint}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="report-department">القسم</Label>
+            <select
+              id="report-department"
+              value={department}
+              onChange={(event) => setDepartment(event.target.value as ServiceKey | "all")}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="all">كل الأقسام</option>
+              {SERVICE_META.map((meta) => <option key={meta.key} value={meta.key}>{meta.label}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1.5"><Label htmlFor="report-from">تاريخ المناسبة من</Label><Input id="report-from" type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></div>
+            <div className="space-y-1.5"><Label htmlFor="report-to">إلى</Label><Input id="report-to" type="date" value={to} onChange={(event) => setTo(event.target.value)} /></div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {window7 ? "بدون تاريخ: المناسبات القادمة خلال 7 أيام من اليوم." : from || to ? "يُطبَّق على تاريخ المناسبة." : "بدون تاريخ: كل الفترات."}
+          </p>
+          {error ? <p role="alert" className="text-sm text-destructive">تعذر إنشاء التقرير: {error}</p> : null}
+        </div>
+        <DialogFooter className="gap-2">
+          <Button type="button" variant="outline" onClick={onClose}>إغلاق</Button>
+          <Button type="button" onClick={() => void print()} disabled={busy} className="gap-1.5">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
+            طباعة / حفظ PDF
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Maps a /admin/booking-center row to the unified shape used on screen and in
+// printed reports (one source of truth for departments/status/amounts).
+function toUnifiedBooking(row: any): UnifiedBooking {
+  const departments = Array.isArray(row.departments)
+    ? row.departments.filter((type: unknown): type is ServiceKey =>
+        SERVICE_META.some((meta) => meta.key === type),
+      )
+    : [];
+  return {
+    ...row,
+    services: (departments.length ? departments : (["decorations"] as ServiceKey[])).map((type: ServiceKey) => ({
+      type,
+      status: normalizeServiceStatus(row.status),
+      amount: num(row.total),
+    })),
+    raw: row,
+  } as UnifiedBooking;
 }
 
 export default function BookingCenterPage() {
@@ -600,6 +801,7 @@ function BookingDashboard() {
   const [search, setSearch] = useState("");
   const [serviceFilter, setServiceFilter] = useState<ServiceKey | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
+  const [reportFor, setReportFor] = useState<ServiceKey | "all" | null>(null);
   const centralBookingsQuery = useQuery({ queryKey: ["admin", "booking-center"], queryFn: () => adminFetch<any[]>("/admin/booking-center") });
   // §15 — unresolved damage/penalty flags per booking for the list indicator.
   const penaltyIndicators = useQuery<{ indicators: Record<string, { remaining: number; pendingReview: number; count: number }> }>({
@@ -609,22 +811,7 @@ function BookingDashboard() {
   });
   const servicesQuery = useQuery({ queryKey: ["admin", "services", "booking-center"], queryFn: () => adminFetch<AdminService[]>("/admin/services") });
   const customersQuery = useQuery({ queryKey: ["admin", "customers", "booking-center"], queryFn: () => adminFetch<Customer[]>("/admin/customers") });
-  const bookings = useMemo(() => (centralBookingsQuery.data ?? []).map((row) => {
-    const departments = Array.isArray(row.departments)
-      ? row.departments.filter((type: unknown): type is ServiceKey =>
-          SERVICE_META.some((meta) => meta.key === type),
-        )
-      : [];
-    return {
-      ...row,
-      services: (departments.length ? departments : (["decorations"] as ServiceKey[])).map((type: ServiceKey) => ({
-        type,
-        status: normalizeServiceStatus(row.status),
-        amount: num(row.total),
-      })),
-      raw: row,
-    };
-  }) as UnifiedBooking[], [centralBookingsQuery.data]);
+  const bookings = useMemo(() => (centralBookingsQuery.data ?? []).map(toUnifiedBooking), [centralBookingsQuery.data]);
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
   const month = today.slice(0, 7);
@@ -682,6 +869,7 @@ function BookingDashboard() {
 
   return (
     <div className="ajn-booking-center" dir="rtl">
+      {reportFor !== null ? <BookingReportsDialog key={reportFor} initialDepartment={reportFor} onClose={() => setReportFor(null)} /> : null}
       <header className="ajn-booking-hero">
         <div>
           <div className="ajn-kicker"><Sparkles className="h-4 w-4" /> مركز العمليات والمناسبات</div>
@@ -692,10 +880,10 @@ function BookingDashboard() {
           <Button variant="outline" asChild><Link href="/admin/calendar"><CalendarDays className="h-4 w-4" /> التقويم</Link></Button>
           <Button
             variant="outline"
-            onClick={() => printStandaloneDocument(buildBookingDepartmentReport("all", bookings))}
-            title="تقرير مطبوع لكل قسم مع الإجمالي العام"
+            onClick={() => setReportFor("all")}
+            title="تقارير: شامل، المبالغ المتبقية، الأعمال المتبقية، المناسبات القادمة…"
           >
-            <Printer className="h-4 w-4" /> تقرير الأقسام
+            <Printer className="h-4 w-4" /> التقارير
           </Button>
           <Button
             className="ajn-rose-button"
@@ -738,7 +926,7 @@ function BookingDashboard() {
               <div className="ajn-service-revenue"><small>إيراد الشهر</small><Money value={card.revenue} /></div>
               <div className="flex items-center gap-1">
                 <Button variant="ghost" size="sm" onClick={() => showServiceBookings(card.key)}>فتح <ChevronLeft className="h-4 w-4" /></Button>
-                <Button variant="ghost" size="sm" onClick={() => printStandaloneDocument(buildBookingDepartmentReport(card.key, bookings))} title={`تقرير قسم ${card.label}`}><Printer className="h-4 w-4" /> تقرير</Button>
+                <Button variant="ghost" size="sm" onClick={() => setReportFor(card.key)} title={`تقارير قسم ${card.label}`}><Printer className="h-4 w-4" /> تقرير</Button>
               </div>
             </article>
           );
