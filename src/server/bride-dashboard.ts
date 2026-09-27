@@ -58,6 +58,11 @@ export async function handleBrideDashboard(req: NextRequest, parts: string[], cu
   const resource = parts[2] || "home";
   const bookingId = Number(req.nextUrl.searchParams.get("bookingId") || 0) || undefined;
   const booking = await bookingFor(customer, bookingId);
+  // Lightweight availability check for the customer account page, so it can
+  // offer the bride portal only to customers with a confirmed booking.
+  if (resource === "status" && req.method === "GET") {
+    return json({ available: Boolean(booking), eventDate: booking?.eventDate ?? null });
+  }
   if (!booking) return fail("لا تتوفر بوابة العروس قبل تأكيد الحجز", 404);
 
   if (resource === "home" && req.method === "GET") {
