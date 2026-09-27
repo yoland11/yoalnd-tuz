@@ -141,6 +141,15 @@ export const NAV: NavItem[] = [
     perm: "graduation",
   },
   {
+    // The only screen that grants a representative access to graduation
+    // groups; the server allows it for admins only, so the entry mirrors that.
+    href: "/representative/assignments",
+    label: "تعيين ممثلي المجموعات",
+    icon: UserCheck,
+    perm: "graduation",
+    adminOnly: true,
+  },
+  {
     href: "/admin/graduation/students",
     label: "الطلاب",
     icon: Users,
@@ -832,6 +841,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/graduation/orders"),
       navItem("/admin/graduation/individual"),
       navItem("/admin/graduation/groups"),
+      navItem("/representative/assignments"),
       navItem("/admin/graduation/students"),
       navItem("/admin/graduation/templates"),
       navItem("/admin/graduation/gallery"),
