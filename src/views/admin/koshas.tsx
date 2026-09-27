@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, apiErrorMessage, apiErrorStatus, formatCurrency } from "./_lib";
+import { shortBookingNumber } from "@/lib/booking-number";
 import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory, KoshaPackage } from "@/views/koshas";
@@ -1171,7 +1172,8 @@ export function AdminKoshaBookingsPage() {
       { name: "الخصم", price: -Number(pricing.discountAmount ?? 0) },
     ].filter((row) => Number(row.price) !== 0);
     const lineItems = pricedLines.length ? pricedLines : [{ name: "إجمالي الحجز حسب الاتفاق", price: total }];
-    const trackingCode = full.trackingCode ?? `KB-${full.id}`;
+    // Display-only booking number (the QR above carries the secret tracking code).
+    const trackingCode = shortBookingNumber("kosha", full.id, full.trackingCode) || `KB-${full.id}`;
     const dateLine = [full.eventDate, full.eventTime].filter(Boolean).join(" ") || "—";
     const qrCaption = "امسح الكود لمتابعة حالة الكوشة";
 
@@ -1537,8 +1539,8 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
 
         <KoshaDetailSection title="التتبع وحالة الكوشة">
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-muted-foreground">رقم التتبع:</span>
-            <span className="font-mono font-bold text-primary">{booking.trackingCode ?? "—"}</span>
+            <span className="text-muted-foreground">رقم الحجز:</span>
+            <span className="font-mono font-bold text-primary" dir="ltr">{shortBookingNumber("kosha", booking.id, booking.trackingCode) || "—"}</span>
             {booking.trackingCode ? <a href={`/kosha-tracking/${booking.trackingCode}`} target="_blank" rel="noreferrer" className="text-xs text-primary underline">فتح صفحة التتبع</a> : null}
           </div>
           <div className="mt-2">
@@ -2203,7 +2205,7 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
         },
       }),
     }),
-    onSuccess: () => { toast({ title: "تم حفظ التعديلات", description: `بقي الحجز على نفس الرقم ${booking.trackingCode ?? `KB-${booking.id}`}.` }); onSaved(); },
+    onSuccess: () => { toast({ title: "تم حفظ التعديلات", description: `بقي الحجز على نفس الرقم ${shortBookingNumber("kosha", booking.id, booking.trackingCode) || `KB-${booking.id}`}.` }); onSaved(); },
     onError: (error: any) => toast({ title: "تعذر حفظ التعديل", description: error?.message, variant: "destructive" }),
   });
   const projectedTotal = pricedTotal;

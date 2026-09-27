@@ -50,6 +50,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { printStandaloneDocument } from "@/lib/pdf";
+import { shortBookingNumber } from "@/lib/booking-number";
 import { formatIraqiPhone } from "@/lib/phone";
 import { CustomerQuickAddDialog } from "./customer-quick-add";
 import { BookingOperationsWorkspace } from "./booking-operations-workspace";
@@ -166,6 +167,8 @@ type UnifiedBooking = {
   source: "service" | "kosha" | "store" | "graduation" | "photography" | "rental";
   id: number;
   number: string;
+  // Long secret tracking code (QR / links only); kept so staff can still search by it.
+  trackingCode?: string | null;
   customerId?: number | null;
   customerName: string;
   phone: string;
@@ -320,7 +323,8 @@ function unify(serviceOrders: ServiceOrder[], koshaBookings: KoshaBooking[]): Un
   const services: UnifiedBooking[] = serviceOrders.map((order) => ({
     source: "service",
     id: order.id,
-    number: order.trackingCode || `AJN-${String(order.id).padStart(5, "0")}`,
+    number: shortBookingNumber("service", order.id, order.trackingCode) || `AJN-${String(order.id).padStart(5, "0")}`,
+    trackingCode: order.trackingCode ?? null,
     // Prefer the canonical service_orders.customer_id (Phase 1) over the legacy
     // value mirrored into customFields, so the unified customer account resolves
     // to the one real customer.
@@ -362,7 +366,8 @@ function unify(serviceOrders: ServiceOrder[], koshaBookings: KoshaBooking[]): Un
     return {
     source: "kosha",
     id: booking.id,
-    number: booking.trackingCode || `KB-${String(booking.id).padStart(5, "0")}`,
+    number: shortBookingNumber("kosha", booking.id, booking.trackingCode) || `KB-${String(booking.id).padStart(5, "0")}`,
+    trackingCode: booking.trackingCode ?? null,
     customerId: booking.customerId,
     customerName: booking.customerName,
     phone: booking.phone,
@@ -605,7 +610,7 @@ function BookingDashboard() {
     return bookings.filter((booking) => {
       if (serviceFilter !== "all" && !booking.services.some((service) => service.type === serviceFilter)) return false;
       if (!q) return true;
-      return [booking.number, booking.customerName, booking.phone, booking.hall, booking.eventDate].join(" ").toLowerCase().includes(q);
+      return [booking.number, booking.trackingCode, booking.customerName, booking.phone, booking.hall, booking.eventDate].join(" ").toLowerCase().includes(q);
     });
   }, [bookings, search, serviceFilter]);
   const cards = SERVICE_META.map((meta) => {

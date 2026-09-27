@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { bookingDisplayNumber } from "@/lib/booking-number";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getListOrdersQueryKey } from "@workspace/api-client-react";
 import { ArchiveRestore, Search } from "lucide-react";
@@ -86,6 +87,7 @@ export default function ArchivePage() {
     const digits = normalizePhoneDigits(search);
     return rows.filter((row) =>
       String(row.trackingCode ?? "").toLowerCase().includes(s) ||
+      bookingDisplayNumber(row.kind, row.id, row.trackingCode).toLowerCase().includes(s) ||
       row.customerName.toLowerCase().includes(s) ||
       row.customerPhone.includes(digits || s) ||
       formatIraqiPhone(row.customerPhone).includes(digits || s) ||
@@ -136,7 +138,7 @@ export default function ArchivePage() {
             <div key={`${row.kind}-${row.id}`} className="bg-card rounded-xl border border-border/30 p-4">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
-                  <p className="font-mono text-sm font-bold text-foreground">{row.trackingCode ?? "—"}</p>
+                  <p className="font-mono text-sm font-bold text-foreground" dir="ltr">{bookingDisplayNumber(row.kind, row.id, row.trackingCode) || row.trackingCode || "—"}</p>
                   <p className="text-sm text-muted-foreground">{row.customerName} — {formatIraqiPhone(row.customerPhone)}</p>
                   <p className="text-xs text-primary">{row.kind === "product" ? "طلب متجر" : row.serviceName}</p>
                   <p className="text-[11px] text-muted-foreground mt-1">

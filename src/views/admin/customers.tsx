@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { shortBookingNumber } from "@/lib/booking-number";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, FileDown, MapPin, MessageCircle, NotebookPen, Pencil, Plus, Receipt, Search, ShoppingBag, Sparkles, Trash2, Trophy, Wallet, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -148,7 +149,7 @@ export default function CustomersPage() {
       [],
       ["النوع", "الرقم", "الحالة", "الإجمالي", "المتبقي", "التاريخ"],
       ...detail.orders.map((order) => ["طلب متجر", order.trackingCode, order.status, String(order.total), String(order.remainingAmount ?? 0), order.createdAt]),
-      ...(detail.serviceOrders ?? []).map((order) => ["حجز خدمة", order.trackingCode ?? "", order.status, String(order.total ?? 0), String(order.remainingAmount ?? 0), order.createdAt]),
+      ...(detail.serviceOrders ?? []).map((order) => ["حجز خدمة", shortBookingNumber("service", order.id, order.trackingCode) || order.trackingCode || "",order.status, String(order.total ?? 0), String(order.remainingAmount ?? 0), order.createdAt]),
       ...(detail.invoices ?? []).map((invoice) => ["فاتورة", invoice.invoiceNo, invoice.paymentStatus, String(invoice.total), String(invoice.remainingAmount), invoice.createdAt]),
     ];
     const csv = rows.map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -453,7 +454,7 @@ export default function CustomersPage() {
                       {detail.serviceOrders.map(o => (
                         <div key={o.id} className="flex items-center justify-between bg-background/40 rounded-lg p-3">
                           <div>
-                            <p className="font-mono text-xs text-foreground">{o.trackingCode ?? "—"}</p>
+                            <p className="font-mono text-xs text-foreground" dir="ltr">{shortBookingNumber("service", o.id, o.trackingCode) || o.trackingCode || "—"}</p>
                             <p className="text-xs text-muted-foreground">{o.eventDate || new Date(o.createdAt).toLocaleDateString("ar-IQ-u-nu-latn")}</p>
                           </div>
                           <div className="text-left">

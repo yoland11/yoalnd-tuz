@@ -16,6 +16,7 @@ import {
 import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@/lib/order-stages";
 import { serviceDetailsToRows } from "@/lib/service-details";
 import { formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
+import { parseShortBookingNumber } from "@/lib/booking-number";
 import { usePublicSettings } from "@/lib/public-settings";
 import { SelectedColorLabel } from "@/components/product-colors";
 import { CelebrationEffect } from "@/components/interactive/celebration-effect";
@@ -98,7 +99,31 @@ export default function Track() {
     refetchInterval: searchPhone ? 30000 : false,
     retry: false,
   });
-  const codeResults = Array.isArray(order) ? order : order ? [order] : [];
+  // Short booking numbers (K-418-5330) are guessable, so the server resolves
+  // them only together with the full registered mobile and rate-limits them per
+  // phone. They are therefore fetched only on an explicit search: no polling,
+  // no refetch on focus, and repeating the same search reuses the result.
+  const [shortPhone, setShortPhone] = useState("");
+  const [shortSearch, setShortSearch] = useState<{ number: string; phone: string } | null>(null);
+  const codeIsShort = mode === "code" && Boolean(parseShortBookingNumber(code));
+  const { data: shortResult, isLoading: loadingShort, error: shortError } = useQuery({
+    queryKey: ["track", "short-number", shortSearch?.number, shortSearch?.phone],
+    queryFn: async () => {
+      const response = await fetch(`/api/orders/track/${encodeURIComponent(shortSearch!.number)}?phone=${encodeURIComponent(shortSearch!.phone)}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error ?? t("تعذر البحث عن الحجز"));
+      return payload;
+    },
+    enabled: Boolean(shortSearch),
+    retry: false,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: Infinity,
+  });
+  const codeResults = shortSearch
+    ? shortResult ? [shortResult] : []
+    : Array.isArray(order) ? order : order ? [order] : [];
 
   useEffect(() => {
     if (prefilledCode) setSearchCode(prefilledCode);
@@ -107,10 +132,24 @@ export default function Track() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (mode === "code") {
-      setPhoneValidationError("");
       setSearchPhone("");
+      if (parseShortBookingNumber(code)) {
+        const normalizedShortPhone = normalizeIraqiPhone(shortPhone);
+        setSearchCode("");
+        if (!normalizedShortPhone) {
+          setShortSearch(null);
+          setPhoneValidationError(t("اكتب رقم الموبايل الكامل المسجّل بالحجز، مثل 0770xxxxxxx"));
+          return;
+        }
+        setPhoneValidationError("");
+        setShortSearch({ number: code.trim().toUpperCase(), phone: normalizedShortPhone });
+        return;
+      }
+      setPhoneValidationError("");
+      setShortSearch(null);
       setSearchCode(code.trim().toUpperCase());
     } else {
+      setShortSearch(null);
       setSearchCode("");
       const normalized = normalizeIraqiPhone(phone);
       if (!normalized) {
@@ -176,12 +215,12 @@ export default function Track() {
         </div>
 
         {/* Search */}
-        <form onSubmit={handleSubmit} className="flex gap-3 mb-10">
+        <form onSubmit={handleSubmit} className="flex flex-wrap gap-3 mb-10">
           {mode === "code" ? (
             <input
               value={code}
               onChange={e => setCode(e.target.value)}
-              placeholder="AJN-2089"
+              placeholder="K-418-5330"
               className="flex-1 bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg font-mono tracking-wider placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors uppercase"
             />
           ) : (
@@ -196,17 +235,41 @@ export default function Track() {
               className="flex-1 bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg tracking-wider placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
             />
           )}
-          <Button type="submit" size="lg" className="px-6" disabled={loadingCode || loadingPhone}>
+          <Button type="submit" size="lg" className="px-6" disabled={loadingCode || loadingPhone || loadingShort}>
             <Search className="w-5 h-5" />
           </Button>
+          {codeIsShort && (
+            <div className="basis-full">
+              <label className="mb-1.5 block text-sm text-muted-foreground">
+                {t("للتأكد أنك صاحب الحجز، اكتب رقم الموبايل الكامل المسجّل بالحجز")}
+              </label>
+              <input
+                value={shortPhone}
+                onChange={e => {
+                  setShortPhone(formatIraqiPhoneInput(e.target.value));
+                  if (phoneValidationError) setPhoneValidationError("");
+                }}
+                placeholder="0770xxxxxxx"
+                inputMode="numeric"
+                className="w-full bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg tracking-wider placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
+              />
+            </div>
+          )}
         </form>
 
-        {mode === "phone" && phoneValidationError && (
+        {(mode === "phone" || codeIsShort) && phoneValidationError && (
           <p className="-mt-7 mb-8 text-sm text-status-danger" role="alert">{phoneValidationError}</p>
         )}
 
         {/* Loading */}
-        {(loadingCode || loadingPhone) && <TrackingSearchSkeleton />}
+        {(loadingCode || loadingPhone || loadingShort) && <TrackingSearchSkeleton />}
+
+        {mode === "code" && shortSearch && shortError && (
+          <div className="text-center py-12 bg-card rounded-xl border border-border/30" role="alert">
+            <XCircle className="w-10 h-10 text-status-danger mx-auto mb-3" />
+            <p className="text-muted-foreground">{(shortError as Error).message}</p>
+          </div>
+        )}
 
         {/* Code mode — single order */}
         {mode === "code" && errorCode && searchCode && (
@@ -675,7 +738,7 @@ function SecureQrTrackingCard({ tracking }: { tracking: any }) {
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div>
           <p className="text-xs text-muted-foreground mb-1">{t("رقم الطلب")}</p>
-          <p className="text-xl font-mono font-bold text-foreground tracking-widest">{tracking.trackingCode}</p>
+          <p className="text-xl font-mono font-bold text-foreground tracking-widest">{tracking.bookingNumber || tracking.trackingCode}</p>
           {tracking.serviceName && (
             <p className="text-sm text-muted-foreground mt-2">{tracking.serviceName}</p>
           )}
@@ -773,7 +836,7 @@ function AssetQrCard({ tracking }: { tracking: any }) {
         <Fingerprint className="w-5 h-5 text-primary shrink-0" />
         <div className="min-w-0">
           <p className="text-xs text-muted-foreground mb-0.5">{t("البصمة الرقمية")}</p>
-          <p className="font-mono text-sm font-semibold text-foreground truncate tracking-wider">{tracking.trackingCode}</p>
+          <p className="font-mono text-sm font-semibold text-foreground truncate tracking-wider">{tracking.bookingNumber || tracking.trackingCode}</p>
         </div>
       </div>
 
@@ -935,7 +998,7 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
     staleTime: 5 * 60_000,
   });
 
-  const waMsg = `استفسار عن الطلب ${tracking.trackingCode}`;
+  const waMsg = `استفسار عن الطلب ${tracking.bookingNumber || tracking.trackingCode}`;
   const waLink = buildWhatsAppLink(contactPhone || "07701234567", waMsg);
 
   useEffect(() => {
@@ -943,7 +1006,7 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
       action: "track_page",
       entityType: tracking.kind === "service" ? "service_order" : "order",
       entityId: Number(tracking.id) || undefined,
-      entityLabel: tracking.trackingCode,
+      entityLabel: tracking.bookingNumber || tracking.trackingCode,
     });
   }, [tracking.id, tracking.kind, tracking.trackingCode]);
 
@@ -983,7 +1046,7 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1">{t("رمز التتبع")}</p>
-              <p className="text-xl font-mono font-bold text-foreground tracking-widest">{tracking.trackingCode}</p>
+              <p className="text-xl font-mono font-bold text-foreground tracking-widest">{tracking.bookingNumber || tracking.trackingCode}</p>
               <p className="text-[11px] text-muted-foreground mt-1">{t("آخر تحديث:")} {formatTrackDate(lastUpdate)}</p>
             </div>
           </div>
@@ -1308,6 +1371,7 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: getTrackOrderQueryKey(tracking.trackingCode) });
+      queryClient.invalidateQueries({ queryKey: ["track", "short-number"] });
       setMode("idle");
       setRequestedDate("");
       setNote("");

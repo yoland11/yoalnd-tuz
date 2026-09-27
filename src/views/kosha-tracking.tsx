@@ -7,6 +7,7 @@ type KoshaTrackingStep = { key: string; label: string; done: boolean; current: b
 
 type KoshaTracking = {
   trackingCode: string | null;
+  bookingNumber?: string | null;
   koshaName: string | null;
   packageName: string | null;
   customerName: string;
@@ -56,7 +57,7 @@ export default function KoshaTrackingPage() {
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-xs text-muted-foreground">رقم التتبع</p>
-            <p className="font-mono text-lg font-bold text-primary">{data.trackingCode}</p>
+            <p className="font-mono text-lg font-bold text-primary" dir="ltr">{data.bookingNumber || data.trackingCode}</p>
           </div>
           <span className="flex-shrink-0 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">{currentLabel}</span>
         </div>

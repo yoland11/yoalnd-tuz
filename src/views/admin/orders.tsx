@@ -18,6 +18,7 @@ import {
   withDerivedServiceDetails,
 } from "@/lib/service-details";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
+import { shortBookingNumber } from "@/lib/booking-number";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { SelectedColorLabel } from "@/components/product-colors";
@@ -377,6 +378,7 @@ export default function OrdersPage() {
       const digits = normalizePhoneDigits(search);
       rows = rows.filter(o =>
         o.trackingCode?.toLowerCase().includes(s) ||
+        shortBookingNumber("service", o.id, o.trackingCode).toLowerCase().includes(s) ||
         o.customerName.toLowerCase().includes(s) ||
         o.phone.includes(digits || s) ||
         formatIraqiPhone(o.phone).includes(digits || s) ||
@@ -652,7 +654,8 @@ export default function OrdersPage() {
             {filteredServices.map(o => {
               const stages = getStagesFor(o.serviceType, "service");
               const trackUrl = `${window.location.origin}/track?code=${o.trackingCode ?? ""}`;
-              const waMsg = `مرحبا ${o.customerName}، رمز تتبع حجزك: ${o.trackingCode ?? ""}\n${trackUrl}`;
+              const shortNo = shortBookingNumber("service", o.id, o.trackingCode) || `#${o.id}`;
+              const waMsg = `مرحبا ${o.customerName}، رقم حجزك: ${shortNo}\nرابط تتبع الحجز: ${trackUrl}`;
               const isReschedulePending = o.status === "reschedule_pending";
               const detailRows = serviceDetailsToRows(o.serviceType, o.customFields);
               const canArchive = ["delivered", "completed", "cancelled"].includes(o.status);
@@ -692,7 +695,7 @@ export default function OrdersPage() {
                       <p className="text-lg font-extrabold leading-tight text-foreground">{o.customerName || "زبون"}</p>
                       <p className="mt-0.5 text-sm font-bold text-muted-foreground" dir="ltr">{formatIraqiPhone(o.phone) || "—"}</p>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <span className="font-mono text-xs font-bold text-primary">طلب #{o.trackingCode ?? o.id}</span>
+                        <span className="font-mono text-xs font-bold text-primary" dir="ltr">حجز {shortNo}</span>
                         <span className="text-xs text-primary">{o.serviceName}</span>
                       </div>
                       {o.eventDate && <p className="text-xs text-muted-foreground">📅 {o.eventDate} {o.eventLocation ? `• ${o.eventLocation}` : ""}</p>}
@@ -1520,7 +1523,7 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
       queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "booking-center"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "booking-workspace"] });
-      toast({ title: "تم حفظ التعديلات", description: `بقي الحجز على نفس الرقم ${order.trackingCode ?? `#${order.id}`}.` });
+      toast({ title: "تم حفظ التعديلات", description: `بقي الحجز على نفس الرقم ${shortBookingNumber("service", order.id, order.trackingCode) || `#${order.id}`}.` });
       onSaved?.();
       onClose();
     },

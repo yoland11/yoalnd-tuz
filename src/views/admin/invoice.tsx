@@ -8,6 +8,7 @@ import { adminFetch, fetchAdminMe, hasPerm } from "./_lib";
 import { formatIraqiPhone } from "@/lib/phone";
 import { logoSrc, usePublicSettings, type PublicSettings } from "@/lib/public-settings";
 import { downloadElementPdf } from "@/lib/pdf";
+import { shortBookingNumber } from "@/lib/booking-number";
 import { luxuryWeddingInvoiceCss, printDocumentWhenImagesReady } from "./print-helpers";
 import { formatCurrency } from "@/lib/money";
 
@@ -59,7 +60,15 @@ export default function Invoice() {
     return () => { alive = false; };
   }, [id, type]);
 
-  useEffect(() => { if (data) document.title = `فاتورة ${data.trackingCode ?? data.id}`; }, [data]);
+  // Short, readable booking number for bookings (store orders keep their code).
+  const displayNumber = data
+    ? type === "kosha"
+      ? shortBookingNumber("kosha", data.id, data.trackingCode)
+      : type === "booking"
+        ? shortBookingNumber("service", data.id, data.trackingCode)
+        : ""
+    : "";
+  useEffect(() => { if (data) document.title = `فاتورة ${displayNumber || data.trackingCode || data.id}`; }, [data, displayNumber]);
   useEffect(() => {
     let active = true;
     const target = settings?.website || (typeof window !== "undefined" ? window.location.origin : "");
@@ -89,7 +98,7 @@ export default function Invoice() {
     const sheet = pdfSheet();
     if (!sheet || !data) return;
     setDownloading(true);
-    try { await downloadElementPdf(sheet, `ajn-event-invoice-${data.trackingCode ?? data.id}.pdf`, { format: [216, 303], margin: 0, scale: 3.125, pagebreakMode: ["css", "legacy"] }); toast.success("تم حفظ ملف PDF كاملاً"); }
+    try { await downloadElementPdf(sheet, `ajn-event-invoice-${displayNumber || data.trackingCode || data.id}.pdf`, { format: [216, 303], margin: 0, scale: 3.125, pagebreakMode: ["css", "legacy"] }); toast.success("تم حفظ ملف PDF كاملاً"); }
     catch (cause) { toast.error(cause instanceof Error ? cause.message : "تعذر إنشاء ملف PDF"); }
     finally { setDownloading(false); }
   }
@@ -104,7 +113,7 @@ export default function Invoice() {
       <div className="flex gap-2"><button onClick={downloadPdf} disabled={downloading} className="inline-flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-60">{downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}{downloading ? "جارٍ إنشاء PDF" : "PDF للطباعة"}</button><button onClick={() => printDocumentWhenImagesReady(sheetRef.current || document)} className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"><Printer className="h-4 w-4" />طباعة الفاتورة</button></div>
     </div>
     {data.financiallyReversed && <div className="print:hidden border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-center text-sm font-semibold text-destructive">تم عكس الأثر المالي لهذه الفاتورة.</div>}
-    <div className="wedding-invoice-stage"><div ref={sheetRef}><WeddingInvoice data={data} model={model} settings={settings} websiteQr={websiteQr} /></div></div>
+    <div className="wedding-invoice-stage"><div ref={sheetRef}><WeddingInvoice data={data} model={model} settings={settings} websiteQr={websiteQr} displayNumber={displayNumber} /></div></div>
     <style>{luxuryWeddingInvoiceCss()}</style>
   </div>;
 }
@@ -134,8 +143,10 @@ function invoiceModel(data: InvoiceData) {
   return { booking, cf, items, subtotal, discount, delivery, additional, paid, remaining, total };
 }
 
-function WeddingInvoice({ data, model, settings, websiteQr }: { data: InvoiceData; model: ReturnType<typeof invoiceModel>; settings: PublicSettings; websiteQr: string }) {
+function WeddingInvoice({ data, model, settings, websiteQr, displayNumber }: { data: InvoiceData; model: ReturnType<typeof invoiceModel>; settings: PublicSettings; websiteQr: string; displayNumber?: string }) {
   const barcodeRef = useRef<SVGSVGElement>(null);
+  // The barcode keeps encoding the full tracking code (scanners look it up);
+  // only the printed number switches to the short booking number.
   const code = text(data.trackingCode, `INV-${data.id}`);
   const cf = model.cf;
   const created = data.createdAt ? new Date(data.createdAt) : new Date();
@@ -166,7 +177,7 @@ function WeddingInvoice({ data, model, settings, websiteQr }: { data: InvoiceDat
         <section className="wi-top">
           <div className="wi-panel"><div className="wi-panel-title">معلومات العميل · CUSTOMER INFORMATION</div><div className="wi-info-grid">{info("اسم العميل", data.customerName, true)}{info("اسم العروس", cf.brideName)}{info("رقم الهاتف", data.customerPhone)}{info("البريد الإلكتروني", data.customerEmail ?? cf.email)}{info("المحافظة", province)}{info("العنوان", customerAddress, true)}{info("قاعة المناسبة", cf.hallName ?? cf.venueName ?? (model.booking ? data.eventLocation : ""), true)}{info("نوع المناسبة", cf.eventType ?? data.serviceName ?? data.serviceType)}{info("تاريخ المناسبة", cf.eventDate ?? data.eventDate)}{info("وقت المناسبة", cf.eventTime ?? data.eventTime)}{cf.transportationLabel ? info("خدمة النقل", cf.transportationVehicle ? `${cf.transportationLabel} · ${cf.transportationVehicle}` : cf.transportationLabel, true) : null}{info("مندوب المبيعات", salesRepresentative)}{info("المدير الرئيسي", cf.managerName ?? data.managerName)}</div></div>
           <div className="wi-top-spacer" />
-          <div className="wi-panel"><div className="wi-panel-title">بيانات الفاتورة · INVOICE DETAILS</div><div className="wi-info-grid">{info("رقم الفاتورة", code, true)}{info("رقم العقد", cf.contractNumber ?? cf.contractNo)}{info("رقم الحجز", cf.bookingNumber ?? (model.booking ? data.trackingCode : ""))}{info("التاريخ", dateText(created))}{info("الوقت", timeText(created))}{info("أنشأها", data.createdByName)}{info("الفرع", cf.branchName ?? cf.branch ?? settings?.city, true)}</div><div className="wi-codes"><div><img className="wi-qr" src={data.qr?.dataUrl || websiteQr} alt="QR verification" /><span className="wi-code-caption">Scan to verify booking</span></div><div><div className="wi-barcode"><svg ref={barcodeRef} /></div><div className="wi-readable">{code}</div></div></div></div>
+          <div className="wi-panel"><div className="wi-panel-title">بيانات الفاتورة · INVOICE DETAILS</div><div className="wi-info-grid">{info("رقم الفاتورة", displayNumber || code, true)}{info("رقم العقد", cf.contractNumber ?? cf.contractNo)}{info("رقم الحجز", cf.bookingNumber ?? (model.booking ? data.trackingCode : ""))}{info("التاريخ", dateText(created))}{info("الوقت", timeText(created))}{info("أنشأها", data.createdByName)}{info("الفرع", cf.branchName ?? cf.branch ?? settings?.city, true)}</div><div className="wi-codes"><div><img className="wi-qr" src={data.qr?.dataUrl || websiteQr} alt="QR verification" /><span className="wi-code-caption">Scan to verify booking</span></div><div><div className="wi-barcode"><svg ref={barcodeRef} /></div><div className="wi-readable">{code}</div></div></div></div>
         </section>
 
         <section className="wi-section"><div className="wi-section-heading">الخدمات والتفاصيل · SERVICES</div><table className="wi-items"><colgroup><col style={{ width: "4%" }} /><col style={{ width: "16%" }} /><col style={{ width: "11%" }} /><col style={{ width: "22%" }} /><col style={{ width: "9%" }} /><col style={{ width: "6%" }} /><col style={{ width: "11%" }} /><col style={{ width: "9%" }} /><col style={{ width: "12%" }} /></colgroup><thead><tr><th>#</th><th>الخدمة<br />Service</th><th>الفئة<br />Category</th><th>الوصف<br />Description</th><th>اللون<br />Color</th><th>الكمية<br />Qty</th><th>سعر الوحدة<br />Unit Price</th><th>الخصم<br />Discount</th><th>الإجمالي<br />Subtotal</th></tr></thead><tbody>{model.items.map((item, index) => <tr key={item.id ?? index}><td>{index + 1}</td><td className="service">{item.name}</td><td>{item.category}</td><td className="description">{item.description}</td><td>{item.color}</td><td className="num">{item.quantity}</td><td className="num">{formatCurrency(item.unitPrice)}</td><td className="num">{formatCurrency(item.discount)}</td><td className="num">{formatCurrency(item.subtotal)}</td></tr>)}</tbody></table></section>

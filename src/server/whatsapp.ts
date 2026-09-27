@@ -403,7 +403,10 @@ export function buildTrackingLink(trackingCode: string): string {
 export type OrderCtx = {
   name: string;
   phone: string;
+  /** Secret tracking code: builds the tracking link. */
   tracking: string;
+  /** Optional short booking number shown in the message text instead of the code. */
+  displayNumber?: string;
   total?: number | string;
   status?: string;
   service?: string;
@@ -422,7 +425,7 @@ export async function fireOrderEvent(
     const link = buildTrackingLink(ctx.tracking);
     const message = renderTemplate(tpl, {
       name: ctx.name ?? "",
-      tracking: ctx.tracking,
+      tracking: ctx.displayNumber || ctx.tracking,
       total: ctx.total ?? "",
       status: ctx.status ?? "",
       service: ctx.service ?? "",

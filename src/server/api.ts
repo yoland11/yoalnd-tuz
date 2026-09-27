@@ -655,6 +655,12 @@ import {
 } from "@/server/photography-approval";
 import { handleRepresentativePortal } from "@/server/representative";
 import { handleBrideDashboard } from "@/server/bride-dashboard";
+import {
+  parseShortBookingNumber,
+  shortBookingNumber,
+  trackingPhoneTail,
+  type ParsedShortBookingNumber,
+} from "@/lib/booking-number";
 import { handleInstallments } from "@/server/installments";
 import { GRADUATION_STAGE_LABELS } from "@/lib/graduation";
 import {
@@ -10259,6 +10265,8 @@ async function buildServiceTracking(so: any) {
     : null;
   return {
     trackingCode: so.trackingCode ?? `SRV-${so.id}`,
+    // Short display number; trackingCode above stays the secret used by links/APIs.
+    bookingNumber: shortBookingNumber("service", so.id, so.trackingCode) || null,
     qrToken: so.qrToken ?? null,
     qrScanUrl,
     qrDataUrl,
@@ -10350,6 +10358,7 @@ async function koshaTrackingPayload(booking: any) {
   const f = await formatKoshaBooking(booking);
   return {
     trackingCode: f.trackingCode ?? booking.trackingCode,
+    bookingNumber: shortBookingNumber("kosha", booking.id, booking.trackingCode) || null,
     qrToken: null,
     qrScanUrl: null,
     qrDataUrl: null,
@@ -10387,6 +10396,40 @@ async function koshaTrackingPayload(booking: any) {
  * stripped on both sides via an exact (non-wildcard) comparison, so this cannot
  * be used to enumerate rows.
  */
+/**
+ * Public tracking by short booking number (K-418-5330 / B-1532-5330). Short
+ * numbers are guessable, so they only resolve together with the full mobile
+ * number registered on that booking. Every mismatch (unknown id, wrong phone,
+ * wrong phone tail) returns the same null so callers cannot tell which part
+ * was wrong.
+ */
+async function resolveTrackingByShortNumber(
+  parsed: ParsedShortBookingNumber,
+  normalizedPhone: string,
+): Promise<any | null> {
+  await Promise.all([ensureTrackingColumns(), ensureKoshaTables()]);
+  if (parsed.source === "kosha") {
+    const booking = await db.query.koshaBookingsTable.findFirst({
+      where: eq(koshaBookingsTable.id, parsed.id),
+    });
+    if (!booking) return null;
+    const phoneMatches = [booking.phone, booking.bridePhone, booking.groomPhone].some(
+      (value) => phoneBelongsToLookup(value, normalizedPhone),
+    );
+    if (!phoneMatches) return null;
+    if (parsed.tail && trackingPhoneTail(booking.trackingCode) !== parsed.tail)
+      return null;
+    return await koshaTrackingPayload(booking);
+  }
+  const so = await db.query.serviceOrdersTable.findFirst({
+    where: eq(serviceOrdersTable.id, parsed.id),
+  });
+  if (!so || !phoneBelongsToLookup(so.phone, normalizedPhone)) return null;
+  if (parsed.tail && trackingPhoneTail(so.trackingCode) !== parsed.tail)
+    return null;
+  return await buildServiceTracking(so);
+}
+
 async function resolveTrackingByCode(raw: string): Promise<any | null> {
   const compact = String(raw ?? "")
     .trim()
@@ -14517,6 +14560,8 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
     }));
     return json({
       trackingCode: formatted.trackingCode,
+      bookingNumber:
+        shortBookingNumber("kosha", booking.id, booking.trackingCode) || null,
       koshaName: formatted.koshaName,
       packageName: formatted.packageName,
       customerName: formatted.customerName,
@@ -15549,6 +15594,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       name: order.customerName,
       phone: order.phone,
       tracking: order.trackingCode ?? "",
+      displayNumber: shortBookingNumber("service", order.id, order.trackingCode),
       status: order.status,
       service: service?.nameAr ?? service?.name ?? "",
     });
@@ -15594,7 +15640,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
     void createCustomerNotificationByPhone(order.phone, {
       type: "booking_created",
       title: "تم إنشاء الحجز",
-      body: `رمز التتبع ${order.trackingCode ?? ""}`,
+      body: `رقم الحجز ${shortBookingNumber("service", order.id, order.trackingCode) || order.trackingCode || ""}`,
       entityType: "service_order",
       entityId: order.id,
       href: `/track?code=${encodeURIComponent(order.trackingCode ?? "")}`,
@@ -15939,6 +15985,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         id: booking.id,
         kind: "service",
         trackingCode: booking.trackingCode ?? `SRV-${booking.id}`,
+        bookingNumber:
+          shortBookingNumber("service", booking.id, booking.trackingCode) || null,
         customerName: booking.customerName,
         customerPhone: booking.phone,
         serviceName:
@@ -15973,6 +16021,55 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     if (!raw || raw.length > 80 || !/^[A-Za-z0-9\s-]+$/.test(raw))
       return error("صيغة رمز التتبع غير صحيحة", 422);
     const normalized = raw.toUpperCase().replace(/[\s-]/g, "");
+    // Short booking numbers need the full registered mobile and have stricter
+    // limits (per IP and per phone) so ids cannot be enumerated.
+    const shortNumber = parseShortBookingNumber(raw);
+    if (shortNumber) {
+      const lookupPhone = normalizeIraqiPhone(
+        req.nextUrl.searchParams.get("phone") ?? "",
+      );
+      if (!lookupPhone)
+        return error(
+          "أدخل رقم الموبايل الكامل المسجّل بالحجز مع رقم الحجز",
+          422,
+        );
+      // The client never auto-refreshes short-number lookups, so these limits
+      // only count deliberate searches: generous for a real customer, far too
+      // low to walk booking ids for someone who merely knows a phone number.
+      const ipLimit = await consumeRateLimit({
+        action: "public-tracking-short",
+        keyParts: [ip(req)],
+        limit: 20,
+        windowMs: 10 * 60_000,
+      });
+      if (!ipLimit.allowed)
+        return rateLimitError(ipLimit, "عدد كبير من المحاولات، حاول بعد قليل");
+      const phoneLimit = await consumeRateLimit({
+        action: "public-tracking-short-phone",
+        keyParts: [lookupPhone],
+        limit: 10,
+        windowMs: 24 * 60 * 60_000,
+      });
+      if (!phoneLimit.allowed)
+        return rateLimitError(
+          phoneLimit,
+          "عدد كبير من المحاولات لهذا الرقم اليوم، حاول غداً أو تواصل معنا",
+        );
+      try {
+        const tracking = await resolveTrackingByShortNumber(
+          shortNumber,
+          lookupPhone,
+        );
+        if (tracking) return json(tracking);
+      } catch (err) {
+        console.error("short booking number tracking lookup failed", {
+          source: shortNumber.source,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return error("تعذّر تنفيذ البحث حالياً، حاول لاحقاً", 500);
+      }
+      return error("لم يتم العثور على حجز بهذا الرقم وهذا الموبايل", 404);
+    }
     const trackingLimit = await consumeRateLimit({
       action: "public-tracking",
       keyParts: [ip(req)],
@@ -34110,7 +34207,8 @@ async function handleCentralBookingCenter(
       return {
         source: "service",
         id: order.id,
-        number: order.trackingCode ?? `SRV-${order.id}`,
+        number: shortBookingNumber("service", order.id, order.trackingCode) || `SRV-${order.id}`,
+        trackingCode: order.trackingCode ?? null,
         customerId: fields.customerId ?? null,
         customerName: order.customerName,
         phone: order.phone,
@@ -34150,7 +34248,8 @@ async function handleCentralBookingCenter(
     ...koshas.map((booking) => ({
       source: "kosha",
       id: booking.id,
-      number: booking.trackingCode ?? `KB-${booking.id}`,
+      number: shortBookingNumber("kosha", booking.id, booking.trackingCode) || `KB-${booking.id}`,
+      trackingCode: booking.trackingCode ?? null,
       customerId: booking.customerId ?? null,
       customerName: booking.customerName,
       phone: booking.phone,
@@ -49889,6 +49988,7 @@ async function handleAdmin(
         name: order.customerName,
         phone: order.phone,
         tracking: order.trackingCode ?? "",
+        displayNumber: shortBookingNumber("service", order.id, order.trackingCode),
         status: order.status,
         service: service.nameAr ?? service.name ?? "",
       });
@@ -49943,7 +50043,7 @@ async function handleAdmin(
       void createCustomerNotificationByPhone(order.phone, {
         type: "booking_created",
         title: "تم إنشاء الحجز",
-        body: `رمز التتبع ${order.trackingCode ?? ""}`,
+        body: `رقم الحجز ${shortBookingNumber("service", order.id, order.trackingCode) || order.trackingCode || ""}`,
         entityType: "service_order",
         entityId: order.id,
         href: `/track?code=${encodeURIComponent(order.trackingCode ?? "")}`,
@@ -50116,6 +50216,7 @@ async function handleAdmin(
           name: row.customerName,
           phone: row.phone,
           tracking: row.trackingCode ?? "",
+          displayNumber: shortBookingNumber("service", row.id, row.trackingCode),
           status: row.status,
           service: service?.nameAr ?? service?.name ?? "",
         });
@@ -50291,6 +50392,7 @@ async function handleAdmin(
             name: row.customerName,
             phone: row.phone,
             tracking: row.trackingCode ?? "",
+            displayNumber: shortBookingNumber("service", row.id, row.trackingCode),
             status: row.status,
             service: service?.nameAr ?? service?.name ?? "",
           });

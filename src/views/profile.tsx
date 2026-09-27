@@ -579,7 +579,7 @@ export default function Profile() {
                   {(Array.isArray(trackResult) ? trackResult : [trackResult]).map((result: any, index: number) => (
                     <div key={`${result.kind ?? "order"}-${result.id ?? index}`} className="rounded-xl bg-background/60 border border-border/25 p-4 flex items-center justify-between gap-3">
                       <div>
-                        <p className="font-mono font-bold text-foreground">{result.trackingCode}</p>
+                        <p className="font-mono font-bold text-foreground" dir="ltr">{result.bookingNumber || result.trackingCode}</p>
                         <p className="text-sm text-muted-foreground">{t(STATUS_LABELS[result.status] ?? result.status)}</p>
                       </div>
                       <Link href={`/track?code=${result.trackingCode}`} className="text-primary text-sm font-medium">
@@ -836,7 +836,7 @@ function OrderList({
             <div className="flex gap-3">
               <OrderThumb order={order} />
               <div>
-                <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
+                <p className="font-mono text-sm font-bold text-foreground" dir="ltr">{order.bookingNumber || order.trackingCode}</p>
               <p className="text-xs text-muted-foreground mt-1">
                 {new Date(order.createdAt).toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "long", day: "numeric" })}
               </p>
@@ -877,7 +877,7 @@ function OrderList({
                   <RefreshCcw className="w-4 h-4" />
                 </button>
               )}
-              <a href={buildWhatsAppLink(contactPhone || "07701234567", `استفسار بخصوص الطلب ${order.trackingCode}`)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center rounded-lg border border-status-success/30 bg-status-success/10 px-3 py-2 text-sm text-status-success hover:bg-status-success/20 transition-colors">
+              <a href={buildWhatsAppLink(contactPhone || "07701234567", `استفسار بخصوص الطلب ${order.bookingNumber || order.trackingCode}`)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center rounded-lg border border-status-success/30 bg-status-success/10 px-3 py-2 text-sm text-status-success hover:bg-status-success/20 transition-colors">
                 <MessageCircle className="w-4 h-4" />
               </a>
               {order.kind === "rental" && (

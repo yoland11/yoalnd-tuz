@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { bookingDisplayNumber } from "@/lib/booking-number";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CalendarDays, Clock, ExternalLink, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -200,7 +201,7 @@ export default function CalendarPage() {
                     )}
                     <div className="mt-2 flex items-center justify-between gap-2 text-[11px] opacity-80">
                       <span>{STATUS_LABELS[event.status] ?? event.status}</span>
-                      <span className="font-mono">{event.trackingCode ?? `#${event.id}`}</span>
+                      <span className="font-mono" dir="ltr">{bookingDisplayNumber(event.kind, event.id, event.trackingCode) || event.trackingCode || `#${event.id}`}</span>
                     </div>
                   </button>
                 ))}
@@ -226,7 +227,7 @@ export default function CalendarPage() {
               <p className="flex items-center gap-2"><Clock className="w-4 h-4 text-primary" /> {selected.date}</p>
               {selected.crewName && <p>الكادر: {selected.crewName}</p>}
               {selected.location && <p>الموقع: {selected.location}</p>}
-              <p>التتبع: <span className="font-mono text-foreground">{selected.trackingCode ?? `#${selected.id}`}</span></p>
+              <p>الرقم: <span className="font-mono text-foreground" dir="ltr">{bookingDisplayNumber(selected.kind, selected.id, selected.trackingCode) || selected.trackingCode || `#${selected.id}`}</span></p>
             </div>
             <div className="mt-5 grid grid-cols-2 gap-2">
               <Button type="button" variant="outline" onClick={() => setSelected(null)}>إغلاق</Button>

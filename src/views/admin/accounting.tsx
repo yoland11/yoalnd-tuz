@@ -1,4 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { shortBookingNumber } from "@/lib/booking-number";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search, Download, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -645,7 +646,7 @@ function VoucherCustomerPicker({
     if (!detail.data) return [];
     return [
       ...detail.data.orders.map((row) => ({ code: row.trackingCode, kind: "طلب متجر", total: row.total, date: row.createdAt })),
-      ...detail.data.serviceOrders.map((row) => ({ code: row.trackingCode, kind: "حجز خدمة", total: row.total, date: row.createdAt })),
+      ...detail.data.serviceOrders.map((row) => ({ code: shortBookingNumber("service", row.id, row.trackingCode) || row.trackingCode, kind: "حجز خدمة", total: row.total, date: row.createdAt })),
       ...detail.data.invoices.map((row) => ({ code: row.invoiceNo, kind: "فاتورة", total: row.total, date: row.createdAt })),
     ].sort((left, right) => right.date.localeCompare(left.date)).slice(0, 5);
   }, [detail.data]);
