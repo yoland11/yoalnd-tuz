@@ -8,7 +8,9 @@ import {
   Boxes,
   Camera,
   CarFront,
+  Check,
   CheckSquare,
+  ChevronsUpDown,
   ClipboardList,
   Edit3,
   FileText,
@@ -29,14 +31,8 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectSeparator,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Dialog,
   DialogContent,
@@ -225,12 +221,13 @@ export default function AssetNewPage() {
     queryFn: () => adminFetch("/admin/staff"),
     staleTime: 5 * 60 * 1000,
   });
-  const { data: assetCategoriesData, isLoading: assetCategoriesLoading } = useQuery<AssetCategoriesResponse>({
+  const { data: assetCategoriesData, isLoading: assetCategoriesLoading, isError: assetCategoriesError } = useQuery<AssetCategoriesResponse>({
     queryKey: ["admin", "asset-categories"],
     queryFn: () => adminFetch("/admin/asset-categories"),
     staleTime: 60_000,
   });
   const assetCategories = assetCategoriesData?.data ?? [];
+  const pickedCategory = assetCategories.find((category) => String(category.id) === form.category);
   const assetEditQuery = useQuery<AssetEditPayload>({
     queryKey: ["admin", "asset-edit", editProductId],
     queryFn: () => adminFetch(`/admin/assets/edit/${editProductId}`),
@@ -792,81 +789,112 @@ export default function AssetNewPage() {
                 <input className={inputCls} value={form.nameAr} onChange={(e) => set("nameAr", e.target.value)} dir="rtl" />
               </Field>
               <Field label="الفئة">
-                <Select
-                  value={form.category}
-                  onValueChange={(value) => set("category", value)}
-                  open={categorySelectOpen}
-                  onOpenChange={setCategorySelectOpen}
-                >
-                  <SelectTrigger className="mt-1 h-[38px] rounded-lg border-border/40 bg-background px-3 text-sm">
-                    <SelectValue placeholder={assetCategoriesLoading ? "جارٍ تحميل الفئات..." : "اختر الفئة"} />
-                  </SelectTrigger>
-                  <SelectContent dir="rtl" className="min-w-[var(--radix-select-trigger-width)]">
-                    {assetCategories.map((category) => (
-                      <SelectItem key={category.id} value={String(category.id)} className="py-2 pe-9">
-                        <div className="flex w-full min-w-0 items-center gap-2 ps-1">
-                          <span
-                            className="h-2.5 w-2.5 shrink-0 rounded-full bg-muted"
-                            style={category.color ? { backgroundColor: category.color } : undefined}
-                            aria-hidden="true"
-                          />
-                          <CategoryIcon icon={category.icon} color={category.color} />
-                          <span className="min-w-0 flex-1 truncate">{category.name}</span>
-                          <span className="flex shrink-0 items-center gap-0.5" dir="ltr">
-                            <button
-                              type="button"
-                              className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                              aria-label={`تعديل فئة ${category.name}`}
-                              onPointerDown={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                              }}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                openCategoryDialog(category);
-                              }}
-                            >
-                              <Edit3 className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                              aria-label={`حذف فئة ${category.name}`}
-                              onPointerDown={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                              }}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                requestDeleteCategory(category);
-                              }}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                    {!assetCategoriesLoading && assetCategories.length === 0 && (
-                      <p className="px-2 py-3 text-center text-xs text-muted-foreground">لا توجد فئات بعد.</p>
-                    )}
-                    <SelectSeparator />
+                <Popover open={categorySelectOpen} onOpenChange={setCategorySelectOpen}>
+                  <PopoverTrigger asChild>
                     <button
                       type="button"
-                      className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-sm font-medium text-primary outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring"
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                      }}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openCategoryDialog();
-                      }}
+                      role="combobox"
+                      aria-expanded={categorySelectOpen}
+                      className="mt-1 flex h-[38px] w-full items-center justify-between gap-2 rounded-lg border border-border/40 bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
-                      <Plus className="h-4 w-4" /> إضافة فئة جديدة
+                      {pickedCategory ? (
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-full bg-muted"
+                            style={pickedCategory.color ? { backgroundColor: pickedCategory.color } : undefined}
+                            aria-hidden="true"
+                          />
+                          <CategoryIcon icon={pickedCategory.icon} color={pickedCategory.color} />
+                          <span className="truncate">{pickedCategory.name}</span>
+                        </span>
+                      ) : (
+                        <span className="truncate text-muted-foreground">
+                          {assetCategoriesLoading ? "جارٍ تحميل الفئات..." : "اختر الفئة"}
+                        </span>
+                      )}
+                      <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
                     </button>
-                  </SelectContent>
-                </Select>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" dir="rtl" className="w-[var(--radix-popover-trigger-width)] min-w-[16rem] p-0">
+                    <Command>
+                      <CommandInput placeholder="ابحث عن فئة..." />
+                      <CommandList>
+                        {assetCategoriesLoading ? (
+                          <p className="px-2 py-3 text-center text-xs text-muted-foreground">جارٍ تحميل الفئات...</p>
+                        ) : assetCategoriesError ? (
+                          <p className="px-2 py-3 text-center text-xs text-status-danger" role="alert">تعذر تحميل الفئات. أعد تحميل الصفحة.</p>
+                        ) : (
+                          <CommandEmpty>{assetCategories.length === 0 ? "لا توجد فئات بعد." : "لا توجد فئة بهذا الاسم."}</CommandEmpty>
+                        )}
+                        <CommandGroup>
+                          {assetCategories.map((category) => (
+                            <CommandItem
+                              key={category.id}
+                              value={`${category.name} #${category.id}`}
+                              onSelect={() => {
+                                set("category", String(category.id));
+                                setCategorySelectOpen(false);
+                              }}
+                              className="py-2"
+                            >
+                              <div className="flex w-full min-w-0 items-center gap-2">
+                                <Check className={`h-4 w-4 shrink-0 ${form.category === String(category.id) ? "opacity-100" : "opacity-0"}`} />
+                                <span
+                                  className="h-2.5 w-2.5 shrink-0 rounded-full bg-muted"
+                                  style={category.color ? { backgroundColor: category.color } : undefined}
+                                  aria-hidden="true"
+                                />
+                                <CategoryIcon icon={category.icon} color={category.color} />
+                                <span className="min-w-0 flex-1 truncate">{category.name}</span>
+                                <span className="flex shrink-0 items-center gap-0.5" dir="ltr">
+                                  <button
+                                    type="button"
+                                    className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    aria-label={`تعديل فئة ${category.name}`}
+                                    onPointerDown={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                    }}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      openCategoryDialog(category);
+                                    }}
+                                  >
+                                    <Edit3 className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    aria-label={`حذف فئة ${category.name}`}
+                                    onPointerDown={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                    }}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      requestDeleteCategory(category);
+                                    }}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </span>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                    <div className="border-t border-border/40 p-1">
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-sm font-medium text-primary outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring"
+                        onClick={() => openCategoryDialog()}
+                      >
+                        <Plus className="h-4 w-4" /> إضافة فئة جديدة
+                      </button>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </Field>
               <Field label="الماركة">
                 <input className={inputCls} value={form.brand} onChange={(e) => set("brand", e.target.value)} />
