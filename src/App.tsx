@@ -1,7 +1,7 @@
 "use client";
 
 import { Component, lazy, Suspense, useEffect, type ReactNode } from "react";
-import { Switch, Route, Router as WouterRouter } from "wouter";
+import { Switch, Route, Redirect, Router as WouterRouter } from "wouter";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "@/lib/query-client";
 import { Toaster } from "@/components/ui/toaster";
@@ -183,12 +183,10 @@ function Router() {
           <StaffPortal />
         </Suspense>
       </Route>
-      {/* "راتبي" in the kosha staff portal links here; the portal renders the
-          salary page from its own router, so it must be mounted for this path. */}
+      {/* One "راتبي" for every staff portal: the unified staff portal's salary
+          tab. Older links to /staff/salary keep working through this redirect. */}
       <Route path="/staff/salary">
-        <Suspense fallback={<AdminSpinner />}>
-          <StaffPortal />
-        </Suspense>
+        <Redirect to="/staff?tab=salary" />
       </Route>
       <Route path="/staff/tailors/*">
         <Suspense fallback={<AdminSpinner />}>

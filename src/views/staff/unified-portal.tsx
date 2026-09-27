@@ -166,6 +166,14 @@ function PortalLogin({ onDone }: { onDone: (user: AdminMe) => void }) {
   </main>;
 }
 
+const PORTAL_TABS = ["tasks", "bookings", "salary", "notifications", "account"] as const;
+
+/** "?tab=…" for a valid requested portal tab in the current URL, else "". */
+function requestedTabQuery(): string {
+  const value = new URLSearchParams(window.location.search).get("tab") ?? "";
+  return (PORTAL_TABS as readonly string[]).includes(value) ? `?tab=${value}` : "";
+}
+
 export default function UnifiedStaffPortal() {
   const [, navigate] = useLocation();
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
@@ -182,8 +190,10 @@ export default function UnifiedStaffPortal() {
       if (!active) return;
       setMe(user);
       const onLoginRoute = window.location.pathname === "/staff/login";
-      if (user && onLoginRoute) navigate("/staff", { replace: true });
-      if (!user && !onLoginRoute) navigate("/staff/login", { replace: true });
+      // Carry the requested tab (e.g. "راتبي" links to ?tab=salary) through the
+      // login screen so the employee lands where they were going.
+      if (user && onLoginRoute) navigate(`/staff${requestedTabQuery()}`, { replace: true });
+      if (!user && !onLoginRoute) navigate(`/staff/login${requestedTabQuery()}`, { replace: true });
     });
     return () => { active = false; };
   }, [navigate]);
@@ -225,7 +235,7 @@ export default function UnifiedStaffPortal() {
   ], []);
 
   if (me === undefined) return <div className="grid min-h-dvh place-items-center bg-background"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
-  if (!me) return <PortalLogin onDone={(user) => { setMe(user); navigate("/staff", { replace: true }); }} />;
+  if (!me) return <PortalLogin onDone={(user) => { setMe(user); navigate(`/staff${requestedTabQuery()}`, { replace: true }); }} />;
 
   const account = dashboard.data?.staff;
   return <div className="min-h-dvh bg-muted/35 text-foreground" dir="rtl">
