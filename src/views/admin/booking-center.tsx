@@ -19,6 +19,7 @@ import {
   Flower2,
   Gift,
   GraduationCap,
+  Layers3,
   ListChecks,
   MapPin,
   MessageCircle,
@@ -34,6 +35,7 @@ import {
   Search,
   Send,
   ShoppingBag,
+  SlidersHorizontal,
   Sparkles,
   Speaker,
   Users,
@@ -99,6 +101,27 @@ type ServiceStatus =
   | "finished"
   | "returned"
   | "cancelled";
+
+// Kosha catalogue for the unified booking form (same active packages and
+// koshas as the public /koshas page, with real prices).
+type KoshaCatalogPackage = { id: number; name: string; price: number; mainImage: string | null; features: string[]; badgeText: string | null; isFeatured: boolean };
+type KoshaCatalogKosha = { id: number; name: string; price: number; mainImage: string | null; availabilityStatus: string | null };
+type KoshaCatalog = { packages: KoshaCatalogPackage[]; koshas: KoshaCatalogKosha[] };
+type KoshaPick = { mode: "package" | "custom"; id: number; name: string; price: number };
+
+// Informational only — catalogue availability is not date-specific, so it never blocks a pick.
+const KOSHA_AVAILABILITY_NOTE: Record<string, string> = {
+  unavailable: "غير متاحة حالياً",
+  maintenance: "بالصيانة",
+  damaged: "متضررة",
+  in_use: "قيد الاستخدام",
+  reserved: "محجوزة",
+};
+
+function koshaPickLabel(pick: KoshaPick): string {
+  const kind = pick.mode === "package" ? "باقة جاهزة" : "كوشة (اختياري)";
+  return `${kind}: ${pick.name}${pick.price > 0 ? ` · ${formatCurrency(pick.price)}` : ""}`;
+}
 
 type BookingService = {
   type: ServiceKey;
@@ -927,7 +950,23 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   const [soundItems, setSoundItems] = useState<SoundBookingItem[]>([]);
   const [transportationMode, setTransportationMode] = useState<"ajn" | "customer" | null>(null);
   const [transportationFee, setTransportationFee] = useState("");
+  const [koshaMode, setKoshaMode] = useState<"packages" | "custom" | null>(null);
+  const [koshaPick, setKoshaPick] = useState<KoshaPick | null>(null);
+  const [koshaSearch, setKoshaSearch] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const koshaSelected = selected.includes("kosha");
+  const koshaCatalogQuery = useQuery<KoshaCatalog>({
+    queryKey: ["admin", "booking-center", "kosha-catalog"],
+    queryFn: () => adminFetch("/admin/booking-center/kosha-catalog"),
+    enabled: koshaSelected,
+    staleTime: 60_000,
+  });
+  const pickKosha = (pick: KoshaPick) => {
+    setKoshaPick(pick);
+    // Pre-fill the booking total from the chosen package/kosha only when it is
+    // still empty — never overwrite an amount the employee already entered.
+    if (pick.price > 0 && num(totalAmount) <= 0) setTotalAmount(String(pick.price));
+  };
   const soundSelected = selected.includes("sound");
   const soundProductsQuery = useQuery<any[]>({
     queryKey: ["admin", "products-all", "booking-sound-picker"],
@@ -1009,8 +1048,11 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
                     amount: transportationMode === "ajn" ? num(transportationFee) : 0,
                     ...(transportationMode === "customer" ? { notes: "النقل من مسؤولية الزبون" } : {}),
                   }
-                : { type, status: "waiting", amount: 0 },
+                : type === "kosha" && koshaPick
+                  ? { type, status: "waiting", amount: 0, notes: koshaPickLabel(koshaPick) }
+                  : { type, status: "waiting", amount: 0 },
             ),
+            ...(koshaSelected && koshaPick ? { koshaSelection: koshaPick } : {}),
             ...(selected.includes("transportation") && transportationMode
               ? {
                   transportationMode,
@@ -1069,6 +1111,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
     setSelected((current) => current.filter((item) => item !== type));
     if (type === "sound") setSoundItems([]);
     if (type === "transportation") { setTransportationMode(null); setTransportationFee(""); }
+    if (type === "kosha") { setKoshaMode(null); setKoshaPick(null); setKoshaSearch(""); }
   };
   const toggle = (type: ServiceKey) => {
     if (selected.includes(type)) {
@@ -1084,7 +1127,9 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
         ? "booking-sound-items"
         : type === "transportation"
           ? "booking-transportation-settings"
-          : "booking-service-picker";
+          : type === "kosha"
+            ? "booking-kosha-settings"
+            : "booking-service-picker";
     window.requestAnimationFrame(() => document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "center" }));
   };
   const photographySelected = selected.includes("photography");
@@ -1138,7 +1183,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
               const meta = SERVICE_META.find((item) => item.key === type);
               if (!meta) return null;
               const Icon = meta.icon;
-              const hasSettings = type === "photography" || type === "sound" || type === "transportation";
+              const hasSettings = type === "photography" || type === "sound" || type === "transportation" || type === "kosha";
               return <div key={type} className="flex min-h-11 items-center justify-between gap-2 rounded-lg border border-border/45 bg-muted/20 px-2.5 py-1.5">
                 <span className="flex min-w-0 items-center gap-2 text-sm font-medium"><Icon className="h-4 w-4 shrink-0 text-primary" /><span className="truncate">{meta.short}</span></span>
                 <span className="flex shrink-0 items-center gap-1">
@@ -1148,6 +1193,21 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
               </div>;
             })}</div>
           </section> : null}
+          {koshaSelected ? <KoshaCatalogSection
+            mode={koshaMode}
+            onMode={(mode) => setKoshaMode((current) => (current === mode ? null : mode))}
+            catalog={koshaCatalogQuery.data}
+            loading={koshaCatalogQuery.isLoading}
+            error={koshaCatalogQuery.isError ? apiErrorMessage(koshaCatalogQuery.error) : ""}
+            onRetry={() => void koshaCatalogQuery.refetch()}
+            search={koshaSearch}
+            onSearch={setKoshaSearch}
+            pick={koshaPick}
+            onPick={pickKosha}
+            onClear={() => setKoshaPick(null)}
+            totalAmount={num(totalAmount)}
+            onUsePrice={(price) => setTotalAmount(String(price))}
+          /> : null}
           {photographySelected ? <section id="booking-photography-settings" className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
             <div><h3 className="font-semibold text-foreground">تفاصيل التصوير</h3><p className="mt-1 text-xs text-muted-foreground">تُحفظ هذه التفاصيل مع الحجز لتظهر لفريق التصوير.</p></div>
             <div className="space-y-1.5"><Label htmlFor="booking-photography-type">نوع التصوير</Label><select id="booking-photography-type" value={photographyType} onChange={(event) => setPhotographyType(event.target.value as "video" | "photo_session")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="video">تصوير فيديو</option><option value="photo_session">جلسة تصوير</option></select></div>
@@ -1169,6 +1229,118 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
           <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending || imageUploading || depositTooHigh} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : "حفظ الحجز"}</Button></div>
         </div>
       </div>
+    </section>
+  );
+}
+
+// Kosha section of the unified booking form: two compact cards mirroring the
+// public /koshas choice — "الباقات الجاهزة" (ready packages) and "اختياري"
+// (pick any kosha) — sized to match the other service settings panels.
+function KoshaCatalogSection({ mode, onMode, catalog, loading, error, onRetry, search, onSearch, pick, onPick, onClear, totalAmount, onUsePrice }: {
+  mode: "packages" | "custom" | null;
+  onMode: (mode: "packages" | "custom") => void;
+  catalog: KoshaCatalog | undefined;
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  search: string;
+  onSearch: (value: string) => void;
+  pick: KoshaPick | null;
+  onPick: (pick: KoshaPick) => void;
+  onClear: () => void;
+  totalAmount: number;
+  onUsePrice: (price: number) => void;
+}) {
+  const packages = catalog?.packages ?? [];
+  const koshas = catalog?.koshas ?? [];
+  const needle = search.trim().toLowerCase();
+  const visibleKoshas = needle ? koshas.filter((kosha) => kosha.name.toLowerCase().includes(needle)) : koshas;
+  const cards = [
+    { key: "packages" as const, label: "الباقات الجاهزة", hint: loading ? "…" : `${packages.length} باقة`, Icon: Layers3 },
+    { key: "custom" as const, label: "اختياري", hint: loading ? "…" : `${koshas.length} كوشة`, Icon: SlidersHorizontal },
+  ];
+  const row = (item: { id: number; name: string; price: number; mainImage: string | null }, sub: string, pickMode: KoshaPick["mode"]) => {
+    const active = pick?.mode === pickMode && pick.id === item.id;
+    return (
+      <button
+        key={`${pickMode}-${item.id}`}
+        type="button"
+        onClick={() => onPick({ mode: pickMode, id: item.id, name: item.name, price: item.price })}
+        aria-pressed={active}
+        className={`flex w-full items-center gap-2 rounded-lg border p-1.5 text-right transition-colors ${active ? "border-primary bg-primary/10" : "border-border/40 bg-background hover:border-primary/40"}`}
+      >
+        <img src={item.mainImage || "/images/kosha.png"} alt="" className="h-11 w-11 shrink-0 rounded-md bg-muted object-cover" loading="lazy" decoding="async" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold text-foreground">{item.name}</span>
+          {sub ? <span className="block truncate text-[11px] text-muted-foreground">{sub}</span> : null}
+        </span>
+        <span className="shrink-0 text-xs font-bold text-primary">{item.price > 0 ? formatCurrency(item.price) : "حسب الاتفاق"}</span>
+        {active ? <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" /> : null}
+      </button>
+    );
+  };
+  return (
+    <section id="booking-kosha-settings" className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 text-rose-600"><Crown className="h-5 w-5" /></span>
+        <div>
+          <h3 className="font-semibold text-foreground">الكوشة</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">اختر باقة جاهزة، أو كوشة بشكل اختياري من كتالوج الكوشات.</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {cards.map(({ key, label, hint, Icon }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onMode(key)}
+            aria-pressed={mode === key}
+            className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-right transition-colors ${mode === key ? "border-primary bg-primary/10" : "border-border/40 bg-background hover:border-primary/40"}`}
+          >
+            <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-md ${mode === key ? "bg-primary text-primary-foreground" : "bg-muted text-primary"}`}><Icon className="h-4 w-4" /></span>
+            <span className="min-w-0">
+              <span className={`block truncate text-sm ${mode === key ? "font-semibold text-primary" : "font-medium text-foreground"}`}>{label}</span>
+              <span className="block text-[11px] text-muted-foreground">{hint}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+      {mode ? (
+        error ? (
+          <div role="alert" className="flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            <span>تعذر تحميل كتالوج الكوشات: {error}</span>
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={onRetry}>إعادة المحاولة</Button>
+          </div>
+        ) : loading ? (
+          <div className="space-y-1.5">{[0, 1, 2].map((index) => <Skeleton key={index} className="h-14 rounded-lg" />)}</div>
+        ) : mode === "packages" ? (
+          packages.length ? (
+            <div className="max-h-64 space-y-1.5 overflow-y-auto pe-1">
+              {packages.map((item) => row(item, item.badgeText || item.features[0] || "", "package"))}
+            </div>
+          ) : <p className="rounded-lg border border-dashed border-border/60 p-3 text-center text-xs text-muted-foreground">لا توجد باقات جاهزة مفعّلة حالياً.</p>
+        ) : (
+          <div className="space-y-2">
+            <div className="relative"><Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="ابحث باسم الكوشة" className="h-9 pr-9 text-sm" /></div>
+            {visibleKoshas.length ? (
+              <div className="max-h-64 space-y-1.5 overflow-y-auto pe-1">
+                {visibleKoshas.map((item) => row(item, KOSHA_AVAILABILITY_NOTE[item.availabilityStatus ?? ""] ?? "", "custom"))}
+              </div>
+            ) : <p className="rounded-lg border border-dashed border-border/60 p-3 text-center text-xs text-muted-foreground">{koshas.length ? "لا توجد كوشة بهذا الاسم." : "لا توجد كوشات مفعّلة حالياً."}</p>}
+          </div>
+        )
+      ) : null}
+      {pick ? (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-primary/30 bg-background/80 px-3 py-2 text-sm">
+          <span className="min-w-0 truncate"><CheckCircle2 className="ml-1 inline h-4 w-4 text-primary" /><b>{koshaPickLabel(pick)}</b></span>
+          <span className="flex shrink-0 items-center gap-1">
+            {pick.price > 0 && totalAmount !== pick.price ? (
+              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onUsePrice(pick.price)}>اعتماد السعر كمبلغ كلي</Button>
+            ) : null}
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-destructive hover:text-destructive" onClick={onClear} aria-label="إلغاء اختيار الكوشة"><X className="h-3.5 w-3.5" /></Button>
+          </span>
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -34145,6 +34145,47 @@ async function handleCentralBookingCenter(
   section: string | undefined,
 ) {
   if (section !== "booking-center" || req.method !== "GET") return null;
+  // Read-only catalogue for the unified booking form's kosha section: the same
+  // active ready packages and koshas as the public /koshas page, with their
+  // real prices (the public page hides prices from customers).
+  if (parts[2] === "kosha-catalog") {
+    const catalogAuth = await requireAnyPermission(req, ["bookings", "orders", "services"]);
+    if (isResponse(catalogAuth)) return catalogAuth;
+    const [packageRows, koshaRows] = await Promise.all([
+      db
+        .select({
+          id: koshaPackagesTable.id,
+          name: koshaPackagesTable.name,
+          price: koshaPackagesTable.price,
+          mainImage: koshaPackagesTable.mainImage,
+          features: koshaPackagesTable.features,
+          badgeText: koshaPackagesTable.badgeText,
+          isFeatured: koshaPackagesTable.isFeatured,
+        })
+        .from(koshaPackagesTable)
+        .where(eq(koshaPackagesTable.isActive, true))
+        .orderBy(asc(koshaPackagesTable.sortOrder), asc(koshaPackagesTable.id)),
+      db
+        .select({
+          id: koshasTable.id,
+          name: koshasTable.name,
+          price: koshasTable.price,
+          mainImage: koshasTable.mainImage,
+          availabilityStatus: koshasTable.availabilityStatus,
+        })
+        .from(koshasTable)
+        .where(eq(koshasTable.isActive, true))
+        .orderBy(asc(koshasTable.sortOrder), asc(koshasTable.id)),
+    ]);
+    return json({
+      packages: packageRows.map((row) => ({
+        ...row,
+        price: Number(row.price ?? 0),
+        features: Array.isArray(row.features) ? row.features.map(String).slice(0, 12) : [],
+      })),
+      koshas: koshaRows.map((row) => ({ ...row, price: Number(row.price ?? 0) })),
+    });
+  }
   const auth = await requirePermission(req, "orders");
   if (isResponse(auth)) return auth;
 
