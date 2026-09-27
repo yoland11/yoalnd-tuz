@@ -145,9 +145,10 @@ function invoiceModel(data: InvoiceData) {
 
 function WeddingInvoice({ data, model, settings, websiteQr, displayNumber }: { data: InvoiceData; model: ReturnType<typeof invoiceModel>; settings: PublicSettings; websiteQr: string; displayNumber?: string }) {
   const barcodeRef = useRef<SVGSVGElement>(null);
-  // The barcode keeps encoding the full tracking code (scanners look it up);
-  // only the printed number switches to the short booking number.
   const code = text(data.trackingCode, `INV-${data.id}`);
+  // Bookings print their short number in the barcode and under it (no scanner
+  // looks invoices up by the long code); store orders keep their tracking code.
+  const barcodeValue = displayNumber || code;
   const cf = model.cf;
   const created = data.createdAt ? new Date(data.createdAt) : new Date();
   const customerAddress = text(data.customerAddress, [data.governorate, data.area, data.address].filter(Boolean).join("، "), cf.address);
@@ -159,12 +160,18 @@ function WeddingInvoice({ data, model, settings, websiteQr, displayNumber }: { d
   const social = settings?.social_links || { instagram: "", facebook: "", whatsapp: "", tiktok: "" };
 
   useEffect(() => {
-    if (!barcodeRef.current || code === "—") return;
-    try { JsBarcode(barcodeRef.current, code, { format: "CODE128", height: 36, width: 1.25, margin: 0, displayValue: false, background: "transparent", lineColor: "#733647" }); }
+    if (!barcodeRef.current || barcodeValue === "—") return;
+    try { JsBarcode(barcodeRef.current, barcodeValue, { format: "CODE128", height: 36, width: 1.25, margin: 0, displayValue: false, background: "transparent", lineColor: "#733647" }); }
     catch { barcodeRef.current.replaceChildren(); }
-  }, [code]);
+  }, [barcodeValue]);
 
-  const info = (label: string, value: unknown, wide = false) => <div className={`wi-field${wide ? " wide" : ""}`}><span>{label}</span><b>{text(value)}</b></div>;
+  // Numbers, dates, times, phones and codes never wrap mid-value; text wraps normally.
+  const info = (label: string, value: unknown, wide = false) => {
+    const shown = text(value);
+    const compact = shown.replace(/[‎‏]/g, "");
+    const numeric = shown !== "—" && /^[\d٠-٩A-Za-z:+\-/.\s]+(?:\s?[صم])?$/.test(compact);
+    return <div className={`wi-field${wide ? " wide" : ""}`}><span>{label}</span><b className={numeric ? "wi-num" : undefined}>{shown}</b></div>;
+  };
 
   return <article className="wedding-invoice-bleed" dir="rtl">
     {(["tl", "tr", "bl", "br"] as const).map((corner) => <i key={corner} className={`wi-crop ${corner}`} />)}
@@ -177,7 +184,7 @@ function WeddingInvoice({ data, model, settings, websiteQr, displayNumber }: { d
         <section className="wi-top">
           <div className="wi-panel"><div className="wi-panel-title">معلومات العميل · CUSTOMER INFORMATION</div><div className="wi-info-grid">{info("اسم العميل", data.customerName, true)}{info("اسم العروس", cf.brideName)}{info("رقم الهاتف", data.customerPhone)}{info("البريد الإلكتروني", data.customerEmail ?? cf.email)}{info("المحافظة", province)}{info("العنوان", customerAddress, true)}{info("قاعة المناسبة", cf.hallName ?? cf.venueName ?? (model.booking ? data.eventLocation : ""), true)}{info("نوع المناسبة", cf.eventType ?? data.serviceName ?? data.serviceType)}{info("تاريخ المناسبة", cf.eventDate ?? data.eventDate)}{info("وقت المناسبة", cf.eventTime ?? data.eventTime)}{cf.transportationLabel ? info("خدمة النقل", cf.transportationVehicle ? `${cf.transportationLabel} · ${cf.transportationVehicle}` : cf.transportationLabel, true) : null}{info("مندوب المبيعات", salesRepresentative)}{info("المدير الرئيسي", cf.managerName ?? data.managerName)}</div></div>
           <div className="wi-top-spacer" />
-          <div className="wi-panel"><div className="wi-panel-title">بيانات الفاتورة · INVOICE DETAILS</div><div className="wi-info-grid">{info("رقم الفاتورة", displayNumber || code, true)}{info("رقم العقد", cf.contractNumber ?? cf.contractNo)}{info("رقم الحجز", cf.bookingNumber ?? (model.booking ? data.trackingCode : ""))}{info("التاريخ", dateText(created))}{info("الوقت", timeText(created))}{info("أنشأها", data.createdByName)}{info("الفرع", cf.branchName ?? cf.branch ?? settings?.city, true)}</div><div className="wi-codes"><div><img className="wi-qr" src={data.qr?.dataUrl || websiteQr} alt="QR verification" /><span className="wi-code-caption">Scan to verify booking</span></div><div><div className="wi-barcode"><svg ref={barcodeRef} /></div><div className="wi-readable">{code}</div></div></div></div>
+          <div className="wi-panel"><div className="wi-panel-title">بيانات الفاتورة · INVOICE DETAILS</div><div className="wi-info-grid">{info("رقم الفاتورة", displayNumber || code, true)}{info("رقم العقد", cf.contractNumber ?? cf.contractNo)}{info("رقم الحجز", displayNumber || cf.bookingNumber || (model.booking ? data.trackingCode : ""))}{info("التاريخ", dateText(created))}{info("الوقت", timeText(created))}{info("أنشأها", data.createdByName)}{info("الفرع", cf.branchName ?? cf.branch ?? settings?.city, true)}</div><div className="wi-codes"><div><img className="wi-qr" src={data.qr?.dataUrl || websiteQr} alt="QR verification" /><span className="wi-code-caption">Scan to verify booking</span></div><div><div className="wi-barcode"><svg ref={barcodeRef} /></div><div className="wi-readable">{barcodeValue}</div></div></div></div>
         </section>
 
         <section className="wi-section"><div className="wi-section-heading">الخدمات والتفاصيل · SERVICES</div><table className="wi-items"><colgroup><col style={{ width: "4%" }} /><col style={{ width: "16%" }} /><col style={{ width: "11%" }} /><col style={{ width: "22%" }} /><col style={{ width: "9%" }} /><col style={{ width: "6%" }} /><col style={{ width: "11%" }} /><col style={{ width: "9%" }} /><col style={{ width: "12%" }} /></colgroup><thead><tr><th>#</th><th>الخدمة<br />Service</th><th>الفئة<br />Category</th><th>الوصف<br />Description</th><th>اللون<br />Color</th><th>الكمية<br />Qty</th><th>سعر الوحدة<br />Unit Price</th><th>الخصم<br />Discount</th><th>الإجمالي<br />Subtotal</th></tr></thead><tbody>{model.items.map((item, index) => <tr key={item.id ?? index}><td>{index + 1}</td><td className="service">{item.name}</td><td>{item.category}</td><td className="description">{item.description}</td><td>{item.color}</td><td className="num">{item.quantity}</td><td className="num">{formatCurrency(item.unitPrice)}</td><td className="num">{formatCurrency(item.discount)}</td><td className="num">{formatCurrency(item.subtotal)}</td></tr>)}</tbody></table></section>

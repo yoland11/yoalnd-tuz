@@ -1516,8 +1516,9 @@ export function luxuryWeddingInvoiceCss() {
     .wi-panel-title { display:flex; align-items:center; gap:1.6mm; margin-bottom:1.5mm; padding-bottom:1mm; color:var(--wi-rose); border-bottom:.16mm solid rgba(198,149,63,.35); font-size:8.5px; font-weight:800; }
     .wi-panel-title:before { content:"✦"; color:var(--wi-gold); }
     .wi-info-grid { display:grid; grid-template-columns:1fr 1fr; gap:.85mm 2mm; }
-    .wi-field { min-width:0; display:grid; grid-template-columns:19mm 1fr; gap:1.2mm; align-items:start; font-size:7.2px; line-height:1.45; }
-    .wi-field.wide { grid-column:1/-1; }.wi-field span { color:#875b67; font-weight:600; }.wi-field b { min-width:0; color:var(--wi-ink); font-weight:700; overflow-wrap:anywhere; }
+    .wi-field { min-width:0; display:flex; flex-direction:column; gap:.15mm; font-size:7.2px; line-height:1.4; }
+    .wi-field.wide { grid-column:1/-1; }.wi-field span { color:#875b67; font-weight:600; font-size:6.3px; }.wi-field b { min-width:0; color:var(--wi-ink); font-weight:700; overflow-wrap:anywhere; }
+    .wi-field b.wi-num { white-space:nowrap; overflow-wrap:normal; direction:ltr; unicode-bidi:isolate; text-align:right; }
     .wi-codes { display:grid; grid-template-columns:19mm 1fr; gap:2mm; align-items:end; margin-top:2mm; }
     .wi-qr { width:18mm; height:18mm; padding:1mm; border:.18mm solid var(--wi-gold-light); border-radius:2mm; background:#fff; image-rendering:pixelated; }
     .wi-code-caption { display:block; margin-top:.7mm; color:var(--wi-rose); font-size:5.8px; text-align:center; direction:ltr; }
