@@ -80,6 +80,13 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
   // administrator); approving executes the payment and marks the expense
   // executed, rejecting marks it rejected. No separate financial logic.
   const canApproveExpenses = getCachedAdminMe()?.role === "admin";
+  // Mirrors the server rule: admin, managers and staff granted
+  // "expenses_view_all" see every expense; others see only their own.
+  const currentUser = getCachedAdminMe();
+  const canSeeAllExpenses =
+    currentUser?.role === "admin" ||
+    currentUser?.role === "manager" ||
+    Boolean(currentUser?.permissions?.includes("expenses_view_all"));
   const refreshAfterDecision = () => {
     qc.invalidateQueries({ queryKey: ["admin", "expenses"] });
     qc.invalidateQueries({ queryKey: ["admin", "dashboard"] });
@@ -158,6 +165,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
         <div>
           <h1 className="text-2xl font-bold text-foreground">إدارة المصاريف</h1>
           <p className="text-sm text-muted-foreground">إضافة وتعديل المصاريف وربطها بالتقارير المالية</p>
+          {!canSeeAllExpenses ? <p className="mt-1 inline-block rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">تعرض هذه القائمة المصاريف التي سجّلتها أنت فقط</p> : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => setForm(blankForm())} size="sm" className="gap-1.5"><Plus className="w-4 h-4" /> إضافة مصروف</Button>
@@ -185,7 +193,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
         <input type="date" value={filters.to} onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))} className={inputCls} />
         <select value={filters.categoryId} onChange={(e) => setFilters((f) => ({ ...f, categoryId: e.target.value }))} className={inputCls}><option value="">كل التصنيفات</option>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.nameAr}</option>)}</select>
         <select value={filters.paymentMethod} onChange={(e) => setFilters((f) => ({ ...f, paymentMethod: e.target.value }))} className={inputCls}><option value="">كل طرق الدفع</option>{paymentMethods.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select>
-        <input value={filters.user} onChange={(e) => setFilters((f) => ({ ...f, user: e.target.value }))} className={inputCls} placeholder="الموظف" />
+        {canSeeAllExpenses ? <input value={filters.user} onChange={(e) => setFilters((f) => ({ ...f, user: e.target.value }))} className={inputCls} placeholder="الموظف" /> : null}
         <div className="relative"><Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><input value={filters.search} onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))} className={`${inputCls} pr-9`} placeholder="بحث" /></div>
       </div>
 

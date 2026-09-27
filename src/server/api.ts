@@ -787,6 +787,9 @@ export const ALL_PERMISSIONS = [
   "sales_invoice.customer.repair",
   "whatsapp",
   "accounting",
+  // Without it (and outside admin/manager) an employee on /admin/expenses sees
+  // and can change only the expenses they recorded themselves.
+  "expenses_view_all",
   // Voucher lifecycle permissions. "accounting" remains an umbrella grant for
   // existing roles while new roles can be scoped to individual actions.
   "voucher_view",
@@ -69807,6 +69810,14 @@ async function handleAccounting(
     const auth = await requirePermission(req, "accounting");
     if (isResponse(auth)) return auth;
     await ensureExpenseManagementTables();
+    // Only the principal administrator, managers and staff granted
+    // "expenses_view_all" see everyone's expenses; any other employee sees and
+    // can change only the expenses they recorded themselves.
+    const canSeeAllExpenses =
+      ["admin", "manager"].includes(auth.role) ||
+      hasPermission(auth, "expenses_view_all");
+    const ownsExpense = (expense: { createdBy: number | null }) =>
+      canSeeAllExpenses || expense.createdBy === auth.id;
     if (method === "GET") {
       const from = req.nextUrl.searchParams.get("from") ?? undefined;
       const to = req.nextUrl.searchParams.get("to") ?? undefined;
@@ -69834,6 +69845,7 @@ async function handleAccounting(
           ),
         );
       if (user) conds.push(ilike(expensesTable.createdByName, userLike));
+      if (!canSeeAllExpenses) conds.push(eq(expensesTable.createdBy, auth.id));
       const rows = await db
         .select()
         .from(expensesTable)
@@ -69862,6 +69874,8 @@ async function handleAccounting(
         ),
       });
       if (!existingExpense) return error("المصروف غير موجود", 404);
+      if (!ownsExpense(existingExpense))
+        return error("لا يمكنك تعديل مصروف سجّله موظف آخر", 403);
       const update: any = { updatedAt: new Date() };
       if (b.date !== undefined) update.date = b.date;
       if (b.amount !== undefined) update.amount = String(b.amount);
@@ -69948,6 +69962,8 @@ async function handleAccounting(
         ),
       });
       if (!existingExpense) return error("المصروف غير موجود", 404);
+      if (!ownsExpense(existingExpense))
+        return error("لا يمكنك حذف مصروف سجّله موظف آخر", 403);
       const a = actor(auth);
       if (existingExpense.financialTransactionId) {
         try {

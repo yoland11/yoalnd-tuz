@@ -67,7 +67,7 @@ const PERMISSION_CATEGORIES: Array<{
   { key: "assets", title: "الأصول والعهدة والإهلاك", match: (id) => startsWithAny(id, ["asset_", "asset.", "custody_groups_", "depreciation_"]) },
   { key: "sales", title: "المبيعات والفواتير والطباعة", match: (id) => SALES_AND_INVOICE_PERMISSION_IDS.has(id) || id.startsWith("print.") },
   { key: "catalog", title: "العملاء والخدمات والمنتجات", match: (id) => ["customers", "services", "products"].includes(id) },
-  { key: "accounting", title: "المحاسبة والسندات", match: (id) => id === "accounting" || id.startsWith("voucher_") },
+  { key: "accounting", title: "المحاسبة والسندات", match: (id) => id === "accounting" || id.startsWith("voucher_") || id.startsWith("expenses_") },
   { key: "approvals", title: "الموافقات", match: (id) => id.startsWith("approvals.") },
   { key: "hr", title: "الموظفون والرواتب", match: (id) => ["staff", "hr"].includes(id) || startsWithAny(id, ["payroll_", "employee_salaries_", "bonus_", "salary_settings_"]) },
   { key: "tasks", title: "المهام", match: (id) => id === "tasks" || id.startsWith("task_") },
