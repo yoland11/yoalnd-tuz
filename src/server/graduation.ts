@@ -1,3 +1,4 @@
+import { SASH_TYPES, studentSashOverrides } from "../lib/graduation-student-flow";
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import QRCode from "qrcode";
@@ -1202,6 +1203,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     const lockedMeta = groupMeta(group);
     const lockedCustomText = safeJson(locked.customText);
     const studentCustomText = safeJson(data.customText);
+    const personalSash = studentSashOverrides(studentCustomText);
     const lockedFabric = safeJson(locked.fabric);
     const lockedDecoration = safeJson(locked.decoration);
     const lockedUniversity = safeJson(locked.universityTemplate);
@@ -1212,7 +1214,11 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       styleKey: String(locked.styleKey || data.styleKey),
       packageKey:
         String(locked.packageKey || data.packageKey || "") || undefined,
-      colors: Object.keys(lockedColors).length ? lockedColors : data.colors,
+      colors: {
+        ...(Object.keys(lockedColors).length ? lockedColors : data.colors),
+        ...(personalSash.sashColor ? { sash: personalSash.sashColor } : {}),
+        ...(personalSash.embroideryColor ? { embroidery: personalSash.embroideryColor } : {}),
+      },
       fabric: Object.keys(lockedFabric).length
         ? ({
             ...lockedFabric,
@@ -1242,6 +1248,8 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       customText: {
         ...studentCustomText,
         ...lockedCustomText,
+        ...personalSash,
+        ...(personalSash.embroideryColor ? { color: personalSash.embroideryColor } : {}),
         studentName:
           studentCustomText.studentName || data.customerName || undefined,
         department:
@@ -1606,6 +1614,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
           selectedTemplates.find((item) => item.templateType === "robe")?.name ||
           data.styleKey,
         sashType:
+          SASH_TYPES.find(item => item.key === studentSashOverrides(data.customText).sashType)?.label ||
           selectedTemplates.find((item) => item.templateType === "sash")?.name ||
           "",
         capType:
@@ -1614,6 +1623,10 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
         packageKey: data.packageKey ?? "",
         robeColor: data.colors.robe ?? "",
         sashColor: data.colors.sash ?? "",
+        sashName: data.customText.text ?? "",
+        rightText: data.customText.text ?? "",
+        font: data.customText.font ?? "",
+        embroideryColor: data.colors.embroidery ?? "",
         capColor: data.colors.cap ?? "",
         decorationType: data.decoration.type,
         decorationPosition: data.decoration.position,

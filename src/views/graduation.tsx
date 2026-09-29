@@ -1,3 +1,5 @@
+import { vocalizeArabicName } from "@/lib/graduation-name";
+import { GraduationStudentSummary, GraduationStudentWizard } from "@/components/graduation-student-wizard";
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -149,51 +151,6 @@ function productStrings(value: unknown): string[] {
 // تشكيل تلقائي للأسماء الشائعة — يظهر كاقتراح على اسم الطالب في خطوة النصوص،
 // حتى يطلع التطريز بالحركات الصحيحة (مثل: علي ← عَلِيّ). المستخدم يختار التطبيق،
 // ويقدر يعدّل يدوياً. عرض فقط — بدون أي تأثير على السعر أو البيانات.
-const NAME_TASHKEEL: Record<string, string> = {
-  // أسماء ذكور شائعة
-  "علي": "عَلِيّ", "محمد": "مُحَمَّد", "احمد": "أَحْمَد", "أحمد": "أَحْمَد", "حسن": "حَسَن",
-  "حسين": "حُسَيْن", "عباس": "عَبَّاس", "حيدر": "حَيْدَر", "كرار": "كَرَّار", "مصطفى": "مُصْطَفَى",
-  "جعفر": "جَعْفَر", "هاشم": "هَاشِم", "يوسف": "يُوسُف", "ابراهيم": "إِبْرَاهِيم", "إبراهيم": "إِبْرَاهِيم",
-  "سجاد": "سَجَّاد", "مرتضى": "مُرْتَضَى", "امير": "أَمِير", "أمير": "أَمِير", "زيد": "زَيْد",
-  "عبدالله": "عَبْدُاللَّه", "عبد الله": "عَبْدُ اللَّه", "منتظر": "مُنْتَظَر", "تبارك": "تَبَارَك",
-  "كاظم": "كَاظِم", "صادق": "صَادِق", "باقر": "بَاقِر", "رضا": "رِضَا", "مهدي": "مَهْدِيّ",
-  "قاسم": "قَاسِم", "جواد": "جَوَاد", "حمزة": "حَمْزَة", "طه": "طَه", "ياسين": "يَاسِين",
-  "عمار": "عَمَّار", "وسام": "وِسَام", "احسان": "إِحْسَان", "ليث": "لَيْث", "سيف": "سَيْف",
-  "عبدالرحمن": "عَبْدُالرَّحْمَن", "عبد الرحمن": "عَبْدُ الرَّحْمَن", "عبدالكريم": "عَبْدُالكَرِيم",
-  "حكيم": "حَكِيم", "كرم": "كَرَم", "غيث": "غَيْث", "رافد": "رَافِد", "اوس": "أَوْس", "أوس": "أَوْس",
-  "مؤمل": "مُؤَمَّل", "علاء": "عَلَاء", "حازم": "حَازِم", "فراس": "فِرَاس", "ايمن": "أَيْمَن", "أيمن": "أَيْمَن",
-  "باسم": "بَاسِم", "رعد": "رَعْد", "صفاء": "صَفَاء", "مازن": "مَازِن", "زين العابدين": "زَيْن العَابِدِين",
-  "ذو الفقار": "ذُو الفِقَار", "امجد": "أَمْجَد", "أمجد": "أَمْجَد", "احمد رضا": "أَحْمَد رِضَا",
-  "نبيل": "نَبِيل", "خالد": "خَالِد", "عمر": "عُمَر", "بكر": "بَكْر", "وليد": "وَلِيد", "سعد": "سَعْد",
-  // أسماء إناث شائعة
-  "فاطمة": "فَاطِمَة", "زينب": "زَيْنَب", "مريم": "مَرْيَم", "زهراء": "زَهْرَاء", "رقية": "رُقَيَّة",
-  "نور": "نُور", "سارة": "سَارَة", "ساره": "سَارَة", "ايه": "آيَة", "آية": "آيَة", "بتول": "بَتُول",
-  "هدى": "هُدَى", "دعاء": "دُعَاء", "رنا": "رَنَا", "شهد": "شَهْد", "غفران": "غُفْرَان", "رند": "رَنْد",
-  "تقى": "تُقَى", "ملاك": "مَلَاك", "نبأ": "نَبَأ", "ضحى": "ضُحَى", "رسل": "رُسُل", "بنين": "بَنِين",
-  "حوراء": "حَوْرَاء", "جنى": "جَنَى", "لمى": "لَمَى", "رغد": "رَغَد", "مروة": "مَرْوَة", "اسراء": "إِسْرَاء",
-  "إسراء": "إِسْرَاء", "نرجس": "نَرْجِس", "سكينة": "سَكِينَة", "رحمة": "رَحْمَة", "بشرى": "بُشْرَى",
-  "هبة": "هِبَة", "ندى": "نَدَى", "اسيل": "أَسِيل", "أسيل": "أَسِيل", "رقيّة": "رُقَيَّة", "ايلاف": "إِيلَاف",
-  "دانية": "دَانِيَة", "رفل": "رَفَل", "غدير": "غَدِير", "زهرة": "زَهْرَة", "امنية": "أُمْنِيَّة",
-  "نور الهدى": "نُور الهُدَى", "ام البنين": "أُمّ البَنِين",
-};
-
-// يُعيد الاسم بالتشكيل إذا اختلف عن المُدخل، وإلا null (لا اقتراح).
-function vocalizeArabicName(input: string): string | null {
-  const raw = (input ?? "").trim();
-  if (!raw) return null;
-  let changed = false;
-  const out = raw
-    .split(/(\s+)/)
-    .map((token) => {
-      if (/^\s+$/.test(token) || !token) return token;
-      const hit = NAME_TASHKEEL[token];
-      if (hit && hit !== token) { changed = true; return hit; }
-      return token;
-    })
-    .join("");
-  return changed ? out : null;
-}
-
 const STEPS = [
   { label: "النوع", icon: GraduationCap },
   { label: "القياسات", icon: Ruler },
@@ -861,47 +818,6 @@ function GraduationConfigurator() {
   );
   const harmony = colorContrast(form.colors.robe, form.colors.sash);
 
-  const submit = useMutation({
-    mutationFn: () =>
-      graduationFetch<{ order: any; warning?: string }>("/orders", {
-        method: "POST",
-        body: JSON.stringify({
-          ...form,
-          measurements: Object.fromEntries(
-            Object.entries(form.measurements).map(([key, value]) => [
-              key,
-              key === "gender" || key === "suggestedSize"
-                ? value
-                : // Omit blank measurements (→ undefined) instead of sending 0,
-                  // which would fail the schema's min even for optional fields.
-                  Number(value) || undefined,
-            ]),
-          ),
-        }),
-      }),
-    onSuccess: ({ order, warning }) => {
-      try {
-        window.sessionStorage.setItem(
-          "ajn-graduation-completed-order",
-          JSON.stringify(order),
-        );
-      } catch {
-        // Session storage is optional and must never affect a successful order.
-      }
-      setCompleted(order);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      toast({
-        title: "تم إرسال الطلب بنجاح",
-        description: warning || `رقم طلبك ${order.orderNo}`,
-      });
-    },
-    onError: (error: Error) =>
-      toast({
-        title: "تعذر إرسال الطلب",
-        description: error.message,
-        variant: "destructive",
-      }),
-  });
   const scan = useMutation({
     mutationFn: () =>
       graduationFetch<any>("/ai/size", {
@@ -1968,132 +1884,7 @@ function GraduationConfigurator() {
                 ) : null}
 
                 {step === 10 ? (
-                  <div className="space-y-6">
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div>
-                        <Label>اسم الزبون *</Label>
-                        <Input
-                          className="mt-2"
-                          value={form.customerName}
-                          onChange={(event) =>
-                            setForm((current) => ({
-                              ...current,
-                              customerName: event.target.value,
-                            }))
-                          }
-                        />
-                      </div>
-                      <div>
-                        <Label>رقم الهاتف *</Label>
-                        <Input
-                          className="mt-2"
-                          inputMode="tel"
-                          dir="ltr"
-                          value={form.phone}
-                          onChange={(event) =>
-                            setForm((current) => ({
-                              ...current,
-                              phone: formatIraqiPhoneInput(event.target.value),
-                            }))
-                          }
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <Label>ملاحظات</Label>
-                      <Textarea
-                        className="mt-2 min-h-24"
-                        value={form.notes}
-                        onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            notes: event.target.value,
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
-                      <PreviewPanel config={config} form={form} />
-                      <div className="rounded-xl border border-primary/30 bg-primary/5 p-5">
-                        <h3 className="font-bold">تأكيد الطلب</h3>
-                        <div className="mt-4 space-y-3 text-sm">
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">النوع</span>
-                            <strong>{selectedStyle?.name}</strong>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">
-                              المقاس
-                            </span>
-                            <strong>
-                              {form.measurements.suggestedSize ||
-                              (form.measurements.chest && form.measurements.height)
-                                ? form.measurements.suggestedSize ||
-                                  recommendedGraduationSize({
-                                    chest: Number(form.measurements.chest),
-                                    height: Number(form.measurements.height),
-                                  })
-                                : "🟠 القياسات غير مدخلة"}
-                            </strong>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">
-                              الإجمالي
-                            </span>
-                            <strong className="text-primary">
-                              {formatCurrency(pricing.total)}
-                            </strong>
-                          </div>
-                        </div>
-                        <Button
-                          type="button"
-                          className="mt-6 w-full"
-                          size="lg"
-                          disabled={submit.isPending}
-                          onClick={() => {
-                            try {
-                              const saved = window.sessionStorage.getItem("ajn-graduation-completed-order");
-                              if (saved) {
-                                setCompleted(JSON.parse(saved));
-                                return;
-                              }
-                            } catch {
-                              // Continue with validation when storage is unavailable.
-                            }
-                            const issue = validateStep();
-                            if (issue) {
-                              toast({
-                                title: "بيانات ناقصة",
-                                description: issue,
-                                variant: "destructive",
-                              });
-                              return;
-                            }
-                            submit.mutate();
-                          }}
-                        >
-                          {submit.isPending ? (
-                            <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-                          ) : (
-                            <CheckCircle2 className="ml-2 h-4 w-4" />
-                          )}
-                          إرسال الطلب
-                        </Button>
-                        <a
-                          href={buildWhatsAppLink(
-                            publicSettings.data?.whatsapp || publicSettings.data?.phone || "9647765004000",
-                            `مرحباً، أريد طلب تجهيز تخرّج:\nالنوع: ${selectedStyle?.name || "—"}\nالمقاس: ${form.measurements.suggestedSize || "غير محدّد"}${form.customText.studentName ? `\nالاسم على القطعة: ${form.customText.studentName}` : ""}\nالإجمالي التقديري: ${formatCurrency(pricing.total)}\nالاسم: ${form.customerName || "—"}${form.phone ? ` · ${form.phone}` : ""}`,
-                          )}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="mt-3 flex w-full items-center justify-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 py-2.5 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-300"
-                        >
-                          <MessageCircle className="h-4 w-4" /> اطلب عبر واتساب
-                        </a>
-                        <p className="mt-2 text-center text-xs text-muted-foreground">تصميمك محفوظ — بضغطة نكمل الطلب معك بالمحادثة.</p>
-                      </div>
-                    </div>
-                  </div>
+                  <GraduationStudentWizard scope="individual" base={form} />
                 ) : null}
               </motion.div>
             </AnimatePresence>
@@ -2141,7 +1932,7 @@ function GraduationConfigurator() {
               ) : null}
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">
-                  إجمالي الطلب
+                  قيمة التجهيز قبل الورود الإضافية
                 </span>
                 <strong className="text-lg text-primary">
                   {formatCurrency(pricing.total)}
@@ -2505,6 +2296,10 @@ export function GraduationTracking() {
             </strong>
           </div>
         </div>
+      </section>
+      <section className="rounded-xl border border-border bg-card p-5">
+        <h2 className="mb-4 font-bold">بيانات الطالب والاختيارات المحفوظة</h2>
+        <GraduationStudentSummary order={order} />
       </section>
       <section className="rounded-xl border border-border bg-card p-5">
         <h2 className="font-bold">تقدم الإنتاج</h2>

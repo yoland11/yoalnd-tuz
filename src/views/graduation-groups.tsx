@@ -1,3 +1,4 @@
+import { GraduationStudentWizard } from "@/components/graduation-student-wizard";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -1323,19 +1324,6 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
   );
 }
 
-const emptyMeasurements = {
-  height: "",
-  weight: "",
-  shoulder: "",
-  chest: "",
-  waist: "",
-  hip: "",
-  sleeveLength: "",
-  neck: "",
-  gender: "male",
-  suggestedSize: "",
-};
-
 // Per-device voter identity for color voting. Stored in localStorage so a
 // student casts one vote per device without any login; wrapped in try/catch so
 // private mode or blocked storage degrades to a session-only key instead of
@@ -1366,35 +1354,6 @@ function rememberColorChoice(scope: string, optionId: string) {
     localStorage.setItem(`graduation-color-choice:${scope}`, optionId);
   } catch {
     /* storage unavailable — highlight is best-effort only */
-  }
-}
-
-// Student registration draft — kept only in this device's localStorage so a
-// half-filled form survives an accidental reload/close. Cleared on successful
-// submit. All accessors swallow storage errors (private mode / blocked).
-function studentDraftKey(scope: string) {
-  return `graduation-student-draft:${scope}`;
-}
-function readStudentDraft(scope: string): any {
-  try {
-    const raw = localStorage.getItem(studentDraftKey(scope));
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-function writeStudentDraft(scope: string, value: unknown) {
-  try {
-    localStorage.setItem(studentDraftKey(scope), JSON.stringify(value));
-  } catch {
-    /* storage unavailable — draft persistence is best-effort only */
-  }
-}
-function clearStudentDraft(scope: string) {
-  try {
-    localStorage.removeItem(studentDraftKey(scope));
-  } catch {
-    /* storage unavailable — nothing to clear */
   }
 }
 
@@ -1753,34 +1712,6 @@ export function GraduationGroupStudentRegistration({
   token: string;
   onBack: () => void;
 }) {
-  const { toast } = useToast();
-  const emptyForm = {
-    customerName: "",
-    phone: "",
-    department: "",
-    preferredSize: "",
-    sashName: "",
-    studentId: "",
-    notes: "",
-    measurements: emptyMeasurements,
-  };
-  const [form, setForm] = useState<typeof emptyForm>(() => {
-    const saved = readStudentDraft(token);
-    return saved
-      ? {
-          ...emptyForm,
-          ...saved,
-          measurements: { ...emptyMeasurements, ...(saved.measurements || {}) },
-        }
-      : emptyForm;
-  });
-  const [draftRestored, setDraftRestored] = useState<boolean>(() =>
-    Boolean(readStudentDraft(token)),
-  );
-  useEffect(() => {
-    writeStudentDraft(token, form);
-  }, [form, token]);
-  const [completed, setCompleted] = useState<any>(null);
   const groupQuery = useQuery({
     queryKey: ["graduation", "group", token],
     queryFn: () =>
@@ -1794,63 +1725,6 @@ export function GraduationGroupStudentRegistration({
   });
   const group = groupQuery.data?.group;
   const locked = group?.defaultConfiguration ?? {};
-  const submit = useMutation({
-    mutationFn: () =>
-      graduationFetch<{ order: any }>("/orders", {
-        method: "POST",
-        body: JSON.stringify({
-          customerName: form.customerName,
-          phone: form.phone,
-          groupToken: token,
-          status: "submitted",
-          styleKey: locked.styleKey || "standard",
-          packageKey: locked.packageKey || undefined,
-          measurements: Object.fromEntries(
-            Object.entries(form.measurements).map(([key, value]) => [
-              key,
-              key === "gender" || key === "suggestedSize"
-                ? value
-                : Number(value) || undefined,
-            ]),
-          ),
-          colors: locked.colors || {},
-          fabric: locked.fabric || { key: "standard" },
-          decoration: locked.decoration || { type: "none", position: "front" },
-          accessories: locked.accessories || [],
-          universityTemplate: locked.universityTemplate || {},
-          previewAssets: locked.previewAssets || {},
-          customText: {
-            ...(locked.customText || {}),
-            studentName: form.customerName,
-            department: form.department,
-            text: form.sashName,
-            studentId: form.studentId,
-            preferredSize: form.preferredSize,
-          },
-          notes: form.notes,
-          dueDate:
-            group?.groupMeta?.deliveryDate || group?.eventDate || undefined,
-        }),
-      }),
-    onSuccess: ({ order }) => {
-      clearStudentDraft(token);
-      setDraftRestored(false);
-      setCompleted(order);
-    },
-    onError: (error: Error) =>
-      toast({
-        title: "تعذر تسجيل الطالب",
-        description: error.message,
-        variant: "destructive",
-      }),
-  });
-  const progress = useMemo(() => {
-    const required = [form.customerName, form.phone];
-    return Math.round(
-      (required.filter(Boolean).length / required.length) * 100,
-    );
-  }, [form]);
-
   if (groupQuery.isLoading)
     return (
       <div className="mx-auto max-w-4xl px-4 py-10">
@@ -1873,39 +1747,6 @@ export function GraduationGroupStudentRegistration({
         </Button>
       </main>
     );
-  if (completed)
-    return (
-      <main className="min-h-dvh bg-background px-4 py-12" dir="rtl">
-        <Card className="mx-auto max-w-xl">
-          <CardContent className="space-y-5 p-7 text-center">
-            <BadgeCheck className="mx-auto h-14 w-14 text-primary" />
-            <h1 className="text-2xl font-bold">تم تسجيلك في المجموعة</h1>
-            <p className="text-muted-foreground">{group.title}</p>
-            <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
-              <span className="text-xs text-muted-foreground">رقم الطلب</span>
-              <strong className="mt-1 block text-xl text-primary">
-                {completed.orderNo}
-              </strong>
-            </div>
-            {completed.qrDataUrl ? (
-              <img
-                src={completed.qrDataUrl}
-                alt="QR متابعة طلب الطالب"
-                className="mx-auto h-48 w-48 rounded-lg bg-white p-2"
-              />
-            ) : null}
-            <Button
-              className="w-full"
-              onClick={() => window.location.assign(completed.trackingUrl)}
-            >
-              متابعة الإنتاج
-            </Button>
-          </CardContent>
-        </Card>
-      </main>
-    );
-
-  const ready = progress === 100 && form.phone.replace(/\D/g, "").length >= 10;
   return (
     <main className="min-h-dvh bg-background px-3 py-6 sm:px-5" dir="rtl">
       <div className="mx-auto max-w-5xl space-y-5">
@@ -1933,7 +1774,7 @@ export function GraduationGroupStudentRegistration({
               <h2 className="font-bold">إعدادات المجموعة</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              هذه التفاصيل اختارها ممثل المجموعة وهي مقفلة لجميع الطلبة.
+              الروب والقماش من اختيار ممثل الدفعة. خصّص الوشاح والإضافات لكل طالب.
             </p>
             <div className="mt-4 flex justify-center rounded-lg border border-border bg-card p-3">
               <GraduationRobePreview
@@ -1961,18 +1802,6 @@ export function GraduationGroupStudentRegistration({
                 </div>
               ))}
             </div>
-            <div className="mt-4 rounded-lg border border-border bg-card p-3">
-              <div className="flex items-center justify-between text-xs">
-                <span>اكتمال بياناتك</span>
-                <strong className="text-primary">{progress}%</strong>
-              </div>
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full bg-primary transition-[width] duration-300"
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-            </div>
           </aside>
           <div className="space-y-5">
             <GroupColorVotePanel
@@ -1990,164 +1819,14 @@ export function GraduationGroupStudentRegistration({
               }}
             />
             <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
-            <div className="mb-5 flex items-center gap-2">
-              <ClipboardList className="h-5 w-5 text-primary" />
-              <div>
-                <h2 className="font-bold">بيانات الطالب والقياسات</h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  أدخل بياناتك الشخصية فقط؛ بقية التصميم موروث من المجموعة.
-                </p>
-              </div>
-            </div>
-            {draftRestored ? (
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/30 bg-primary/[0.04] px-3 py-2 text-xs">
-                <span className="text-muted-foreground">
-                  تمت استعادة مسودتك المحفوظة على هذا الجهاز.
-                </span>
-                <button
-                  type="button"
-                  className="font-medium text-primary underline"
-                  onClick={() => {
-                    clearStudentDraft(token);
-                    setForm(emptyForm);
-                    setDraftRestored(false);
-                  }}
-                >
-                  مسح المسودة والبدء من جديد
-                </button>
-              </div>
-            ) : null}
-            <div className="grid gap-4 sm:grid-cols-2">
-              {[
-                ["customerName", "الاسم الكامل"],
-                ["phone", "رقم الهاتف"],
-                ["studentId", "الرقم الجامعي"],
-                ["department", "القسم"],
-                ["preferredSize", "المقاس المفضل"],
-                ["sashName", "الاسم على الوشاح"],
-              ].map(([key, label]) => (
-                <div key={key}>
-                  <Label>{label}</Label>
-                  <Input
-                    className="mt-2"
-                    inputMode={key === "phone" ? "tel" : undefined}
-                    value={(form as any)[key]}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        [key]:
-                          key === "phone"
-                            ? formatIraqiPhoneInput(event.target.value)
-                            : event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="my-5 border-t border-border" />
-            <div className="mb-3 flex items-center gap-2">
-              <Ruler className="h-4 w-4 text-primary" />
-              <h3 className="font-semibold">القياسات</h3>
-              <span className="rounded-full bg-status-warning/15 px-2 py-1 text-[11px] text-status-warning">
-                اختياري — يمكن إدخالها لاحقاً
-              </span>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {(
-                [
-                  ["height", "الطول (سم)", 80, 250],
-                  ["weight", "الوزن (كغم)", 20, 300],
-                  ["shoulder", "عرض الكتف", 20, 100],
-                  ["chest", "محيط الصدر", 40, 220],
-                  ["waist", "محيط الخصر", 35, 220],
-                  ["hip", "محيط الورك", 35, 240],
-                  ["sleeveLength", "طول الكم", 20, 120],
-                  ["neck", "محيط الرقبة", 20, 80],
-                ] as [string, string, number, number][]
-              ).map(([key, label, min, max]) => {
-                const raw = (form.measurements as any)[key];
-                const num = Number(raw);
-                const invalid =
-                  String(raw).trim() !== "" &&
-                  (Number.isNaN(num) || num < min || num > max);
-                return (
-                  <div key={key}>
-                    <Label>{label}</Label>
-                    <Input
-                      className={`mt-2 ${invalid ? "border-red-500 focus-visible:ring-red-500" : ""}`}
-                      type="number"
-                      inputMode="decimal"
-                      min={min}
-                      max={max}
-                      placeholder={`${min} - ${max}`}
-                      value={raw}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          measurements: {
-                            ...current.measurements,
-                            [key]: event.target.value,
-                          },
-                        }))
-                      }
-                    />
-                    {invalid ? (
-                      <p className="mt-1 text-xs text-red-500">
-                        القيمة يجب أن تكون بين {min} و{max}
-                      </p>
-                    ) : null}
-                  </div>
-                );
-              })}
-              <div>
-                <Label>الجنس</Label>
-                <Select
-                  value={form.measurements.gender}
-                  onValueChange={(value) =>
-                    setForm((current) => ({
-                      ...current,
-                      measurements: { ...current.measurements, gender: value },
-                    }))
-                  }
-                >
-                  <SelectTrigger className="mt-2">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="male">ذكر</SelectItem>
-                    <SelectItem value="female">أنثى</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="mt-4">
-              <Label>ملاحظات</Label>
-              <Textarea
-                className="mt-2"
-                value={form.notes}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    notes: event.target.value,
-                  }))
-                }
-              />
-            </div>
-            <div className="mt-5 flex justify-end">
-              <Button
-                size="lg"
-                disabled={!ready || submit.isPending}
-                onClick={() => submit.mutate()}
-              >
-                {submit.isPending ? (
-                  <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <Shirt className="ml-2 h-4 w-4" />
-                )}
-                تسجيل طلب الطالب
-              </Button>
-            </div>
+              <GraduationStudentWizard key={token} scope={token} base={{
+                ...locked,
+                groupToken: token,
+                styleKey: locked.styleKey || "standard",
+                fabric: locked.fabric || { key: "standard" },
+                customText: { ...locked.customText, department: group.department },
+                dueDate: group.groupMeta?.deliveryDate || group.eventDate || undefined,
+              }} />
             </section>
           </div>
         </div>
