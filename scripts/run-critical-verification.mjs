@@ -14,6 +14,7 @@ const steps = [
   ["Database/shared-core change authorization", "pnpm", ["run", "test:critical-file-changes"]],
   ["Financial approval invariant", "pnpm", ["run", "test:financial-approval"]],
   ["Payment-state reconciliation invariant", "pnpm", ["run", "test:payment-state"]],
+  ["Payroll movement schema recovery", "pnpm", ["run", "test:payroll-movement-schema"]],
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice product search", "pnpm", ["run", "test:sales-product-search"]],
   ["Kosha routed instruction persistence", "pnpm", ["run", "test:kosha-instruction-store"]],
