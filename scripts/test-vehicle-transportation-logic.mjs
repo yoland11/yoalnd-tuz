@@ -34,6 +34,7 @@ const api = readFileSync("src/server/api.ts", "utf8");
 const cash = readFileSync("src/server/master-cash-box.ts", "utf8");
 const masterCashUI = readFileSync("src/views/admin/master-cash.tsx", "utf8");
 const staffExpenseUI = readFileSync("src/views/staff/expense-requests.tsx", "utf8");
+const staffPortalUI = readFileSync("src/views/staff/index.tsx", "utf8");
 const staffVehicleStart = api.indexOf('if (resource === "vehicle-expense-requests")');
 const staffVehicleEnd = api.indexOf("// ── تجهيزاتي اليوم", staffVehicleStart);
 const staffVehicleHandler = api.slice(staffVehicleStart, staffVehicleEnd > staffVehicleStart ? staffVehicleEnd : undefined);
@@ -51,6 +52,7 @@ check("staff vehicle expense routes use Kosha portal authentication and expose o
 check("staff vehicle expense submissions create a pending central vehicle approval", staffVehicleHandler.includes('sourceEvent: "vehicle_expense"') && staffVehicleHandler.includes('transactionType: "vehicle_expense"') && staffVehicleHandler.includes('status: "pending"'));
 check("vehicle expense retries reuse an idempotency key only for identical request data", staffVehicleHandler.indexOf("if (priorRequest)") < staffVehicleHandler.indexOf("const inFlight") && staffVehicleHandler.includes("matchesRequest(priorRequest)") && staffExpenseUI.includes("ajn-kosha-vehicle-expense-idempotency") && staffExpenseUI.includes("idempotencyKey: form.idempotencyKey"));
 check("staff vehicle expense UI posts vehicle and odometer details", staffExpenseUI.includes("/staff/koshas/vehicle-expense-requests") && staffExpenseUI.includes("vehicleId") && staffExpenseUI.includes("odometerKm"));
+check("Kosha portal has a direct vehicle expense shortcut that preselects vehicle mode", staffPortalUI.includes('nav("/staff/koshas/expenses?mode=vehicle")') && staffExpenseUI.includes('.get("mode") === "vehicle"'));
 check("cash approval source links open the selected vehicle profitability view", masterCashUI.includes("VE-(\\d+)-") && masterCashUI.includes("&vehicle=${encodeURIComponent(vehicleId)}") && masterCashUI.includes("referenceNo={row.sourceReference}"));
 check("transport revenue is an analytical pro-rata calculation, not a new cash transaction", api.includes("executedTransportationRevenue = total > 0"));
 const destructiveStatements = migration

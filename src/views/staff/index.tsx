@@ -1,6 +1,6 @@
 import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
-import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff, User, WalletCards } from "lucide-react";
+import { Armchair, Bell, BusFront, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff, User, WalletCards } from "lucide-react";
 import { apiErrorMessage, fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, isSessionDecision, type AdminMe } from "@/views/admin/_lib";
 import { SessionDevicesPanel } from "@/components/session-devices";
 import { BUCKET_LABEL, STAGE_LABEL, isKoshaPendingPricing, money, staffApi, type Bucket, type CrewBooking } from "./lib";
@@ -176,20 +176,36 @@ function Dashboard() {
   const order: Bucket[] = ["today", "tomorrow", "upcoming", "late", "completed"];
   return (
     <div className="space-y-4 p-4">
-      <button
-        type="button"
-        onClick={() => nav("/staff/koshas/expenses")}
-        className="flex w-full items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/5 p-3 text-right"
-      >
-        <span className="flex items-center gap-2">
-          <WalletCards className="h-5 w-5 text-primary" />
-          <span>
-            <span className="block text-sm font-bold">إضافة مصروف</span>
-            <span className="block text-[11px] text-muted-foreground">يظهر بمصاريف الإدارة معلّقاً لحد موافقة المدير</span>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={() => nav("/staff/koshas/expenses")}
+          className="flex w-full items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/5 p-3 text-right"
+        >
+          <span className="flex items-center gap-2">
+            <WalletCards className="h-5 w-5 text-primary" />
+            <span>
+              <span className="block text-sm font-bold">إضافة مصروف</span>
+              <span className="block text-[11px] text-muted-foreground">يظهر بمصاريف الإدارة معلّقاً لحد موافقة المدير</span>
+            </span>
           </span>
-        </span>
-        <span className="text-xs font-bold text-primary">فتح</span>
-      </button>
+          <span className="text-xs font-bold text-primary">فتح</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => nav("/staff/koshas/expenses?mode=vehicle")}
+          className="flex w-full items-center justify-between gap-3 rounded-xl border border-status-warning/35 bg-status-warning/5 p-3 text-right"
+        >
+          <span className="flex items-center gap-2">
+            <BusFront className="h-5 w-5 text-status-warning" />
+            <span>
+              <span className="block text-sm font-bold">مصروف مركبة</span>
+              <span className="block text-[11px] text-muted-foreground">إرسال للصندوق للموافقة وربطه بالمركبة</span>
+            </span>
+          </span>
+          <span className="text-xs font-bold text-status-warning">فتح</span>
+        </button>
+      </div>
       <div className="grid grid-cols-2 gap-2">
         {order.map((bk) => (
           <button key={bk} onClick={() => nav(`/staff/koshas/list/${bk}`)} className="rounded-xl border border-border bg-card p-3 text-right">

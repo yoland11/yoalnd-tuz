@@ -66,7 +66,8 @@ const inputClass =
 export default function StaffExpenseRequests() {
   const bookingId = Number(new URLSearchParams(window.location.search).get("booking") || 0) || null;
   const blank = () => ({ date: today(), name: "", categoryId: "", amount: "", paymentMethod: "cash", notes: "", receiptImage: "", attachmentUrl: "", expenseMode: "general" as "general" | "vehicle", vehicleId: "", expenseType: "fuel", odometerKm: "", idempotencyKey: crypto.randomUUID() });
-  const [form, setForm] = useState(blank);
+  const initialMode = new URLSearchParams(window.location.search).get("mode") === "vehicle" ? "vehicle" : "general";
+  const [form, setForm] = useState(() => ({ ...blank(), expenseMode: initialMode }));
   const [categories, setCategories] = useState<ExpenseCategory[] | null>(null);
   const [categoriesError, setCategoriesError] = useState("");
   const [vehicleOptions, setVehicleOptions] = useState<StaffVehicleOption[] | null>(null);
