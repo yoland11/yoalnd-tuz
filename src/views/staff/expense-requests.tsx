@@ -1,15 +1,16 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Camera, CheckCircle2, Clock3, Loader2, RefreshCw, Send, Undo2, X, XCircle } from "lucide-react";
+import { BusFront, Camera, CheckCircle2, Clock3, Loader2, RefreshCw, Send, Undo2, WalletCards, X, XCircle } from "lucide-react";
 import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
 import { processImageFile } from "@/lib/image-tools";
 import { money } from "./lib";
 
-// Kosha staff expenses. Same fields as /admin/expenses; the server files each
-// one through the same code path as the admin screen, so it appears in the
-// admin expenses list and as a PENDING request in the main cash box. Nothing
-// is paid until an administrator approves it ("منفّذ").
+// Kosha staff can request general expenses or vehicle expenses. Both use the
+// central cash approval workflow; nothing is paid until a manager executes it.
+// Staff only ever see their own submitted records.
 
 type ExpenseCategory = { id: number; name: string };
+type StaffVehicleOption = { id: number; name: string; plateNumber: string };
+type VehicleExpenseType = { value: string; label: string };
 
 type StaffExpense = {
   key: string;
@@ -43,6 +44,7 @@ const STATUS: Record<string, { label: string; className: string; icon: typeof Cl
 };
 
 const ARABIC_DIGITS = "٠١٢٣٤٥٦٧٨٩";
+const VEHICLE_EXPENSE_IDEMPOTENCY_KEY = "ajn-kosha-vehicle-expense-idempotency";
 const today = () => new Date().toISOString().slice(0, 10);
 
 function normalizeAmountInput(value: string): string {
@@ -63,10 +65,13 @@ const inputClass =
 
 export default function StaffExpenseRequests() {
   const bookingId = Number(new URLSearchParams(window.location.search).get("booking") || 0) || null;
-  const blank = () => ({ date: today(), name: "", categoryId: "", amount: "", paymentMethod: "cash", notes: "", receiptImage: "" });
+  const blank = () => ({ date: today(), name: "", categoryId: "", amount: "", paymentMethod: "cash", notes: "", receiptImage: "", attachmentUrl: "", expenseMode: "general" as "general" | "vehicle", vehicleId: "", expenseType: "fuel", odometerKm: "", idempotencyKey: crypto.randomUUID() });
   const [form, setForm] = useState(blank);
   const [categories, setCategories] = useState<ExpenseCategory[] | null>(null);
   const [categoriesError, setCategoriesError] = useState("");
+  const [vehicleOptions, setVehicleOptions] = useState<StaffVehicleOption[] | null>(null);
+  const [vehicleExpenseTypes, setVehicleExpenseTypes] = useState<VehicleExpenseType[]>([]);
+  const [vehicleOptionsError, setVehicleOptionsError] = useState("");
   const [imageBusy, setImageBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
@@ -76,10 +81,36 @@ export default function StaffExpenseRequests() {
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
+    try {
+      const savedDraft = window.sessionStorage.getItem(VEHICLE_EXPENSE_IDEMPOTENCY_KEY);
+      if (savedDraft) {
+        const parsed = JSON.parse(savedDraft);
+        if (parsed && typeof parsed === "object" && typeof parsed.idempotencyKey === "string" && typeof parsed.vehicleId === "string") {
+          setForm((current) => ({ ...current, ...parsed, expenseMode: "vehicle" }));
+        }
+      }
+    } catch {
+      // Session storage is optional; the server still enforces request idempotency.
+    }
+  }, []);
+
+  useEffect(() => {
     let active = true;
     adminFetch<{ data: ExpenseCategory[] }>("/staff/koshas/expense-categories")
       .then((result) => { if (active) setCategories(result.data); })
       .catch((error) => { if (active) setCategoriesError(apiErrorMessage(error)); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    adminFetch<{ data: StaffVehicleOption[]; expenseTypes: VehicleExpenseType[] }>("/staff/koshas/vehicle-options")
+      .then((result) => {
+        if (!active) return;
+        setVehicleOptions(result.data);
+        setVehicleExpenseTypes(result.expenseTypes);
+      })
+      .catch((error) => { if (active) setVehicleOptionsError(apiErrorMessage(error)); });
     return () => { active = false; };
   }, []);
 
@@ -102,10 +133,11 @@ export default function StaffExpenseRequests() {
   const numericAmount = Number(form.amount);
   const valid =
     Boolean(form.date) &&
-    Boolean(form.categoryId) &&
     Number.isFinite(numericAmount) &&
     numericAmount > 0 &&
-    form.name.trim().length >= 2;
+    (form.expenseMode === "vehicle"
+      ? Boolean(form.vehicleId) && Boolean(form.expenseType) && form.notes.trim().length >= 2
+      : Boolean(form.categoryId) && form.name.trim().length >= 2);
 
   async function pickReceipt(file: File | undefined) {
     if (!file) return;
@@ -127,24 +159,64 @@ export default function StaffExpenseRequests() {
     setFormError("");
     setSentMessage("");
     try {
-      const result = await adminFetch<{ duplicate?: boolean }>("/staff/koshas/expense-requests", {
-        method: "POST",
-        body: JSON.stringify({
-          date: form.date,
-          name: form.name.trim(),
-          categoryId: Number(form.categoryId),
-          amount: numericAmount,
-          paymentMethod: form.paymentMethod,
-          notes: form.notes.trim() || null,
-          receiptImage: form.receiptImage || null,
-          bookingId,
-        }),
-      });
+      if (form.expenseMode === "vehicle") {
+        try {
+          window.sessionStorage.setItem(VEHICLE_EXPENSE_IDEMPOTENCY_KEY, JSON.stringify({
+            expenseMode: "vehicle",
+            vehicleId: form.vehicleId,
+            expenseType: form.expenseType,
+            amount: form.amount,
+            date: form.date,
+            odometerKm: form.odometerKm,
+            paymentMethod: form.paymentMethod,
+            notes: form.notes,
+            attachmentUrl: form.attachmentUrl,
+            idempotencyKey: form.idempotencyKey,
+          }));
+        } catch {
+          // The in-memory idempotency key remains available for this attempt.
+        }
+      }
+      const result = form.expenseMode === "vehicle"
+        ? await adminFetch<{ duplicate?: boolean }>("/staff/koshas/vehicle-expense-requests", {
+            method: "POST",
+            body: JSON.stringify({
+              vehicleId: Number(form.vehicleId),
+              expenseType: form.expenseType,
+              amount: numericAmount,
+              expenseDate: form.date,
+              odometerKm: form.odometerKm ? Number(form.odometerKm) : null,
+              paymentMethod: form.paymentMethod,
+              description: form.notes.trim(),
+              attachments: form.attachmentUrl.trim() ? [form.attachmentUrl.trim()] : [],
+              idempotencyKey: form.idempotencyKey,
+            }),
+          })
+        : await adminFetch<{ duplicate?: boolean }>("/staff/koshas/expense-requests", {
+            method: "POST",
+            body: JSON.stringify({
+              date: form.date,
+              name: form.name.trim(),
+              categoryId: Number(form.categoryId),
+              amount: numericAmount,
+              paymentMethod: form.paymentMethod,
+              notes: form.notes.trim() || null,
+              receiptImage: form.receiptImage || null,
+              bookingId,
+            }),
+          });
       setForm(blank());
+      try {
+        window.sessionStorage.removeItem(VEHICLE_EXPENSE_IDEMPOTENCY_KEY);
+      } catch {
+        // Session storage is optional.
+      }
       setSentMessage(
         result?.duplicate
           ? "هذا المصروف مسجّل قبل قليل ولم يُكرَّر."
-          : "تم تسجيل المصروف وإرساله للإدارة. ما ينصرف من الصندوق قبل الموافقة.",
+          : form.expenseMode === "vehicle"
+            ? "تم إرسال مصروف المركبة إلى موافقات الصندوق. ويظهر ضمن ربحية المركبة بعد الاعتماد فقط."
+            : "تم تسجيل المصروف وإرساله للإدارة. ما ينصرف من الصندوق قبل الموافقة.",
       );
       setReloadKey((key) => key + 1);
     } catch (error) {
@@ -159,8 +231,19 @@ export default function StaffExpenseRequests() {
       <div>
         <h1 className="text-lg font-bold">إضافة مصروف</h1>
         <p className="mt-1 text-xs text-muted-foreground">
-          يظهر المصروف في مصاريف الإدارة ويبقى معلّقاً، وما ينصرف من الصندوق قبل موافقة المدير.
+          {form.expenseMode === "vehicle"
+            ? "يرتبط المصروف بالمركبة المختارة، ويبقى معلقاً حتى موافقة الصندوق."
+            : "يظهر المصروف في مصاريف الإدارة ويبقى معلّقاً، وما ينصرف من الصندوق قبل موافقة المدير."}
         </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 rounded-xl border border-border bg-muted/30 p-1.5" role="group" aria-label="نوع المصروف">
+        <button type="button" aria-pressed={form.expenseMode === "general"} onClick={() => set("expenseMode", "general")} className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors ${form.expenseMode === "general" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-background"}`}>
+          <WalletCards className="h-4 w-4" /> مصروف عام
+        </button>
+        <button type="button" aria-pressed={form.expenseMode === "vehicle"} onClick={() => set("expenseMode", "vehicle")} className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors ${form.expenseMode === "vehicle" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-background"}`}>
+          <BusFront className="h-4 w-4" /> مصروف مركبة
+        </button>
       </div>
 
       <form onSubmit={submit} className="space-y-3 rounded-xl border border-border bg-card p-4">
@@ -181,7 +264,34 @@ export default function StaffExpenseRequests() {
             </select>
           </label>
         </div>
-        <label className="block">
+        {form.expenseMode === "vehicle" ? (
+          <>
+            <label className="block">
+              <span className="mb-1 block text-xs text-muted-foreground">المركبة *</span>
+              {vehicleOptionsError ? (
+                <p role="alert" className="text-sm text-status-danger">تعذر تحميل المركبات: {vehicleOptionsError}</p>
+              ) : (
+                <select value={form.vehicleId} onChange={(event) => set("vehicleId", event.target.value)} disabled={vehicleOptions === null || vehicleOptions.length === 0} className={inputClass}>
+                  <option value="">{vehicleOptions === null ? "جارٍ تحميل المركبات..." : vehicleOptions.length ? "اختر المركبة" : "لا توجد مركبات مفعّلة"}</option>
+                  {(vehicleOptions ?? []).map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.name} · {vehicle.plateNumber}</option>)}
+                </select>
+              )}
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="mb-1 block text-xs text-muted-foreground">نوع المصروف *</span>
+                <select value={form.expenseType} onChange={(event) => set("expenseType", event.target.value)} className={inputClass}>
+                  {vehicleExpenseTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs text-muted-foreground">العداد (اختياري)</span>
+                <input type="number" min="0" max="9999999" value={form.odometerKm} onChange={(event) => set("odometerKm", event.target.value)} inputMode="numeric" placeholder="كم" className={inputClass} />
+              </label>
+            </div>
+          </>
+        ) : null}
+        {form.expenseMode === "general" ? <label className="block">
           <span className="mb-1 block text-xs text-muted-foreground">عنوان المصروف *</span>
           <input
             value={form.name}
@@ -190,8 +300,8 @@ export default function StaffExpenseRequests() {
             placeholder="مثلاً: شراء ورد طبيعي للكوشة"
             className={inputClass}
           />
-        </label>
-        <label className="block">
+        </label> : null}
+        {form.expenseMode === "general" ? <label className="block">
           <span className="mb-1 block text-xs text-muted-foreground">التصنيف *</span>
           {categoriesError ? (
             <p role="alert" className="text-sm text-status-danger">تعذر تحميل التصنيفات: {categoriesError}</p>
@@ -206,7 +316,7 @@ export default function StaffExpenseRequests() {
               {(categories ?? []).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
             </select>
           )}
-        </label>
+        </label> : null}
         <label className="block">
           <span className="mb-1 block text-xs text-muted-foreground">المبلغ (دينار) *</span>
           <input
@@ -220,7 +330,7 @@ export default function StaffExpenseRequests() {
           {numericAmount > 0 ? <span className="mt-1 block text-xs text-muted-foreground">{money(numericAmount)}</span> : null}
         </label>
         <label className="block">
-          <span className="mb-1 block text-xs text-muted-foreground">ملاحظات (اختياري)</span>
+          <span className="mb-1 block text-xs text-muted-foreground">{form.expenseMode === "vehicle" ? "وصف المصروف / السبب *" : "ملاحظات (اختياري)"}</span>
           <textarea
             value={form.notes}
             onChange={(event) => set("notes", event.target.value)}
@@ -229,8 +339,10 @@ export default function StaffExpenseRequests() {
           />
         </label>
         <div>
-          <span className="mb-1 block text-xs text-muted-foreground">صورة الإيصال (اختياري)</span>
-          {form.receiptImage ? (
+          <span className="mb-1 block text-xs text-muted-foreground">{form.expenseMode === "vehicle" ? "رابط مرفق أو إيصال (اختياري)" : "صورة الإيصال (اختياري)"}</span>
+          {form.expenseMode === "vehicle" ? (
+            <input type="url" value={form.attachmentUrl} onChange={(event) => set("attachmentUrl", event.target.value)} dir="ltr" placeholder="https://…" className={inputClass} />
+          ) : form.receiptImage ? (
             <div className="relative inline-block">
               <img src={form.receiptImage} alt="صورة الإيصال" className="h-24 w-24 rounded-lg border border-border object-cover" />
               <button

@@ -65182,6 +65182,29 @@ async function handleStaffPortal(
     return json({ data: rows.map((row) => ({ id: row.id, name: row.nameAr || row.name })) });
   }
 
+  if (resource === "vehicle-options") {
+    const auth = await requirePermission(req, "koshas");
+    if (isResponse(auth)) return auth;
+    if (method !== "GET" || id) return error("المسار غير موجود", 404);
+    await ensureEnterprisePhase5Tables();
+    const vehicles = await db.query.fleetVehiclesTable.findMany({
+      where: eq(fleetVehiclesTable.isActive, true),
+      orderBy: [asc(fleetVehiclesTable.name), asc(fleetVehiclesTable.id)],
+      limit: 200,
+    });
+    return json({
+      data: vehicles.map((vehicle) => ({
+        id: vehicle.id,
+        name: vehicle.name,
+        plateNumber: vehicle.plateNumber,
+      })),
+      expenseTypes: VEHICLE_EXPENSE_TYPES.map((value) => ({
+        value,
+        label: VEHICLE_EXPENSE_LABELS[value],
+      })),
+    });
+  }
+
   if (resource === "expense-requests") {
     const auth = await requirePermission(req, "koshas");
     if (isResponse(auth)) return auth;
@@ -65213,6 +65236,32 @@ async function handleStaffPortal(
         )
         .where(and(eq(expensesTable.createdBy, auth.id), isNull(expensesTable.deletedAt)))
         .orderBy(desc(expensesTable.createdAt))
+        .limit(50);
+      await ensureEnterprisePhase5Tables();
+      const vehicleExpenseRows = await db
+        .select({
+          id: vehicleExpensesTable.id,
+          vehicleId: vehicleExpensesTable.vehicleId,
+          vehicleName: fleetVehiclesTable.name,
+          plateNumber: fleetVehiclesTable.plateNumber,
+          expenseType: vehicleExpensesTable.expenseType,
+          expenseDate: vehicleExpensesTable.expenseDate,
+          amount: vehicleExpensesTable.amount,
+          paymentMethod: vehicleExpensesTable.paymentMethod,
+          description: vehicleExpensesTable.description,
+          attachments: vehicleExpensesTable.attachments,
+          odometerKm: vehicleExpensesTable.odometerKm,
+          status: financialTransactionsTable.approvalStatus,
+          transactionNo: financialTransactionsTable.transactionNo,
+          executedAt: financialTransactionsTable.executedAt,
+          rejectionReason: financialTransactionsTable.rejectionReason,
+          createdAt: vehicleExpensesTable.createdAt,
+        })
+        .from(vehicleExpensesTable)
+        .innerJoin(fleetVehiclesTable, eq(fleetVehiclesTable.id, vehicleExpensesTable.vehicleId))
+        .leftJoin(financialTransactionsTable, eq(financialTransactionsTable.id, vehicleExpensesTable.financialTransactionId))
+        .where(eq(vehicleExpensesTable.createdBy, auth.id))
+        .orderBy(desc(vehicleExpensesTable.createdAt), desc(vehicleExpensesTable.id))
         .limit(50);
       // Requests filed through the short-lived first version of this screen
       // were cash-box requests without an expense row; keep showing them.
@@ -65253,6 +65302,23 @@ async function handleStaffPortal(
           executedAt: iso(row.executedAt),
           rejectionReason: row.rejectionReason ?? null,
           createdAt: iso(row.createdAt),
+        })),
+        ...vehicleExpenseRows.map((row) => ({
+          key: `vehicle-expense-${row.id}`,
+          date: iso(row.expenseDate),
+          name: `${VEHICLE_EXPENSE_LABELS[row.expenseType as keyof typeof VEHICLE_EXPENSE_LABELS] ?? row.expenseType} · ${row.vehicleName}`,
+          amount: Number(row.amount),
+          categoryName: `مصروف سيارة · ${row.plateNumber}`,
+          paymentMethod: row.paymentMethod,
+          notes: row.description,
+          receiptImage: row.attachments?.[0] ?? null,
+          status: row.status ?? "pending",
+          transactionNo: row.transactionNo ?? null,
+          executedAt: iso(row.executedAt),
+          rejectionReason: row.rejectionReason ?? null,
+          createdAt: iso(row.createdAt),
+          vehicleId: row.vehicleId,
+          odometerKm: row.odometerKm,
         })),
         ...legacyRows.map((row) => ({
           key: `request-${row.id}`,
@@ -65350,6 +65416,143 @@ async function handleStaffPortal(
       return json(created.row, 201);
     }
     return error("المسار غير موجود", 404);
+  }
+
+  if (resource === "vehicle-expense-requests") {
+    const auth = await requirePermission(req, "koshas");
+    if (isResponse(auth)) return auth;
+    await ensureEnterprisePhase5Tables();
+    if (method !== "POST" || id) return error("المسار غير موجود", 404);
+    const parsed = VehicleExpenseSchema.extend({
+      vehicleId: z.coerce.number().int().positive(),
+    }).safeParse(await body(req));
+    if (!parsed.success)
+      return validationError("staff.koshas.vehicle-expense-requests", parsed);
+    const data = parsed.data;
+    const vehicle = await db.query.fleetVehiclesTable.findFirst({
+      where: and(eq(fleetVehiclesTable.id, data.vehicleId ?? 0), eq(fleetVehiclesTable.isActive, true)),
+    });
+    if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
+    if (data.bookingId) {
+      const booking = await db.query.koshaBookingsTable.findFirst({
+        where: eq(koshaBookingsTable.id, data.bookingId),
+      });
+      if (!booking) return error("الحجز المرتبط غير موجود", 404);
+      if (booking.transportationVehicleId !== vehicle.id)
+        return error("الحجز المرتبط لا يستخدم هذه السيارة للنقل", 400);
+    }
+    const matchesRequest = (existing: {
+      vehicleId: number;
+      bookingId: number | null;
+      driverId: number | null;
+      odometerKm: number | null;
+      expenseType: string;
+      amount: string;
+      expenseDate: Date;
+      paymentMethod: string;
+      description: string | null;
+      attachments: string[];
+    }) =>
+      existing.vehicleId === vehicle.id &&
+      existing.bookingId === (data.bookingId ?? null) &&
+      existing.driverId === (data.driverId ?? null) &&
+      existing.odometerKm === (data.odometerKm ?? null) &&
+      existing.expenseType === data.expenseType &&
+      money(existing.amount) === money(data.amount) &&
+      existing.expenseDate.toISOString().slice(0, 10) === data.expenseDate &&
+      existing.paymentMethod === (data.paymentMethod === "card" ? "pos" : data.paymentMethod) &&
+      existing.description === (data.description?.trim() || null) &&
+      JSON.stringify(existing.attachments ?? []) === JSON.stringify(data.attachments);
+    const [priorRequest] = await db
+      .select()
+      .from(vehicleExpensesTable)
+      .where(eq(vehicleExpensesTable.idempotencyKey, data.idempotencyKey))
+      .limit(1);
+    if (priorRequest) {
+      if (priorRequest.createdBy !== auth.id)
+        return error("مفتاح تسجيل المصروف مستخدم لطلب آخر", 409);
+      if (!matchesRequest(priorRequest))
+        return error("مفتاح إعادة المحاولة مرتبط ببيانات مصروف مختلفة", 409);
+      return json({ ...priorRequest, duplicate: true });
+    }
+    const fingerprint = [data.expenseDate, data.amount, data.vehicleId, data.expenseType, data.description?.trim() ?? ""].join("|");
+    const inFlight = await consumeRateLimit({
+      action: "kosha-staff-vehicle-expense-submit",
+      keyParts: [String(auth.id), fingerprint],
+      limit: 1,
+      windowMs: 15_000,
+    });
+    if (!inFlight.allowed) return error("جارٍ حفظ نفس مصروف المركبة، انتظر لحظة", 409);
+    const result = await db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(vehicleExpensesTable)
+        .where(eq(vehicleExpensesTable.idempotencyKey, data.idempotencyKey))
+        .limit(1);
+      if (existing) {
+        if (existing.createdBy !== auth.id)
+          return { conflict: true as const };
+        if (!matchesRequest(existing))
+          return { conflict: true as const };
+        return { expense: existing, duplicate: true as const };
+      }
+      const [expense] = await tx.insert(vehicleExpensesTable).values({
+        vehicleId: vehicle.id,
+        bookingId: data.bookingId ?? null,
+        driverId: data.driverId ?? null,
+        odometerKm: data.odometerKm ?? null,
+        expenseType: data.expenseType,
+        amount: String(money(data.amount)),
+        expenseDate: new Date(`${data.expenseDate}T12:00:00`),
+        cashAccountCode: "MASTER",
+        paymentMethod: data.paymentMethod === "card" ? "pos" : data.paymentMethod,
+        description: data.description?.trim() || null,
+        attachments: data.attachments,
+        status: "pending",
+        idempotencyKey: data.idempotencyKey,
+        createdBy: auth.id,
+        createdByName: auth.fullName || auth.username,
+      }).returning();
+      const financial = await createAndExecuteSourceFinancialTransaction(tx, {
+        transactionDate: data.expenseDate,
+        direction: "expense",
+        amount: money(data.amount),
+        department: "koshas",
+        transactionType: "vehicle_expense",
+        referenceNo: `VE-${vehicle.id}-${expense.id}`,
+        description: `${VEHICLE_EXPENSE_LABELS[data.expenseType]} · ${vehicle.name}${data.description ? ` · ${data.description}` : ""}`,
+        paymentMethod: data.paymentMethod,
+        sourceType: "vehicle_expense",
+        sourceId: expense.id,
+        sourceEvent: "vehicle_expense",
+        idempotencyKey: `vehicle-expense-finance:${data.idempotencyKey}`,
+        notes: data.description?.trim() || null,
+        attachments: data.attachments,
+      }, financialActor(auth));
+      const [linked] = await tx.update(vehicleExpensesTable)
+        .set({ financialTransactionId: financial.id, updatedAt: new Date() })
+        .where(eq(vehicleExpensesTable.id, expense.id))
+        .returning();
+      return { expense: linked, duplicate: false as const };
+    });
+    if ("conflict" in result) return error("مفتاح تسجيل المصروف مستخدم لطلب آخر", 409);
+    if (!result.duplicate) {
+      await recordEnterpriseMutation(req, auth, "vehicle_expense_created", "vehicle_expense", result.expense.id, "تم إنشاء طلب مصروف مركبة من بوابة الكوشات بانتظار الاعتماد", {
+        vehicleId: vehicle.id,
+        amount: Number(result.expense.amount),
+        expenseType: result.expense.expenseType,
+        requestedBy: auth.id,
+      });
+      void createNotificationOnce({
+        type: "vehicle_expense",
+        title: "مصروف مركبة بانتظار الموافقة",
+        body: `${auth.fullName || auth.username} · ${vehicle.name} · ${Number(result.expense.amount).toLocaleString("en-US")} د.ع`,
+        entityType: "vehicle_expense",
+        entityId: result.expense.id,
+        href: `/admin/command-center?tab=vehicle-profitability&vehicle=${vehicle.id}`,
+      });
+    }
+    return json({ ...result.expense, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
   }
 
   // ── تجهيزاتي اليوم — the employee's assigned preparation tasks (from the shared
