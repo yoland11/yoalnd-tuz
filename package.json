@@ -47,6 +47,7 @@
     "test:graduation-center": "node ./scripts/verify-graduation-order-center.mjs",
     "test:graduation-enterprise": "node ./scripts/verify-graduation-enterprise.mjs",
     "test:graduation-group-step-flow": "node ./scripts/verify-graduation-group-step-flow.mjs",
+    "test:graduation-student-flow": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-student-flow.ts",
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",
     "test:staff-portal-auth": "node ./scripts/verify-staff-portal-auth.mjs",
     "test:installments": "node ./scripts/verify-installments.mjs",

@@ -120,6 +120,14 @@ try {
   await page.getByLabel("رقم الهاتف *", { exact: true }).fill("07712345678");
   await page.getByRole("button", { name: "التالي", exact: true }).click();
   await page.getByRole("button", { name: "ملكي", exact: true }).click();
+  const sashModels = page.getByRole("group", { name: "نماذج الوشاح ملكي" });
+  await sashModels.waitFor();
+  assert.equal(await sashModels.getByText("أمام", { exact: true }).count(), 1);
+  assert.equal(await sashModels.getByText("خلف", { exact: true }).count(), 1);
+  assert.equal(
+    await page.getByRole("button", { name: "ملكي", exact: true }).getAttribute("aria-pressed"),
+    "true",
+  );
   await page
     .getByRole("alert")
     .filter({ hasText: "تعذر تحميل الورود" })

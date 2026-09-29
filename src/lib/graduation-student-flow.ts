@@ -5,10 +5,58 @@ export const STUDENT_STEPS = [
   "اسمك على الوشاح",
 ];
 export const SASH_TYPES = [
-  { key: "standard", label: "عادي" },
-  { key: "side", label: "جانبي" },
-  { key: "royal", label: "ملكي" },
-  { key: "american", label: "أمريكي" },
+  {
+    key: "standard",
+    label: "عادي",
+    description: "قصة مستقيمة بوشاحين أماميين، بدون قطعة خلفية.",
+    images: [
+      {
+        label: "أمام",
+        src: "https://khamaiq.com/product_types/sash-regular.webp?v=p138",
+      },
+    ],
+  },
+  {
+    key: "side",
+    label: "جانبي",
+    description: "قصة مائلة تمتد من الكتف إلى جانب الجسم.",
+    images: [
+      {
+        label: "أمام",
+        src: "https://khamaiq.com/product_types/sash-side.webp?v=p138",
+      },
+    ],
+  },
+  {
+    key: "royal",
+    label: "ملكي",
+    description: "تصميم أمامي وخلفي بمساحة أوسع للعبارات والرسومات.",
+    images: [
+      {
+        label: "أمام",
+        src: "https://khamaiq.com/product_types/sash-royal-front.webp?v=p138",
+      },
+      {
+        label: "خلف",
+        src: "https://khamaiq.com/product_types/sash-royal-back.webp?v=p138",
+      },
+    ],
+  },
+  {
+    key: "american",
+    label: "أمريكي",
+    description: "قصة مثلثة واضحة من الأمام والخلف.",
+    images: [
+      {
+        label: "أمام",
+        src: "https://khamaiq.com/product_types/sash-american-front.webp?v=p138",
+      },
+      {
+        label: "خلف",
+        src: "https://khamaiq.com/product_types/sash-american-back.webp?v=p138",
+      },
+    ],
+  },
 ];
 export const SASH_FONTS = [
   {

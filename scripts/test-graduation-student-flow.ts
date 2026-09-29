@@ -6,6 +6,20 @@ assert.equal(
   "function",
   "a new student must start independently",
 );
+assert.deepEqual(
+  flow.SASH_TYPES.map(({ key, images }) => [key, images.length]),
+  [
+    ["standard", 1],
+    ["side", 1],
+    ["royal", 2],
+    ["american", 2],
+  ],
+  "sash chooser should show a single model for standard/side and front/back models for royal/American",
+);
+assert.ok(
+  flow.SASH_TYPES.every((type) => type.description.trim().length > 12),
+  "each sash model should explain its cut",
+);
 const first = flow.newStudent();
 first.customerName = "علي أحمد";
 first.phone = "07712345678";

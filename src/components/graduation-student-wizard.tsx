@@ -200,6 +200,44 @@ export function SashPreview({
   );
 }
 
+function SashModelImage({
+  type,
+  label,
+  src,
+  color,
+  thread,
+}: {
+  type: string;
+  label: string;
+  src: string;
+  color: string;
+  thread: string;
+}) {
+  const [imageUnavailable, setImageUnavailable] = useState(false);
+  return (
+    <figure className="min-w-0">
+      <div className="aspect-[4/5] overflow-hidden rounded-2xl bg-[#f4f3f4] shadow-[0_14px_32px_-22px_rgba(92,5,43,0.55)]">
+        {imageUnavailable ? (
+          <div className="h-full p-3">
+            <SashPreview type={type} color={color} thread={thread} />
+          </div>
+        ) : (
+          <img
+            src={src}
+            alt={`نموذج الوشاح ${SASH_TYPES.find((item) => item.key === type)?.label || ""} ${label}`}
+            className="h-full w-full object-cover"
+            loading="lazy"
+            onError={() => setImageUnavailable(true)}
+          />
+        )}
+      </div>
+      <figcaption className="mt-2 text-center text-xs text-muted-foreground">
+        {label}
+      </figcaption>
+    </figure>
+  );
+}
+
 export function GraduationStudentWizard({
   base,
   scope,
@@ -571,8 +609,15 @@ export function GraduationStudentWizard({
             )}
             {step === 1 && (
               <>
-                <h3 className="font-semibold">نوع الوشاح</h3>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <h3 className="font-semibold">اختر نوع الوشاح</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  اختر القَصّة المناسبة، ونجهزها ضمن طلب مجموعتكم.
+                </p>
+                <div
+                  role="group"
+                  aria-label="أنواع الوشاح"
+                  className="mt-4 grid grid-cols-4 gap-1 rounded-2xl border border-[#f0ccd3] bg-[#fff0f2] p-1"
+                >
                   {SASH_TYPES.map((type) => (
                     <button
                       key={type.key}
@@ -580,21 +625,50 @@ export function GraduationStudentWizard({
                       aria-label={type.label}
                       aria-pressed={form.sashType === type.key}
                       onClick={() => change({ sashType: type.key })}
-                      className={`rounded-xl border-2 p-3 focus-visible:outline focus-visible:outline-primary ${form.sashType === type.key ? "border-primary bg-primary/5" : "border-border"}`}
+                      className={`min-h-11 rounded-xl px-2 py-2 text-xs font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:text-sm ${form.sashType === type.key ? "bg-[#68002f] text-white shadow-md" : "text-[#805c68] hover:bg-white/80"}`}
                     >
-                      <div className="h-32">
-                        <SashPreview
-                          type={type.key}
-                          color={form.sashColor}
-                          thread={form.embroideryColor}
-                        />
-                      </div>
-                      <span className="mt-2 block font-semibold">
-                        {type.label}
-                      </span>
+                      {type.label}
                     </button>
                   ))}
                 </div>
+                {(() => {
+                  const selectedSash =
+                    SASH_TYPES.find((type) => type.key === form.sashType) ||
+                    SASH_TYPES[0];
+                  return (
+                    <div
+                      role="group"
+                      aria-label={`نماذج الوشاح ${selectedSash.label}`}
+                      className="mt-5"
+                    >
+                      <div
+                        className={`mx-auto grid max-w-[480px] gap-3 ${selectedSash.images.length === 1 ? "grid-cols-1 max-w-[300px]" : "grid-cols-2"}`}
+                      >
+                        {selectedSash.images.map((image) => (
+                          <SashModelImage
+                            key={image.src}
+                            type={selectedSash.key}
+                            label={image.label}
+                            src={image.src}
+                            color={form.sashColor}
+                            thread={form.embroideryColor}
+                          />
+                        ))}
+                      </div>
+                      <div className="mx-auto mt-4 max-w-xl text-center">
+                        <h4 className="text-xl font-bold text-[#260c18]">
+                          {selectedSash.label}
+                        </h4>
+                        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                          {selectedSash.description}
+                        </p>
+                        <span className="mt-3 inline-flex rounded-full border border-[#e8c7a7] bg-[#fff8ef] px-3 py-1 text-xs font-medium text-[#a96b2c]">
+                          اختيار خاص لكل طالب
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <h3 className="font-semibold">
                   ورود ومسكات المتجر{" "}
                   <span className="text-sm font-normal text-muted-foreground">
