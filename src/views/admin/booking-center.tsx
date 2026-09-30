@@ -39,6 +39,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Speaker,
+  Trash2,
   Users,
   Warehouse,
   X,
@@ -881,6 +882,31 @@ function BookingDashboard() {
     queryClient.invalidateQueries({ queryKey: ["admin", "service-orders"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
   };
+  const bookingDeleteMutation = useMutation({
+    mutationFn: (booking: UnifiedBooking) =>
+      adminFetch<{ message: string }>(
+        booking.source === "kosha"
+          ? `/admin/kosha-bookings/${booking.id}`
+          : `/admin/service-orders/${booking.id}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: (result) => {
+      refresh();
+      toast({ title: result.message || "تم إرسال طلب إلغاء الحجز" });
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذر مسح الحجز",
+        description: apiErrorMessage(error, "تعذر إلغاء الحجز. حاول مرة أخرى."),
+        variant: "destructive",
+      }),
+  });
+  const requestBookingDeletion = (booking: UnifiedBooking) => {
+    const confirmed = window.confirm(
+      `مسح الحجز ${booking.number || booking.customerName}؟ سيتم إلغاؤه وأرشفته مع الحفاظ على بياناته المالية والتاريخية.`,
+    );
+    if (confirmed) bookingDeleteMutation.mutate(booking);
+  };
   const openCreateBooking = () => {
     setShowCreate(true);
     window.requestAnimationFrame(() =>
@@ -990,7 +1016,7 @@ function BookingDashboard() {
           <div className="ajn-empty"><CalendarDays /><h3>لا توجد حجوزات مطابقة</h3><p>غيّر البحث أو أنشئ أول حجز موحّد لهذه الخدمة.</p></div>
         ) : (
           <div className="ajn-booking-grid">
-            {filtered.map((booking) => <BookingPreview key={`${booking.source}-${booking.id}`} booking={booking} penalty={penaltyIndicators.data?.indicators?.[`${booking.source === "kosha" ? "kosha_booking" : "service_order"}:${booking.id}`]} />)}
+            {filtered.map((booking) => <BookingPreview key={`${booking.source}-${booking.id}`} booking={booking} penalty={penaltyIndicators.data?.indicators?.[`${booking.source === "kosha" ? "kosha_booking" : "service_order"}:${booking.id}`]} onDelete={requestBookingDeletion} deleting={bookingDeleteMutation.isPending && bookingDeleteMutation.variables?.id === booking.id} />)}
           </div>
         )}
       </section>
@@ -1004,7 +1030,7 @@ function groupAttendeeCount(booking: UnifiedBooking): number {
   return Array.isArray(ops?.groupAttendees) ? ops.groupAttendees.length : 0;
 }
 
-function BookingPreview({ booking, penalty }: { booking: UnifiedBooking; penalty?: { remaining: number; pendingReview: number; count: number } }) {
+function BookingPreview({ booking, penalty, onDelete, deleting = false }: { booking: UnifiedBooking; penalty?: { remaining: number; pendingReview: number; count: number }; onDelete: (booking: UnifiedBooking) => void; deleting?: boolean }) {
   const readiness = getReadiness(booking);
   const transport = transportationSummary(booking);
   const attendees = groupAttendeeCount(booking);
@@ -1065,6 +1091,7 @@ function BookingPreview({ booking, penalty }: { booking: UnifiedBooking; penalty
           <Button size="sm" variant="ghost" asChild>
             <Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`} aria-label={`فتح مساحة عمل الحجز ${booking.number || booking.customerName}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link>
           </Button>
+          {(booking.source === "service" || booking.source === "kosha") ? <Button size="sm" variant="outline" className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => onDelete(booking)} disabled={deleting} aria-label={`مسح الحجز ${booking.number || booking.customerName}`}><Trash2 className="h-3.5 w-3.5" />{deleting ? "جارٍ الإلغاء…" : "مسح"}</Button> : null}
         </div>
       </div>
     </article>
