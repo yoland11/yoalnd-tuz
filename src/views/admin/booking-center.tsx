@@ -939,6 +939,9 @@ function BookingDashboard() {
       {showCreate && (
         <UnifiedBookingForm
           services={servicesQuery.data ?? []}
+          servicesLoading={servicesQuery.isLoading || servicesQuery.isFetching}
+          servicesError={servicesQuery.isError ? apiErrorMessage(servicesQuery.error, "تعذر تحميل قائمة الخدمات") : ""}
+          onRetryServices={() => void servicesQuery.refetch()}
           customers={customersQuery.data ?? []}
           onCancel={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); refresh(); toast({ title: "تم إنشاء الحجز الموحد بنجاح", description: "تم حفظ العميل والخدمات ضمن رقم حجز واحد." }); }}
@@ -1148,7 +1151,7 @@ function BookingCustomerSelector({ value, onChange, error }: { value: Customer |
   );
 }
 
-function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { services: AdminService[]; customers: Customer[]; onCancel: () => void; onCreated: () => void }) {
+function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryServices, customers, onCancel, onCreated }: { services: AdminService[]; servicesLoading: boolean; servicesError: string; onRetryServices: () => void; customers: Customer[]; onCancel: () => void; onCreated: () => void }) {
   const { toast } = useToast();
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [eventDate, setEventDate] = useState("");
@@ -1238,8 +1241,11 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       }
       if (!eventDate) failField("eventDate", "حدد تاريخ المناسبة");
       if (!selected.length) failField("serviceId", "اختر خدمة واحدة على الأقل");
+      if (servicesLoading) failField("serviceId", "قائمة الخدمات ما زالت قيد التحميل. انتظر قليلاً ثم أعد المحاولة.");
+      if (servicesError) failField("serviceId", `تعذر تحميل قائمة الخدمات: ${servicesError}`);
+      if (!services.length) failField("serviceId", "لا توجد خدمة فعالة في النظام. افتح إدارة الخدمات وأضف أو فعّل خدمة قبل حفظ الحجز.");
       const primary = resolveUnifiedBookingService(selected, services);
-      if (!primary) failField("serviceId", "لا توجد خدمة فعالة. أضف خدمة من إدارة الخدمات أولاً.");
+      if (!primary) failField("serviceId", "لم يتم العثور على خدمة صالحة لهذا الحجز. تحقق من تفعيل خدمة في إدارة الخدمات.");
       // النقل بواسطة AJN يبقى ضمن إجمالي الحجز: يُضاف إلى المبلغ الكلي المرسل.
       const transportFee = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
       // Chosen flower products are part of the booking total, like AJN transport.
@@ -1414,6 +1420,9 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
           <div className="space-y-2"><Label htmlFor="booking-notes">ملاحظات</Label><Textarea id="booking-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="تفاصيل خاصة بالمناسبة أو العميل" /></div>
         </div>
         <div id="booking-service-picker" tabIndex={-1} className={`ajn-service-picker ${fieldErrors.serviceId ? "ring-1 ring-destructive" : ""}`}>
+          {servicesLoading ? <p className="mb-3 rounded-lg border border-border/60 bg-muted/30 p-3 text-sm text-muted-foreground" role="status">جارٍ تحميل قائمة الخدمات اللازمة لإنشاء الحجز…</p> : null}
+          {servicesError ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><span>تعذر تحميل قائمة الخدمات: {servicesError}</span><Button type="button" variant="outline" size="sm" onClick={onRetryServices}>إعادة المحاولة</Button></div> : null}
+          {!servicesLoading && !servicesError && services.length === 0 ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-300/50 bg-amber-50 p-3 text-sm text-amber-900"><span>لا توجد خدمة مفعّلة حالياً؛ يجب تفعيل خدمة قبل حفظ الحجز.</span><Button type="button" variant="outline" size="sm" asChild><Link href="/admin/services">إدارة الخدمات</Link></Button></div> : null}
           <div><span>الخدمات المطلوبة</span><strong>{selected.length} خدمات محددة</strong></div>
           <div className="grid grid-cols-2 gap-2">{SERVICE_META.map((meta) => { const Icon = meta.icon; const checked = selected.includes(meta.key); return <button type="button" key={meta.key} className={checked ? "is-selected" : ""} onClick={() => toggle(meta.key)} aria-pressed={checked}><Icon /><span>{meta.short}</span>{checked && <CheckCircle2 />}</button>; })}</div>
           {fieldErrors.serviceId ? <p className="text-xs text-destructive">{fieldErrors.serviceId}</p> : null}
@@ -1474,7 +1483,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             </div>
             {transportationMode === "ajn" ? <div className="space-y-1.5"><Label htmlFor="booking-transport-fee">أجرة النقل</Label><Input id="booking-transport-fee" inputMode="decimal" value={transportationFee} onChange={(event) => setTransportationFee(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" /><p className="text-xs text-muted-foreground">تُضاف أجرة النقل تلقائياً إلى المبلغ الكلي للحجز. يمكن تحديد السيارة والسائق لاحقاً من مساحة تنفيذ الحجز.</p></div> : null}
           </section> : null}
-          <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending || imageUploading || depositTooHigh} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : "حفظ الحجز"}</Button></div>
+          <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending || imageUploading || depositTooHigh || servicesLoading || !!servicesError || services.length === 0} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : servicesLoading ? "جارٍ تحميل الخدمات..." : "حفظ الحجز"}</Button></div>
         </div>
       </div>
     </section>
