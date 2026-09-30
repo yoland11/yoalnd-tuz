@@ -177,7 +177,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
         </div>
       </div>
 
-      {form && <ExpenseFormPanel form={form} categories={categories} saving={save.isPending} onChange={setForm} onClose={() => setForm(null)} onSave={() => save.mutate(form)} />}
+      {form && <ExpenseFormPanel form={form} categories={categories} saving={save.isPending} onChange={setForm} onClose={() => setForm(null)} onSave={() => save.mutate(form)} onManageCategories={() => setShowCategories(true)} />}
 
       {showCategories && (
         <div className="bg-card rounded-xl border border-primary/30 p-4">
@@ -258,7 +258,7 @@ function ApprovalBadge({ status = "executed" }: { status?: string }) {
   return <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-medium ${style}`}>{labels[status] ?? status}</span>;
 }
 
-function ExpenseFormPanel({ form, categories, saving, onChange, onSave, onClose }: { form: ExpenseForm; categories: Category[]; saving: boolean; onChange: (form: ExpenseForm) => void; onSave: () => void; onClose: () => void }) {
+function ExpenseFormPanel({ form, categories, saving, onChange, onSave, onClose, onManageCategories }: { form: ExpenseForm; categories: Category[]; saving: boolean; onChange: (form: ExpenseForm) => void; onSave: () => void; onClose: () => void; onManageCategories: () => void }) {
   async function onReceipt(file: File) {
     onChange({ ...form, receiptImage: await fileToDataUrl(file) });
   }
@@ -268,7 +268,7 @@ function ExpenseFormPanel({ form, categories, saving, onChange, onSave, onClose 
       <Field label="التاريخ"><input type="date" value={form.date} onChange={(e) => onChange({ ...form, date: e.target.value })} className={inputCls} /></Field>
       <Field label="عنوان المصروف"><input value={form.name} onChange={(e) => onChange({ ...form, name: e.target.value })} className={inputCls} /></Field>
       <Field label="المبلغ"><input type="number" min="0" value={form.amount} onChange={(e) => onChange({ ...form, amount: e.target.value })} className={inputCls} /></Field>
-      <Field label="التصنيف"><select value={form.categoryId} onChange={(e) => onChange({ ...form, categoryId: e.target.value })} className={inputCls}><option value="">اختر التصنيف</option>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.nameAr}</option>)}</select></Field>
+      <div><Field label="التصنيف"><select value={form.categoryId} onChange={(e) => onChange({ ...form, categoryId: e.target.value })} className={inputCls}><option value="">اختر التصنيف</option>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.nameAr}</option>)}</select></Field><Button type="button" variant="ghost" size="sm" onClick={onManageCategories} className="mt-1 h-8 gap-1 px-2 text-xs text-primary"><Tags className="h-3.5 w-3.5" />إدارة التصنيفات</Button><span className="ms-1 text-[11px] text-muted-foreground">إضافة أو تعديل أو حذف</span></div>
       <Field label="طريقة الدفع"><select value={form.paymentMethod} onChange={(e) => onChange({ ...form, paymentMethod: e.target.value })} className={inputCls}>{paymentMethods.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select></Field>
       <Field label="صورة الإيصال"><input type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && void onReceipt(e.target.files[0])} className="text-xs text-muted-foreground file:ml-2 file:rounded file:border-0 file:bg-primary/10 file:text-primary file:px-2 file:py-1" /></Field>
       <div className="lg:col-span-2"><Field label="ملاحظات"><input value={form.notes} onChange={(e) => onChange({ ...form, notes: e.target.value })} className={inputCls} /></Field></div>

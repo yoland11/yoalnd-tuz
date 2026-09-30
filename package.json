@@ -70,6 +70,7 @@
     "test:purchase-invoice-print": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-purchase-invoice-print.ts",
     "test:booking-finance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-finance.ts",
     "test:booking-center-delete": "node ./scripts/verify-booking-center-delete.mjs",
+    "test:expense-category-access": "node ./scripts/verify-expense-category-access.mjs",
     "test:booking-penalties": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-penalties.ts",
     "diagnose:booking-finance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/diagnose-booking-finance.ts",
     "normalize:booking-finance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/normalize-booking-finance.ts",
