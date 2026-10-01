@@ -16,6 +16,7 @@ const steps = [
   ["Payment-state reconciliation invariant", "pnpm", ["run", "test:payment-state"]],
   ["Payroll movement schema recovery", "pnpm", ["run", "test:payroll-movement-schema"]],
   ["Graduation student sash selection", "pnpm", ["run", "test:graduation-student-flow"]],
+  ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice product search", "pnpm", ["run", "test:sales-product-search"]],
   ["Kosha routed instruction persistence", "pnpm", ["run", "test:kosha-instruction-store"]],

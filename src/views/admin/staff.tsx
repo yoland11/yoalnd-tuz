@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Edit2, Archive, X, Building2, ChevronDown } from "lucide-react";
+import { Plus, Edit2, Archive, X, Building2, ChevronDown, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmployeeAvatar } from "@/components/employee-avatar";
@@ -342,6 +342,7 @@ export default function StaffPage() {
     queryFn: () => adminFetch<Staff[]>("/admin/staff"),
   });
   const [editing, setEditing] = useState<Editing | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
   const [editorTab, setEditorTab] = useState<"profile" | "salary" | "devices">("profile");
   // Group staff by department so each department renders as its own
   // collapsible section (largest teams first, then alphabetical by label).
@@ -447,7 +448,7 @@ export default function StaffPage() {
           الموظفون والصلاحيات
         </h1>
         <Button
-          onClick={() => { setEditorTab("profile"); setEditing({ ...blank }); }}
+          onClick={() => { setShowPassword(false); setEditorTab("profile"); setEditing({ ...blank }); }}
           size="sm"
           className="gap-2"
         >
@@ -562,6 +563,7 @@ export default function StaffPage() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {
+                    setShowPassword(false);
                     setEditorTab("profile"); setEditing({
                       id: s.id,
                       username: s.username,
@@ -672,16 +674,33 @@ export default function StaffPage() {
                 onChange={(v) => setEditing((s) => ({ ...s!, username: v }))}
               />
             )}
-            <Field
-              label={
-                editing.id
+            <div>
+              <label htmlFor="staff-password" className="mb-1 block text-xs text-muted-foreground">
+                {editing.id
                   ? "كلمة مرور جديدة (اتركه فارغ للإبقاء)"
-                  : "كلمة المرور"
-              }
-              type="password"
-              value={editing.password}
-              onChange={(v) => setEditing((s) => ({ ...s!, password: v }))}
-            />
+                  : "كلمة المرور"}
+              </label>
+              <div className="relative">
+                <input
+                  id="staff-password"
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="new-password"
+                  value={editing.password}
+                  onChange={(event) => setEditing((current) => ({ ...current!, password: event.target.value }))}
+                  className="w-full rounded-lg border border-border/40 bg-background py-2 pe-3 ps-11 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+                <button
+                  type="button"
+                  aria-label={showPassword ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
+                  aria-pressed={showPassword}
+                  onClick={() => setShowPassword((visible) => !visible)}
+                  className="absolute left-1 top-1/2 -translate-y-1/2 rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              {editing.id ? <p className="mt-1 text-xs text-muted-foreground">كلمة المرور الحالية لا يمكن استرجاعها؛ اكتب كلمة جديدة أو اترك الحقل فارغاً.</p> : null}
+            </div>
             <div>
               <label className="block text-xs text-muted-foreground mb-1">
                 الدور
