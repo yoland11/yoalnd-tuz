@@ -663,6 +663,9 @@ export type AdminMe = {
   id: number;
   username: string;
   fullName: string;
+  photoUrl?: string | null;
+  department?: string | null;
+  jobTitle?: string | null;
   role: string;
   permissions: string[];
   isActive: boolean;

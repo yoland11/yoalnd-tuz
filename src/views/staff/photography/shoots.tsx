@@ -5,6 +5,8 @@ import {
   History, Loader2, Lock, MapPin, Navigation, QrCode, Radio, Send, Undo2, Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { EmployeeAvatar } from "@/components/employee-avatar";
+import { EmployeeSelect } from "@/components/employee-select";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiErrorMessage, type AdminMe } from "@/views/admin/_lib";
@@ -244,7 +246,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
   const [data, setData] = useState<ShootDetail | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [photographers, setPhotographers] = useState<Array<{ id: number; name: string }>>([]);
+  const [photographers, setPhotographers] = useState<Array<{ id: number; name: string; photoUrl?: string | null; jobTitle?: string | null; department?: string | null }>>([]);
   const [crewStaffId, setCrewStaffId] = useState(0);
   const [crewRole, setCrewRole] = useState("photographer");
   const [approval, setApproval] = useState<ShootApproval | null>(null);
@@ -605,10 +607,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
           <h2 className="mb-3 flex items-center gap-2 text-sm font-bold text-foreground"><Users className="h-4 w-4 text-primary" /> الفريق</h2>
           {manager ? (
             <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
-              <select value={crewStaffId} onChange={(event) => setCrewStaffId(Number(event.target.value))} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
-                <option value={0}>اختر الموظف</option>
-                {photographers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
-              </select>
+              <EmployeeSelect employees={photographers} value={crewStaffId ? String(crewStaffId) : ""} onValueChange={(value) => setCrewStaffId(Number(value))} placeholder="اختر الموظف" emptyLabel="اختر الموظف" aria-label="موظف فريق التصوير" />
               <select value={crewRole} onChange={(event) => setCrewRole(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
                 <option value="main_photographer">المصور الرئيسي</option>
                 <option value="second_photographer">المصور الثاني</option>
@@ -624,7 +623,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
           <ul className="space-y-1.5">
             {data.crew.map((member) => (
               <li key={member.id} className="flex items-center justify-between gap-2 text-sm">
-                <span className="truncate">{member.staffName}</span>
+                <span className="flex min-w-0 items-center gap-2"><EmployeeAvatar name={member.staffName} photoUrl={member.photoUrl} size={32} /><span className="truncate">{member.staffName}</span></span>
                 <span className="flex items-center gap-1">
                   <span className="text-[11px] text-muted-foreground">{member.role}</span>
                   {member.isLead ? <span className="flex-shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-bold text-primary">قائد</span> : null}

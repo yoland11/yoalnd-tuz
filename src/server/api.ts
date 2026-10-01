@@ -11,6 +11,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import bcrypt from "bcryptjs";
+import { staffPhotoUpdateSchema } from "./staff-photo";
 import { koshaManagerList, koshaManagerDetail, resolveKoshaManagerProblem, mayResolveKoshaProblem, type KoshaLookups } from "./kosha-manager";
 import {
   createKoshaInstructionStore,
@@ -1050,6 +1051,9 @@ export type AdminUser = {
   id: number;
   username: string;
   fullName: string;
+  photoUrl?: string | null;
+  department?: string | null;
+  jobTitle?: string | null;
   role: string;
   permissions: string[];
   isActive: boolean;
@@ -2012,6 +2016,9 @@ export async function resolveAdminSession(
       id: user.id,
       username: user.username,
       fullName: user.fullName,
+      photoUrl: user.photoUrl ?? null,
+      department: user.department ?? null,
+      jobTitle: user.jobTitle ?? null,
       role: user.role,
       permissions: user.permissions ?? [],
       isActive: user.isActive,
@@ -2296,6 +2303,9 @@ function publicUser(u: AdminUser) {
     id: u.id,
     username: u.username,
     fullName: u.fullName,
+    photoUrl: u.photoUrl ?? null,
+    department: u.department ?? null,
+    jobTitle: u.jobTitle ?? null,
     role: u.role,
     permissions: u.permissions,
     isActive: u.isActive,
@@ -31959,6 +31969,7 @@ async function handleBookingOperations(
         name: staff.fullName || staff.username,
         role: staff.jobTitle || staff.role,
         department: staff.department,
+        photoUrl: staff.photoUrl ?? null,
       }));
 
     if (method === "GET") {
@@ -31970,6 +31981,7 @@ async function handleBookingOperations(
           name: staff.fullName || staff.username,
           role: staff.jobTitle || staff.role,
           department: staff.department,
+          photoUrl: staff.photoUrl ?? null,
         })),
       });
     }
@@ -38616,6 +38628,9 @@ async function handleAdmin(
             id: user.id,
             username: user.username,
             fullName: user.fullName,
+            photoUrl: user.photoUrl ?? null,
+            department: user.department ?? null,
+            jobTitle: user.jobTitle ?? null,
             role: user.role,
             permissions: user.permissions ?? [],
             isActive: user.isActive,
@@ -38730,6 +38745,7 @@ async function handleAdmin(
         userName: adminActivityLogsTable.userName,
         staffName: staffTable.fullName,
         username: staffTable.username,
+        staffPhotoUrl: staffTable.photoUrl,
         action: adminActivityLogsTable.action,
         entityType: adminActivityLogsTable.entityType,
         entityId: adminActivityLogsTable.entityId,
@@ -38754,6 +38770,7 @@ async function handleAdmin(
           id: staffTable.id,
           username: staffTable.username,
           fullName: staffTable.fullName,
+          photoUrl: staffTable.photoUrl,
         })
         .from(staffTable)
         .orderBy(staffTable.id),
@@ -38769,6 +38786,7 @@ async function handleAdmin(
         id: row.id,
         name: row.fullName || row.username,
         username: row.username,
+        photoUrl: row.photoUrl ?? null,
       })),
       total: countRows[0]?.count ?? 0,
       page,
@@ -48612,6 +48630,8 @@ async function handleAdmin(
       if (!password.trim()) return error("كلمة المرور مطلوبة", 400);
       if (username.length > 50) return error("اسم المستخدم طويل جداً", 400);
       const cleanPassword = password.trim();
+      const photoUpdate = staffPhotoUpdateSchema({ storageUrl: STORAGE_URL, bucket: STORAGE_BUCKET }).safeParse(payload);
+      if (!photoUpdate.success) return validationError("staff.create", photoUpdate);
       const normalizedRole = normalizeStaffRole(payload?.role);
       const explicitPermissions = validateStaffPermissions(
         payload?.permissions,
@@ -48629,6 +48649,7 @@ async function handleAdmin(
             username,
             passwordHash: hashPassword(cleanPassword),
             fullName: String(payload?.fullName ?? ""),
+            photoUrl: photoUpdate.data.photoUrl ?? null,
             role: normalizedRole,
             department:
               String(payload?.department ?? "general")
@@ -48770,7 +48791,9 @@ async function handleAdmin(
         }
       }
       const b = await body(req);
-      const update: any = {};
+      const photoUpdate = staffPhotoUpdateSchema({ storageUrl: STORAGE_URL, bucket: STORAGE_BUCKET }).safeParse(b);
+      if (!photoUpdate.success) return validationError("staff.update", photoUpdate);
+      const update: any = { ...photoUpdate.data };
       if (b?.fullName !== undefined) update.fullName = String(b.fullName ?? "");
       if (b?.department !== undefined)
         update.department =
@@ -60675,7 +60698,13 @@ async function handlePhotographyStaffPortal(
       (manager
         ? photographers
         : photographers.filter((row) => row.id === auth.id)
-      ).map((row) => ({ id: row.id, name: row.fullName || row.username })),
+      ).map((row) => ({
+        id: row.id,
+        name: row.fullName || row.username,
+        photoUrl: row.photoUrl ?? null,
+        jobTitle: row.jobTitle ?? null,
+        department: row.department ?? null,
+      })),
     );
   }
 
@@ -64451,6 +64480,8 @@ async function handleUnifiedStaffPortal(
     role: string;
     permissions: string[];
     department: string;
+    photoUrl: string | null;
+    jobTitle: string | null;
     isActive: boolean;
   } | undefined;
   try {
@@ -64462,6 +64493,8 @@ async function handleUnifiedStaffPortal(
         role: staffTable.role,
         permissions: staffTable.permissions,
         department: staffTable.department,
+        photoUrl: staffTable.photoUrl,
+        jobTitle: staffTable.jobTitle,
         isActive: staffTable.isActive,
       })
       .from(staffTable)
@@ -64589,7 +64622,8 @@ async function handleUnifiedStaffPortal(
           name: employee.fullName || employee.username,
           role: employee.role,
           department: employee.department ?? null,
-          jobTitle: null,
+          photoUrl: employee.photoUrl ?? null,
+          jobTitle: employee.jobTitle ?? null,
           permissions: employee.permissions ?? [],
         },
         tasks: formattedTasks,
@@ -65111,6 +65145,9 @@ async function handleStaffPortal(
           id: user.id,
           username: user.username,
           fullName: user.fullName,
+          photoUrl: user.photoUrl ?? null,
+          department: user.department ?? null,
+          jobTitle: user.jobTitle ?? null,
           role: user.role,
           permissions: user.permissions ?? [],
           isActive: user.isActive,

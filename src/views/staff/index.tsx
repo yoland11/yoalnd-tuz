@@ -3,6 +3,7 @@ import { Link, Route, Switch, useLocation } from "wouter";
 import { Armchair, Bell, BusFront, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff, User, WalletCards } from "lucide-react";
 import { apiErrorMessage, fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, isSessionDecision, type AdminMe } from "@/views/admin/_lib";
 import { SessionDevicesPanel } from "@/components/session-devices";
+import { EmployeeAvatar } from "@/components/employee-avatar";
 import { BUCKET_LABEL, STAGE_LABEL, isKoshaPendingPricing, money, staffApi, type Bucket, type CrewBooking } from "./lib";
 import { KoshaOpsBoardPage, KoshaOpsReportsPage } from "./operations";
 import { countOps, flushQueue } from "./offline";
@@ -563,11 +564,12 @@ function StaffPortalContent() {
   return (
     <div className="min-h-dvh bg-background text-foreground" dir="rtl">
       <header className="sticky top-0 z-20 flex items-center justify-between border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
-        <div className="flex items-center gap-2">
-          <Armchair className="h-5 w-5 text-primary" />
-          <div>
+        <div className="flex min-w-0 items-center gap-3">
+          <EmployeeAvatar name={me.fullName || me.username} photoUrl={me.photoUrl} size={64} />
+          <div className="min-w-0">
             <div className="text-sm font-bold leading-none">كادر الكوشات</div>
-            <div className="text-[11px] text-muted-foreground">{me.fullName || me.username}</div>
+            <div className="mt-1 truncate text-sm font-semibold">{me.fullName || me.username}</div>
+            <div className="mt-1 truncate text-xs text-muted-foreground">{[me.jobTitle, me.department].filter(Boolean).join(" · ") || "فريق التنفيذ"}</div>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -591,7 +593,7 @@ function StaffPortalContent() {
           <Route path="/staff/koshas/ops-board"><KoshaOpsBoardPage /></Route>
           <Route path="/staff/koshas/ops-reports"><KoshaOpsReportsPage /></Route>
           <Route path="/staff/koshas/reports"><Reports /></Route>
-          <Route path="/staff/koshas/account"><div className="p-4"><div className="mb-4"><div className="text-sm font-bold text-foreground">{me.fullName || me.username}</div><div className="text-[11px] text-muted-foreground">كادر الكوشات</div></div><SessionDevicesPanel portal="kosha" onSwitched={refreshMe} /></div></Route>
+          <Route path="/staff/koshas/account"><div className="p-4"><div className="mb-4 flex items-center gap-4 rounded-xl border border-border bg-card p-4"><EmployeeAvatar name={me.fullName || me.username} photoUrl={me.photoUrl} size={96} /><div className="min-w-0"><div className="break-words text-lg font-bold text-foreground">{me.fullName || me.username}</div><div className="mt-1 text-sm text-muted-foreground">{[me.jobTitle, me.department].filter(Boolean).join(" · ") || "كادر الكوشات"}</div><div className="mt-2 text-xs text-muted-foreground">الرقم الوظيفي: #{me.id}</div></div></div><SessionDevicesPanel portal="kosha" onSwitched={refreshMe} /></div></Route>
           <Route path="/staff/koshas"><Dashboard /></Route>
           <Route><Dashboard /></Route>
         </Switch>

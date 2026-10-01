@@ -134,10 +134,10 @@ export async function koshaManagerDetail(id:number,source:KoshaManagerSource,act
   if(delivery){const d=jsonToCamel(delivery);result.delivery={hasLoss:Boolean(d.hasLoss),hasBreakage:Boolean(d.hasBreakage),note:d.note||null,staffName:d.staffName||null,createdAt:iso(d.createdAt),signatureUrl:d.signatureUrl||null};}
   if(workorders[0]) {
     const w=workorders[0]; result.workOrder={id:w.id,number:w.work_order_no,status:w.status,leaderName:w.leader_name,requiredArrivalAt:iso(w.required_arrival_at),completedAt:iso(w.completed_at)};
-    const [we,members,checklist]=await Promise.all([rows(sql`select * from kosha_work_order_events where work_order_id=${w.id} order by created_at desc`),rows(sql`select m.staff_id,m.role,s.full_name,s.username from kosha_work_order_members m join staff s on s.id=m.staff_id where m.work_order_id=${w.id} and m.removed_at is null`),rows(sql`select c.*,s.full_name as staff_name from kosha_work_order_checklist c left join staff s on s.id=c.completed_by where c.work_order_id=${w.id} and c.photo_url is not null`)]);
+    const [we,members,checklist]=await Promise.all([rows(sql`select * from kosha_work_order_events where work_order_id=${w.id} order by created_at desc`),rows(sql`select m.staff_id,m.role,s.full_name,s.username,s.photo_url from kosha_work_order_members m join staff s on s.id=m.staff_id where m.work_order_id=${w.id} and m.removed_at is null`),rows(sql`select c.*,s.full_name as staff_name from kosha_work_order_checklist c left join staff s on s.id=c.completed_by where c.work_order_id=${w.id} and c.photo_url is not null`)]);
     result.media.push(...checklist.map(c=>({id:`checklist:${c.id}`,url:c.photo_url,kind:"image" as const,purpose:"execution",stage:null,staffName:c.staff_name,createdAt:iso(c.updated_at)})));
     result.timeline.push(...we.map(e=>timeline(e,"workorder")));
-    result.assignedStaff.push(...members.map(m=>({id:m.staff_id,name:m.full_name||m.username,role:m.role==="LEADER"?"مسؤول الفريق":"الفريق"})));
+    result.assignedStaff.push(...members.map(m=>({id:m.staff_id,name:m.full_name||m.username,role:m.role==="LEADER"?"مسؤول الفريق":"الفريق",photoUrl:m.photo_url??null})));
   }
   result.timeline.sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
   [booking]=await activityFor([booking],actor);result.booking=booking;

@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
+import { EmployeeSelect } from "@/components/employee-select";
 
 type Rollup = { total: number; ready: number; preparing: number; shortage: number; needsPurchase: number; completed: number; progress: number };
 type PrepCard = { source: "service" | "kosha"; id: number; number: string; customerName: string; eventDate: string | null; location: string | null; departments: string[]; rollup: Rollup };
@@ -18,7 +19,7 @@ type PrepList = { cards: PrepCard[]; summary: { bookings: number; totalItems: nu
 type PrepItem = {
   key: string; kind: "product" | "asset" | "manual"; productId: number | null; name: string; sku: string | null; department: string;
   required: number; totalStock: number; reservedByOthers: number; available: number; shortfall: number; status: string;
-  assigneeName: string | null; priority: string; deadline: string | null; note: string | null; purchaseRequested: boolean; evidenceCount: number;
+  assigneeName: string | null; assigneeId?: number | null; priority: string; deadline: string | null; note: string | null; purchaseRequested: boolean; evidenceCount: number;
   manual?: boolean; infoOnly?: boolean;
 };
 type PrepDetail = { source: string; id: number; items: PrepItem[]; rollup: Rollup };
@@ -73,9 +74,9 @@ function PreparationDetail({ card }: { card: PrepCard }) {
     queryFn: () => adminFetch(`${base}/preparation`),
     staleTime: 10_000,
   });
-  const staff = useQuery<{ eligibleStaff: Array<{ id: number; name: string }> }>({
+  const staff = useQuery<{ eligibleStaff: Array<{ id: number; name: string; photoUrl?: string | null; department?: string | null; jobTitle?: string | null }> }>({
     queryKey: ["admin", "preparation-staff", card.source, card.id],
-    queryFn: () => adminFetch(`${base}/staff-assignment`).catch(() => ({ eligibleStaff: [] })),
+    queryFn: () => adminFetch(`${base}/staff-assignment`),
     staleTime: 60_000,
   });
   const staffList = staff.data?.eligibleStaff ?? [];
@@ -127,12 +128,11 @@ function PreparationDetail({ card }: { card: PrepCard }) {
           <select defaultValue="" className={cell} disabled={bulk.isPending} onChange={(e) => { if (e.target.value) bulk.mutate({ keys: selected, status: e.target.value }); e.target.value = ""; }}>
             <option value="">تغيير الحالة…</option>{MANUAL_STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
-          <select defaultValue="" className={cell} disabled={bulk.isPending || !staffList.length} onChange={(e) => { const id = Number(e.target.value); if (id) bulk.mutate({ keys: selected, assigneeId: id, assigneeName: staffName(id) }); e.target.value = ""; }}>
-            <option value="">تعيين موظف…</option>{staffList.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          <EmployeeSelect employees={staffList} value="" placeholder="تعيين موظف…" aria-label="تعيين موظف للعناصر المحددة" disabled={bulk.isPending || staff.isError || !staffList.length} onValueChange={(value) => { const id = Number(value); if (id) bulk.mutate({ keys: selected, assigneeId: id, assigneeName: staffName(id) }); }} />
           <Button size="sm" variant="ghost" onClick={() => setSelected([])}>إلغاء التحديد</Button>
         </div>
       ) : null}
+      {staff.isError ? <div role="alert" className="text-xs text-destructive">تعذر تحميل الموظفين. <Button type="button" size="sm" variant="ghost" onClick={() => void staff.refetch()}>إعادة المحاولة</Button></div> : null}
       {[...groups.entries()].map(([dept, deptItems]) => (
         <div key={dept}>
           <div className="mb-1 flex items-center gap-2 text-xs font-bold text-primary"><Package className="h-3.5 w-3.5" /> {deptLabel(dept)} <span className="text-muted-foreground">({deptItems.length})</span></div>
@@ -165,9 +165,7 @@ function PreparationDetail({ card }: { card: PrepCard }) {
                     </td>
                     <td className="p-2">
                       <div className="flex items-center gap-1">
-                        <select value={item.assigneeName && staffList.find((s) => s.name === item.assigneeName)?.id ? String(staffList.find((s) => s.name === item.assigneeName)!.id) : ""} className={`${cell} min-w-0 flex-1`} disabled={update.isPending || !staffList.length} onChange={(e) => { const id = Number(e.target.value); update.mutate({ key: item.key, itemName: item.name, department: item.department, assigneeId: id || null, assigneeName: id ? staffName(id) : null }); }}>
-                          <option value="">{item.assigneeName || "بدون"}</option>{staffList.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                        </select>
+                        <EmployeeSelect employees={staffList} value={item.assigneeId ? String(item.assigneeId) : ""} placeholder={item.assigneeName || "بدون مسؤول"} emptyLabel="بدون مسؤول" aria-label={`المسؤول عن ${item.name}`} className="min-w-0 flex-1" disabled={update.isPending || staff.isError || !staffList.length} onValueChange={(value) => { const id = Number(value); update.mutate({ key: item.key, itemName: item.name, department: item.department, assigneeId: id || null, assigneeName: id ? staffName(id) : null }); }} />
                         {item.manual ? <button type="button" title="حذف العنصر" aria-label="حذف العنصر" disabled={removeItem.isPending} onClick={() => removeItem.mutate(item.key)} className="shrink-0 rounded-md border border-border/40 p-1 text-status-danger hover:bg-status-danger/10"><Trash2 className="h-3.5 w-3.5" /></button> : null}
                       </div>
                     </td>

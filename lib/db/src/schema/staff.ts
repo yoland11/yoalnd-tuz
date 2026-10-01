@@ -7,6 +7,7 @@ export const staffTable = pgTable("staff", {
   username: varchar("username", { length: 50 }).notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   fullName: text("full_name").notNull().default(""),
+  photoUrl: text("photo_url"),
   role: varchar("role", { length: 30 }).notNull().default("employee"),
   permissions: jsonb("permissions").$type<string[]>().notNull().default([]),
   department: varchar("department", { length: 60 }).notNull().default("general"),

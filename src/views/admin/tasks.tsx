@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { uploadImageWithVariants, uploadTaskFile } from "@/lib/large-image-upload";
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
+import { EmployeeAvatar } from "@/components/employee-avatar";
 
 type Staff = { id: number; username: string; fullName: string; role: string; isActive: boolean; department?: string | null; jobTitle?: string | null; photoUrl?: string | null };
 type Task = {
@@ -88,15 +89,6 @@ function formatDate(value: string | null) {
   return new Date(value).toLocaleString("ar-IQ-u-nu-latn", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function employeeInitials(employee: Staff) {
-  return (employee.fullName || employee.username || "؟")
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join("");
-}
-
 function EmployeeSelector({
   staff,
   selectedIds,
@@ -132,7 +124,7 @@ function EmployeeSelector({
     {loading ? <div className="space-y-2"><Skeleton className="h-14 rounded-lg" /><Skeleton className="h-14 rounded-lg" /></div> : error ? <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive"><p>{error instanceof Error ? error.message : "تعذر تحميل الموظفين النشطين."}</p>{onRetry ? <Button type="button" size="sm" variant="outline" className="mt-2 min-h-10 border-destructive/30 bg-background text-destructive hover:text-destructive" onClick={onRetry}>إعادة المحاولة</Button> : null}</div> : !activeStaff.length ? <p className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-sm text-muted-foreground">لا يوجد موظفون نشطون.</p> : !visibleStaff.length ? <p className="px-3 py-4 text-center text-sm text-muted-foreground">لا توجد نتائج مطابقة.</p> : <div className="max-h-60 space-y-1 overflow-y-auto" role="listbox" aria-multiselectable="true">{visibleStaff.map((employee) => {
       const selected = selectedIds.includes(employee.id);
       return <button key={employee.id} type="button" role="option" aria-selected={selected} onClick={() => toggle(employee.id)} className={`flex min-h-14 w-full items-center gap-3 rounded-lg px-2.5 py-2 text-right transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${selected ? "bg-primary/10 text-primary" : "hover:bg-muted"}`}>
-        {employee.photoUrl ? <img src={employee.photoUrl} alt="" className="h-10 w-10 shrink-0 rounded-full object-cover" /> : <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-muted text-xs font-black text-muted-foreground">{employeeInitials(employee)}</span>}
+        <EmployeeAvatar name={employee.fullName || employee.username} photoUrl={employee.photoUrl} />
         <span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold">{employee.fullName || employee.username}</span><span className="mt-0.5 block truncate text-xs text-muted-foreground">{[employee.department, employee.jobTitle].filter(Boolean).join(" · ") || "بدون قسم أو مسمى وظيفي"}</span></span>
         <span className={`h-5 w-5 shrink-0 rounded border ${selected ? "border-primary bg-primary" : "border-border bg-background"}`} aria-hidden="true">{selected ? <CheckCircle2 className="h-full w-full text-primary-foreground" /> : null}</span>
       </button>;
@@ -351,7 +343,7 @@ export default function TasksPage() {
                         <span className="rounded-full bg-primary/10 text-primary px-2.5 py-1">{STATUS_LABELS[task.status] ?? task.status}</span>
                         <span className="rounded-full bg-background border border-border/30 px-2.5 py-1">{PRIORITY_LABELS[task.priority] ?? task.priority}</span>
                         <span className="inline-flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5" /> {formatDate(task.dueAt)}</span>
-                        {task.assignedStaff.map((staff) => <span key={staff.id}>{staff.fullName || staff.username}</span>)}
+                        {task.assignedStaff.map((staff) => <span key={staff.id} className="inline-flex items-center gap-2"><EmployeeAvatar name={staff.fullName || staff.username} photoUrl={staff.photoUrl} size={32} />{staff.fullName || staff.username}</span>)}
                       </div>
                       {task.entityProgress && task.entityProgress.total > 0 && (
                         <div className="mt-3 max-w-xs">

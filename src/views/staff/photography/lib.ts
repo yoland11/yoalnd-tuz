@@ -100,7 +100,7 @@ function reportQuery(opts: { scope?: "all"; photographerId?: number | null; from
 
 export const photographyApi = {
   dashboard: () => adminFetch<{ today: string; counts: { events: number; orders: number; ready: number; delivered: number }; recentEvents: PhotographyEvent[]; recentOrders: PhotographyOrder[] }>(`${base}/dashboard`),
-  photographers: () => adminFetch<Array<{ id: number; name: string }>>(`${base}/photographers`),
+  photographers: () => adminFetch<Array<{ id: number; name: string; photoUrl?: string | null; jobTitle?: string | null; department?: string | null }>>(`${base}/photographers`),
   prices: () => adminFetch<PhotographyPrice[]>(`${base}/prices`),
   events: (search = "", opts: { photographerId?: number | null; from?: string; to?: string; archived?: boolean } = {}) => {
     const params = new URLSearchParams({ search });
@@ -228,7 +228,7 @@ export type ShootDetail = ShootCard & {
   };
   orderCount: number;
   crew: Array<{
-    id: number; staffId: number; staffName: string; role: string; isLead: boolean;
+    id: number; staffId: number; staffName: string; photoUrl?: string | null; role: string; isLead: boolean;
     assignmentStatus: string; assignedAt: string | null; acceptedAt: string | null;
     rejectedAt: string | null; startedAt: string | null; completedAt: string | null;
     conflictReason: string | null; overrideReason: string | null;

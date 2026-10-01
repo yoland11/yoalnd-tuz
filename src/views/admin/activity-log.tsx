@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, Filter, Search, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmployeeAvatar } from "@/components/employee-avatar";
+import { EmployeeSelect } from "@/components/employee-select";
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
 
@@ -10,6 +12,7 @@ type ActivityLogRow = {
   id: number;
   staffId: number | null;
   userName: string;
+  staffPhotoUrl?: string | null;
   action: string;
   entityType: string | null;
   entityId: number | null;
@@ -20,7 +23,7 @@ type ActivityLogRow = {
 
 type ActivityLogResponse = {
   data: ActivityLogRow[];
-  users: { id: number; name: string; username: string }[];
+  users: { id: number; name: string; username: string; photoUrl?: string | null }[];
   total: number;
   page: number;
   limit: number;
@@ -141,16 +144,7 @@ export default function ActivityLogPage() {
               className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
-          <select
-            value={userId}
-            onChange={(e) => { setUserId(e.target.value); setPage(1); }}
-            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <option value="">كل المستخدمين</option>
-            {data?.users.map((user) => (
-              <option key={user.id} value={user.id}>{user.name}</option>
-            ))}
-          </select>
+          <EmployeeSelect employees={(data?.users ?? []).map((user) => ({ id: user.id, name: user.name, username: user.username, photoUrl: user.photoUrl }))} value={userId} onValueChange={(value) => { setUserId(value); setPage(1); }} placeholder="كل المستخدمين" emptyLabel="كل المستخدمين" aria-label="تصفية حسب المستخدم" />
           <select
             value={action}
             onChange={(e) => { setAction(e.target.value); setPage(1); }}
@@ -217,7 +211,7 @@ export default function ActivityLogPage() {
                 {data.data.map((row) => (
                   <tr key={row.id} className="hover:bg-background/30">
                     <td className="p-3 text-muted-foreground whitespace-nowrap">{formatDate(row.createdAt)}</td>
-                    <td className="p-3 font-medium text-foreground whitespace-nowrap">{row.userName}</td>
+                    <td className="p-3 font-medium text-foreground whitespace-nowrap"><span className="flex items-center gap-2"><EmployeeAvatar name={row.userName} photoUrl={row.staffPhotoUrl} size={32} />{row.userName}</span></td>
                     <td className="p-3">
                       <span className="inline-flex rounded-full bg-primary/10 text-primary px-2.5 py-1 text-xs">
                         {ACTION_LABELS[row.action] ?? row.action}

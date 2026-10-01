@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { EmployeeAvatar } from "@/components/employee-avatar";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -139,7 +140,7 @@ type SalaryRow = SalaryLine & {
   auditLog?: unknown[];
   timeline?: unknown[];
 };
-type StaffOption = { id: number; fullName?: string; username?: string; department?: string };
+type StaffOption = { id: number; fullName?: string; username?: string; department?: string; photoUrl?: string | null };
 type SalaryManagement = {
   payments: Array<{ id: number; amount: string | number; payment_date: string; payment_method: string; transaction_no: string; financial_transaction_id: number; status: string; created_by_name: string; notes?: string | null; attachment?: string | null; balance_before?: string | number; balance_after?: string | number; reversal_txn_id?: number | null }>;
   adjustments: Array<{ id: number; direction: string; adjustment_type: string; amount: string | number; reason: string; status: string; include_in: string; effective_date: string; created_by_name: string; created_at: string }>;
@@ -247,6 +248,7 @@ function EmployeeSalariesPageInner() {
   const detailTarget = selected || reconcileRow || correctionRow;
   const managementQuery = useQuery({ queryKey: ["employee-salary-management", detailTarget?.runId, detailTarget?.id], enabled: !!detailTarget, queryFn: () => adminFetch<SalaryManagement>(`/admin/hr/payroll/${detailTarget!.runId}/lines/${detailTarget!.id}/management`) });
   const rows = useMemo(() => flattenRuns(runsQuery.data || []), [runsQuery.data]);
+  const staffById = useMemo(() => new Map((staffQuery.data ?? []).map((staff) => [staff.id, staff])), [staffQuery.data]);
   const departments = useMemo(() => [...new Set(rows.map((row) => row.department).filter(Boolean))].sort(), [rows]);
   const years = useMemo(() => [...new Set(rows.map((row) => row.period.slice(0, 4)))].sort().reverse(), [rows]);
 
@@ -553,7 +555,7 @@ function EmployeeSalariesPageInner() {
       {runsQuery.isError && <tr><td colSpan={8} className="p-12 text-center text-destructive">تعذر تحميل الرواتب. حاول تحديث الصفحة.</td></tr>}
       {!runsQuery.isLoading && filtered.map((row) => {
         return <tr key={row.id} className="align-middle transition-colors hover:bg-muted/30">
-          <td className="px-3 py-2.5"><div className="flex items-center gap-2"><b className="whitespace-nowrap">{row.employeeName}</b>{row.legacyIssues.length > 0 && <Badge variant="outline" className="shrink-0 border-amber-500/30 bg-amber-500/10 px-1.5 py-0 text-[10px] text-amber-700">قديم</Badge>}</div><div className="text-xs text-muted-foreground">{row.employeeCode} · {row.department || "—"}</div><div className="font-mono text-[11px] text-muted-foreground/80">{row.salaryNumber}</div></td>
+          <td className="px-3 py-2.5"><div className="flex items-center gap-2"><EmployeeAvatar name={row.employeeName} photoUrl={staffById.get(Number(row.staff_id))?.photoUrl} size={32} /><div><div className="flex items-center gap-2"><b className="whitespace-nowrap">{row.employeeName}</b>{row.legacyIssues.length > 0 && <Badge variant="outline" className="shrink-0 border-amber-500/30 bg-amber-500/10 px-1.5 py-0 text-[10px] text-amber-700">قديم</Badge>}</div><div className="text-xs text-muted-foreground">{row.employeeCode} · {row.department || "—"}</div><div className="font-mono text-[11px] text-muted-foreground/80">{row.salaryNumber}</div></div></div></td>
           <td className="px-3 py-2.5"><b className="whitespace-nowrap">{periodLabel(row.period)}</b><div className="whitespace-nowrap text-xs text-muted-foreground">{row.periodStart} — {row.periodEnd || "—"}</div></td>
           <MoneyCell value={row.baseSalary} /><MoneyCell value={row.netSalary} strong /><MoneyCell value={row.amountPaid} tone="text-emerald-600" /><MoneyCell value={row.remainingSalary} tone="text-amber-600" />
           <td className="px-3 py-2.5"><div className="flex flex-col items-start gap-1"><Badge variant="outline" className={statusTone(row.paymentStatus)}>{paymentLabels[row.paymentStatus] || row.paymentStatus}</Badge><Badge variant="outline" className={statusTone(row.payrollStatus)}>{payrollLabels[row.payrollStatus] || row.payrollStatus}</Badge></div></td>

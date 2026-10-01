@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
+import { EmployeeAvatar } from "@/components/employee-avatar";
+import { EmployeeSelect } from "@/components/employee-select";
+import { employeeMatchesSearch } from "@/lib/employee-identity";
 import {
   AlertTriangle,
   ArchiveRestore,
@@ -189,7 +192,7 @@ type AssetRow = {
 };
 
 type TimelineRow = { id: number; type: string; title: string; body?: string | null; actorName?: string; createdAt: string; metadata?: Record<string, any> };
-type AssignableStaff = { id: number; name: string; role?: string | null; department?: string | null };
+type AssignableStaff = { id: number; name: string; role?: string | null; department?: string | null; photoUrl?: string | null; jobTitle?: string | null };
 type StaffAssignmentData = { types: string[]; assignedStaff: AssignableStaff[]; eligibleStaff: AssignableStaff[] };
 type BranchData = {
   data: Array<{ id: number; name: string; code?: string | null; isActive?: boolean }>;
@@ -288,6 +291,7 @@ function StaffAssignmentControl({ base, queryKey, booking }: { base: string; que
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
+  const [staffSearch, setStaffSearch] = useState("");
   const query = useQuery<StaffAssignmentData>({ queryKey: [...queryKey, "staff-assignment"], queryFn: () => adminFetch(`${base}/staff-assignment`) });
   useEffect(() => {
     if (open) setSelected(query.data?.assignedStaff.map((staff) => staff.id) ?? []);
@@ -307,22 +311,27 @@ function StaffAssignmentControl({ base, queryKey, booking }: { base: string; que
   const toggle = (staffId: number) => setSelected((current) => current.includes(staffId) ? current.filter((id) => id !== staffId) : [...current, staffId]);
   return <Dialog open={open} onOpenChange={setOpen}>
     <Button variant="outline" className="ajn-op-assign-trigger" onClick={() => setOpen(true)} disabled={query.isLoading}>
+      {assigned.slice(0, 3).map((staff) => <EmployeeAvatar key={staff.id} name={staff.name} photoUrl={staff.photoUrl} size={32} />)}
       <Users /> {assigned.length ? assigned.map((staff) => staff.name).join("، ") : "تعيين الموظفين"}
     </Button>
     <DialogContent dir="rtl" className="ajn-op-staff-dialog">
       <DialogHeader><DialogTitle>تعيين فريق الحجز</DialogTitle><DialogDescription>اختر موظفاً واحداً أو أكثر من المخولين لخدمات هذا الحجز. لا ينشئ التعيين مهاماً مكررة.</DialogDescription></DialogHeader>
       <div className="ajn-op-assignment-context">{booking.services.map((service) => service.type).join(" · ")} <span>·</span> {booking.number}</div>
+      <Input aria-label="بحث عن موظف" placeholder="ابحث باسم الموظف أو القسم..." value={staffSearch} onChange={(event) => setStaffSearch(event.target.value)} />
+      {query.isError ? <div role="alert" className="text-sm text-destructive">تعذر تحميل فريق الحجز. <Button type="button" variant="ghost" onClick={() => void query.refetch()}>إعادة المحاولة</Button></div> : null}
       <div className="ajn-op-staff-picker" aria-label="الموظفون المخولون">
-        {query.isLoading ? <Skeleton className="h-28" /> : query.data?.eligibleStaff.length ? query.data.eligibleStaff.map((staff) => {
+        {query.isLoading ? <Skeleton className="h-28" /> : query.isError ? null : query.data?.eligibleStaff.length ? query.data.eligibleStaff.filter((staff) => employeeMatchesSearch(staff, staffSearch)).map((staff) => {
           const checked = selected.includes(staff.id);
           return <label key={staff.id} className={checked ? "is-selected" : ""}>
             <input type="checkbox" checked={checked} onChange={() => toggle(staff.id)} />
+            <EmployeeAvatar name={staff.name} photoUrl={staff.photoUrl} size={40} />
             <span><b>{staff.name}</b><small>{[staff.role, staff.department].filter(Boolean).join(" · ") || "موظف مخول"}</small></span>
             <CheckCircle2 aria-hidden="true" />
           </label>;
         }) : <div className="ajn-op-empty compact"><Users /><h3>لا يوجد موظف مخول لهذه الخدمة</h3><p>راجع قسم الموظف وصلاحياته ثم أعد المحاولة.</p></div>}
       </div>
-      <DialogFooter className="ajn-op-dialog-actions"><Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button><Button className="ajn-op-primary" disabled={mutation.isPending || query.isLoading} onClick={() => mutation.mutate()}>{mutation.isPending ? "جارٍ الحفظ..." : selected.length ? `حفظ ${selected.length} موظف` : "إزالة كل الموظفين"}</Button></DialogFooter>
+      {!query.isError && query.data?.eligibleStaff.length && !query.data.eligibleStaff.some((staff) => employeeMatchesSearch(staff, staffSearch)) ? <p className="text-sm text-muted-foreground">لا توجد نتائج مطابقة.</p> : null}
+      <DialogFooter className="ajn-op-dialog-actions"><Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button><Button className="ajn-op-primary" disabled={mutation.isPending || query.isLoading || query.isError} onClick={() => mutation.mutate()}>{mutation.isPending ? "جارٍ الحفظ..." : selected.length ? `حفظ ${selected.length} موظف` : "إزالة كل الموظفين"}</Button></DialogFooter>
     </DialogContent>
   </Dialog>;
 }

@@ -43,6 +43,7 @@ export type KoshaManagerTimeline = {
   title: string;
   note: string | null;
   staffName: string | null;
+  actorPhotoUrl?: string | null;
   createdAt: string | null;
   fromStage: string | null;
   toStage: string | null;
@@ -100,7 +101,7 @@ export type KoshaManagerDetail = {
   timeline: KoshaManagerTimeline[];
   damages: KoshaManagerProblem[];
   referencePhotos: string[];
-  assignedStaff: Array<{ id: number | null; name: string; role: string }>;
+  assignedStaff: Array<{ id: number | null; name: string; role: string; photoUrl?: string | null }>;
   delivery: { hasLoss: boolean; hasBreakage: boolean; note: string | null; staffName: string | null; createdAt: string | null; signatureUrl: string | null } | null;
   workOrder: { id: number; number: string; status: string; leaderName: string | null; requiredArrivalAt: string | null; completedAt: string | null } | null;
   permissions: { execution: boolean; resolveProblems: boolean; manageInstructions: boolean };

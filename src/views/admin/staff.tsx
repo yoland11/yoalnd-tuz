@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Edit2, Archive, X, UserCog, Building2, ChevronDown } from "lucide-react";
+import { Plus, Edit2, Archive, X, Building2, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmployeeAvatar } from "@/components/employee-avatar";
+import { ImageUploadEditor } from "@/components/image-upload-editor";
 import { adminFetch, ALL_PERMISSIONS, PERMISSION_LABELS } from "./_lib";
+import { employeePhotoUrlFromUpload } from "@/lib/employee-identity";
 import { EmptyState } from "./_layout";
 import ScanDocumentButton from "./scan-document-button";
 import { useToast } from "@/hooks/use-toast";
@@ -15,6 +18,7 @@ type Staff = {
   id: number;
   username: string;
   fullName: string;
+  photoUrl?: string | null;
   role: string;
   permissions: string[];
   isActive: boolean;
@@ -120,6 +124,7 @@ type Editing = {
   username: string;
   password: string;
   fullName: string;
+  photoUrl: string | null;
   role: string;
   department: string;
   baseSalary: string;
@@ -195,6 +200,7 @@ const blank: Editing = {
   username: "",
   password: "",
   fullName: "",
+  photoUrl: null,
   role: "booking_staff",
   department: "general",
   baseSalary: "0",
@@ -364,6 +370,7 @@ export default function StaffPage() {
     mutationFn: (e: Editing) => {
       const body: any = {
         fullName: e.fullName ?? "",
+        photoUrl: e.photoUrl ?? null,
         department: e.department ?? "general",
         baseSalary: Number(e.baseSalary ?? 0),
         hiredAt: e.hiredAt || undefined,
@@ -482,9 +489,7 @@ export default function StaffPage() {
             >
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
-                    <UserCog className="w-5 h-5 text-primary" />
-                  </div>
+                  <EmployeeAvatar name={s.fullName || s.username} photoUrl={s.photoUrl} size={40} />
                   <div>
                     <p className="font-semibold text-foreground">
                       {s.fullName || s.username}
@@ -562,6 +567,7 @@ export default function StaffPage() {
                       username: s.username,
                       password: "",
                       fullName: s.fullName,
+                      photoUrl: s.photoUrl ?? null,
                       role: s.role === "staff" ? "employee" : s.role,
                       department: s.department ?? "general",
                       baseSalary: String(s.baseSalary ?? 0),
@@ -622,6 +628,27 @@ export default function StaffPage() {
             </div>
             {editing.id && <div className="grid grid-cols-3 rounded-lg bg-muted p-1 text-sm"><button type="button" onClick={() => setEditorTab("profile")} className={`rounded-md px-3 py-2 ${editorTab === "profile" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>بيانات الموظف</button><button type="button" onClick={() => setEditorTab("salary")} className={`rounded-md px-3 py-2 ${editorTab === "salary" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>💰 إعدادات الراتب</button><button type="button" onClick={() => setEditorTab("devices")} className={`rounded-md px-3 py-2 ${editorTab === "devices" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>الأجهزة</button></div>}
             {editorTab === "devices" && editing.id ? <EmployeeSessionsManager staffId={editing.id} employeeName={editing.fullName} /> : editorTab === "salary" && editing.id ? <SalarySettingsTab employee={{ ...editing, id: editing.id }} onSaved={() => qc.invalidateQueries({ queryKey: ["admin", "staff"] })} /> : <>
+            <section className="rounded-xl border border-border/40 bg-muted/20 p-4">
+              <div className="mb-3 flex items-center gap-3">
+                <EmployeeAvatar name={editing.fullName || editing.username} photoUrl={editing.photoUrl} size={96} />
+                <div className="min-w-0">
+                  <h4 className="font-semibold">صورة الموظف</h4>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">اختيارية. قصّ مربع تلقائي مع معاينة؛ تظهر الصورة في البوابات وقوائم إسناد الموظفين.</p>
+                </div>
+              </div>
+              <ImageUploadEditor
+                kind="avatar"
+                label={editing.photoUrl ? "استبدال صورة الموظف" : "رفع صورة الموظف"}
+                accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                currentImage={editing.photoUrl}
+                onComplete={(results) => {
+                  const photoUrl = employeePhotoUrlFromUpload(results[0]?.metadata ?? {});
+                  if (!photoUrl) throw new Error("تعذر حفظ رابط الصورة المرفوعة");
+                  setEditing((current) => current ? { ...current, photoUrl } : current);
+                }}
+                onRemove={editing.photoUrl ? () => setEditing((current) => current ? { ...current, photoUrl: null } : current) : undefined}
+              />
+            </section>
             <Field
               label="الاسم الكامل"
               value={editing.fullName}
