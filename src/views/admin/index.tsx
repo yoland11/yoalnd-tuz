@@ -26,6 +26,7 @@ const ServicesPage = lazy(() => import("./services"));
 const AdminKoshasPage = lazy(() => import("./koshas"));
 const KoshaPackagesPage = lazy(() => import("./kosha-packages"));
 const AdminKoshaBookingsPage = lazy(() => import("./kosha-bookings"));
+const KoshaFinancePage = lazy(() => import("./kosha-finance"));
 const KoshatTasksPage = lazy(() => import("./koshat-tasks"));
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
 const ProductsPage = lazy(() => import("./products"));
@@ -473,6 +474,20 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="orders">
                 <AdminKoshaBookingsPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/kosha-finance/:id">
+            {() => (
+              <Guard me={me} perm="accounting">
+                <KoshaFinancePage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/kosha-finance">
+            {() => (
+              <Guard me={me} perm="accounting">
+                <KoshaFinancePage />
               </Guard>
             )}
           </Route>

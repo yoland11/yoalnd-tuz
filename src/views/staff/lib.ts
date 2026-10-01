@@ -187,6 +187,13 @@ function sourceQuery(source: "kosha" | "service" = "kosha") {
   return `?source=${source}`;
 }
 export const staffApi = {
+  koshaPassport: (id: number) => adminFetch<{
+    kosha: { id: number; financialCode: string; name: string; mainImage: string | null; createdAt: string; availabilityStatus: string };
+    bookingCount: number; responsibleEmployee: string | null; currentCondition: string; maintenanceDue: boolean;
+    components: Array<{ id: number; productId: number; name: string; image: string | null; quantity: string; storageLocation: string | null; shared: boolean; stock: string | null }>;
+    openDamageReports: Array<{ id: number; incidentType: string; description: string; status: string; createdAt: string }>;
+    maintenanceHistory: Array<{ id: number; maintenanceType: string; maintenanceDate: string; description: string; nextMaintenanceDate: string | null }>;
+  }>(`${base}/passport/${id}`),
   salary: () => adminFetch<{ data: Array<{
     id: number; month: string; baseSalary: number; bonus: number; deduction: number;
     netSalary: number; amountPaid: number; remaining: number; paymentStatus: string;

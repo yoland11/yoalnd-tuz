@@ -479,6 +479,27 @@ function Approvals() {
   );
 }
 
+function KoshaPassport({ id }: { id: number }) {
+  const [data, setData] = useState<Awaited<ReturnType<typeof staffApi.koshaPassport>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    staffApi.koshaPassport(id).then((row) => { if (alive) setData(row); }).catch((reason: Error) => { if (alive) setError(reason.message || "تعذر تحميل جواز الكوشة"); });
+    return () => { alive = false; };
+  }, [id]);
+  if (error) return <div dir="rtl" role="alert" className="m-4 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">{error}</div>;
+  if (!data) return <div dir="rtl" className="p-8 text-center text-sm text-muted-foreground">جارٍ تحميل جواز الكوشة…</div>;
+  return <div dir="rtl" className="mx-auto max-w-3xl space-y-4 p-4">
+    <section className="overflow-hidden rounded-2xl border border-border bg-card">
+      {data.kosha.mainImage ? <img src={data.kosha.mainImage} alt={data.kosha.name} className="h-56 w-full object-cover" /> : <div className="flex h-36 items-center justify-center bg-muted text-muted-foreground">لا توجد صورة رئيسية</div>}
+      <div className="space-y-2 p-4"><p className="text-xs font-bold text-primary">{data.kosha.financialCode}</p><h1 className="text-2xl font-extrabold">جواز {data.kosha.name}</h1><p className="text-sm text-muted-foreground">تاريخ التسجيل: {new Date(data.kosha.createdAt).toLocaleDateString("ar-IQ")} · الحجوزات: {data.bookingCount}</p><div className="flex flex-wrap gap-2 text-xs"><span className="rounded-full bg-muted px-3 py-1">الحالة: {data.currentCondition}</span>{data.responsibleEmployee && <span className="rounded-full bg-muted px-3 py-1">المسؤول: {data.responsibleEmployee}</span>}{data.maintenanceDue && <span className="rounded-full bg-status-warning/15 px-3 py-1 text-status-warning">موعد صيانة مستحق</span>}</div></div>
+    </section>
+    <section className="rounded-xl border border-border bg-card p-4"><h2 className="mb-3 font-bold">المكونات المسجلة</h2>{data.components.length ? <div className="divide-y divide-border">{data.components.map((item) => <div key={item.id} className="flex items-center gap-3 py-3">{item.image ? <img src={item.image} alt="" className="h-12 w-12 rounded-lg object-cover" /> : <div className="h-12 w-12 rounded-lg bg-muted" />}<div className="min-w-0 flex-1"><p className="font-semibold">{item.name}</p><p className="text-xs text-muted-foreground">كمية الإسناد: {item.quantity} · {item.shared ? "مشترك" : "مخصص"} · {item.storageLocation || "موقع التخزين غير محدد"}</p></div></div>)}</div> : <p className="text-sm text-muted-foreground">لا توجد مكونات مسندة للكوشة</p>}</section>
+    {data.openDamageReports.length > 0 && <section className="rounded-xl border border-status-warning/40 bg-status-warning/5 p-4"><h2 className="mb-2 font-bold">بلاغات تحتاج متابعة</h2>{data.openDamageReports.map((row) => <p key={row.id} className="py-1 text-sm">{row.incidentType} · {row.description} · {row.status}</p>)}</section>}
+    <section className="rounded-xl border border-border bg-card p-4"><h2 className="mb-3 font-bold">سجل الصيانة</h2>{data.maintenanceHistory.length ? data.maintenanceHistory.map((row) => <div key={row.id} className="border-t border-border py-3 text-sm"><b>{row.maintenanceType} · {row.maintenanceDate}</b><p className="mt-1 text-muted-foreground">{row.description}</p>{row.nextMaintenanceDate && <p className="text-xs text-muted-foreground">الموعد القادم: {row.nextMaintenanceDate}</p>}</div>) : <p className="text-sm text-muted-foreground">لا يوجد سجل صيانة</p>}</section>
+  </div>;
+}
+
 export default function StaffPortal() {
   return <StaffPortalBoundary><StaffPortalContent /></StaffPortalBoundary>;
 }
@@ -584,6 +605,7 @@ function StaffPortalContent() {
       <main className="pb-20">
         <Switch>
           <Route path="/staff/koshas/work-orders/:id">{(p) => <KoshatWorkOrderDetail id={Number(p.id)} />}</Route>
+          <Route path="/staff/koshas/passport/:id">{(p) => <KoshaPassport id={Number(p.id)} />}</Route>
           <Route path="/staff/koshas/work-orders"><MyKoshatWorkOrders /></Route>
           <Route path="/staff/koshas/booking/:id">{(p) => <StaffBookingDetail id={Number(p.id)} source={new URLSearchParams(window.location.search).get("source") === "service" ? "service" : "kosha"} onBack={() => window.history.back()} />}</Route>
           <Route path="/staff/koshas/list/:bucket">{(p) => <BookingsList bucket={(p.bucket as Bucket | "all") ?? "all"} showOperations={canSeeAllOperations} />}</Route>

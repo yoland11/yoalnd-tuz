@@ -1,4 +1,6 @@
+import { sql } from "drizzle-orm";
 import {
+  check,
   pgTable,
   serial,
   text,
@@ -7,10 +9,13 @@ import {
   timestamp,
   varchar,
   date,
+  index,
 } from "drizzle-orm/pg-core";
 import { suppliersTable } from "./suppliers";
 import { staffTable } from "./staff";
 import { productsTable } from "./products";
+import { koshaConstructionProjectsTable } from "./kosha-finance";
+import { koshaBookingsTable, koshasTable } from "./koshas";
 
 export const purchaseInvoicesTable = pgTable("purchase_invoices", {
   id: serial("id").primaryKey(),
@@ -58,6 +63,11 @@ export const purchaseInvoiceItemsTable = pgTable("purchase_invoice_items", {
     .notNull()
     .references(() => purchaseInvoicesTable.id, { onDelete: "cascade" }),
   productId: integer("product_id").references(() => productsTable.id),
+  costCategory: varchar("cost_category", { length: 20 }),
+  koshaId: integer("kosha_id").references(() => koshasTable.id, { onDelete: "set null" }),
+  constructionProjectId: integer("construction_project_id").references(() => koshaConstructionProjectsTable.id, { onDelete: "set null" }),
+  bookingId: integer("booking_id").references(() => koshaBookingsTable.id, { onDelete: "set null" }),
+  assetProductId: integer("asset_product_id").references(() => productsTable.id, { onDelete: "set null" }),
   productName: text("product_name").notNull(),
   barcode: varchar("barcode", { length: 100 }),
   quantity: numeric("quantity", { precision: 12, scale: 3 })
@@ -74,7 +84,19 @@ export const purchaseInvoiceItemsTable = pgTable("purchase_invoice_items", {
     .default("0"),
   total: numeric("total", { precision: 14, scale: 2 }).notNull().default("0"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => ({
+  koshaIdx: index("purchase_invoice_items_kosha_idx").on(table.koshaId, table.costCategory),
+  bookingIdx: index("purchase_invoice_items_booking_idx").on(table.bookingId),
+  assetProductIdx: index("purchase_invoice_items_asset_product_idx").on(table.assetProductId),
+  costCategoryCheck: check(
+    "purchase_invoice_items_cost_category_check",
+    sql`${table.costCategory} IS NULL OR ${table.costCategory} IN ('investment', 'operating', 'booking')`,
+  ),
+  bookingCategoryCheck: check(
+    "purchase_invoice_items_booking_category_check",
+    sql`${table.costCategory} <> 'booking' OR ${table.bookingId} IS NOT NULL`,
+  ),
+}));
 
 export type PurchaseInvoice = typeof purchaseInvoicesTable.$inferSelect;
 export type InsertPurchaseInvoice = typeof purchaseInvoicesTable.$inferInsert;

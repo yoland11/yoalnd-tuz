@@ -1,8 +1,12 @@
-import { pgTable, serial, text, numeric, integer, timestamp, varchar, date } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { check, index, pgTable, serial, text, numeric, integer, timestamp, varchar, date } from "drizzle-orm/pg-core";
 import { staffTable } from "./staff";
 import { customersTable } from "./customers";
 import { ordersTable } from "./orders";
 import { serviceOrdersTable } from "./services";
+import { koshaBookingsTable, koshasTable } from "./koshas";
+import { suppliersTable } from "./suppliers";
+import { koshaConstructionProjectsTable } from "./kosha-finance";
 
 export const expenseCategoriesTable = pgTable("expense_categories", {
   id: serial("id").primaryKey(),
@@ -76,6 +80,14 @@ export const expensesTable = pgTable("expenses", {
   name: text("name").notNull().default(""),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   categoryId: integer("category_id").references(() => expenseCategoriesTable.id),
+  costCategory: varchar("cost_category", { length: 20 }),
+  koshaId: integer("kosha_id").references(() => koshasTable.id, { onDelete: "set null" }),
+  constructionProjectId: integer("construction_project_id").references(() => koshaConstructionProjectsTable.id, { onDelete: "set null" }),
+  bookingId: integer("booking_id").references(() => koshaBookingsTable.id, { onDelete: "set null" }),
+  expenseType: varchar("expense_type", { length: 40 }),
+  supplierId: integer("supplier_id").references(() => suppliersTable.id, { onDelete: "set null" }),
+  beneficiaryName: text("beneficiary_name"),
+  responsibleEmployeeId: integer("responsible_employee_id").references(() => staffTable.id, { onDelete: "set null" }),
   categoryName: text("category_name").notNull().default(""),
   paymentMethod: varchar("payment_method", { length: 20 }).notNull().default("cash"),
   receiptImage: text("receipt_image"),
@@ -89,7 +101,18 @@ export const expensesTable = pgTable("expenses", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   deletedAt: timestamp("deleted_at"),
-});
+}, (table) => ({
+  koshaCategoryIdx: index("expenses_kosha_category_idx").on(table.koshaId, table.costCategory, table.date),
+  bookingIdx: index("expenses_booking_idx").on(table.bookingId),
+  costCategoryCheck: check(
+    "expenses_kosha_cost_category_check",
+    sql`${table.costCategory} IS NULL OR ${table.costCategory} IN ('investment', 'operating', 'booking')`,
+  ),
+  bookingCategoryCheck: check(
+    "expenses_kosha_booking_category_check",
+    sql`${table.costCategory} <> 'booking' OR ${table.bookingId} IS NOT NULL`,
+  ),
+}));
 
 export type ReceiptVoucher = typeof receiptVouchersTable.$inferSelect;
 export type ReceiptVoucherAllocation = typeof receiptVoucherAllocationsTable.$inferSelect;

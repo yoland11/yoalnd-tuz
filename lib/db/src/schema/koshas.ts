@@ -1,4 +1,4 @@
-import { boolean, date, integer, jsonb, numeric, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { boolean, date, integer, jsonb, numeric, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { fleetVehiclesTable } from "./enterprise";
@@ -6,6 +6,8 @@ import { staffTable } from "./staff";
 
 export const koshasTable = pgTable("koshas", {
   id: serial("id").primaryKey(),
+  // Nullable for untouched legacy rows; new Koshat receive a stable code on create.
+  financialCode: varchar("financial_code", { length: 30 }),
   name: text("name").notNull(),
   slug: varchar("slug", { length: 160 }).notNull().unique(),
   description: text("description"),
@@ -27,7 +29,9 @@ export const koshasTable = pgTable("koshas", {
   categoryId: integer("category_id").references(() => koshaCategoriesTable.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => ({
+  financialCodeIdx: uniqueIndex("koshas_financial_code_idx").on(table.financialCode),
+}));
 
 // Occasion categories for koshas (حنة / خطوبة / عرس / عيد ميلاد / تخرج / مناسبات أخرى …),
 // fully manager-managed so new occasions can be added without code changes.

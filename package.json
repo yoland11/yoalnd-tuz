@@ -38,6 +38,8 @@
     "test:sound-center": "node ./scripts/verify-sound-center.mjs",
     "test:sound-reservations": "node ./scripts/test-unified-sound-reservations.mjs",
     "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs",
+    "test:kosha-finance-schema": "node ./scripts/test-kosha-finance-schema.mjs",
+    "test:kosha-finance-logic": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-kosha-finance-logic.ts",
     "test:kosha-manager": "node ./scripts/test-kosha-manager.mjs",
     "test:kosha-instruction-store": "node ./scripts/test-kosha-instruction-store.cjs",
     "test:kosha-staff-detail": "node ./scripts/test-kosha-staff-detail.cjs",

@@ -36,6 +36,7 @@ export * from "./koshas";
 export * from "./kosha-staff";
 export * from "./kosha-manager-instructions";
 export * from "./kosha-work-orders";
+export * from "./kosha-finance";
 export * from "./photography-staff";
 export * from "./photography-shoots";
 export * from "./photography-post";

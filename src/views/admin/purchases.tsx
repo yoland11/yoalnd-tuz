@@ -92,6 +92,11 @@ type Supplier = {
 };
 type PurchaseItem = {
   productId: number | null;
+  costCategory: string;
+  koshaId: string;
+  bookingId: string;
+  constructionProjectId: string;
+  assetProductId: number | null;
   productName: string;
   barcode: string;
   quantity: number;
@@ -144,6 +149,11 @@ const PAYMENT_METHODS = [
 function blankItem(): PurchaseItem {
   return {
     productId: null,
+    costCategory: "",
+    koshaId: "",
+    bookingId: "",
+    constructionProjectId: "",
+    assetProductId: null,
     productName: "",
     barcode: "",
     quantity: 1,
@@ -246,6 +256,13 @@ export default function PurchasesPage() {
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["admin", "suppliers"],
     queryFn: () => adminFetch("/admin/suppliers"),
+    staleTime: 5 * 60 * 1000,
+    enabled: !listMode,
+  });
+
+  const { data: koshas = [] } = useQuery<Array<{ id: number; name: string; financialCode?: string }>>({
+    queryKey: ["admin", "koshas"],
+    queryFn: () => adminFetch("/admin/koshas"),
     staleTime: 5 * 60 * 1000,
     enabled: !listMode,
   });
@@ -468,6 +485,11 @@ export default function PurchasesPage() {
         notes: form.notes,
         items: validItems.map((i) => ({
           productId: i.productId,
+          costCategory: i.costCategory || null,
+          koshaId: i.koshaId ? Number(i.koshaId) : null,
+          bookingId: i.bookingId ? Number(i.bookingId) : null,
+          constructionProjectId: i.constructionProjectId ? Number(i.constructionProjectId) : null,
+          assetProductId: i.assetProductId,
           productName: i.productName,
           barcode: i.barcode,
           quantity: i.quantity,
@@ -581,6 +603,11 @@ export default function PurchasesPage() {
       setItems(
         (full.items ?? []).map((it: any) => ({
           productId: it.productId ?? null,
+          costCategory: it.costCategory ?? "",
+          koshaId: it.koshaId ? String(it.koshaId) : "",
+          bookingId: it.bookingId ? String(it.bookingId) : "",
+          constructionProjectId: it.constructionProjectId ? String(it.constructionProjectId) : "",
+          assetProductId: it.assetProductId ?? null,
           productName: it.productName ?? "",
           barcode: it.barcode ?? "",
           quantity: Number(it.quantity) || 1,
@@ -923,6 +950,14 @@ export default function PurchasesPage() {
                               ))}
                             </PopoverContent>
                           </Popover>
+                          <div className="mt-2 grid grid-cols-2 gap-1.5">
+                            <select aria-label="تصنيف تكلفة بند الشراء" value={item.costCategory} onChange={(e) => { updateItem(idx, "costCategory", e.target.value); if (e.target.value !== "booking") updateItem(idx, "bookingId", ""); if (e.target.value !== "investment") updateItem(idx, "constructionProjectId", ""); }} className="min-w-0 rounded border border-border/30 bg-background px-1 py-1 text-[11px]">
+                              <option value="">غير مرتبط بكوشة</option><option value="investment">استثمار الكوشة</option><option value="operating">تشغيل الكوشة</option><option value="booking">تكلفة حجز</option>
+                            </select>
+                            {item.costCategory ? <select required aria-label="الكوشة المرتبطة ببند الشراء" value={item.koshaId} onChange={(e) => updateItem(idx, "koshaId", e.target.value)} className="min-w-0 rounded border border-border/30 bg-background px-1 py-1 text-[11px]"><option value="">اختر الكوشة</option>{koshas.map((kosha) => <option key={kosha.id} value={kosha.id}>{kosha.financialCode ? `${kosha.financialCode} — ` : ""}{kosha.name}</option>)}</select> : null}
+                            {item.costCategory === "booking" ? <input required aria-label="رقم الحجز المرتبط ببند الشراء" type="number" min="1" value={item.bookingId} onChange={(e) => updateItem(idx, "bookingId", e.target.value)} placeholder="رقم الحجز" className="min-w-0 rounded border border-border/30 bg-background px-1 py-1 text-[11px]" /> : null}
+                            {item.costCategory === "investment" ? <input aria-label="رقم أمر الإنشاء" type="number" min="1" value={item.constructionProjectId} onChange={(e) => updateItem(idx, "constructionProjectId", e.target.value)} placeholder="رقم أمر الإنشاء (اختياري)" className="min-w-0 rounded border border-border/30 bg-background px-1 py-1 text-[11px]" /> : null}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <input

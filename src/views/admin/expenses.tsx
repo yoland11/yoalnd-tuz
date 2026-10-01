@@ -9,14 +9,15 @@ import { EmptyState } from "./_layout";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
-type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; financialTransactionId?: number | null; createdByName: string; createdAt: string };
+type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; financialTransactionId?: number | null; createdByName: string; createdAt: string; costCategory?: string | null; koshaId?: number | null; bookingId?: number | null; constructionProjectId?: number | null; expenseType?: string | null; beneficiaryName?: string | null };
 type Category = { id: number; name: string; nameAr: string; isActive: number };
-type ExpenseForm = { id?: number; date: string; name: string; categoryId: string; amount: string; paymentMethod: string; notes: string; receiptImage: string };
+type ExpenseForm = { id?: number; date: string; name: string; categoryId: string; amount: string; paymentMethod: string; notes: string; receiptImage: string; costCategory: string; koshaId: string; bookingId: string; constructionProjectId: string; expenseType: string; beneficiaryName: string };
 
 const inputCls = "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50";
 const today = () => new Date().toISOString().slice(0, 10);
 const monthStart = () => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
-const blankForm = (): ExpenseForm => ({ date: today(), name: "", categoryId: "", amount: "", paymentMethod: "cash", notes: "", receiptImage: "" });
+const blankForm = (): ExpenseForm => ({ date: today(), name: "", categoryId: "", amount: "", paymentMethod: "cash", notes: "", receiptImage: "", costCategory: "", koshaId: "", bookingId: "", constructionProjectId: "", expenseType: "", beneficiaryName: "" });
+const costCategories = [{ value: "investment", label: "استثمار الكوشة" }, { value: "operating", label: "تشغيل الكوشة" }, { value: "booking", label: "تكلفة حجز" }];
 const paymentMethods = [
   { value: "cash", label: "نقد" },
   { value: "pos", label: "بطاقة / POS" },
@@ -42,6 +43,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
   }, [filters]);
 
   const { data: categories = [] } = useQuery<Category[]>({ queryKey: ["admin", "expense-categories"], queryFn: () => adminFetch("/admin/expense-categories") });
+  const { data: koshas = [] } = useQuery<Array<{ id: number; name: string; financialCode?: string }>>({ queryKey: ["admin", "koshas"], queryFn: () => adminFetch("/admin/koshas") });
   const { data: expenses = [], isLoading } = useQuery<Expense[]>({ queryKey: ["admin", "expenses", filters], queryFn: () => adminFetch(`/admin/expenses?${query}`) });
   const total = expenses.reduce((sum, item) => sum + ((item.approvalStatus ?? "executed") === "executed" ? Number(item.amount ?? 0) : 0), 0);
   const byCategory = useMemo(() => {
@@ -55,7 +57,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
 
   const save = useMutation({
     mutationFn: async (payload: ExpenseForm) => {
-      const body = { ...payload, categoryId: Number(payload.categoryId), amount: Number(payload.amount) };
+      const body = { ...payload, categoryId: Number(payload.categoryId), amount: Number(payload.amount), koshaId: payload.koshaId ? Number(payload.koshaId) : null, bookingId: payload.bookingId ? Number(payload.bookingId) : null, constructionProjectId: payload.constructionProjectId ? Number(payload.constructionProjectId) : null, costCategory: payload.costCategory || null, expenseType: payload.expenseType || null };
       const path = payload.id ? `/admin/expenses/${payload.id}` : "/admin/expenses";
       return adminFetch(path, { method: payload.id ? "PATCH" : "POST", body: JSON.stringify(body) });
     },
@@ -177,7 +179,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
         </div>
       </div>
 
-      {form && <ExpenseFormPanel form={form} categories={categories} saving={save.isPending} onChange={setForm} onClose={() => setForm(null)} onSave={() => save.mutate(form)} onManageCategories={() => setShowCategories(true)} />}
+      {form && <ExpenseFormPanel form={form} categories={categories} koshas={koshas} saving={save.isPending} onChange={setForm} onClose={() => setForm(null)} onSave={() => save.mutate(form)} onManageCategories={() => setShowCategories(true)} />}
 
       {showCategories && (
         <div className="bg-card rounded-xl border border-primary/30 p-4">
@@ -235,7 +237,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
                             <button onClick={() => decideExpense(expense, "reject")} disabled={approveExpense.isPending || rejectExpense.isPending} className="rounded px-2 py-1 text-xs font-bold text-status-danger hover:bg-status-danger/10 disabled:opacity-50">رفض</button>
                           </> : null}
                           {(expense.approvalStatus ?? "executed") !== "executed" ? <>
-                            <button onClick={() => setForm({ id: expense.id, date: expense.date, name: expense.name ?? "", categoryId: expense.categoryId ? String(expense.categoryId) : "", amount: String(expense.amount ?? ""), paymentMethod: expense.paymentMethod ?? "cash", notes: expense.notes ?? "", receiptImage: expense.receiptImage ?? "" })} className="p-1.5 rounded text-primary hover:bg-primary/10"><Pencil className="w-4 h-4" /></button>
+                            <button onClick={() => setForm({ ...blankForm(), id: expense.id, date: expense.date, name: expense.name ?? "", categoryId: expense.categoryId ? String(expense.categoryId) : "", amount: String(expense.amount ?? ""), paymentMethod: expense.paymentMethod ?? "cash", notes: expense.notes ?? "", receiptImage: expense.receiptImage ?? "", costCategory: expense.costCategory ?? "", koshaId: expense.koshaId ? String(expense.koshaId) : "", bookingId: expense.bookingId ? String(expense.bookingId) : "", constructionProjectId: expense.constructionProjectId ? String(expense.constructionProjectId) : "", expenseType: expense.expenseType ?? "", beneficiaryName: expense.beneficiaryName ?? "" })} className="p-1.5 rounded text-primary hover:bg-primary/10"><Pencil className="w-4 h-4" /></button>
                             <button onClick={() => confirm("حذف المصروف؟") && remove.mutate(expense.id)} className="p-1.5 rounded text-status-danger hover:bg-status-danger/10"><Trash2 className="w-4 h-4" /></button>
                           </> : <span className="text-xs text-muted-foreground">محفوظ</span>}
                         </div>
@@ -258,7 +260,7 @@ function ApprovalBadge({ status = "executed" }: { status?: string }) {
   return <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-medium ${style}`}>{labels[status] ?? status}</span>;
 }
 
-function ExpenseFormPanel({ form, categories, saving, onChange, onSave, onClose, onManageCategories }: { form: ExpenseForm; categories: Category[]; saving: boolean; onChange: (form: ExpenseForm) => void; onSave: () => void; onClose: () => void; onManageCategories: () => void }) {
+function ExpenseFormPanel({ form, categories, koshas, saving, onChange, onSave, onClose, onManageCategories }: { form: ExpenseForm; categories: Category[]; koshas: Array<{ id: number; name: string; financialCode?: string }>; saving: boolean; onChange: (form: ExpenseForm) => void; onSave: () => void; onClose: () => void; onManageCategories: () => void }) {
   async function onReceipt(file: File) {
     onChange({ ...form, receiptImage: await fileToDataUrl(file) });
   }
@@ -270,6 +272,12 @@ function ExpenseFormPanel({ form, categories, saving, onChange, onSave, onClose,
       <Field label="المبلغ"><input type="number" min="0" value={form.amount} onChange={(e) => onChange({ ...form, amount: e.target.value })} className={inputCls} /></Field>
       <div><Field label="التصنيف"><select value={form.categoryId} onChange={(e) => onChange({ ...form, categoryId: e.target.value })} className={inputCls}><option value="">اختر التصنيف</option>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.nameAr}</option>)}</select></Field><Button type="button" variant="ghost" size="sm" onClick={onManageCategories} className="mt-1 h-8 gap-1 px-2 text-xs text-primary"><Tags className="h-3.5 w-3.5" />إدارة التصنيفات</Button><span className="ms-1 text-[11px] text-muted-foreground">إضافة أو تعديل أو حذف</span></div>
       <Field label="طريقة الدفع"><select value={form.paymentMethod} onChange={(e) => onChange({ ...form, paymentMethod: e.target.value })} className={inputCls}>{paymentMethods.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select></Field>
+      <Field label="تصنيف كلفة الكوشة (اختياري)"><select value={form.costCategory} onChange={(e) => onChange({ ...form, costCategory: e.target.value, bookingId: e.target.value === "booking" ? form.bookingId : "", constructionProjectId: e.target.value === "investment" ? form.constructionProjectId : "" })} className={inputCls}><option value="">مصروف عام</option>{costCategories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}</select></Field>
+      {form.costCategory ? <Field label="الكوشة"><select required value={form.koshaId} onChange={(e) => onChange({ ...form, koshaId: e.target.value })} className={inputCls}><option value="">اختر الكوشة</option>{koshas.map((kosha) => <option key={kosha.id} value={kosha.id}>{kosha.financialCode ? `${kosha.financialCode} — ` : ""}{kosha.name}</option>)}</select></Field> : null}
+      {form.costCategory === "booking" ? <Field label="رقم الحجز"><input required type="number" min="1" value={form.bookingId} onChange={(e) => onChange({ ...form, bookingId: e.target.value })} className={inputCls} placeholder="أدخل رقم الحجز" /></Field> : null}
+      {form.costCategory === "investment" ? <Field label="رقم أمر الإنشاء (اختياري)"><input type="number" min="1" value={form.constructionProjectId} onChange={(e) => onChange({ ...form, constructionProjectId: e.target.value })} className={inputCls} placeholder="معرف أمر الإنشاء" /></Field> : null}
+      {form.costCategory ? <Field label="نوع المصروف"><select value={form.expenseType} onChange={(e) => onChange({ ...form, expenseType: e.target.value })} className={inputCls}><option value="">اختر النوع</option>{[["maintenance","صيانة"],["repair","إصلاح"],["labor","أجور"],["transportation","نقل"],["installation","تنصيب"],["cleaning","تنظيف"],["painting","صبغ"],["electrical","كهرباء"],["storage","خزن"],["replacement","استبدال"],["fuel","وقود"],["other","أخرى"]].map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></Field> : null}
+      {form.costCategory ? <Field label="المستفيد / المورد"><input value={form.beneficiaryName} onChange={(e) => onChange({ ...form, beneficiaryName: e.target.value })} className={inputCls} /></Field> : null}
       <Field label="صورة الإيصال"><input type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && void onReceipt(e.target.files[0])} className="text-xs text-muted-foreground file:ml-2 file:rounded file:border-0 file:bg-primary/10 file:text-primary file:px-2 file:py-1" /></Field>
       <div className="lg:col-span-2"><Field label="ملاحظات"><input value={form.notes} onChange={(e) => onChange({ ...form, notes: e.target.value })} className={inputCls} /></Field></div>
       <div className="flex items-end"><Button type="submit" disabled={saving} className="w-full gap-1.5"><Plus className="w-4 h-4" /> {saving ? "جاري الحفظ..." : "حفظ المصروف"}</Button></div>

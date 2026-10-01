@@ -29,6 +29,7 @@ import {
 import QRCode from "qrcode";
 import webpush from "web-push";
 import { formatCurrency, formatMoney } from "@/lib/money";
+import { canAssignKoshaAsset, deriveKoshaFinancialSummary, validateKoshaExpenseClassification } from "@/lib/kosha-finance";
 import {
   getTaskWorkflow,
   getTaskWorkflowStage,
@@ -166,6 +167,13 @@ import {
   koshaProvincesTable,
   koshaWelcomeBoardsTable,
   koshasTable,
+  koshaConstructionProjectsTable,
+  koshaAssetAssignmentsTable,
+  koshaMaintenanceRecordsTable,
+  koshaDamageReportsTable,
+  koshaWorkOrdersTable,
+  koshaWorkOrderChecklistTable,
+  koshaWorkOrderAssetsTable,
   photographyEventsTable,
   photographyOrdersTable,
   photographyOrderEventsTable,
@@ -2665,12 +2673,15 @@ function baseUrlFromReq(req: NextRequest): string {
 
 function publicQrTarget(
   entityType: string,
-  _entity: any,
+  entity: any,
   req: NextRequest,
   token: string,
 ): string {
   const base = baseUrlFromReq(req);
-  // Kosha bookings have their own customer tracking page; everything else uses order tracking.
+  // Kosha bookings have their own customer tracking page. A Koshah QR only
+  // enters the staff-authenticated passport; it never exposes financial data.
+  if (entityType === "kosha")
+    return `${base}/staff/koshas/passport/${encodeURIComponent(String(entity.id))}`;
   if (entityType === "kosha_booking")
     return `${base}/kosha-tracking/${encodeURIComponent(token)}`;
   return `${base}/track/${encodeURIComponent(token)}`;
@@ -2682,6 +2693,7 @@ async function ensureQrForEntity(
     | "service_order"
     | "invoice"
     | "kosha_booking"
+    | "kosha"
     | "photography_order",
   entity: any,
   req: NextRequest,
@@ -18883,7 +18895,11 @@ async function handleQr(req: NextRequest, parts: string[]) {
     .update(qrTokensTable)
     .set({ scanCount: (row.scanCount ?? 0) + 1, lastScannedAt: new Date() })
     .where(eq(qrTokensTable.id, row.id));
-  const safeTarget = `${baseUrlFromReq(req)}/track/${encodeURIComponent(token)}`;
+  const safeTarget = row.entityType === "kosha"
+    ? `${baseUrlFromReq(req)}/staff/koshas/passport/${encodeURIComponent(String(row.entityId))}`
+    : row.entityType === "kosha_booking"
+      ? `${baseUrlFromReq(req)}/kosha-tracking/${encodeURIComponent(token)}`
+      : `${baseUrlFromReq(req)}/track/${encodeURIComponent(token)}`;
   if (
     row.targetUrl !== safeTarget ||
     /\/admin(?:\/|$)|\/dashboard(?:\/|$)|\/orders(?:\/|$)|\/invoices(?:\/|$)/i.test(
@@ -18899,6 +18915,8 @@ async function handleQr(req: NextRequest, parts: string[]) {
 }
 
 async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
+  if (row.entityType === "kosha")
+    return { kind: "kosha_passport", message: "سجل الكوشة متاح للموظفين المخولين بعد تسجيل الدخول." };
   if (row.entityType === "order") {
     const order = await db.query.ordersTable.findFirst({
       where: eq(ordersTable.id, row.entityId),
@@ -20179,10 +20197,24 @@ async function handleAdminKoshas(
       const data = parsed.data;
       if (!String(data.name ?? "").trim())
         return error("اسم الكوشة مطلوب", 400);
-      const [row] = await db
-        .insert(koshasTable)
-        .values(await koshaValuesFromData(data))
-        .returning();
+      const values = await koshaValuesFromData(data);
+      const row = await db.transaction(async (tx) => {
+        const sequenceResult: any = await tx.execute(
+          sql`select nextval(pg_get_serial_sequence('koshas', 'id')) as id`,
+        );
+        const nextId = Number(sequenceResult.rows?.[0]?.id);
+        if (!Number.isSafeInteger(nextId) || nextId <= 0)
+          throw new Error("تعذر تخصيص رقم مالي للكوشة");
+        const [created] = await tx
+          .insert(koshasTable)
+          .values({
+            ...values,
+            id: nextId,
+            financialCode: `KOSHA-${String(nextId).padStart(10, "0")}`,
+          })
+          .returning();
+        return created;
+      });
       await replaceKoshaImages(row.id, data.galleryImages);
       void logAdminActivity(req, "kosha_created", "kosha", row.id, {
         name: row.name,
@@ -53006,6 +53038,11 @@ function purchaseInvoiceItems(value: unknown) {
           Number.isFinite(Number(item?.productId)) && Number(item.productId) > 0
             ? Number(item.productId)
             : null,
+        costCategory: item?.costCategory == null || item.costCategory === "" ? null : String(item.costCategory),
+        koshaId: Number.isSafeInteger(Number(item?.koshaId)) && Number(item.koshaId) > 0 ? Number(item.koshaId) : null,
+        constructionProjectId: Number.isSafeInteger(Number(item?.constructionProjectId)) && Number(item.constructionProjectId) > 0 ? Number(item.constructionProjectId) : null,
+        bookingId: Number.isSafeInteger(Number(item?.bookingId)) && Number(item.bookingId) > 0 ? Number(item.bookingId) : null,
+        assetProductId: Number.isSafeInteger(Number(item?.assetProductId)) && Number(item.assetProductId) > 0 ? Number(item.assetProductId) : null,
         productName,
         barcode: normalizeProductBarcode(item?.barcode) || null,
         quantity,
@@ -53016,6 +53053,32 @@ function purchaseInvoiceItems(value: unknown) {
       };
     })
     .filter((item) => item.productName && item.quantity > 0);
+}
+
+async function validatePurchaseKoshaItems(items: Array<{ costCategory?: string | null; koshaId?: number | null; bookingId?: number | null; assetProductId?: number | null; constructionProjectId?: number | null }>): Promise<string | null> {
+  for (const item of items) {
+    if (!item.koshaId && !item.costCategory && !item.bookingId && !item.assetProductId) continue;
+    if (item.costCategory != null && !["investment", "operating", "booking"].includes(item.costCategory)) return "تصنيف كلفة بند الشراء غير صحيح";
+    if (!item.koshaId) return "اختر الكوشة لبند الشراء المرتبط بالكوشة";
+    const kosha = await db.query.koshasTable.findFirst({ where: eq(koshasTable.id, item.koshaId), columns: { id: true } });
+    if (!kosha) return "الكوشة المرتبطة ببند الشراء غير موجودة";
+    if (item.constructionProjectId) {
+      const project = await db.query.koshaConstructionProjectsTable.findFirst({ where: and(eq(koshaConstructionProjectsTable.id, item.constructionProjectId), eq(koshaConstructionProjectsTable.koshaId, item.koshaId)), columns: { id: true } });
+      if (!project || item.costCategory !== "investment") return "أمر الإنشاء يجب أن يتبع الكوشة نفسها وأن يكون تصنيف البند استثماراً";
+    }
+    if (item.assetProductId) {
+      const asset = await db.query.productsTable.findFirst({ where: eq(productsTable.id, item.assetProductId), columns: { id: true } });
+      if (!asset) return "الأصل المشترك المرتبط ببند الشراء غير موجود";
+    }
+    if (item.bookingId) {
+      const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, item.bookingId), columns: { id: true, koshaId: true } });
+      if (!booking) return "الحجز المرتبط ببند الشراء غير موجود";
+      if (booking.koshaId != null && booking.koshaId !== item.koshaId) return "الكوشة لا تطابق الكوشة المسجلة على الحجز";
+    }
+    if (item.costCategory === "booking" && !item.bookingId) return "تكلفة الحجز تتطلب اختيار الحجز";
+    if (item.costCategory && item.costCategory !== "booking" && item.bookingId) return "لا يمكن ربط حجز بتصنيف استثمار أو تشغيل";
+  }
+  return null;
 }
 
 type SalesInvoiceCustomerCandidate = {
@@ -56191,6 +56254,8 @@ async function handlePurchaseInvoices(
     const items = purchaseInvoiceItems(b?.items);
     if (items.length === 0)
       return error("أضف صنفاً واحداً على الأقل إلى فاتورة الشراء", 400);
+    const koshaItemsError = await validatePurchaseKoshaItems(items);
+    if (koshaItemsError) return error(koshaItemsError, 422);
     const dateVal = b.date ?? new Date().toISOString().slice(0, 10);
     const subtotal = items.reduce(
       (sum, item) => sum + item.quantity * item.costPrice,
@@ -56315,6 +56380,11 @@ async function handlePurchaseInvoices(
             processedItems.map((item: any) => ({
               invoiceId: inv.id,
               productId: item.productId ?? null,
+              costCategory: item.costCategory ?? null,
+              koshaId: item.koshaId ?? null,
+              constructionProjectId: item.constructionProjectId ?? null,
+              bookingId: item.bookingId ?? null,
+              assetProductId: item.assetProductId ?? null,
               productName: item.productName ?? "",
               barcode: item.barcode,
               quantity: String(item.quantity),
@@ -56430,6 +56500,8 @@ async function handlePurchaseInvoices(
     const newItems = purchaseInvoiceItems(b?.items);
     if (newItems.length === 0)
       return error("أضف صنفاً واحداً على الأقل إلى فاتورة الشراء", 400);
+    const koshaItemsError = await validatePurchaseKoshaItems(newItems);
+    if (koshaItemsError) return error(koshaItemsError, 422);
 
     const subtotal = newItems.reduce(
       (sum, item) => sum + item.quantity * item.costPrice,
@@ -56499,6 +56571,9 @@ async function handlePurchaseInvoices(
       const insertedItems = await tx.insert(purchaseInvoiceItemsTable).values(
         processedItems.map((item: any) => ({
           invoiceId: id, productId: item.productId ?? null, productName: item.productName ?? "",
+          costCategory: item.costCategory ?? null, koshaId: item.koshaId ?? null,
+          constructionProjectId: item.constructionProjectId ?? null,
+          bookingId: item.bookingId ?? null, assetProductId: item.assetProductId ?? null,
           barcode: item.barcode, quantity: String(item.quantity), costPrice: String(item.costPrice),
           salePrice: String(item.salePrice), discount: String(item.discount), total: String(item.total),
         })),
@@ -65200,6 +65275,35 @@ async function handleStaffPortal(
   const action = parts[4];
   await ensureKoshaStaffTables();
 
+  if (resource === "passport") {
+    if (method !== "GET" || !id) return error("مسار جواز الكوشة غير صحيح", 404);
+    const kosha = await db.query.koshasTable.findFirst({ where: eq(koshasTable.id, id) });
+    if (!kosha) return error("الكوشة غير موجودة", 404);
+    const [assignments, bookings, maintenanceRecords, damageReports, projects] = await Promise.all([
+      db.query.koshaAssetAssignmentsTable.findMany({ where: and(eq(koshaAssetAssignmentsTable.koshaId, id), eq(koshaAssetAssignmentsTable.isActive, true)), orderBy: [desc(koshaAssetAssignmentsTable.assignedAt)] }),
+      db.query.koshaBookingsTable.findMany({ where: and(eq(koshaBookingsTable.koshaId, id), sql`${koshaBookingsTable.archivedAt} is null`), columns: { id: true } }),
+      db.query.koshaMaintenanceRecordsTable.findMany({ where: eq(koshaMaintenanceRecordsTable.koshaId, id), orderBy: [desc(koshaMaintenanceRecordsTable.maintenanceDate)], limit: 10 }),
+      db.query.koshaDamageReportsTable.findMany({ where: and(eq(koshaDamageReportsTable.koshaId, id), ne(koshaDamageReportsTable.status, "resolved")), orderBy: [desc(koshaDamageReportsTable.createdAt)], limit: 20 }),
+      db.query.koshaConstructionProjectsTable.findMany({ where: eq(koshaConstructionProjectsTable.koshaId, id), orderBy: [desc(koshaConstructionProjectsTable.id)], limit: 1 }),
+    ]);
+    const productIds = [...new Set(assignments.map((row) => row.productId))];
+    const products = productIds.length ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds), columns: { id: true, name: true, nameAr: true, images: true, stock: true } }) : [];
+    const productById = new Map(products.map((row) => [row.id, row]));
+    const responsible = projects[0]?.responsibleEmployeeId ? await db.query.staffTable.findFirst({ where: eq(staffTable.id, projects[0].responsibleEmployeeId), columns: { fullName: true } }) : null;
+    const today = baghdadToday();
+    const nextMaintenance = maintenanceRecords.map((row) => row.nextMaintenanceDate).filter((value): value is string => !!value).sort()[0] ?? null;
+    return json({
+      kosha: { id: kosha.id, financialCode: kosha.financialCode, name: kosha.name, mainImage: kosha.mainImage, createdAt: kosha.createdAt, availabilityStatus: kosha.availabilityStatus },
+      bookingCount: bookings.length,
+      responsibleEmployee: responsible?.fullName ?? null,
+      components: assignments.map((row) => { const product = productById.get(row.productId); return { id: row.id, productId: row.productId, name: product?.nameAr || product?.name || `منتج #${row.productId}`, image: product?.images?.[0] ?? null, quantity: row.quantity, storageLocation: row.storageLocation, shared: row.shared, stock: product?.stock ?? null }; }),
+      currentCondition: damageReports.length ? "يحتاج متابعة" : "سليم حسب السجلات المسجلة",
+      openDamageReports: damageReports.map((row) => ({ id: row.id, incidentType: row.incidentType, description: row.description, status: row.status, createdAt: row.createdAt })),
+      maintenanceHistory: maintenanceRecords.map((row) => ({ id: row.id, maintenanceType: row.maintenanceType, maintenanceDate: row.maintenanceDate, description: row.description, nextMaintenanceDate: row.nextMaintenanceDate })),
+      maintenanceDue: !!nextMaintenance && nextMaintenance <= today,
+    });
+  }
+
   // ── مصاريف الكوشات — kosha staff file expenses from the portal with the same
   // fields as /admin/expenses. They are created by the SAME code path as the
   // admin screen (createExpenseWithFinancialRequest), so each one appears in
@@ -68759,7 +68863,74 @@ const expenseMutationSchema = z.object({
     .transform((value) => (value === "card" ? "pos" : value)),
   notes: z.string().nullish(),
   receiptImage: z.string().nullish(),
+  costCategory: z.enum(["investment", "operating", "booking"]).nullish(),
+  koshaId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional(),
+  constructionProjectId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional(),
+  bookingId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional(),
+  expenseType: z.enum(["maintenance", "repair", "labor", "transportation", "installation", "cleaning", "painting", "electrical", "storage", "replacement", "fuel", "other"]).nullish(),
+  supplierId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional(),
+  beneficiaryName: z.string().trim().max(200).nullish(),
+  responsibleEmployeeId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional(),
 });
+
+async function validateExpenseKoshaReferences(input: {
+  koshaId?: number | null;
+  costCategory?: string | null;
+  bookingId?: number | null;
+  constructionProjectId?: number | null;
+  supplierId?: number | null;
+  responsibleEmployeeId?: number | null;
+}): Promise<NextResponse | null> {
+  let bookingKoshaId: number | null = null;
+  if (input.koshaId != null) {
+    const kosha = await db.query.koshasTable.findFirst({
+      where: eq(koshasTable.id, input.koshaId),
+      columns: { id: true },
+    });
+    if (!kosha) return error("الكوشة غير موجودة", 422);
+  }
+  if (input.bookingId != null) {
+    const booking = await db.query.koshaBookingsTable.findFirst({
+      where: eq(koshaBookingsTable.id, input.bookingId),
+      columns: { id: true, koshaId: true },
+    });
+    if (!booking) return error("الحجز غير موجود", 422);
+    bookingKoshaId = booking.koshaId;
+  }
+  if (
+    input.costCategory != null &&
+    !["investment", "operating", "booking"].includes(input.costCategory)
+  )
+    return error("تصنيف المصروف غير صحيح", 422);
+  const classificationError = validateKoshaExpenseClassification({
+    koshaId: input.koshaId,
+    costCategory: input.costCategory as "investment" | "operating" | "booking" | null | undefined,
+    bookingId: input.bookingId,
+    bookingKoshaId,
+  });
+  if (classificationError) return error(classificationError, 422);
+  if (input.constructionProjectId != null) {
+    if (input.costCategory !== "investment" || input.koshaId == null)
+      return error("أمر الإنشاء يقبل مصروف استثمار مرتبطاً بكوشة فقط", 422);
+    const project = await db.query.koshaConstructionProjectsTable.findFirst({ where: and(eq(koshaConstructionProjectsTable.id, input.constructionProjectId), eq(koshaConstructionProjectsTable.koshaId, input.koshaId)), columns: { id: true } });
+    if (!project) return error("أمر الإنشاء لا يتبع الكوشة المحددة", 422);
+  }
+  if (input.supplierId != null) {
+    const supplier = await db.query.suppliersTable.findFirst({
+      where: eq(suppliersTable.id, input.supplierId),
+      columns: { id: true },
+    });
+    if (!supplier) return error("المورد غير موجود", 422);
+  }
+  if (input.responsibleEmployeeId != null) {
+    const employee = await db.query.staffTable.findFirst({
+      where: eq(staffTable.id, input.responsibleEmployeeId),
+      columns: { id: true },
+    });
+    if (!employee) return error("الموظف المسؤول غير موجود", 422);
+  }
+  return null;
+}
 
 /**
  * Creates an expense row plus its PENDING cash-box request (approval-first):
@@ -68774,6 +68945,8 @@ async function createExpenseWithFinancialRequest(
   auth: AdminUser,
   options: { notesPrefix?: string } = {},
 ): Promise<{ ok: true; row: typeof expensesTable.$inferSelect } | { ok: false; response: NextResponse }> {
+  const koshaReferenceError = await validateExpenseKoshaReferences(b);
+  if (koshaReferenceError) return { ok: false, response: koshaReferenceError };
   let categoryName = "";
   if (b?.categoryId) {
     const cat = await db.query.expenseCategoriesTable.findFirst({
@@ -68793,6 +68966,14 @@ async function createExpenseWithFinancialRequest(
       amount: String(b.amount),
       categoryId: b?.categoryId ?? null,
       categoryName,
+      costCategory: b.costCategory ?? null,
+      koshaId: b.koshaId ?? null,
+      constructionProjectId: b.constructionProjectId ?? null,
+      bookingId: b.bookingId ?? null,
+      expenseType: b.expenseType ?? null,
+      supplierId: b.supplierId ?? null,
+      beneficiaryName: b.beneficiaryName ?? null,
+      responsibleEmployeeId: b.responsibleEmployeeId ?? null,
       paymentMethod: normMethod(b?.paymentMethod),
       receiptImage,
       notes: options.notesPrefix
@@ -70056,6 +70237,280 @@ async function handleAccounting(
     }
   }
 
+  if (section === "kosha-finance") {
+    const auth = await requirePermission(req, "accounting");
+    if (isResponse(auth)) return auth;
+    const koshaId = int(parts[2]);
+    if (!koshaId) return error("معرف الكوشة غير صحيح", 400);
+    const currentKosha = await db.query.koshasTable.findFirst({ where: eq(koshasTable.id, koshaId), columns: { id: true } });
+    if (!currentKosha) return error("الكوشة غير موجودة", 404);
+    const koshaSection = parts[3];
+    if (method === "POST" && koshaSection === "passport-qr") {
+      const kosha = await db.query.koshasTable.findFirst({ where: eq(koshasTable.id, koshaId) });
+      if (!kosha) return error("الكوشة غير موجودة", 404);
+      const qr = await ensureQrForEntity("kosha", kosha, req);
+      void logAdminActivity(req, "kosha_passport_qr_created", "kosha", koshaId, { financialCode: kosha.financialCode });
+      return json(qr);
+    }
+    if (method === "POST" && koshaSection === "projects") {
+      const b = await body(req);
+      const budget = Number(String(b?.plannedBudget ?? "0").replace(/[٬,\s]/g, ""));
+      if (!Number.isFinite(budget) || budget < 0) return error("الميزانية المخططة غير صحيحة", 422);
+      const stages = ["draft", "materials_required", "purchasing", "materials_received", "assembly", "inspection", "ready"];
+      const stage = String(b?.stage ?? "draft");
+      if (!stages.includes(stage)) return error("مرحلة الإنشاء غير صحيحة", 422);
+      const responsibleEmployeeId = Number(b?.responsibleEmployeeId) || null;
+      if (responsibleEmployeeId && !await db.query.staffTable.findFirst({ where: eq(staffTable.id, responsibleEmployeeId), columns: { id: true } })) return error("الموظف المسؤول غير موجود", 422);
+      const [project] = await db.insert(koshaConstructionProjectsTable).values({ koshaId, plannedBudget: String(budget), stage, createdOn: normalizeDateOnly(b?.createdOn) ?? new Date().toISOString().slice(0, 10), expectedCompletionDate: normalizeDateOnly(b?.expectedCompletionDate), responsibleEmployeeId, notes: nullableText(b?.notes), createdBy: actor(auth).id }).returning();
+      void logAdminActivity(req, "kosha_construction_project_created", "kosha", koshaId, { projectId: project.id, plannedBudget: budget });
+      return json(project, 201);
+    }
+    if (method === "PATCH" && koshaSection === "projects" && parts[4]) {
+      const projectId = int(parts[4]);
+      if (!projectId) return error("معرف أمر الإنشاء غير صحيح", 400);
+      const b = await body(req);
+      const stage = String(b?.stage ?? "");
+      if (!["draft", "materials_required", "purchasing", "materials_received", "assembly", "inspection", "ready"].includes(stage)) return error("مرحلة الإنشاء غير صحيحة", 422);
+      const existingProject = await db.query.koshaConstructionProjectsTable.findFirst({ where: and(eq(koshaConstructionProjectsTable.id, projectId), eq(koshaConstructionProjectsTable.koshaId, koshaId)) });
+      if (!existingProject) return error("أمر إنشاء الكوشة غير موجود", 404);
+      const projectStages = ["draft", "materials_required", "purchasing", "materials_received", "assembly", "inspection", "ready"];
+      if (projectStages.indexOf(stage) > projectStages.indexOf(existingProject.stage) + 1) return error("لا يمكن تجاوز مراحل إنشاء الكوشة", 409);
+      const [updated] = await db.update(koshaConstructionProjectsTable).set({ stage, updatedAt: new Date() }).where(and(eq(koshaConstructionProjectsTable.id, projectId), eq(koshaConstructionProjectsTable.koshaId, koshaId))).returning();
+      if (!updated) return error("أمر إنشاء الكوشة غير موجود", 404);
+      void logAdminActivity(req, "kosha_construction_stage_changed", "kosha", koshaId, { projectId, stage });
+      return json(updated);
+    }
+    if (method === "POST" && koshaSection === "assets") {
+      const b = await body(req);
+      const productId = int(b?.productId);
+      const quantity = Number(b?.quantity ?? 1);
+      const shared = b?.shared === true;
+      if (!productId || !Number.isFinite(quantity) || quantity <= 0) return error("المنتج والكمية مطلوبان", 422);
+      if (!await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId), columns: { id: true } })) return error("الأصل أو المادة غير موجودة في المخزن", 422);
+      const assignmentResult = await db.transaction(async (tx) => {
+        // Serialize assignments per physical product so simultaneous requests cannot
+        // turn a dedicated asset into duplicate ownership across Koshat.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`kosha-asset:${productId}`}))`);
+        const existing = await tx.select({ koshaId: koshaAssetAssignmentsTable.koshaId, shared: koshaAssetAssignmentsTable.shared })
+          .from(koshaAssetAssignmentsTable)
+          .where(and(eq(koshaAssetAssignmentsTable.productId, productId), eq(koshaAssetAssignmentsTable.isActive, true)));
+        if (!canAssignKoshaAsset(koshaId, shared, existing)) return { conflict: "dedicated" as const };
+        const [assignment] = await tx.insert(koshaAssetAssignmentsTable).values({ koshaId, productId, quantity: String(quantity), shared, storageLocation: nullableText(b?.storageLocation), notes: nullableText(b?.notes), assignedBy: actor(auth).id }).onConflictDoNothing().returning();
+        return assignment ? { assignment } : { conflict: "duplicate" as const };
+      });
+      if (assignmentResult.conflict === "dedicated") return error("هذا الأصل مخصص لكوشة أخرى؛ فعّل خيار الأصل المشترك بعد التحقق من جميع الإسنادات", 409);
+      if (assignmentResult.conflict === "duplicate") return error("هذا المنتج مسجل مسبقاً للكوشة؛ عدّل سجل الإسناد الحالي", 409);
+      const assignment = assignmentResult.assignment;
+      void logAdminActivity(req, "kosha_asset_assigned", "kosha", koshaId, { productId, assignmentId: assignment.id, shared: assignment.shared });
+      return json(assignment, 201);
+    }
+    if (method === "DELETE" && koshaSection === "assets" && parts[4]) {
+      const assignmentId = int(parts[4]);
+      if (!assignmentId) return error("معرف الأصل غير صحيح", 400);
+      const [assignment] = await db.update(koshaAssetAssignmentsTable).set({ isActive: false }).where(and(eq(koshaAssetAssignmentsTable.id, assignmentId), eq(koshaAssetAssignmentsTable.koshaId, koshaId), eq(koshaAssetAssignmentsTable.isActive, true))).returning();
+      if (!assignment) return error("إسناد الأصل غير موجود", 404);
+      void logAdminActivity(req, "kosha_asset_unassigned", "kosha", koshaId, { assignmentId });
+      return json({ message: "تم إنهاء إسناد الأصل" });
+    }
+    if (method === "POST" && koshaSection === "maintenance") {
+      const b = await body(req);
+      const description = String(b?.description ?? "").trim();
+      const maintenanceType = String(b?.maintenanceType ?? "").trim();
+      if (!description || !maintenanceType) return error("نوع الصيانة والوصف مطلوبان", 422);
+      const expenseId = Number(b?.expenseId) || null;
+      if (expenseId) {
+        const expense = await db.query.expensesTable.findFirst({ where: and(eq(expensesTable.id, expenseId), eq(expensesTable.koshaId, koshaId), eq(expensesTable.costCategory, "operating"), eq(expensesTable.approvalStatus, "executed"), sql`${expensesTable.deletedAt} is null`) });
+        if (!expense) return error("المصروف المرتبط يجب أن يكون معتمداً ومصنفاً تشغيلياً لهذه الكوشة", 422);
+        if (await db.query.koshaMaintenanceRecordsTable.findFirst({ where: eq(koshaMaintenanceRecordsTable.expenseId, expenseId), columns: { id: true } })) return error("هذا المصروف مرتبط بسجل صيانة آخر", 409);
+      }
+      const productId = Number(b?.productId) || null;
+      const supplierId = Number(b?.supplierId) || null;
+      const employeeId = Number(b?.employeeId) || null;
+      if (productId && !await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId), columns: { id: true } })) return error("المنتج المرتبط غير موجود", 422);
+      if (supplierId && !await db.query.suppliersTable.findFirst({ where: eq(suppliersTable.id, supplierId), columns: { id: true } })) return error("المورد المرتبط غير موجود", 422);
+      if (employeeId && !await db.query.staffTable.findFirst({ where: eq(staffTable.id, employeeId), columns: { id: true } })) return error("الموظف المرتبط غير موجود", 422);
+      const [record] = await db.insert(koshaMaintenanceRecordsTable).values({ koshaId, productId, maintenanceType, maintenanceDate: normalizeDateOnly(b?.maintenanceDate) ?? new Date().toISOString().slice(0, 10), description, parts: Array.isArray(b?.parts) ? b.parts.map(String).slice(0, 100) : [], supplierId, technicianName: nullableText(b?.technicianName), employeeId, attachments: Array.isArray(b?.attachments) ? b.attachments.map(String).slice(0, 20) : [], nextMaintenanceDate: normalizeDateOnly(b?.nextMaintenanceDate), expenseId }).returning();
+      void logAdminActivity(req, "kosha_maintenance_recorded", "kosha", koshaId, { maintenanceId: record.id, expenseId });
+      return json(record, 201);
+    }
+    if (method === "POST" && koshaSection === "damage") {
+      const b = await body(req);
+      const description = String(b?.description ?? "").trim();
+      const reason = String(b?.reason ?? "").trim();
+      const incidentType = String(b?.incidentType ?? "");
+      if (description.length < 5 || !reason || !["damage", "missing", "loss"].includes(incidentType)) return error("حدد نوع التلف أو الفقدان والسبب ووصفاً واضحاً", 422);
+      const bookingId = Number(b?.bookingId) || null;
+      if (!bookingId) return error("الحجز مطلوب لتسجيل بلاغ التلف أو الفقدان", 422);
+      const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, bookingId), columns: { koshaId: true } });
+      if (!booking || (booking.koshaId != null && booking.koshaId !== koshaId)) return error("الحجز لا يتبع الكوشة المحددة", 422);
+      const expenseId = Number(b?.expenseId) || null;
+      if (expenseId && !await db.query.expensesTable.findFirst({ where: and(eq(expensesTable.id, expenseId), eq(expensesTable.koshaId, koshaId), eq(expensesTable.costCategory, "operating"), eq(expensesTable.approvalStatus, "executed"), sql`${expensesTable.deletedAt} is null`), columns: { id: true } })) return error("مصروف الإصلاح المرتبط يجب أن يكون معتمداً ومصنفاً تشغيلياً لهذه الكوشة", 422);
+      const productId = Number(b?.productId) || null;
+      if (productId && !await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId), columns: { id: true } })) return error("المنتج المرتبط غير موجود", 422);
+      const repairRaw = String(b?.estimatedRepairCost ?? "").trim();
+      const replacementRaw = String(b?.estimatedReplacementCost ?? "").trim();
+      const estimatedRepairCost = repairRaw ? Number(repairRaw) : null;
+      const estimatedReplacementCost = replacementRaw ? Number(replacementRaw) : null;
+      if ((estimatedRepairCost != null && (!Number.isFinite(estimatedRepairCost) || estimatedRepairCost < 0)) || (estimatedReplacementCost != null && (!Number.isFinite(estimatedReplacementCost) || estimatedReplacementCost < 0))) return error("التكلفة التقديرية يجب أن تكون رقماً موجباً أو صفراً", 422);
+      const reportActor = actor(auth);
+      const [report] = await db.insert(koshaDamageReportsTable).values({ koshaId, productId, bookingId, bookingSource: "kosha", reportedBy: reportActor.id, reportedByName: reportActor.name, incidentType, reason, description, photoUrl: b?.photo ? await persistMediaValue(String(b.photo), "kosha-damage") : null, priority: "medium", costEstimate: String(estimatedRepairCost ?? estimatedReplacementCost ?? 0), estimatedRepairCost: estimatedRepairCost == null ? null : String(estimatedRepairCost), estimatedReplacementCost: estimatedReplacementCost == null ? null : String(estimatedReplacementCost), status: "reported", expenseId }).returning();
+      void logAdminActivity(req, "kosha_damage_reported", "kosha", koshaId, { reportId: report.id, bookingId, incidentType });
+      return json(report, 201);
+    }
+    if (method === "PATCH" && koshaSection === "damage" && parts[4]) {
+      const reportId = int(parts[4]);
+      const b = await body(req);
+      const status = String(b?.status ?? "");
+      if (!reportId || !["reported", "under_review", "repairing", "replaced", "resolved"].includes(status)) return error("حالة البلاغ غير صحيحة", 422);
+      const [report] = await db.update(koshaDamageReportsTable).set({ status, resolvedAt: status === "resolved" ? new Date() : null }).where(and(eq(koshaDamageReportsTable.id, reportId), eq(koshaDamageReportsTable.koshaId, koshaId))).returning();
+      if (!report) return error("بلاغ التلف غير موجود", 404);
+      void logAdminActivity(req, "kosha_damage_status_changed", "kosha", koshaId, { reportId, status });
+      return json(report);
+    }
+    if (method !== "GET") return error("العملية غير مدعومة", 405);
+    const from = req.nextUrl.searchParams.get("from");
+    const to = req.nextUrl.searchParams.get("to");
+    const [kosha, bookings, allPurchaseLines, allExpenses, projects, assetAssignments, maintenanceRecords, damageReports, timeline] = await Promise.all([
+      db.query.koshasTable.findFirst({ where: eq(koshasTable.id, koshaId) }),
+      db.query.koshaBookingsTable.findMany({
+        where: and(eq(koshaBookingsTable.koshaId, koshaId), sql`${koshaBookingsTable.archivedAt} is null`),
+        orderBy: [desc(koshaBookingsTable.eventDate), desc(koshaBookingsTable.id)],
+      }),
+      db.select({ item: purchaseInvoiceItemsTable, invoiceId: purchaseInvoicesTable.id, invoiceNo: purchaseInvoicesTable.invoiceNo, invoiceDate: purchaseInvoicesTable.date, invoiceStatus: purchaseInvoicesTable.status, invoiceTotal: purchaseInvoicesTable.total, supplierName: purchaseInvoicesTable.supplierName })
+        .from(purchaseInvoiceItemsTable)
+        .innerJoin(purchaseInvoicesTable, eq(purchaseInvoicesTable.id, purchaseInvoiceItemsTable.invoiceId))
+        .where(and(eq(purchaseInvoiceItemsTable.koshaId, koshaId), sql`${purchaseInvoicesTable.status} <> 'deleted'`)),
+      db.query.expensesTable.findMany({ where: and(eq(expensesTable.koshaId, koshaId), sql`${expensesTable.deletedAt} is null`) }),
+      db.query.koshaConstructionProjectsTable.findMany({ where: eq(koshaConstructionProjectsTable.koshaId, koshaId), orderBy: [desc(koshaConstructionProjectsTable.id)] }),
+      db.query.koshaAssetAssignmentsTable.findMany({ where: and(eq(koshaAssetAssignmentsTable.koshaId, koshaId), eq(koshaAssetAssignmentsTable.isActive, true)), orderBy: [desc(koshaAssetAssignmentsTable.assignedAt)] }),
+      db.query.koshaMaintenanceRecordsTable.findMany({ where: eq(koshaMaintenanceRecordsTable.koshaId, koshaId), orderBy: [desc(koshaMaintenanceRecordsTable.maintenanceDate)] }),
+      db.query.koshaDamageReportsTable.findMany({ where: eq(koshaDamageReportsTable.koshaId, koshaId), orderBy: [desc(koshaDamageReportsTable.createdAt)] }),
+      db.query.adminActivityLogsTable.findMany({ where: and(eq(adminActivityLogsTable.entityType, "kosha"), eq(adminActivityLogsTable.entityId, koshaId)), orderBy: [desc(adminActivityLogsTable.createdAt)], limit: 100 }),
+    ]);
+    if (!kosha) return error("الكوشة غير موجودة", 404);
+    const inPeriod = (date: unknown) => (!from || String(date ?? "") >= from) && (!to || String(date ?? "") <= to);
+    const periodBookings = bookings.filter((booking) => inPeriod(booking.eventDate) && booking.status !== "cancelled");
+    const bookingIds = bookings.map((booking) => booking.id);
+    const upcomingBookingRows = bookings.filter((booking) => booking.status !== "cancelled" && booking.status !== "completed" && String(booking.eventDate ?? "") >= new Date().toISOString().slice(0, 10)).slice(0, 30);
+    const upcomingBookingIds = upcomingBookingRows.map((booking) => booking.id);
+    const upcomingWorkOrders = upcomingBookingIds.length ? await db.query.koshaWorkOrdersTable.findMany({ where: inArray(koshaWorkOrdersTable.bookingId, upcomingBookingIds) }) : [];
+    const workOrderIds = upcomingWorkOrders.map((row) => row.id);
+    const [preparationChecklist, preparationAssets] = workOrderIds.length ? await Promise.all([
+      db.query.koshaWorkOrderChecklistTable.findMany({ where: inArray(koshaWorkOrderChecklistTable.workOrderId, workOrderIds), orderBy: [asc(koshaWorkOrderChecklistTable.sortOrder), asc(koshaWorkOrderChecklistTable.id)] }),
+      db.query.koshaWorkOrderAssetsTable.findMany({ where: inArray(koshaWorkOrderAssetsTable.workOrderId, workOrderIds) }),
+    ]) : [[], []];
+    const prepProductIds = [...new Set([...preparationChecklist.map((row) => row.productId), ...preparationAssets.map((row) => row.productId)].filter((value): value is number => value != null))];
+    const prepProducts = prepProductIds.length ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, prepProductIds), columns: { id: true, name: true, nameAr: true } }) : [];
+    const prepProductNames = new Map(prepProducts.map((row) => [row.id, row.nameAr || row.name]));
+    const workOrderByBooking = new Map(upcomingWorkOrders.map((row) => [row.bookingId, row]));
+    const upcomingPreparations = upcomingBookingRows.map((booking) => {
+      const workOrder = workOrderByBooking.get(booking.id);
+      const checklist = workOrder ? preparationChecklist.filter((row) => row.workOrderId === workOrder.id) : [];
+      const assignedAssets = workOrder ? preparationAssets.filter((row) => row.workOrderId === workOrder.id) : [];
+      return {
+        bookingId: booking.id,
+        bookingNo: booking.trackingCode ?? `KB-${booking.id}`,
+        customerName: booking.customerName,
+        eventDate: booking.eventDate,
+        workOrderId: workOrder?.id ?? null,
+        workOrderStatus: workOrder?.status ?? null,
+        checklistTotal: checklist.length,
+        checklistComplete: checklist.filter((row) => row.isCompleted).length,
+        missingChecklist: checklist.filter((row) => !row.isCompleted).map((row) => row.label),
+        assignedAssets: assignedAssets.map((row) => ({ productId: row.productId, name: prepProductNames.get(row.productId) ?? `منتج #${row.productId}`, checkedOut: !!row.checkedOutAt && !row.returnedAt, returned: !!row.returnedAt })),
+      };
+    });
+    const transactions = bookingIds.length ? await db.query.financialTransactionsTable.findMany({
+      where: and(eq(financialTransactionsTable.sourceType, "kosha_booking"), inArray(financialTransactionsTable.sourceId, bookingIds.map(String))),
+    }) : [];
+    const vehicleRows = bookingIds.length ? await db.query.vehicleExpensesTable.findMany({
+      where: inArray(vehicleExpensesTable.bookingId, bookingIds),
+    }) : [];
+    const vehicleTransactionIds = [...new Set(vehicleRows.map((row) => row.financialTransactionId).filter((value): value is number => value != null))];
+    const vehicleTransactions = vehicleTransactionIds.length ? await db.query.financialTransactionsTable.findMany({
+      where: inArray(financialTransactionsTable.id, vehicleTransactionIds),
+    }) : [];
+    const linkedInvoiceIds = [...new Set(allPurchaseLines.map((line) => line.invoiceId))];
+    const purchasePayments = linkedInvoiceIds.length ? await db.query.financialTransactionsTable.findMany({
+      where: and(eq(financialTransactionsTable.sourceType, "purchase_invoice"), inArray(financialTransactionsTable.sourceId, linkedInvoiceIds.map(String))),
+    }) : [];
+    const transactionsByBooking = new Map<number, typeof transactions>();
+    for (const transaction of transactions) {
+      const bookingId = Number(transaction.sourceId);
+      transactionsByBooking.set(bookingId, [...(transactionsByBooking.get(bookingId) ?? []), transaction]);
+    }
+    const executedNet = (rows: typeof transactions) => rows.filter((row) => row.approvalStatus === "executed").reduce((sum, row) => sum + (row.direction === "revenue" ? Number(row.amount) : -Number(row.amount)), 0);
+    const bookingRevenue = periodBookings.reduce((sum, row) => sum + Number(row.totalAmount ?? 0), 0);
+    const collectedRevenue = periodBookings.reduce((sum, row) => sum + Math.max(0, executedNet(transactionsByBooking.get(row.id) ?? [])), 0);
+    const customerRemaining = periodBookings.reduce((sum, row) => sum + Math.max(0, Number(row.totalAmount ?? 0) - Math.max(0, executedNet(transactionsByBooking.get(row.id) ?? []))), 0);
+    const classifiedExpenses = allExpenses.filter((row) => row.approvalStatus === "executed");
+    const purchaseLines = allPurchaseLines.map(({ item, invoiceNo, invoiceDate, supplierName }) => ({
+      date: invoiceDate, description: item.productName, category: item.costCategory, amount: Number(item.total), sourceKey: `purchase-line:${item.id}`, sourceType: "purchase_invoice_item", reference: invoiceNo, supplierName, bookingId: item.bookingId, constructionProjectId: item.constructionProjectId, status: "executed" as const,
+    }));
+    const expenseLines = classifiedExpenses.map((row) => ({
+      date: row.date, description: row.name, category: row.costCategory, amount: Number(row.amount), sourceKey: row.financialTransactionId ? `financial:${row.financialTransactionId}` : `expense:${row.id}`, sourceType: "expense", reference: row.financialTransactionId ? `FT-${row.financialTransactionId}` : `EXP-${row.id}`, supplierName: row.beneficiaryName ?? "", bookingId: row.bookingId, constructionProjectId: row.constructionProjectId, status: "executed" as const,
+    }));
+    const actualInvestmentByProject = new Map<number, number>();
+    for (const { item } of allPurchaseLines) if (item.costCategory === "investment" && item.constructionProjectId) actualInvestmentByProject.set(item.constructionProjectId, (actualInvestmentByProject.get(item.constructionProjectId) ?? 0) + Number(item.total));
+    for (const expense of classifiedExpenses) if (expense.costCategory === "investment" && expense.constructionProjectId) actualInvestmentByProject.set(expense.constructionProjectId, (actualInvestmentByProject.get(expense.constructionProjectId) ?? 0) + Number(expense.amount));
+    const projectSummaries = projects.map((project) => {
+      const actualCost = actualInvestmentByProject.get(project.id) ?? 0;
+      const plannedBudget = Number(project.plannedBudget);
+      return { ...project, plannedBudget, actualCost, remainingBudget: Math.max(0, plannedBudget - actualCost), budgetVariance: Math.max(0, actualCost - plannedBudget) };
+    });
+    const vehicleTransactionById = new Map(vehicleTransactions.map((row) => [row.id, row]));
+    const vehicleExpenseLines = vehicleRows.flatMap((row) => {
+      const transaction = row.financialTransactionId ? vehicleTransactionById.get(row.financialTransactionId) : null;
+      if (!transaction || transaction.approvalStatus !== "executed" || transaction.direction !== "expense" || row.status !== "executed" || row.reversedAt) return [];
+      return [{ date: row.expenseDate, description: row.description || `مصروف مركبة ${row.expenseType}`, category: "booking", amount: Number(row.amount), sourceKey: `financial:${transaction.id}`, sourceType: "vehicle_expense", reference: `FT-${transaction.id}`, supplierName: "", bookingId: row.bookingId, status: "executed" as const }];
+    });
+    const investmentSources = new Map<string, number>();
+    for (const row of [...purchaseLines, ...expenseLines]) if (row.category === "investment") investmentSources.set(row.sourceKey, row.amount);
+    const investmentTotal = [...investmentSources.values()].reduce((sum, amount) => sum + amount, 0);
+    const linkedLinesByInvoice = new Map<number, number>();
+    for (const { item, invoiceId } of allPurchaseLines) linkedLinesByInvoice.set(invoiceId, (linkedLinesByInvoice.get(invoiceId) ?? 0) + Number(item.total));
+    const paidByInvoice = new Map<number, number>();
+    for (const transaction of purchasePayments) {
+      if (transaction.approvalStatus !== "executed") continue;
+      const invoiceId = Number(transaction.sourceId);
+      paidByInvoice.set(invoiceId, (paidByInvoice.get(invoiceId) ?? 0) + (transaction.direction === "expense" ? Number(transaction.amount) : -Number(transaction.amount)));
+    }
+    const invoicesById = new Map<number, (typeof allPurchaseLines)[number]>();
+    for (const row of allPurchaseLines) if (!invoicesById.has(row.invoiceId)) invoicesById.set(row.invoiceId, row);
+    const supplierPayable = [...invoicesById.entries()].reduce((sum, [invoiceId, row]) => {
+      const total = Number(row.invoiceTotal ?? 0);
+      if (total <= 0) return sum;
+      const linkedShare = Math.min(1, (linkedLinesByInvoice.get(invoiceId) ?? 0) / total);
+      const paid = Math.max(0, paidByInvoice.get(invoiceId) ?? 0);
+      return sum + Math.max(0, total - paid) * linkedShare;
+    }, 0);
+    const allOperatingCosts = [...purchaseLines, ...expenseLines].filter((row) => row.category === "operating").map((row) => ({ sourceKey: row.sourceKey, amount: row.amount, status: row.status }));
+    const allBookingCosts = [...purchaseLines, ...expenseLines, ...vehicleExpenseLines].filter((row) => row.category === "booking").map((row) => ({ sourceKey: row.sourceKey, amount: row.amount, status: row.status, bookingId: row.bookingId, category: "booking" as const }));
+    const operatingCosts = allOperatingCosts.filter((row) => inPeriod([...purchaseLines, ...expenseLines].find((line) => line.sourceKey === row.sourceKey)?.date));
+    const bookingCosts = allBookingCosts.filter((row) => inPeriod([...purchaseLines, ...expenseLines, ...vehicleExpenseLines].find((line) => line.sourceKey === row.sourceKey)?.date));
+    const summary = deriveKoshaFinancialSummary({ investmentTotal, bookingRevenue, collectedRevenue, customerRemaining, operatingCosts, bookingCosts });
+    const lifetimeBookingRevenue = bookings.filter((row) => row.status !== "cancelled").reduce((sum, row) => sum + Number(row.totalAmount ?? 0), 0);
+    const lifetimeCollected = bookings.filter((row) => row.status !== "cancelled").reduce((sum, row) => sum + Math.max(0, executedNet(transactionsByBooking.get(row.id) ?? [])), 0);
+    const lifetimeReceivable = bookings.filter((row) => row.status !== "cancelled").reduce((sum, row) => sum + Math.max(0, Number(row.totalAmount ?? 0) - Math.max(0, executedNet(transactionsByBooking.get(row.id) ?? []))), 0);
+    const lifetimeSummary = deriveKoshaFinancialSummary({ investmentTotal, bookingRevenue: lifetimeBookingRevenue, collectedRevenue: lifetimeCollected, customerRemaining: lifetimeReceivable, operatingCosts: allOperatingCosts, bookingCosts: allBookingCosts });
+    const uniqueStatementCosts = new Map<string, (typeof purchaseLines)[number] | (typeof expenseLines)[number] | (typeof vehicleExpenseLines)[number]>();
+    for (const row of [...purchaseLines, ...expenseLines, ...vehicleExpenseLines]) {
+      if (inPeriod(row.date) && !uniqueStatementCosts.has(row.sourceKey)) uniqueStatementCosts.set(row.sourceKey, row);
+    }
+    const statement = [
+      ...[...uniqueStatementCosts.values()].map((row) => ({ ...row, impact: "debit" })),
+      ...periodBookings.map((row) => ({ date: row.eventDate, description: `إيراد الحجز ${row.trackingCode ?? `KB-${row.id}`}`, category: "revenue", amount: Number(row.totalAmount), sourceKey: `booking:${row.id}`, sourceType: "kosha_booking", reference: row.trackingCode ?? `KB-${row.id}`, supplierName: "", bookingId: row.id, status: "recorded", impact: "credit" })),
+    ].sort((left, right) => String(right.date ?? "").localeCompare(String(left.date ?? "")));
+    return json({
+      kosha: { id: kosha.id, financialCode: kosha.financialCode, name: kosha.name, mainImage: kosha.mainImage },
+      period: { from, to, basis: "booking_event_date_and_cost_record_date" },
+      summary: { ...summary, recoveredInvestment: lifetimeSummary.recoveredInvestment, remainingInvestment: lifetimeSummary.remainingInvestment, recoveryPercent: lifetimeSummary.recoveryPercent, supplierPayable, bookingCount: periodBookings.length, upcomingBookingCount: periodBookings.filter((row) => String(row.eventDate ?? "") >= new Date().toISOString().slice(0, 10)).length, lifetimeInvestment: investmentTotal, lifetimeBookingRevenue },
+      statement,
+      operations: { projects: projectSummaries, assetAssignments, maintenanceRecords, damageReports, timeline, upcomingPreparations },
+      bookings: periodBookings.map((row) => ({ id: row.id, trackingCode: row.trackingCode, customerName: row.customerName, eventDate: row.eventDate, totalAmount: Number(row.totalAmount), collectedCurrent: Math.max(0, executedNet(transactionsByBooking.get(row.id) ?? [])), remainingCurrent: Math.max(0, Number(row.totalAmount) - Math.max(0, executedNet(transactionsByBooking.get(row.id) ?? []))) })),
+    });
+  }
+
   if (section === "expenses") {
     const auth = await requirePermission(req, "accounting");
     if (isResponse(auth)) return auth;
@@ -70126,6 +70581,23 @@ async function handleAccounting(
       if (!existingExpense) return error("المصروف غير موجود", 404);
       if (!ownsExpense(existingExpense))
         return error("لا يمكنك تعديل مصروف سجّله موظف آخر", 403);
+      const classificationError = await validateExpenseKoshaReferences({
+        koshaId: b.koshaId !== undefined ? b.koshaId : existingExpense.koshaId,
+        costCategory:
+          b.costCategory !== undefined
+            ? b.costCategory
+            : existingExpense.costCategory,
+        bookingId:
+          b.bookingId !== undefined ? b.bookingId : existingExpense.bookingId,
+        constructionProjectId: b.constructionProjectId !== undefined ? b.constructionProjectId : existingExpense.constructionProjectId,
+        supplierId:
+          b.supplierId !== undefined ? b.supplierId : existingExpense.supplierId,
+        responsibleEmployeeId:
+          b.responsibleEmployeeId !== undefined
+            ? b.responsibleEmployeeId
+            : existingExpense.responsibleEmployeeId,
+      });
+      if (classificationError) return classificationError;
       const update: any = { updatedAt: new Date() };
       if (b.date !== undefined) update.date = b.date;
       if (b.amount !== undefined) update.amount = String(b.amount);
@@ -70142,10 +70614,21 @@ async function handleAccounting(
       if (b.paymentMethod !== undefined)
         update.paymentMethod = normMethod(b.paymentMethod);
       if (b.notes !== undefined) update.notes = nullableText(b.notes);
+      if (b.constructionProjectId !== undefined) update.constructionProjectId = b.constructionProjectId;
       if (b.receiptImage !== undefined)
         update.receiptImage = b.receiptImage
           ? await persistMediaValue(b.receiptImage, "expenses")
           : null;
+      if (b.koshaId !== undefined) update.koshaId = b.koshaId ?? null;
+      if (b.costCategory !== undefined)
+        update.costCategory = b.costCategory ?? null;
+      if (b.bookingId !== undefined) update.bookingId = b.bookingId ?? null;
+      if (b.expenseType !== undefined) update.expenseType = b.expenseType ?? null;
+      if (b.supplierId !== undefined) update.supplierId = b.supplierId ?? null;
+      if (b.beneficiaryName !== undefined)
+        update.beneficiaryName = b.beneficiaryName ?? null;
+      if (b.responsibleEmployeeId !== undefined)
+        update.responsibleEmployeeId = b.responsibleEmployeeId ?? null;
       const a = actor(auth);
       update.updatedBy = a.id;
       update.updatedByName = a.name;

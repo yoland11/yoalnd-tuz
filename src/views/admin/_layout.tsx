@@ -328,6 +328,12 @@ export const NAV: NavItem[] = [
     perm: "services",
   },
   {
+    href: "/admin/kosha-finance",
+    label: "حسابات الكوشات",
+    icon: Wallet,
+    perm: "accounting",
+  },
+  {
     href: "/admin/kosha-packages",
     label: "إدارة الباقات",
     icon: PackageCheck,

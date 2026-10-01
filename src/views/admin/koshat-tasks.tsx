@@ -46,7 +46,7 @@ function AssignWorkOrderDialog({ booking, onClose }: { booking: Booking; onClose
 }
 
 export default function KoshatTasksPage() {
-  const [filter,setFilter]=useState("today"); const [assigning,setAssigning]=useState<Booking|null>(null); const [bookingId,setBookingId]=useState("");
+  const [filter,setFilter]=useState("today"); const [assigning,setAssigning]=useState<Booking|null>(null); const [bookingId,setBookingId]=useState(()=>new URLSearchParams(window.location.search).get("bookingId") ?? "");
   const range=useMemo(()=>{ const today=new Date(); const iso=(d:Date)=>d.toISOString().slice(0,10); const tomorrow=new Date(today); tomorrow.setDate(today.getDate()+1); return filter==="today"?`from=${iso(today)}&to=${iso(today)}`:filter==="tomorrow"?`from=${iso(tomorrow)}&to=${iso(tomorrow)}`:""; },[filter]);
   const orders=useQuery<WorkOrder[]>({queryKey:["koshat-work-orders",range],queryFn:()=>adminFetch(`/admin/koshat-tasks?${range}`),refetchInterval:30000});
   const bookings=useQuery<Booking[]>({queryKey:["koshat-bookings-for-tasks"],queryFn:()=>adminFetch("/admin/kosha-bookings?search=&status=")});
