@@ -53382,12 +53382,15 @@ async function handleSalesInvoices(
   section: string | undefined,
 ) {
   if (section !== "sales-invoices") return null;
+  const isCustomerSearch = parts[2] === "customer-search";
   const isCustomerLinkRequest =
     parts[3] === "customer-link" || parts[2] === "customer-link-repair";
   const isCustomerLinkWrite = isCustomerLinkRequest && req.method === "POST";
   const auth = await requirePermission(
     req,
-    isCustomerLinkWrite
+    isCustomerSearch
+      ? "accounting"
+      : isCustomerLinkWrite
       ? "sales_invoice.customer.link"
       : parts[3] === "cancel"
         ? "sales_invoice.cancel"
@@ -53397,6 +53400,31 @@ async function handleSalesInvoices(
   );
   if (isResponse(auth)) return auth;
   const method = req.method;
+  if (isCustomerSearch) {
+    if (method !== "GET") return error("طريقة الطلب غير مدعومة", 405);
+    const query = (req.nextUrl.searchParams.get("search") ?? "").trim().slice(0, 100);
+    if (query.length < 1) return json([]);
+    const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+    const customers = await db.query.customersTable.findMany({
+      columns: { id: true, name: true, fullName: true, phone: true, businessName: true },
+      where: and(
+        ne(customersTable.status, "deleted"),
+        or(
+          ilike(customersTable.name, pattern),
+          ilike(customersTable.fullName, pattern),
+          ilike(customersTable.businessName, pattern),
+          ilike(customersTable.phone, pattern),
+        ),
+      ),
+      orderBy: [desc(customersTable.id)],
+      limit: 12,
+    });
+    return json(customers.map((customer) => ({
+      id: customer.id,
+      name: customer.name || customer.fullName || customer.businessName || "بدون اسم",
+      phone: customer.phone,
+    })));
+  }
   const id = parts[2] ? int(parts[2]) : null;
   // The register is read-only; do not run stock DDL before returning history.
   if (!(method === "GET" && !id)) {

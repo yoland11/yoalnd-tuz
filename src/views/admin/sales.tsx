@@ -276,13 +276,13 @@ function CustomerLookup({
     queryKey: ["admin", "sales-customer-search", deferredSearch],
     queryFn: () =>
       adminFetch(
-        `/admin/customers?search=${encodeURIComponent(deferredSearch)}&limit=12`,
+        `/admin/sales-invoices/customer-search?search=${encodeURIComponent(deferredSearch)}`,
       ),
-    enabled: open && deferredSearch.length >= 2,
+    enabled: open && deferredSearch.length >= 1,
     staleTime: 30_000,
   });
 
-  const showResults = open && deferredSearch.length >= 2;
+  const showResults = open && deferredSearch.length >= 1;
 
   return (
     <div className="relative">
@@ -305,6 +305,18 @@ function CustomerLookup({
           {customers.isFetching ? (
             <div className="px-3 py-3 text-xs text-muted-foreground">
               جارٍ البحث عن العملاء...
+            </div>
+          ) : customers.isError ? (
+            <div className="flex items-center justify-between gap-3 px-3 py-3 text-xs text-destructive" role="alert">
+              <span className="min-w-0">تعذر البحث عن العملاء. {apiErrorMessage(customers.error)}</span>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void customers.refetch()}
+                className="shrink-0 font-semibold underline underline-offset-2"
+              >
+                إعادة المحاولة
+              </button>
             </div>
           ) : !customers.data?.length ? (
             <div className="px-3 py-3 text-xs text-muted-foreground">
