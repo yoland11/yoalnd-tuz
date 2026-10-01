@@ -894,6 +894,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/archive"),
       navItem("/admin/services"),
       navItem("/admin/koshas"),
+      navItem("/admin/kosha-finance"),
       navItem("/admin/kosha-packages"),
       navItem("/admin/kosha-bookings"),
       navItem("/admin/invitations"),
