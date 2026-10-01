@@ -53406,13 +53406,12 @@ async function handleSalesInvoices(
     if (query.length < 1) return json([]);
     const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
     const customers = await db.query.customersTable.findMany({
-      columns: { id: true, name: true, fullName: true, phone: true, businessName: true },
+      columns: { id: true, name: true, fullName: true, phone: true },
       where: and(
         ne(customersTable.status, "deleted"),
         or(
           ilike(customersTable.name, pattern),
           ilike(customersTable.fullName, pattern),
-          ilike(customersTable.businessName, pattern),
           ilike(customersTable.phone, pattern),
         ),
       ),
@@ -53421,7 +53420,7 @@ async function handleSalesInvoices(
     });
     return json(customers.map((customer) => ({
       id: customer.id,
-      name: customer.name || customer.fullName || customer.businessName || "بدون اسم",
+      name: customer.name || customer.fullName || "بدون اسم",
       phone: customer.phone,
     })));
   }

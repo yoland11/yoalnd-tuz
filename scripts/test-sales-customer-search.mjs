@@ -29,5 +29,8 @@ assert.match(handler, /limit:\s*12/, "Customer search results are bounded");
 assert.match(handler, /query\.length\s*<\s*1/, "API accepts a single-character search");
 assert.match(handler, /customersTable\.(name|fullName|phone)/, "Search uses customer identity fields");
 assert.match(handler, /status[\s\S]{0,80}deleted|deleted[\s\S]{0,80}status/, "Deleted customers are excluded");
+const customerSearchStart = handler.indexOf("if (isCustomerSearch)");
+const customerSearch = handler.slice(customerSearchStart, customerSearchStart + 1_500);
+assert.doesNotMatch(customerSearch, /businessName/, "Search only selects fields present in the production customer schema");
 
 console.log("Sales invoice customer search contract passed.");
