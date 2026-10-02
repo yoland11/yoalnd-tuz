@@ -75,6 +75,28 @@ export function normalizeShootStage(value: unknown): PhotographyShootStage {
   return LEGACY_STAGE_MAP[raw] ?? "new_booking";
 }
 
+/**
+ * Workflow settings created by earlier releases contain legacy stage IDs.
+ * Treat their aliases as the current canonical stages so an old default list
+ * cannot accidentally block a valid forward transition.
+ */
+export function isPhotographyWorkflowStageEnabled(
+  activeStages: unknown,
+  target: string,
+): boolean {
+  if (!Array.isArray(activeStages) || activeStages.length === 0) return true;
+  if (!(PHOTOGRAPHY_SHOOT_STAGES as readonly string[]).includes(target))
+    return false;
+
+  const configuredStages = activeStages.map((value) => {
+    const raw = String(value ?? "").trim();
+    if ((PHOTOGRAPHY_SHOOT_STAGES as readonly string[]).includes(raw))
+      return raw;
+    return LEGACY_STAGE_MAP[raw] ?? null;
+  });
+  return configuredStages.includes(target);
+}
+
 export function stageIndex(stage: string): number {
   const index = (PHOTOGRAPHY_SHOOT_STAGES as readonly string[]).indexOf(
     normalizeShootStage(stage),

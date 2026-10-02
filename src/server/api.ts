@@ -468,6 +468,7 @@ import {
   SHOOT_STAGE_LABELS,
   checklistComplete,
   evaluateTransition,
+  isPhotographyWorkflowStageEnabled,
   mapsLink,
   normalizeChecklist,
   normalizeShootStage,
@@ -62276,9 +62277,7 @@ async function handlePhotographyStaffPortal(
         });
       if (
         to !== "cancelled" &&
-        Array.isArray(workflowSettings?.activeStages) &&
-        workflowSettings.activeStages.length > 0 &&
-        !workflowSettings.activeStages.includes(to)
+        !isPhotographyWorkflowStageEnabled(workflowSettings?.activeStages, to)
       ) {
         return error("هذه المرحلة معطلة في إعدادات سير عمل التصوير", 409);
       }
