@@ -7,6 +7,11 @@ import { EmployeeAvatar } from "@/components/employee-avatar";
 import { ImageUploadEditor } from "@/components/image-upload-editor";
 import { adminFetch, ALL_PERMISSIONS, hasPerm, PERMISSION_LABELS, type AdminMe } from "./_lib";
 import { employeePhotoUrlFromUpload } from "@/lib/employee-identity";
+import {
+  canAssignStaffRole as canAssignStaffRoleForUser,
+  canManageStaffPermissionSets,
+  isLimitedStaffRoleAssignable,
+} from "@/lib/staff-permissions";
 import { EmptyState } from "./_layout";
 import ScanDocumentButton from "./scan-document-button";
 import { useToast } from "@/hooks/use-toast";
@@ -345,7 +350,8 @@ export default function StaffPage() {
   const canCreateStaff = hasPerm(currentUser, "staff.create");
   const canEditStaff = hasPerm(currentUser, "staff.edit");
   const canDeleteStaff = hasPerm(currentUser, "staff.delete");
-  const canManageStaffRoles = currentUser?.role === "admin" || Boolean(currentUser?.permissions.includes("staff"));
+  const canManageStaffRoles = canManageStaffPermissionSets(currentUser?.role, currentUser?.permissions);
+  const canAssignStaffRole = canAssignStaffRoleForUser(currentUser?.role, currentUser?.permissions);
   const canViewStaffPay = Boolean(currentUser?.role === "admin" || currentUser?.permissions.includes("staff") || hasPerm(currentUser, "salary_settings_view") || hasPerm(currentUser, "salary_settings_edit") || hasPerm(currentUser, "employee_salaries_view") || hasPerm(currentUser, "payroll_view"));
   const canEditStaffPay = Boolean(currentUser?.role === "admin" || currentUser?.permissions.includes("staff") || hasPerm(currentUser, "salary_settings_edit"));
   const { data, isLoading } = useQuery({
@@ -412,8 +418,10 @@ export default function StaffPage() {
           salaryNotes: e.salaryNotes,
         });
       }
-      if (canManageStaffRoles) {
+      if (canAssignStaffRole) {
         body.role = e.role;
+      }
+      if (canManageStaffRoles) {
         body.permissions = e.permissions ?? [];
       }
       if (e.password) body.password = e.password;
@@ -750,18 +758,23 @@ export default function StaffPage() {
                   setEditing((s) => ({
                     ...s!,
                     role,
-                    permissions: ROLE_PRESETS[role] ?? s!.permissions,
+                    permissions: canManageStaffRoles ? ROLE_PRESETS[role] ?? s!.permissions : s!.permissions,
                   }));
                 }}
-                disabled={editing.role === "admin" || !canManageStaffRoles}
+                disabled={editing.role === "admin" || !canAssignStaffRole}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-70"
               >
-                {ROLES.map((r) => (
+                {ROLES.filter((r) => canManageStaffRoles || r.value === editing.role || isLimitedStaffRoleAssignable(r.value)).map((r) => (
                   <option key={r.value} value={r.value}>
                     {r.label}
                   </option>
                 ))}
               </select>
+              {!canAssignStaffRole && editing.role !== "admin" ? (
+                <p className="mt-1 text-xs text-muted-foreground">تغيير الدور يحتاج صلاحية «تغيير الدور الوظيفي»؛ الصلاحيات التفصيلية يديرها المدير.</p>
+              ) : canAssignStaffRole && !canManageStaffRoles ? (
+                <p className="mt-1 text-xs text-muted-foreground">تغيير المسمى الوظيفي لا يغيّر صلاحيات الحساب.</p>
+              ) : null}
             </div>
             <div>
               <label className="block text-xs text-muted-foreground mb-2">

@@ -12,7 +12,13 @@ import {
 } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { staffPhotoUpdateSchema } from "./staff-photo";
-import { hasStaffPermission, type StaffPermission } from "@/lib/staff-permissions";
+import {
+  canAssignStaffRole,
+  canAssignStaffRoleTo,
+  canManageStaffPermissionSets,
+  hasStaffPermission,
+  type StaffPermission,
+} from "@/lib/staff-permissions";
 import { normalizeProductItemSettings } from "./product-item-settings";
 import { calculateServiceLine, invoiceLineTracksInventory, serviceOrderTotal } from "./service-item-lines";
 import { groupPurchaseInvoiceStockChanges, preparePurchaseVariantLines, type PurchaseVariantProduct } from "./purchase-variant-lines";
@@ -791,6 +797,7 @@ export const ALL_PERMISSIONS = [
   "staff.create",
   "staff.edit",
   "staff.delete",
+  "staff.role",
   "salary_settings_view",
   "salary_settings_edit",
   "salary_settings_approve",
@@ -49210,13 +49217,23 @@ async function handleAdmin(
         update.username = nextUsername;
       }
       if (existing.role !== "admin") {
-        const canManageStaffRoles = auth.role === "admin" || auth.permissions.includes("staff");
-        if (!canManageStaffRoles && (b?.role !== undefined || b?.permissions !== undefined))
+        const canManageStaffRoles = canManageStaffPermissionSets(auth.role, auth.permissions);
+        const canAssignRole = canAssignStaffRole(auth.role, auth.permissions);
+        if (
+          (b?.role !== undefined && !canAssignRole) ||
+          (b?.permissions !== undefined && !canManageStaffRoles)
+        )
           return error("ليس لديك صلاحية تعديل أدوار وصلاحيات الموظفين", 403);
         const nextRole =
           b?.role !== undefined ? normalizeStaffRole(b.role) : existing.role;
+        if (
+          b?.role !== undefined &&
+          nextRole !== existing.role &&
+          !canAssignStaffRoleTo(auth.role, auth.permissions, nextRole)
+        )
+          return error("يمكنك اختيار دور موظف تشغيلي فقط", 403);
         if (b?.role !== undefined) update.role = nextRole;
-        if (b?.permissions !== undefined || b?.role !== undefined) {
+        if (canManageStaffRoles && (b?.permissions !== undefined || b?.role !== undefined)) {
           const explicitPermissions = validateStaffPermissions(b?.permissions);
           if (b?.permissions !== undefined && explicitPermissions === null)
             return error("صلاحيات غير صحيحة", 400);

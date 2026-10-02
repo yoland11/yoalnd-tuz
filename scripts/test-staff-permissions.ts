@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { hasStaffPermission, type StaffPermission } from "../src/lib/staff-permissions";
+import {
+  canAssignStaffRole,
+  canAssignStaffRoleTo,
+  canManageStaffPermissionSets,
+  hasStaffPermission,
+  isLimitedStaffRoleAssignable,
+  type StaffPermission,
+} from "../src/lib/staff-permissions";
 
 const actions: StaffPermission[] = ["staff.view", "staff.create", "staff.edit", "staff.delete"];
 
@@ -14,4 +21,20 @@ assert.equal(hasStaffPermission(["staff.edit"], "staff.create"), false);
 assert.equal(hasStaffPermission(["staff.delete"], "staff.edit"), false);
 assert.equal(hasStaffPermission([], "staff.delete"), false);
 
-console.log("Staff permission compatibility checks passed.");
+assert.equal(canAssignStaffRole("admin", []), true);
+assert.equal(canAssignStaffRole("employee", ["staff"]), true);
+assert.equal(canAssignStaffRole("employee", ["staff.role"]), true);
+assert.equal(canAssignStaffRole("employee", ["staff.edit"]), false);
+assert.equal(canAssignStaffRoleTo("employee", ["staff.role"], "photographer"), true);
+assert.equal(canAssignStaffRoleTo("employee", ["staff.role"], "manager"), false);
+assert.equal(canAssignStaffRoleTo("employee", ["staff.edit"], "employee"), false);
+assert.equal(canAssignStaffRoleTo("admin", [], "accountant"), true);
+assert.equal(canManageStaffPermissionSets("employee", ["staff.role"]), false);
+assert.equal(canManageStaffPermissionSets("employee", ["staff"]), true);
+assert.equal(isLimitedStaffRoleAssignable("photographer"), true);
+assert.equal(isLimitedStaffRoleAssignable("booking_staff"), true);
+assert.equal(isLimitedStaffRoleAssignable("manager"), false);
+assert.equal(isLimitedStaffRoleAssignable("accountant"), false);
+assert.equal(isLimitedStaffRoleAssignable("admin"), false);
+
+console.log("Staff permission and role assignment checks passed.");
