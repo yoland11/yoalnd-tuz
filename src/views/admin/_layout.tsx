@@ -423,6 +423,12 @@ export const NAV: NavItem[] = [
     perm: "invoices",
   },
   {
+    href: "/admin/wholesale",
+    label: "الجملة",
+    icon: Store,
+    perm: "invoices",
+  },
+  {
     href: "/admin/sales",
     label: "فواتير المبيعات",
     icon: Receipt,

@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
   Trash2,
@@ -73,6 +73,19 @@ type Product = {
   category?: string;
   images?: string[];
 };
+type ProductVariant = {
+  id: number;
+  productId: number;
+  color?: string | null;
+  size?: string | null;
+  sku?: string | null;
+  barcode?: string | null;
+  price?: number | null;
+  cost?: number | null;
+  stock: number;
+  isActive?: boolean;
+};
+type ProductVariantResponse = { variants?: ProductVariant[] };
 
 function ProductSearchThumbnail({ product }: { product: Pick<Product, "name" | "nameAr" | "images"> }) {
   const [failed, setFailed] = useState(false);
@@ -92,6 +105,9 @@ type Supplier = {
 };
 type PurchaseItem = {
   productId: number | null;
+  variantId: number | null;
+  variantLabel: string | null;
+  variantSku: string | null;
   costCategory: string;
   koshaId: string;
   bookingId: string;
@@ -149,6 +165,9 @@ const PAYMENT_METHODS = [
 function blankItem(): PurchaseItem {
   return {
     productId: null,
+    variantId: null,
+    variantLabel: null,
+    variantSku: null,
     costCategory: "",
     koshaId: "",
     bookingId: "",
@@ -252,6 +271,24 @@ export default function PurchasesPage() {
     gcTime: 15 * 60 * 1000,
     enabled: !listMode,
   });
+  const selectedProductIds = Array.from(new Set(items.map((item) => item.productId).filter((id): id is number => Boolean(id))));
+  const productVariantQueries = useQueries({
+    queries: selectedProductIds.map((productId) => ({
+      queryKey: ["admin", "product-variants", productId],
+      queryFn: () => adminFetch<ProductVariantResponse>(`/admin/products/${productId}/variants`),
+      enabled: !listMode,
+      staleTime: 60_000,
+    })),
+  });
+  const variantsByProduct = new Map<number, ProductVariant[]>(
+    selectedProductIds.map((productId, index) => [
+      productId,
+      productVariantQueries[index]?.data?.variants ?? [],
+    ]),
+  );
+  const variantQueryByProduct = new Map(
+    selectedProductIds.map((productId, index) => [productId, productVariantQueries[index]]),
+  );
 
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["admin", "suppliers"],
@@ -372,7 +409,7 @@ export default function PurchasesPage() {
     const cost = parseFloat(String(product.costPrice ?? "0")) || 0;
     const sale = parseFloat(String(product.price ?? "0")) || 0;
     setItems((prev) => {
-      const existingIdx = prev.findIndex((r) => r.productId === product.id);
+      const existingIdx = prev.findIndex((r) => r.productId === product.id && r.variantId == null);
       if (existingIdx >= 0) {
         const updated = [...prev];
         const it = { ...updated[existingIdx] };
@@ -388,6 +425,9 @@ export default function PurchasesPage() {
       rows[idx] = {
         ...rows[idx],
         productId: product.id,
+        variantId: null,
+        variantLabel: null,
+        variantSku: null,
         productName: product.nameAr || product.name || "",
         barcode: product.barcode || "",
         quantity: qty,
@@ -427,6 +467,9 @@ export default function PurchasesPage() {
       updated[idx] = {
         ...updated[idx],
         productId: p.id,
+        variantId: null,
+        variantLabel: null,
+        variantSku: null,
         productName: p.nameAr || p.name,
         barcode: p.barcode || "",
         costPrice: parseFloat(p.costPrice || "0"),
@@ -440,6 +483,29 @@ export default function PurchasesPage() {
     });
     setShowProductSearch(null);
     setSearchQ((prev) => ({ ...prev, [idx]: "" }));
+  }
+
+  function selectVariant(idx: number, rawVariantId: string) {
+    const current = items[idx];
+    if (!current) return;
+    const variantId = rawVariantId ? Number(rawVariantId) : null;
+    const variant = variantId == null
+      ? null
+      : variantsByProduct.get(Number(current.productId))?.find((entry) => entry.id === variantId) ?? null;
+    const product = products.find((entry) => entry.id === current.productId);
+    setItems((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[idx] };
+      item.variantId = variant?.id ?? null;
+      item.variantLabel = variant ? [variant.color, variant.size].filter(Boolean).join(" / ") || "متغير" : null;
+      item.variantSku = variant?.sku?.trim() || null;
+      item.barcode = variant?.barcode || product?.barcode || "";
+      item.costPrice = variant?.cost != null ? Number(variant.cost) : Number(product?.costPrice ?? 0);
+      item.salePrice = variant?.price != null ? Number(variant.price) : Number(product?.price ?? 0);
+      item.total = +(item.quantity * item.costPrice - item.discount).toFixed(2);
+      updated[idx] = item;
+      return updated;
+    });
   }
 
   // "Open a customer account?" prompt shown on save for a new counterparty name.
@@ -466,6 +532,25 @@ export default function PurchasesPage() {
       toast({ title: "أضف أصناف للفاتورة", variant: "destructive" });
       return;
     }
+    const selectedQueries = validItems
+      .map((item) => item.productId)
+      .filter((productId): productId is number => Boolean(productId))
+      .map((productId) => ({ productId, query: variantQueryByProduct.get(productId) }));
+    if (selectedQueries.some(({ query }) => query?.isError)) {
+      toast({ title: "تعذر تحميل متغيرات المنتجات", description: "أعد المحاولة قبل حفظ الفاتورة حتى لا يُسجل المخزون على منتج غير صحيح.", variant: "destructive" });
+      return;
+    }
+    if (selectedQueries.some(({ query }) => !query?.data)) {
+      toast({ title: "جارٍ التحقق من متغيرات المنتجات", description: "انتظر تحميل بيانات المخزون ثم أعد الحفظ.", variant: "destructive" });
+      return;
+    }
+    const missingVariant = validItems.find((item) =>
+      item.productId && (variantsByProduct.get(item.productId)?.length ?? 0) > 0 && !item.variantId,
+    );
+    if (missingVariant) {
+      toast({ title: "اختر متغير المنتج", description: missingVariant.productName, variant: "destructive" });
+      return;
+    }
     setSaving(true);
     try {
       submitKeyRef.current ??= `purchase-invoice:${crypto.randomUUID()}`;
@@ -485,6 +570,7 @@ export default function PurchasesPage() {
         notes: form.notes,
         items: validItems.map((i) => ({
           productId: i.productId,
+          variantId: i.variantId,
           costCategory: i.costCategory || null,
           koshaId: i.koshaId ? Number(i.koshaId) : null,
           bookingId: i.bookingId ? Number(i.bookingId) : null,
@@ -603,6 +689,9 @@ export default function PurchasesPage() {
       setItems(
         (full.items ?? []).map((it: any) => ({
           productId: it.productId ?? null,
+          variantId: it.variantId ?? null,
+          variantLabel: it.variantLabel ?? null,
+          variantSku: it.variantSku ?? null,
           costCategory: it.costCategory ?? "",
           koshaId: it.koshaId ? String(it.koshaId) : "",
           bookingId: it.bookingId ? String(it.bookingId) : "",
@@ -843,6 +932,9 @@ export default function PurchasesPage() {
                 <tbody className="divide-y divide-border/20">
                   {items.map((item, idx) => {
                     const q = (searchQ[idx] ?? "").toLowerCase();
+                    const productVariants = item.productId ? variantsByProduct.get(item.productId) ?? [] : [];
+                    const variantQuery = item.productId ? variantQueryByProduct.get(item.productId) : null;
+                    const selectedVariant = productVariants.find((variant) => variant.id === item.variantId);
                     const filtered = q
                       ? products
                           .filter(
@@ -950,6 +1042,35 @@ export default function PurchasesPage() {
                               ))}
                             </PopoverContent>
                           </Popover>
+                          {item.productId && variantQuery?.isLoading ? <p className="mt-2 text-[11px] text-muted-foreground">جارٍ تحميل متغيرات المنتج...</p> : null}
+                          {item.productId && variantQuery?.isError ? <p className="mt-2 text-[11px] text-destructive" role="alert">تعذر تحميل متغيرات المنتج. أعد المحاولة قبل الحفظ.</p> : null}
+                          {item.productId && (productVariants.length > 0 || item.variantId != null) ? (
+                            <div className="mt-2 space-y-1">
+                              <label className="block text-[11px] font-medium text-muted-foreground">المتغير *</label>
+                              <select
+                                required
+                                aria-label="متغير المنتج"
+                                value={item.variantId == null ? "" : String(item.variantId)}
+                                onChange={(event) => selectVariant(idx, event.target.value)}
+                                className="w-full rounded border border-primary/30 bg-background px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                              >
+                                <option value="">اختر المتغير</option>
+                                {productVariants.map((variant) => {
+                                  const label = [variant.color, variant.size].filter(Boolean).join(" / ") || `متغير #${variant.id}`;
+                                  return <option key={variant.id} value={variant.id} disabled={variant.isActive === false && item.variantId !== variant.id}>
+                                    {[item.productName, label, variant.sku ? `SKU ${variant.sku}` : "", variant.barcode ? `باركود ${variant.barcode}` : "", `مخزون ${variant.stock}`, variant.cost != null ? `تكلفة ${formatCurrency(variant.cost)}` : ""].filter(Boolean).join(" — ")}
+                                  </option>;
+                                })}
+                              </select>
+                              {selectedVariant ? <p className="text-[10px] leading-5 text-muted-foreground">
+                                {selectedVariant.sku ? `SKU: ${selectedVariant.sku} · ` : ""}
+                                {selectedVariant.barcode ? `الباركود: ${selectedVariant.barcode} · ` : ""}
+                                المخزون الحالي: {selectedVariant.stock}
+                                {selectedVariant.cost != null ? ` · سعر الشراء: ${formatCurrency(selectedVariant.cost)}` : ""}
+                                {selectedVariant.isActive === false ? " · متغير غير نشط محفوظ سابقاً" : ""}
+                              </p> : null}
+                            </div>
+                          ) : null}
                           <div className="mt-2 grid grid-cols-2 gap-1.5">
                             <select aria-label="تصنيف تكلفة بند الشراء" value={item.costCategory} onChange={(e) => { updateItem(idx, "costCategory", e.target.value); if (e.target.value !== "booking") updateItem(idx, "bookingId", ""); if (e.target.value !== "investment") updateItem(idx, "constructionProjectId", ""); }} className="min-w-0 rounded border border-border/30 bg-background px-1 py-1 text-[11px]">
                               <option value="">غير مرتبط بكوشة</option><option value="investment">استثمار الكوشة</option><option value="operating">تشغيل الكوشة</option><option value="booking">تكلفة حجز</option>
@@ -962,8 +1083,8 @@ export default function PurchasesPage() {
                         <td className="px-3 py-2">
                           <input
                             type="number"
-                            min="0.001"
-                            step="0.001"
+                            min={selectedVariant ? "1" : "0.001"}
+                            step={selectedVariant ? "1" : "0.001"}
                             value={item.quantity}
                             onChange={(e) =>
                               updateItem(idx, "quantity", e.target.value)
@@ -1394,6 +1515,18 @@ type PurchasePaymentHistory = {
 };
 
 type PurchaseInvoiceDetails = PurchaseInvoice & {
+  items?: Array<{
+    id: number;
+    productId?: number | null;
+    productName: string;
+    variantId?: number | null;
+    variantLabel?: string | null;
+    variantSku?: string | null;
+    barcode?: string | null;
+    quantity: number | string;
+    costPrice: number | string;
+    total: number | string;
+  }>;
   payments?: PurchasePaymentHistory[];
   paymentSummary?: {
     total: number;
@@ -1445,6 +1578,9 @@ function purchaseInvoicePrintInput(
     items: Array.isArray((invoice as any).items)
       ? (invoice as any).items.map((item: any) => ({
           productName: item.productName || item.name || "—",
+          variantLabel: item.variantLabel || null,
+          variantSku: item.variantSku || null,
+          barcode: item.barcode || null,
           quantity: item.quantity ?? 0,
           unitPrice: item.costPrice ?? item.unitPrice ?? 0,
           total: item.total ?? 0,
@@ -1667,6 +1803,10 @@ function PurchaseInvoicePaymentDialog({
             <PaymentMetric title="المتبقي للمورد" value={formatCurrency(details.supplierAccountSummary?.outstandingBalance ?? 0)} emphasis />
           </div>
           <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, Math.max(0, summary.percentage || (summary.total ? (summary.paidAmount / summary.total) * 100 : 0)))}%` }} /></div>
+        </section>
+        <section className="rounded-xl border bg-card p-4">
+          <h3 className="mb-3 font-semibold">أصناف فاتورة الشراء</h3>
+          <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-sm"><thead className="border-b text-xs text-muted-foreground"><tr><th className="p-2 text-right">الصنف</th><th className="p-2 text-right">المتغير / SKU</th><th className="p-2 text-center">الكمية</th><th className="p-2 text-left">سعر الشراء</th><th className="p-2 text-left">الإجمالي</th></tr></thead><tbody>{(details.items ?? []).map((item) => <tr key={item.id} className="border-b"><td className="p-2 font-medium">{item.productName || "—"}</td><td className="p-2"><span>{item.variantLabel || "—"}</span>{item.variantSku ? <small className="mr-2 text-muted-foreground">SKU: {item.variantSku}</small> : null}{item.barcode ? <small className="mr-2 text-muted-foreground">باركود: {item.barcode}</small> : null}</td><td className="p-2 text-center">{item.quantity}</td><td className="p-2 text-left">{formatCurrency(item.costPrice)}</td><td className="p-2 text-left font-semibold">{formatCurrency(item.total)}</td></tr>)}{!details.items?.length ? <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">لا توجد بنود محفوظة لهذه الفاتورة.</td></tr> : null}</tbody></table></div>
         </section>
         <section className="rounded-xl border bg-card p-4">
           <div className="mb-3 flex items-center gap-2"><Wallet className="h-4 w-4 text-primary" /><h3 className="font-semibold">تسجيل دفعة</h3></div>

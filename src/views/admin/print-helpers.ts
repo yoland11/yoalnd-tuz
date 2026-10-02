@@ -209,6 +209,7 @@ export type SalesInvoiceReceiptInput = {
   employeeName?: string | null;
   items: Array<{
     productName: string;
+    unit?: string | null;
     quantity: number | string;
     unitPrice: number | string;
     total: number | string;
@@ -247,6 +248,9 @@ export type PurchaseInvoiceStatementInput = {
   employeeName?: string | null;
   items: Array<{
     productName: string;
+    variantLabel?: string | null;
+    variantSku?: string | null;
+    barcode?: string | null;
     quantity: number | string;
     unitPrice: number | string;
     total: number | string;
@@ -496,7 +500,7 @@ export function buildSalesInvoiceDocumentHtml(
   const itemRows = input.items
     .map(
       (item, index) =>
-        `<tr><td class="num center">${index + 1}</td><td class="name">${esc(item.productName)}</td><td class="num center">${esc(item.quantity)}</td><td class="num center">${esc(formatCurrency(item.unitPrice))}</td><td class="num" style="text-align:left">${esc(formatCurrency(item.total))}</td></tr>`,
+        `<tr><td class="num center">${index + 1}</td><td class="name">${esc(item.unit ? `${item.productName} (${item.unit})` : item.productName)}</td><td class="num center">${esc(item.quantity)}</td><td class="num center">${esc(formatCurrency(item.unitPrice))}</td><td class="num" style="text-align:left">${esc(formatCurrency(item.total))}</td></tr>`,
     )
     .join("");
   const itemHead =
@@ -594,7 +598,7 @@ function purchaseInvoiceStatementMarkup(input: PurchaseInvoiceStatementInput) {
     ? input.items
         .map(
           (item, index) =>
-            `<tr><td class="num">${index + 1}</td><td>${esc(item.productName)}</td><td class="num">${esc(item.quantity)}</td><td class="num">${esc(formatCurrency(item.unitPrice))}</td><td class="num">${esc(formatCurrency(item.total))}</td></tr>`,
+            `<tr><td class="num">${index + 1}</td><td>${esc(item.productName)}${item.variantLabel || item.variantSku || item.barcode ? `<small style="display:block;color:#555;margin-top:3px">${[item.variantLabel, item.variantSku ? `SKU: ${item.variantSku}` : null, item.barcode ? `باركود: ${item.barcode}` : null].filter(Boolean).map(esc).join(" · ")}</small>` : ""}</td><td class="num">${esc(item.quantity)}</td><td class="num">${esc(formatCurrency(item.unitPrice))}</td><td class="num">${esc(formatCurrency(item.total))}</td></tr>`,
         )
         .join("")
     : '<tr><td colspan="5" class="empty">لا توجد أصناف مسجلة</td></tr>';
@@ -639,7 +643,7 @@ function purchaseInvoiceThermalMarkup(input: PurchaseInvoiceStatementInput) {
     ? new Intl.DateTimeFormat("en-CA", { dateStyle: "medium" }).format(new Date(input.issuedAt))
     : "—";
   const items = input.items.length
-    ? input.items.map((item) => `<div class="purchase-thermal-item"><strong>${esc(item.productName)}</strong><div><span class="num">${esc(item.quantity)} × ${esc(formatCurrency(item.unitPrice))}</span><b class="num">${esc(formatCurrency(item.total))}</b></div></div>`).join("")
+    ? input.items.map((item) => `<div class="purchase-thermal-item"><strong>${esc(item.productName)}</strong>${item.variantLabel || item.variantSku || item.barcode ? `<small style="display:block;color:#444">${[item.variantLabel, item.variantSku ? `SKU: ${item.variantSku}` : null, item.barcode ? `باركود: ${item.barcode}` : null].filter(Boolean).map(esc).join(" · ")}</small>` : ""}<div><span class="num">${esc(item.quantity)} × ${esc(formatCurrency(item.unitPrice))}</span><b class="num">${esc(formatCurrency(item.total))}</b></div></div>`).join("")
     : '<p class="purchase-thermal-empty">لا توجد أصناف مسجلة</p>';
 
   return `<main class="purchase-thermal-receipt" data-paper-size="80mm">

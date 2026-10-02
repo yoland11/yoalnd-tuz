@@ -80,6 +80,7 @@ import {
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
+  itemType?: "product" | "service"; serviceUnit?: string | null; trackInventory?: boolean;
   stock: string; barcode?: string; images?: string[]; bundleId?: number; availableQuantity?: number;
   offerDeliveryFee?: number;
   category?: string; categoryId?: number | null;
@@ -97,6 +98,7 @@ type CartItem = {
   productId: number; bundleId?: number | null; productName: string; barcode: string;
   quantity: number; unitPrice: number; discount: number; discountPct: number;
   total: number; costPrice: number; offerDeliveryFee?: number;
+  itemType?: "product" | "service"; serviceUnit?: string | null; trackInventory?: boolean; priceOverride?: boolean;
 };
 type SalesInvoice = {
   id: number; invoiceNo: string; date: string; customerId?: number | null; customerName: string; customerPhone?: string;
@@ -523,8 +525,9 @@ export default function SalesPage() {
       return [...prev, {
         productId: p.bundleId ? 0 : p.id, bundleId: p.bundleId ?? null, productName: p.nameAr || p.name,
         barcode: p.barcode || "", quantity: 1,
-        unitPrice: price, discount: 0, discountPct: 0,
+        unitPrice: price, discount: 0, discountPct: 0, priceOverride: false,
         total: price, costPrice: cost, offerDeliveryFee: finiteNumber(p.offerDeliveryFee),
+        itemType: p.itemType ?? "product", serviceUnit: p.serviceUnit ?? null, trackInventory: p.itemType === "service" ? false : p.trackInventory !== false,
       }];
     });
     setSearchQ("");
@@ -553,6 +556,7 @@ export default function SalesPage() {
           ? finiteNumber(raw, 0, 100)
           : finiteNumber(raw);
       item[field] = field === "productName" || field === "barcode" ? raw : val;
+      if (field === "unitPrice") item.priceOverride = true;
       if (field === "discountPct") {
         item.discount = +(item.unitPrice * item.quantity * val / 100).toFixed(2);
       } else if (field === "discount") {
@@ -631,7 +635,7 @@ export default function SalesPage() {
       paymentMethod: invoice.paymentMethod,
       paymentStatus: invoice.paymentStatus,
       employeeName: invoice.createdByName,
-      items: invoice.items ?? [],
+        items: (invoice.items ?? []).map((item) => ({ ...item, unit: item.serviceUnit })),
       subtotal: invoice.subtotal,
       discount: invoice.discountAmount,
       tax: invoice.taxAmount,
@@ -695,7 +699,7 @@ export default function SalesPage() {
         items: cart.map(i => ({
           productId: i.bundleId ? null : i.productId, bundleId: i.bundleId ?? null, productName: i.productName, barcode: i.barcode,
           quantity: i.quantity, unitPrice: i.unitPrice, discount: i.discount,
-          discountPct: i.discountPct, total: i.total, costPrice: i.costPrice,
+          discountPct: i.discountPct, total: i.total, costPrice: i.costPrice, priceOverride: Boolean(i.priceOverride),
         })),
       };
       const res = await adminFetch<{ invoice: SalesInvoice; items?: CartItem[]; delivery?: any; qr?: { dataUrl?: string } }>("/admin/sales-invoices", {
@@ -996,7 +1000,7 @@ export default function SalesPage() {
                     </div>
                     <div className="text-left">
                       <p className="font-bold text-[#182033]">{formatCurrency(p.price)}</p>
-                      <p className={`mt-1 text-xs font-medium ${Number(p.stock) <= 0 ? "text-[#D75A5A]" : Number(p.stock) <= 3 ? "text-[#D99A43]" : "text-[#3F9A76]"}`}>{Number(p.stock) <= 0 ? "نفد المخزون" : Number(p.stock) <= 3 ? `مخزون منخفض: ${p.stock}` : `متوفر: ${p.stock}`}</p>
+                      {p.itemType === "service" ? <p className="mt-1 text-xs font-medium text-emerald-700">لكل {p.serviceUnit || "خدمة"} · لا تخصم من المخزون</p> : <p className={`mt-1 text-xs font-medium ${Number(p.stock) <= 0 ? "text-[#D75A5A]" : Number(p.stock) <= 3 ? "text-[#D99A43]" : "text-[#3F9A76]"}`}>{Number(p.stock) <= 0 ? "نفد المخزون" : Number(p.stock) <= 3 ? `مخزون منخفض: ${p.stock}` : `متوفر: ${p.stock}`}</p>}
                     </div>
                   </button>
                 ))}
@@ -2057,6 +2061,9 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
         discountPct: toNumber(item.discountPct),
         total: toNumber(item.total) || Math.max(quantity * unitPrice - discount, 0),
         costPrice: toNumber(item.costPrice),
+        serviceUnit: item.unitSnapshot ?? null,
+        itemType: item.unitSnapshot ? "service" : "product",
+        trackInventory: item.trackInventorySnapshot !== false,
       };
     }));
     setEditDelivery({
@@ -2134,6 +2141,9 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
         barcode: product.barcode || "",
         unitPrice,
         costPrice: finiteNumber(product.costPrice),
+        itemType: product.itemType ?? "product",
+        serviceUnit: product.serviceUnit ?? null,
+        trackInventory: product.itemType === "service" ? false : product.trackInventory !== false,
         total: +(Math.max(0, item.quantity * unitPrice - discount)).toFixed(2),
       };
     }));
@@ -2195,6 +2205,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
             discountPct: item.discountPct,
             total: item.total,
             costPrice: item.costPrice,
+            priceOverride: Boolean(item.priceOverride),
           })),
         }),
       });

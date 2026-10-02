@@ -12,6 +12,9 @@ import {
 } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { staffPhotoUpdateSchema } from "./staff-photo";
+import { normalizeProductItemSettings } from "./product-item-settings";
+import { calculateServiceLine, invoiceLineTracksInventory, serviceOrderTotal } from "./service-item-lines";
+import { groupPurchaseInvoiceStockChanges, preparePurchaseVariantLines, type PurchaseVariantProduct } from "./purchase-variant-lines";
 import { koshaManagerList, koshaManagerDetail, resolveKoshaManagerProblem, mayResolveKoshaProblem, type KoshaLookups } from "./kosha-manager";
 import {
   createKoshaInstructionStore,
@@ -125,6 +128,7 @@ import {
   customerPreferencesTable,
   customerRewardHistoryTable,
   customersTable,
+  customerProductPricesTable,
   deliveryDetailsTable,
   deliveryOrdersTable,
   deliveryOrderStatusHistoryTable,
@@ -211,6 +215,7 @@ import {
   otpCodesTable,
   paymentVouchersTable,
   productsTable,
+  productWholesalePriceTiersTable,
   productBundlesTable,
   productBundleItemsTable,
   salesInvoiceBundleSnapshotsTable,
@@ -219,6 +224,7 @@ import {
   receiptVoucherAllocationsTable,
   reviewsTable,
   serviceOrdersTable,
+  serviceOrderItemsTable,
   serviceOrderStatusHistoryTable,
   servicesTable,
   settingsTable,
@@ -317,6 +323,9 @@ import {
   type FinancialActor,
 } from "@/server/master-cash-box";
 import { getCustomerAccountSummary, getCustomerStatement } from "@/server/customer-account";
+import { wholesaleCustomerProfileSchema } from "@/server/wholesale-customer";
+import { customerProductPriceSchema, wholesalePriceUpdateSchema } from "@/server/wholesale-price-admin";
+import { resolveWholesaleUnitPrice } from "@/server/wholesale-pricing";
 import {
   getBookingPenaltySummary,
   penaltyApprovedPaid,
@@ -5697,6 +5706,9 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     id: p.id,
     name: p.name,
     nameAr: p.nameAr ?? p.name_ar ?? p.name,
+    itemType: p.itemType ?? p.item_type ?? "product",
+    serviceUnit: p.serviceUnit ?? p.service_unit ?? null,
+    trackInventory: p.trackInventory ?? p.track_inventory ?? true,
     nameKu: p.nameKu ?? p.name_ku ?? null,
     nameTr: p.nameTr ?? p.name_tr ?? null,
     description: p.description ?? null,
@@ -8039,6 +8051,7 @@ async function applySalesInvoiceItemsStock(
       .where(eq(salesInvoiceItemsTable.invoiceId, invoiceId)),
   ]);
   for (const item of items) {
+    if (!invoiceLineTracksInventory((item as any).trackInventorySnapshot)) continue;
     const productId = Number(item.productId ?? 0);
     const quantity = Number.parseFloat(String(item.quantity ?? "0")) || 0;
     if (productId > 0 && quantity > 0) {
@@ -10686,7 +10699,7 @@ async function createServiceOrderWithHistory(
     "trackingCode" | "phoneLast4"
   >,
   historyNote: string,
-  options?: { settleByAmount?: boolean },
+  options?: { settleByAmount?: boolean; serviceItems?: Array<{ productId: number; productName: string; unit: string; quantity: number; unitPrice: number; discount: number; total: number }> },
 ) {
   // Schema setup must complete before the transaction starts. The customer
   // upsert, booking row, and status-history row below use one transaction.
@@ -10723,6 +10736,18 @@ async function createServiceOrderWithHistory(
         settleByAmount: options?.settleByAmount,
       },
     );
+    if (options?.serviceItems?.length) {
+      await tx.insert(serviceOrderItemsTable).values(options.serviceItems.map((item) => ({
+        serviceOrderId: order.id,
+        productId: item.productId,
+        productName: item.productName,
+        unit: item.unit,
+        quantity: String(item.quantity),
+        unitPrice: String(item.unitPrice),
+        discount: String(item.discount),
+        total: String(item.total),
+      })));
+    }
     logServiceBookingStep({
       step: "services",
       serviceId: values.serviceId,
@@ -13345,7 +13370,12 @@ async function handleProductVariants(
   method: string,
   productId: number,
 ): Promise<NextResponse | null> {
-  const auth = await requirePermission(req, "products");
+  let auth = await requirePermission(req, "products");
+  // Purchase invoice editors need read-only variant choices through their existing
+  // accounting permission; product creation and mutation remain products-only.
+  if (isResponse(auth) && method === "GET") {
+    auth = await requirePermission(req, "accounting");
+  }
   if (isResponse(auth)) return auth;
   await ensureVariantTables();
   const product = await db.query.productsTable.findFirst({
@@ -13598,6 +13628,102 @@ async function handleProducts(req: NextRequest, parts: string[]) {
   await ensureAdminProductsColumns();
   await ensureStoreCategoryColumns();
   await ensureAssetCategoriesTables();
+
+  if (parts[2] === "wholesale-prices") {
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    const productId = int(parts[1]);
+    if (!productId) return error("معرف المنتج غير صحيح", 400);
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+    if (!product) return error("المنتج غير موجود", 404);
+    if (method === "GET") {
+      const tiers = await db.select().from(productWholesalePriceTiersTable)
+        .where(eq(productWholesalePriceTiersTable.productId, productId))
+        .orderBy(asc(productWholesalePriceTiersTable.minimumQuantity));
+      return json({
+        productId,
+        wholesalePrice: product.wholesalePrice == null ? null : money(product.wholesalePrice),
+        tiers: tiers.map((tier) => ({ id: tier.id, minimumQuantity: money(tier.minimumQuantity), unitPrice: money(tier.unitPrice), isActive: tier.isActive })),
+      });
+    }
+    if (method === "PUT") {
+      const parsed = wholesalePriceUpdateSchema.safeParse(await body(req));
+      if (!parsed.success) return error(parsed.error.issues[0]?.message ?? "بيانات أسعار الجملة غير صحيحة", 400);
+      const result = await db.transaction(async (tx) => {
+        const [updated] = await tx.update(productsTable)
+          .set({ wholesalePrice: parsed.data.wholesalePrice == null ? null : String(parsed.data.wholesalePrice), updatedAt: new Date() })
+          .where(eq(productsTable.id, productId)).returning({ id: productsTable.id });
+        if (!updated) throw new Error("المنتج غير موجود");
+        await tx.delete(productWholesalePriceTiersTable)
+          .where(eq(productWholesalePriceTiersTable.productId, productId));
+        const savedTiers = parsed.data.tiers.length
+          ? await tx.insert(productWholesalePriceTiersTable).values(parsed.data.tiers.map((tier) => ({
+              productId,
+              minimumQuantity: String(tier.minimumQuantity),
+              unitPrice: String(tier.unitPrice),
+              isActive: tier.isActive,
+            }))).returning()
+          : [];
+        return savedTiers;
+      });
+      void logAdminActivity(req, "product_wholesale_prices_updated", "product", productId, {
+        tierCount: result.length,
+        hasBaseWholesalePrice: parsed.data.wholesalePrice != null,
+      });
+      return json({
+        productId,
+        wholesalePrice: parsed.data.wholesalePrice ?? null,
+        tiers: result.map((tier) => ({ id: tier.id, minimumQuantity: money(tier.minimumQuantity), unitPrice: money(tier.unitPrice), isActive: tier.isActive })),
+      });
+    }
+    return error("الطريقة غير مدعومة", 405);
+  }
+
+  if (parts[2] === "customer-prices") {
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    const productId = int(parts[1]);
+    if (!productId) return error("معرف المنتج غير صحيح", 400);
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+    if (!product) return error("المنتج غير موجود", 404);
+    if (method === "GET") {
+      const prices = await db.select({ id: customerProductPricesTable.id, customerId: customerProductPricesTable.customerId, customerName: customersTable.businessName, ownerName: customersTable.ownerName, phone: customersTable.phone, unitPrice: customerProductPricesTable.unitPrice, isActive: customerProductPricesTable.isActive })
+        .from(customerProductPricesTable)
+        .innerJoin(customersTable, eq(customersTable.id, customerProductPricesTable.customerId))
+        .where(and(eq(customerProductPricesTable.productId, productId), eq(customersTable.customerType, "wholesale")))
+        .orderBy(asc(customersTable.businessName));
+      return json({ productId, prices: prices.map((row) => ({ ...row, unitPrice: money(row.unitPrice) })) });
+    }
+    if (method === "DELETE" && parts[3]) {
+      const customerId = int(parts[3]);
+      if (!customerId) return error("معرف العميل غير صحيح", 400);
+      const [deleted] = await db.delete(customerProductPricesTable).where(and(
+        eq(customerProductPricesTable.productId, productId),
+        eq(customerProductPricesTable.customerId, customerId),
+      )).returning({ id: customerProductPricesTable.id });
+      if (!deleted) return error("السعر الخاص غير موجود", 404);
+      void logAdminActivity(req, "customer_product_wholesale_price_deleted", "product", productId, { customerId });
+      return json({ ok: true });
+    }
+    if (method === "POST" || method === "PUT") {
+      const customerAuth = await requirePermission(req, "customers");
+      if (isResponse(customerAuth)) return customerAuth;
+      const parsed = customerProductPriceSchema.safeParse(await body(req));
+      if (!parsed.success) return error(parsed.error.issues[0]?.message ?? "بيانات السعر الخاص غير صحيحة", 400);
+      const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, parsed.data.customerId) });
+      if (!customer || customer.status !== "active" || customer.customerType !== "wholesale")
+        return error("اختر عميل جملة نشطاً", 400);
+      const [saved] = await db.insert(customerProductPricesTable).values({
+        customerId: customer.id, productId, unitPrice: String(parsed.data.unitPrice), isActive: true,
+      }).onConflictDoUpdate({
+        target: [customerProductPricesTable.customerId, customerProductPricesTable.productId],
+        set: { unitPrice: String(parsed.data.unitPrice), isActive: true, updatedAt: new Date() },
+      }).returning();
+      void logAdminActivity(req, "customer_product_wholesale_price_updated", "product", productId, { customerId: customer.id, priceId: saved.id });
+      return json({ id: saved.id, customerId: saved.customerId, productId: saved.productId, unitPrice: money(saved.unitPrice) });
+    }
+    return error("الطريقة غير مدعومة", 405);
+  }
 
   // Public, designer-specific projection.  It uses the same product, variant
   // and BOM records that Admin manages; nothing is copied into a flower-only
@@ -14040,6 +14166,14 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const parsed = CreateProductBody.safeParse(rawBody);
     if (!parsed.success) return validationError("products.create", parsed);
     const data = parsed.data as any;
+    const itemSettings = normalizeProductItemSettings(data);
+    if (!itemSettings.ok) return error(itemSettings.message, 422);
+    if (
+      itemSettings.settings.itemType === "service" &&
+      (data.isRental === true || data.sharedStockProductId != null)
+    ) {
+      return error("الخدمة لا يمكن ربطها بمخزون أو تأجير منتج", 422);
+    }
     const productNameAr = textFallback(data.nameAr, data.name, "منتج جديد");
     const productName = textFallback(
       data.name,
@@ -14086,18 +14220,21 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         description: data.description,
         descriptionAr: data.descriptionAr,
         ...pickContentTranslations(rawBody, true),
+        itemType: itemSettings.settings.itemType,
+        serviceUnit: itemSettings.settings.serviceUnit,
+        trackInventory: itemSettings.settings.trackInventory,
         price: String(money(data.price)),
         originalPrice:
           money(data.originalPrice) > 0
             ? String(money(data.originalPrice))
             : null,
         costPrice: String(money(data.costPrice)),
-        stock: sharedStock.id
+        stock: !itemSettings.settings.trackInventory || sharedStock.id
           ? 0
           : Number.isFinite(Number(data.stock))
             ? Number(data.stock)
             : 0,
-        minStock: sharedStock.id
+        minStock: !itemSettings.settings.trackInventory || sharedStock.id
           ? 0
           : Number.isFinite(Number(data.minStock))
             ? Number(data.minStock)
@@ -14182,7 +14319,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         .returning();
       product = updated ?? product;
     }
-    if (!sharedStock.id && Number(data.stock ?? 0) > 0) {
+    if (itemSettings.settings.trackInventory && !sharedStock.id && Number(data.stock ?? 0) > 0) {
       const resolved = await getStockOwnerProduct(product.id);
       if (resolved) {
         await recordStockMovement(resolved, Number(data.stock ?? 0), {
@@ -14216,6 +14353,21 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       where: eq(productsTable.id, id),
     })) as any;
     if (!existing) return error("المنتج غير موجود", 404);
+    const itemSettings = normalizeProductItemSettings(data, existing);
+    if (!itemSettings.ok) return error(itemSettings.message, 422);
+    const nextIsRental = data.isRental ?? existing.isRental;
+    if (
+      itemSettings.settings.itemType === "service" &&
+      (nextIsRental === true ||
+        (data.sharedStockProductId !== undefined
+          ? data.sharedStockProductId != null
+          : Boolean(existing.sharedStockProductId)))
+    ) {
+      return error("أوقف التأجير أو افصل المخزون المشترك قبل تحويل العنصر إلى خدمة", 409);
+    }
+    if (!itemSettings.settings.trackInventory && existing.sharedStockProductId && data.sharedStockProductId === undefined) {
+      return error("افصل المخزون المشترك قبل إيقاف تتبع المخزون", 409);
+    }
     const hasSharedStockChange = Object.prototype.hasOwnProperty.call(
       data,
       "sharedStockProductId",
@@ -14261,6 +14413,20 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         "product-ready-made-preview",
       );
     const update: any = { updatedAt: new Date() };
+    if (
+      data.itemType !== undefined ||
+      data.serviceUnit !== undefined ||
+      data.trackInventory !== undefined
+    ) {
+      update.itemType = itemSettings.settings.itemType;
+      update.serviceUnit = itemSettings.settings.serviceUnit;
+      update.trackInventory = itemSettings.settings.trackInventory;
+      if (itemSettings.settings.itemType === "service") {
+        update.isRental = false;
+        update.stock = 0;
+        update.minStock = 0;
+      }
+    }
     let directStockMovementDelta: number | null = null;
     for (const k of [
       "name",
@@ -15514,6 +15680,47 @@ async function handleServices(req: NextRequest, parts: string[]) {
   return null;
 }
 
+type ServiceOrderItemDraft = {
+  productId: number;
+  productName: string;
+  unit: string;
+  quantity: number;
+  unitPrice: number;
+  discount: number;
+  total: number;
+};
+
+async function resolveServiceOrderItemDrafts(value: unknown, auth: AdminUser): Promise<ServiceOrderItemDraft[]> {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 100) throw new CheckoutError("قائمة الخدمات الإضافية غير صالحة", 400);
+  if (!value.length) return [];
+  const ids = [...new Set(value.map((row: any) => Number(row?.productId)).filter((id) => Number.isInteger(id) && id > 0))];
+  if (ids.length !== new Set(value.map((row: any) => Number(row?.productId))).size) throw new CheckoutError("يوجد معرّف خدمة غير صالح", 400);
+  const products = await db.select().from(productsTable).where(inArray(productsTable.id, ids));
+  const byId = new Map(products.map((product) => [product.id, product]));
+  return value.map((row: any) => {
+    const productId = Number(row.productId);
+    const product = byId.get(productId);
+    if (!product || !product.isActive || product.itemType !== "service" || !String(product.serviceUnit ?? "").trim())
+      throw new CheckoutError("اختر خدمة فعالة بوحدة بيع محددة", 400);
+    const quantity = Number(row.quantity);
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 1_000_000 || Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 1e-8)
+      throw new CheckoutError("كمية الخدمة غير صالحة (حتى 3 منازل عشرية)", 400);
+    const requestedPrice = row.unitPrice === undefined ? null : Number(row.unitPrice);
+    if (requestedPrice !== null && (!Number.isFinite(requestedPrice) || requestedPrice < 0 || requestedPrice > 100_000_000))
+      throw new CheckoutError("سعر الخدمة غير صالح", 400);
+    const unitPrice = requestedPrice !== null && hasPermission(auth, "accounting") ? money(requestedPrice) : money(product.price);
+    const line = calculateServiceLine({ quantity, unitPrice, discount: Number(row.discount ?? 0) });
+    if (!line) throw new CheckoutError("خصم الخدمة أو كميتها غير صالح", 400);
+    return {
+      productId,
+      productName: product.nameAr || product.name,
+      unit: String(product.serviceUnit).trim(),
+      ...line,
+    };
+  });
+}
+
 async function handleCrews(req: NextRequest, parts: string[]) {
   if (req.method === "GET" && parts.length === 1) {
     await ensureCrewsTable();
@@ -15542,6 +15749,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
     if (!parsed.success)
       return validationError("service-orders.create", parsed);
     const data = parsed.data;
+    if (data.serviceItems?.length) return error("إضافة خدمات الأسعار إلى الحجز متاحة من مركز الحجوزات", 403);
     const service = await db.query.servicesTable.findFirst({
       where: eq(servicesTable.id, data.serviceId),
     });
@@ -19013,6 +19221,7 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
         where: eq(salesInvoiceItemsTable.invoiceId, invoice.id),
         columns: {
           productName: true,
+          unitSnapshot: true,
           quantity: true,
           unitPrice: true,
           total: true,
@@ -19063,6 +19272,7 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
           : null,
       items: items.map((item) => ({
         name: item.productName || "صنف",
+        unit: item.unitSnapshot ?? null,
         quantity: Number(item.quantity ?? 0),
         unitPrice: Number(item.unitPrice ?? 0),
         total: Number(item.total ?? 0),
@@ -40818,6 +41028,9 @@ async function handleAdmin(
           productName: row.productId
             ? (productNameById.get(row.productId) ?? "")
             : "",
+          variantId: row.variantId ?? null,
+          variantLabel: (row.metadata as any)?.variantLabel ?? null,
+          variantSku: (row.metadata as any)?.variantSku ?? null,
           stockSourceProductId: row.stockSourceProductId,
           stockSourceProductName: row.stockSourceProductId
             ? (productNameById.get(row.stockSourceProductId) ?? "")
@@ -43661,6 +43874,9 @@ async function handleAdmin(
     const rows = await db
       .select({
         productId: purchaseInvoiceItemsTable.productId,
+        variantId: purchaseInvoiceItemsTable.variantId,
+        variantLabel: purchaseInvoiceItemsTable.variantLabel,
+        variantSku: purchaseInvoiceItemsTable.variantSku,
         productName: purchaseInvoiceItemsTable.productName,
         costPrice: purchaseInvoiceItemsTable.costPrice,
         salePrice: purchaseInvoiceItemsTable.salePrice,
@@ -49201,6 +49417,13 @@ async function handleAdmin(
         name: c.name,
         phone: c.phone,
         role: c.role,
+        customerType: c.customerType ?? "retail",
+        businessName: c.businessName ?? null,
+        ownerName: c.ownerName ?? null,
+        province: c.province ?? null,
+        creditLimit: c.creditLimit == null ? null : money(c.creditLimit),
+        specialDiscountPercent: c.specialDiscountPercent == null ? null : money(c.specialDiscountPercent),
+        wholesaleNotes: c.notes ?? null,
         rewardPoints: Number(c.rewardPoints ?? 0),
         rewardLevel:
           c.rewardLevel ?? rewardLevelForPoints(Number(c.rewardPoints ?? 0)),
@@ -49301,6 +49524,7 @@ async function handleAdmin(
           or(
             ilike(customersTable.name, `%${q}%`),
             ilike(customersTable.fullName, `%${q}%`),
+            ilike(customersTable.businessName, `%${q}%`),
             digits
               ? like(customersTable.phone, `%${digits}%`)
               : (sql`false` as any),
@@ -49356,6 +49580,9 @@ async function handleAdmin(
           phone: m.phone,
           code: `CUS-${String(m.id).padStart(6, "0")}`,
           city: m.city ?? null,
+          customerType: m.customerType ?? "retail",
+          businessName: m.businessName ?? null,
+          ownerName: m.ownerName ?? null,
           invoiceCount:
             Number(inv.cnt ?? 0) +
             Number(ord.cnt ?? 0) +
@@ -49582,6 +49809,13 @@ async function handleAdmin(
         city: customer.city ?? "",
         phone: customer.phone,
         role: customer.role,
+        customerType: customer.customerType ?? "retail",
+        businessName: customer.businessName ?? null,
+        ownerName: customer.ownerName ?? null,
+        province: customer.province ?? null,
+        creditLimit: customer.creditLimit == null ? null : money(customer.creditLimit),
+        specialDiscountPercent: customer.specialDiscountPercent == null ? null : money(customer.specialDiscountPercent),
+        wholesaleNotes: customer.notes ?? null,
         rewardPoints: Number(customer.rewardPoints ?? 0),
         rewardLevel:
           customer.rewardLevel ??
@@ -49786,6 +50020,17 @@ async function handleAdmin(
     // Create a customer
     if (method === "POST" && !parts[2]) {
       const data = await body(req);
+      const wholesaleProfile = wholesaleCustomerProfileSchema.safeParse({
+        customerType: data?.customerType ?? "retail",
+        businessName: data?.businessName,
+        ownerName: data?.ownerName,
+        province: data?.province,
+        creditLimit: data?.creditLimit,
+        specialDiscountPercent: data?.specialDiscountPercent,
+        notes: data?.notes,
+      });
+      if (!wholesaleProfile.success)
+        return error(wholesaleProfile.error.issues[0]?.message ?? "بيانات العميل غير صحيحة", 400);
       const rawPhone = textFallback(data?.phone);
       const phone = rawPhone ? normalizeIraqiPhone(rawPhone) : null;
       if (!phone) return error("رقم هاتف عراقي صحيح مطلوب", 400);
@@ -49795,6 +50040,17 @@ async function handleAdmin(
       });
       if (existing) {
         if (existing.status === "deleted") {
+          const reactivationProfile = wholesaleCustomerProfileSchema.safeParse({
+            customerType: data?.customerType ?? existing.customerType ?? "retail",
+            businessName: data?.businessName ?? existing.businessName,
+            ownerName: data?.ownerName ?? existing.ownerName,
+            province: data?.province ?? existing.province,
+            creditLimit: data?.creditLimit ?? existing.creditLimit,
+            specialDiscountPercent: data?.specialDiscountPercent ?? existing.specialDiscountPercent,
+            notes: data?.notes ?? existing.notes,
+          });
+          if (!reactivationProfile.success)
+            return error(reactivationProfile.error.issues[0]?.message ?? "بيانات العميل غير صحيحة", 400);
           const [row] = await db
             .update(customersTable)
             .set({
@@ -49804,6 +50060,13 @@ async function handleAdmin(
               email: nullableText(data?.email),
               address: nullableText(data?.address),
               city: nullableText(data?.city),
+              customerType: reactivationProfile.data.customerType,
+              businessName: reactivationProfile.data.businessName,
+              ownerName: reactivationProfile.data.ownerName,
+              province: reactivationProfile.data.province,
+              creditLimit: reactivationProfile.data.creditLimit == null ? null : String(reactivationProfile.data.creditLimit),
+              specialDiscountPercent: reactivationProfile.data.specialDiscountPercent == null ? null : String(reactivationProfile.data.specialDiscountPercent),
+              notes: reactivationProfile.data.notes,
               updatedAt: new Date(),
             })
             .where(eq(customersTable.id, existing.id))
@@ -49815,7 +50078,7 @@ async function handleAdmin(
             existing.id,
             { phone },
           );
-          return json({ id: row.id, name: row.name, phone: row.phone }, 201);
+          return json({ id: row.id, name: row.name, phone: row.phone, customerType: row.customerType }, 201);
         }
         return error("رقم الهاتف مستخدم لعميل آخر", 409);
       }
@@ -49828,6 +50091,13 @@ async function handleAdmin(
           email: nullableText(data?.email),
           address: nullableText(data?.address),
           city: nullableText(data?.city),
+          customerType: wholesaleProfile.data.customerType,
+          businessName: wholesaleProfile.data.businessName,
+          ownerName: wholesaleProfile.data.ownerName,
+          province: wholesaleProfile.data.province,
+          creditLimit: wholesaleProfile.data.creditLimit == null ? null : String(wholesaleProfile.data.creditLimit),
+          specialDiscountPercent: wholesaleProfile.data.specialDiscountPercent == null ? null : String(wholesaleProfile.data.specialDiscountPercent),
+          notes: wholesaleProfile.data.notes,
           role: "customer",
           status: "active",
         } as any)
@@ -49836,7 +50106,7 @@ async function handleAdmin(
         phone,
         name,
       });
-      return json({ id: row.id, name: row.name, phone: row.phone }, 201);
+      return json({ id: row.id, name: row.name, phone: row.phone, customerType: row.customerType }, 201);
     }
 
     // Edit a customer
@@ -49849,6 +50119,25 @@ async function handleAdmin(
       if (!customer) return error("غير موجود", 404);
       const data = await body(req);
       const update: any = { updatedAt: new Date() };
+      const wholesaleInput = {
+        customerType: data?.customerType ?? customer.customerType ?? "retail",
+        businessName: data?.businessName !== undefined ? data.businessName : customer.businessName,
+        ownerName: data?.ownerName !== undefined ? data.ownerName : customer.ownerName,
+        province: data?.province !== undefined ? data.province : customer.province,
+        creditLimit: data?.creditLimit !== undefined ? data.creditLimit : customer.creditLimit,
+        specialDiscountPercent: data?.specialDiscountPercent !== undefined ? data.specialDiscountPercent : customer.specialDiscountPercent,
+        notes: data?.notes !== undefined ? data.notes : customer.notes,
+      };
+      const wholesaleProfile = wholesaleCustomerProfileSchema.safeParse(wholesaleInput);
+      if (!wholesaleProfile.success)
+        return error(wholesaleProfile.error.issues[0]?.message ?? "بيانات العميل غير صحيحة", 400);
+      for (const key of ["customerType", "businessName", "ownerName", "province", "creditLimit", "specialDiscountPercent", "notes"] as const) {
+        if (data?.[key] === undefined && !(key === "customerType" && data?.customerType !== undefined)) continue;
+        const value = wholesaleProfile.data[key];
+        update[key] = key === "creditLimit" || key === "specialDiscountPercent"
+          ? value == null ? null : String(value)
+          : value;
+      }
       if (data?.name !== undefined)
         update.name = textFallback(data.name, customer.name).slice(0, 200);
       if (data?.fullName !== undefined)
@@ -49931,6 +50220,15 @@ async function handleAdmin(
         "service_order",
         rows.map((row) => row.id),
       );
+      const serviceItemRows = rows.length
+        ? await db.select().from(serviceOrderItemsTable).where(inArray(serviceOrderItemsTable.serviceOrderId, rows.map((row) => row.id)))
+        : [];
+      const serviceItemsByOrder = new Map<number, typeof serviceItemRows>();
+      for (const item of serviceItemRows) {
+        const current = serviceItemsByOrder.get(item.serviceOrderId) ?? [];
+        current.push(item);
+        serviceItemsByOrder.set(item.serviceOrderId, current);
+      }
       const sorted = [...rows].sort((a, b) => {
         const ar = a.status === "reschedule_pending" ? 0 : 1;
         const br = b.status === "reschedule_pending" ? 0 : 1;
@@ -49951,6 +50249,16 @@ async function handleAdmin(
           notes: r.notes,
           internalNotes: r.internalNotes ?? null,
           totalAmount: Number.parseFloat(r.totalAmount ?? "0"),
+          serviceItems: (serviceItemsByOrder.get(r.id) ?? []).map((item) => ({
+            id: item.id,
+            productId: item.productId,
+            productName: item.productName,
+            unit: item.unit,
+            quantity: Number(item.quantity),
+            unitPrice: Number(item.unitPrice),
+            discount: Number(item.discount),
+            total: Number(item.total),
+          })),
           depositAmount: Number.parseFloat(r.depositAmount ?? "0"),
           remainingAmount: Number.parseFloat(r.remainingAmount ?? "0"),
           paymentStatus: r.paymentStatus ?? "unpaid",
@@ -49975,6 +50283,13 @@ async function handleAdmin(
       if (!parsed.success)
         return validationError("admin.service-orders.create", parsed);
       const data = parsed.data;
+      let serviceItems: ServiceOrderItemDraft[];
+      try {
+        serviceItems = await resolveServiceOrderItemDrafts(rawBody?.serviceItems, auth);
+      } catch (err) {
+        if (err instanceof CheckoutError) return error(err.message, err.status);
+        throw err;
+      }
       const service = await db.query.servicesTable.findFirst({
         where: eq(servicesTable.id, data.serviceId),
       });
@@ -49993,7 +50308,13 @@ async function handleAdmin(
           return error("طريقة دفع غير صالحة", 400);
         (customFields as any).paymentMethod = servicePaymentMethod;
       }
-      const requestedTotalAmount = money(rawBody?.totalAmount);
+      const requestedBaseAmount = money(rawBody?.baseTotalAmount ?? rawBody?.totalAmount);
+      if (serviceItems.length && rawBody?.baseTotalAmount === undefined)
+        return error("أرسل مبلغ الحجز الأساسي منفصلاً عن خدمات التصوير", 400);
+      const requestedTotalAmount = serviceItems.length
+        ? serviceOrderTotal(requestedBaseAmount, serviceItems.map((item) => item.total))
+        : requestedBaseAmount;
+      if (requestedTotalAmount === null) return error("مبلغ الحجز غير صالح", 400);
       const requestedDepositAmount = money(rawBody?.depositAmount);
       if (requestedDepositAmount > requestedTotalAmount)
         return error("لا يمكن أن يتجاوز العربون المبلغ الكلي للحجز", 400, {
@@ -50053,7 +50374,7 @@ async function handleAdmin(
             customFields,
           },
           "إضافة من الإدارة",
-          { settleByAmount: true },
+          { settleByAmount: true, serviceItems },
         );
       } catch (err) {
         const diagnostic = safeServerError(err);
@@ -50248,6 +50569,7 @@ async function handleAdmin(
           notes: order.notes ?? null,
           internalNotes: order.internalNotes ?? null,
           totalAmount: Number.parseFloat(order.totalAmount ?? "0"),
+          serviceItems: serviceItems.map((item) => ({ ...item })),
           depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
           remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
           paymentStatus: order.paymentStatus ?? "unpaid",
@@ -50373,6 +50695,20 @@ async function handleAdmin(
         where: eq(serviceOrdersTable.id, id),
       });
       if (!prev) return error("غير موجود", 404);
+      let serviceItemsToSave: ServiceOrderItemDraft[] | null = null;
+      if (b?.serviceItems !== undefined) {
+        try {
+          serviceItemsToSave = await resolveServiceOrderItemDrafts(b.serviceItems, auth);
+        } catch (err) {
+          if (err instanceof CheckoutError) return error(err.message, err.status);
+          throw err;
+        }
+        if (b.baseTotalAmount === undefined)
+          return error("أرسل مبلغ الحجز الأساسي منفصلاً عن خدمات التصوير", 400);
+        const recomputedTotal = serviceOrderTotal(money(b.baseTotalAmount), serviceItemsToSave.map((item) => item.total));
+        if (recomputedTotal === null) return error("مبلغ الحجز غير صالح", 400);
+        b.totalAmount = recomputedTotal;
+      }
       let nextService = await db.query.servicesTable.findFirst({
         where: eq(servicesTable.id, prev.serviceId),
       });
@@ -50427,7 +50763,8 @@ async function handleAdmin(
         b?.totalAmount !== undefined ||
         b?.depositAmount !== undefined ||
         b?.paymentStatus !== undefined ||
-        b?.paymentMethod !== undefined
+        b?.paymentMethod !== undefined ||
+        serviceItemsToSave !== null
       ) {
         if (!canEditOrderFinancials(auth))
           return error("لا تملك صلاحية تعديل المبالغ المالية للحجز", 403, {
@@ -50477,11 +50814,29 @@ async function handleAdmin(
           update.customFields,
         );
       }
-      const [row] = await db
-        .update(serviceOrdersTable)
-        .set(update)
-        .where(eq(serviceOrdersTable.id, id))
-        .returning();
+      const [row] = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(serviceOrdersTable)
+          .set(update)
+          .where(eq(serviceOrdersTable.id, id))
+          .returning();
+        if (serviceItemsToSave !== null) {
+          await tx.delete(serviceOrderItemsTable).where(eq(serviceOrderItemsTable.serviceOrderId, id));
+          if (serviceItemsToSave.length) {
+            await tx.insert(serviceOrderItemsTable).values(serviceItemsToSave.map((item) => ({
+              serviceOrderId: id,
+              productId: item.productId,
+              productName: item.productName,
+              unit: item.unit,
+              quantity: String(item.quantity),
+              unitPrice: String(item.unitPrice),
+              discount: String(item.discount),
+              total: String(item.total),
+            })));
+          }
+        }
+        return [updated];
+      });
       if (
         typeof update.status === "string" &&
         update.status &&
@@ -50690,7 +51045,7 @@ async function handleAdmin(
         "service_order",
         row.id,
         {
-          fields: Object.keys(update),
+          fields: [...Object.keys(update), ...(serviceItemsToSave !== null ? ["serviceItems"] : [])],
           tracking: row.trackingCode,
           oldValues: prev,
           newValues: row,
@@ -50732,7 +51087,28 @@ async function handleAdmin(
           ),
         );
       }
-      return json(row);
+      if (serviceItemsToSave !== null) {
+        void addEntityTimeline({
+          entityType: "service_order",
+          entityId: row.id,
+          type: "service_items_updated",
+          title: "تم تحديث خدمات التصوير المسعّرة",
+          body: `عدد البنود: ${serviceItemsToSave.length}`,
+          actor: erpActorFromAdmin(auth),
+          metadata: { itemCount: serviceItemsToSave.length, total: serviceItemsToSave.reduce((sum, item) => sum + item.total, 0) },
+        });
+      }
+      const savedServiceItems = serviceItemsToSave ?? (await db.select().from(serviceOrderItemsTable).where(eq(serviceOrderItemsTable.serviceOrderId, id))).map((item) => ({
+        id: item.id,
+        productId: item.productId,
+        productName: item.productName,
+        unit: item.unit,
+        quantity: Number(item.quantity),
+        unitPrice: Number(item.unitPrice),
+        discount: Number(item.discount),
+        total: Number(item.total),
+      }));
+      return json({ ...row, serviceItems: savedServiceItems });
     }
 
     if (method === "DELETE" && parts[2]) {
@@ -52218,6 +52594,7 @@ const salesInvoiceRecordColumns = {
   paidAmount: salesInvoicesTable.paidAmount,
   remainingAmount: salesInvoicesTable.remainingAmount,
   paymentMethod: salesInvoicesTable.paymentMethod,
+  saleType: salesInvoicesTable.saleType,
   paymentStatus: salesInvoicesTable.paymentStatus,
   dueDate: salesInvoicesTable.dueDate,
   status: salesInvoicesTable.status,
@@ -52288,7 +52665,7 @@ function fmtInvoiceNo(prefix: string, id: number, date: Date): string {
 function salesInvoiceItems(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item: any) => {
+    .map((item: any, sourceIndex: number) => {
       const quantity = Math.max(
         Number.parseFloat(String(item?.quantity ?? "0")) || 0,
         0,
@@ -52317,9 +52694,44 @@ function salesInvoiceItems(value: unknown) {
         discountPct: Math.min(money(item?.discountPct), 100),
         total: Math.max(gross - discount, 0),
         costPrice: money(item?.costPrice),
+        unitSnapshot: null as string | null,
+        trackInventorySnapshot: null as boolean | null,
+        sourceIndex,
       };
     })
     .filter((item) => item.productName && item.quantity > 0);
+}
+
+/** Product identity, service unit and stock behavior always come from the catalog. */
+async function resolveSalesInvoiceProductLines(
+  items: ReturnType<typeof salesInvoiceItems>,
+  rawItems: any[],
+  auth: AdminUser,
+  existingSnapshots = new Map<number, { unitSnapshot: string | null; trackInventorySnapshot: boolean | null }>(),
+) {
+  const ids = [...new Set(items.filter((item) => !item.bundleId && item.productId).map((item) => Number(item.productId)))];
+  if (!ids.length) return items;
+  const products = await db.select().from(productsTable).where(inArray(productsTable.id, ids));
+  const byId = new Map(products.map((product) => [product.id, product]));
+  for (const item of items) {
+    if (item.bundleId || !item.productId) continue;
+    const product = byId.get(item.productId);
+    if (!product || (!product.isActive && !existingSnapshots.has(item.productId))) throw new CheckoutError("يوجد عنصر غير متاح ضمن الفاتورة", 404);
+    if (product.itemType === "service" && !String(product.serviceUnit ?? "").trim())
+      throw new CheckoutError("وحدة بيع الخدمة غير معرفة في بطاقة العنصر", 409);
+    const requestedOverride = rawItems[item.sourceIndex]?.priceOverride === true;
+    if (!requestedOverride || !hasPermission(auth, "accounting")) item.unitPrice = money(product.price);
+    item.productName = product.nameAr || product.name;
+    item.barcode = product.barcode ?? null;
+    item.costPrice = product.itemType === "service" ? 0 : money(product.costPrice);
+    const originalSnapshot = existingSnapshots.get(item.productId);
+    item.unitSnapshot = originalSnapshot ? originalSnapshot.unitSnapshot : product.itemType === "service" ? String(product.serviceUnit).trim() : null;
+    item.trackInventorySnapshot = originalSnapshot ? originalSnapshot.trackInventorySnapshot : product.itemType === "service" ? false : (product.trackInventory ?? true);
+    const gross = item.quantity * item.unitPrice;
+    item.discount = Math.min(item.discount, gross);
+    item.total = Math.max(gross - item.discount, 0);
+  }
+  return items;
 }
 
 async function ensureAssetCategoriesTables(): Promise<void> {
@@ -52336,6 +52748,7 @@ async function ensureAssetCategoriesTables(): Promise<void> {
 }
 
 const salesInvoiceItemSchema = z.object({
+  priceOverride: z.boolean().optional().default(false),
   bundleId: z.coerce.number().int().positive().nullable().optional(),
   productId: z.coerce.number().int().positive().nullable().optional(),
   productName: z.string().trim().min(1).max(500),
@@ -52482,6 +52895,7 @@ async function resolveSalesInvoiceBundleLines(
 }
 
 const salesInvoiceCreateSchema = z.object({
+  saleType: z.enum(["retail", "wholesale"]).optional().default("retail"),
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -52529,6 +52943,7 @@ const invoiceRegisterQuerySchema = z.object({
     .optional(),
   status: z.string().trim().max(30).optional(),
   paymentStatus: z.enum(INVOICE_PAYMENT_STATUSES).optional(),
+  saleType: z.enum(["retail", "wholesale"]).optional(),
   paymentMethod: z.string().trim().max(30).optional(),
   employeeId: z.coerce.number().int().positive().optional(),
   scope: z.enum(["mine"]).optional(),
@@ -52759,6 +53174,7 @@ async function deductSalesInvoiceStockInTransaction(
         bundleId: (item as any).bundleId ?? null,
       }));
     }
+    if (!invoiceLineTracksInventory((item as any).trackInventorySnapshot)) return [];
     return [{ ...item, bundleId: null }];
   });
   const productIds = [
@@ -52910,38 +53326,60 @@ async function addPurchaseInvoiceStockInTransaction(
   items: Array<{
     id: number;
     productId: number | null;
+    variantId?: number | null;
+    variantLabel?: string | null;
+    variantSku?: string | null;
+    barcode?: string | null;
     quantity: string | number;
   }>,
   invoiceId: number,
   actorInfo: { id: number | null; name: string },
 ) {
-  const productIds = [
-    ...new Set(
-      items.map((item) => Number(item.productId ?? 0)).filter((id) => id > 0),
-    ),
-  ];
+  const { productQuantities, variantQuantities } = groupPurchaseInvoiceStockChanges(items);
+  const productIds = [...productQuantities.keys()];
   const ownerIds = await stockOwnerProductIdsInTransaction(tx, productIds);
-  const quantities = new Map<number, number>();
-  for (const item of items) {
-    if (!item.productId) continue;
-    const ownerId = ownerIds.get(item.productId);
-    if (!ownerId) throw new CheckoutError("Product not found", 404);
-    quantities.set(
-      ownerId,
-      (quantities.get(ownerId) ?? 0) + Number(item.quantity),
-    );
+  for (const productId of productIds) {
+    if (!ownerIds.has(productId)) throw new CheckoutError("Product not found", 404);
   }
-  for (const [ownerId, quantity] of quantities) {
+  const ownerQuantities = new Map<number, number>();
+  for (const [productId, quantity] of productQuantities) {
+    const ownerId = ownerIds.get(productId)!;
+    ownerQuantities.set(ownerId, (ownerQuantities.get(ownerId) ?? 0) + quantity);
+  }
+  for (const [ownerId, quantity] of ownerQuantities) {
     await tx.execute(sql`
       UPDATE products SET stock = stock::numeric + ${quantity}, updated_at = now()
       WHERE id = ${ownerId}
+    `);
+  }
+  const variantParents = new Set<number>();
+  for (const [variantId, quantity] of variantQuantities) {
+    const updated: any = await tx.execute(sql`
+      UPDATE product_variants
+      SET stock = stock + ${quantity}, updated_at = now()
+      WHERE id = ${variantId}
+      RETURNING product_id
+    `);
+    const productId = Number((updated?.rows ?? updated ?? [])[0]?.product_id ?? 0);
+    if (!productId) throw new CheckoutError("المتغير المحدد لم يعد متاحاً", 422);
+    variantParents.add(productId);
+  }
+  for (const productId of variantParents) {
+    await tx.execute(sql`
+      UPDATE products
+      SET stock = COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = ${productId} AND is_active = true), 0)::numeric,
+          updated_at = now()
+      WHERE id = ${productId}
     `);
   }
   const movements = items
     .filter((item) => item.productId && Number(item.quantity) > 0)
     .map((item) => ({
       productId: item.productId,
-      stockSourceProductId: ownerIds.get(item.productId!) ?? item.productId,
+      stockSourceProductId: item.variantId
+        ? item.productId
+        : ownerIds.get(item.productId!) ?? item.productId,
+      variantId: item.variantId ?? null,
       quantityChange: String(Number(item.quantity)),
       reason: "purchase_invoice_stock_increased",
       relatedType: "purchase_invoice",
@@ -52952,6 +53390,9 @@ async function addPurchaseInvoiceStockInTransaction(
         sourceType: "purchase_invoice",
         sourceId: invoiceId,
         invoiceItemId: item.id,
+        variantLabel: item.variantLabel ?? null,
+        variantSku: item.variantSku ?? null,
+        barcode: item.barcode ?? null,
       },
       createdBy: actorInfo.id,
       createdByName: actorInfo.name,
@@ -52963,38 +53404,67 @@ async function addPurchaseInvoiceStockInTransaction(
  * An edit is a replacement, never two independently committed stock actions. */
 async function reversePurchaseInvoiceStockInTransaction(
   tx: any,
-  items: Array<{ id: number; productId: number | null; quantity: string | number }>,
+  items: Array<{ id: number; productId: number | null; variantId?: number | null; variantLabel?: string | null; variantSku?: string | null; barcode?: string | null; quantity: string | number }>,
   invoiceId: number,
   actorInfo: { id: number | null; name: string },
+  reason = "purchase_invoice_edit_reversal",
 ) {
-  const productIds = [...new Set(items.map((item) => Number(item.productId ?? 0)).filter((id) => id > 0))];
+  const plainProductIds = [...new Set(items.filter((item) => !item.variantId).map((item) => Number(item.productId ?? 0)).filter((id) => id > 0))];
+  const { variantQuantities } = groupPurchaseInvoiceStockChanges(items);
+  const productIds = plainProductIds;
   const ownerIds = await stockOwnerProductIdsInTransaction(tx, productIds);
-  const quantities = new Map<number, number>();
   for (const item of items) {
-    if (!item.productId || Number(item.quantity) <= 0) continue;
+    if (!item.productId || item.variantId || Number(item.quantity) <= 0) continue;
     const ownerId = ownerIds.get(item.productId);
     if (!ownerId) throw new CheckoutError("Product not found", 404);
-    quantities.set(ownerId, (quantities.get(ownerId) ?? 0) + Number(item.quantity));
   }
-  for (const [ownerId, quantity] of quantities) {
+  const ownerQuantities = new Map<number, number>();
+  for (const item of items) {
+    if (!item.productId || item.variantId || Number(item.quantity) <= 0) continue;
+    const ownerId = ownerIds.get(item.productId)!;
+    ownerQuantities.set(ownerId, (ownerQuantities.get(ownerId) ?? 0) + Number(item.quantity));
+  }
+  for (const [ownerId, quantity] of ownerQuantities) {
     await tx.execute(sql`
       UPDATE products
       SET stock = GREATEST(0, stock::numeric - ${quantity}), updated_at = now()
       WHERE id = ${ownerId}
     `);
   }
+  const variantParents = new Set<number>();
+  for (const [variantId, quantity] of variantQuantities) {
+    const updated: any = await tx.execute(sql`
+      UPDATE product_variants
+      SET stock = GREATEST(0, stock - ${quantity}), updated_at = now()
+      WHERE id = ${variantId}
+      RETURNING product_id
+    `);
+    const productId = Number((updated?.rows ?? updated ?? [])[0]?.product_id ?? 0);
+    if (productId) variantParents.add(productId);
+  }
+  for (const productId of variantParents) {
+    await tx.execute(sql`
+      UPDATE products
+      SET stock = COALESCE((SELECT SUM(stock) FROM product_variants WHERE product_id = ${productId} AND is_active = true), 0)::numeric,
+          updated_at = now()
+      WHERE id = ${productId}
+    `);
+  }
   const movements = items
     .filter((item) => item.productId && Number(item.quantity) > 0)
     .map((item) => ({
       productId: item.productId,
-      stockSourceProductId: ownerIds.get(item.productId!) ?? item.productId,
+      stockSourceProductId: item.variantId
+        ? item.productId
+        : ownerIds.get(item.productId!) ?? item.productId,
+      variantId: item.variantId ?? null,
       quantityChange: String(-Number(item.quantity)),
-      reason: "purchase_invoice_edit_reversal",
+      reason,
       relatedType: "purchase_invoice",
       relatedId: invoiceId,
       movementType: "purchase_reversal",
       idempotencyKey: `purchase-invoice-stock-reversal:${invoiceId}:${item.id}`,
-      metadata: { sourceType: "purchase_invoice", sourceId: invoiceId, invoiceItemId: item.id },
+      metadata: { sourceType: "purchase_invoice", sourceId: invoiceId, invoiceItemId: item.id, variantLabel: item.variantLabel ?? null, variantSku: item.variantSku ?? null, barcode: item.barcode ?? null },
       createdBy: actorInfo.id,
       createdByName: actorInfo.name,
     }));
@@ -53038,6 +53508,10 @@ function purchaseInvoiceItems(value: unknown) {
           Number.isFinite(Number(item?.productId)) && Number(item.productId) > 0
             ? Number(item.productId)
             : null,
+        variantId:
+          item?.variantId == null || item.variantId === ""
+            ? null
+            : Number(item.variantId),
         costCategory: item?.costCategory == null || item.costCategory === "" ? null : String(item.costCategory),
         koshaId: Number.isSafeInteger(Number(item?.koshaId)) && Number(item.koshaId) > 0 ? Number(item.koshaId) : null,
         constructionProjectId: Number.isSafeInteger(Number(item?.constructionProjectId)) && Number(item.constructionProjectId) > 0 ? Number(item.constructionProjectId) : null,
@@ -53045,6 +53519,8 @@ function purchaseInvoiceItems(value: unknown) {
         assetProductId: Number.isSafeInteger(Number(item?.assetProductId)) && Number(item.assetProductId) > 0 ? Number(item.assetProductId) : null,
         productName,
         barcode: normalizeProductBarcode(item?.barcode) || null,
+        variantLabel: textFallback(item?.variantLabel, item?.variant_label) || null,
+        variantSku: normalizeProductBarcode(item?.variantSku ?? item?.variant_sku) || null,
         quantity,
         costPrice,
         salePrice: money(item?.salePrice),
@@ -53053,6 +53529,47 @@ function purchaseInvoiceItems(value: unknown) {
       };
     })
     .filter((item) => item.productName && item.quantity > 0);
+}
+
+async function preparePurchaseInvoiceVariantItemsInTransaction(
+  tx: any,
+  items: Array<Record<string, any>>,
+  allowInactiveVariantIds: ReadonlySet<number> = new Set(),
+) {
+  await ensureVariantTables();
+  const productIds = [...new Set(items.map((item) => Number(item.productId ?? 0)).filter((id) => id > 0))];
+  const variantResult: any = productIds.length
+    ? await tx.execute(sql`
+        SELECT * FROM product_variants
+        WHERE product_id IN (${sql.join(productIds.map((id) => sql`${id}`), sql`, `)})
+      `)
+    : { rows: [] };
+  const variantsByProduct = new Map<number, any[]>();
+  for (const row of variantResult?.rows ?? variantResult ?? []) {
+    const productId = Number(row.product_id ?? row.productId);
+    const rows = variantsByProduct.get(productId) ?? [];
+    rows.push({
+      id: Number(row.id),
+      productId,
+      color: row.color ?? null,
+      size: row.size ?? null,
+      sku: row.sku ?? null,
+      barcode: row.barcode ?? null,
+      price: row.price ?? null,
+      cost: row.cost ?? null,
+      stock: row.stock ?? 0,
+      isActive: row.is_active ?? true,
+    });
+    variantsByProduct.set(productId, rows);
+  }
+  const products: PurchaseVariantProduct[] = productIds.map((id) => ({
+    id,
+    name: String(items.find((item) => Number(item.productId) === id)?.productName ?? `#${id}`),
+    variants: variantsByProduct.get(id) ?? [],
+  }));
+  const result = preparePurchaseVariantLines(items as any, products, allowInactiveVariantIds);
+  if (!result.ok) throw new CheckoutError(result.message, 422);
+  return result.lines;
 }
 
 async function validatePurchaseKoshaItems(items: Array<{ costCategory?: string | null; koshaId?: number | null; bookingId?: number | null; assetProductId?: number | null; constructionProjectId?: number | null }>): Promise<string | null> {
@@ -53423,6 +53940,39 @@ async function handleSalesInvoices(
       name: customer.name || customer.fullName || "بدون اسم",
       phone: customer.phone,
     })));
+  }
+  if (method === "POST" && parts[2] === "wholesale-price-quote") {
+    const quoteSchema = z.object({
+      customerId: z.coerce.number().int().positive(),
+      items: z.array(z.object({ productId: z.coerce.number().int().positive(), quantity: z.coerce.number().finite().positive().max(1_000_000) }).strict()).min(1).max(500),
+    }).strict();
+    const parsedQuote = quoteSchema.safeParse(await body(req));
+    if (!parsedQuote.success) return error("بيانات تسعير الجملة غير صحيحة", 400);
+    const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, parsedQuote.data.customerId) });
+    if (!customer || customer.status !== "active" || customer.customerType !== "wholesale") return error("اختر عميل جملة نشطاً", 400);
+    const lines = [] as Array<{ productId: number; quantity: number; unitPrice: number; source: string; tierMinimumQuantity?: number }>;
+    for (const line of parsedQuote.data.items) {
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, line.productId) });
+      if (!product || !product.isActive) return error("يوجد منتج غير متاح ضمن طلب التسعير", 404);
+      const tiers = await db.select().from(productWholesalePriceTiersTable).where(and(
+        eq(productWholesalePriceTiersTable.productId, line.productId),
+        eq(productWholesalePriceTiersTable.isActive, true),
+      ));
+      const [special] = await db.select({ unitPrice: customerProductPricesTable.unitPrice }).from(customerProductPricesTable).where(and(
+        eq(customerProductPricesTable.customerId, customer.id),
+        eq(customerProductPricesTable.productId, line.productId),
+        eq(customerProductPricesTable.isActive, true),
+      )).limit(1);
+      const resolved = resolveWholesaleUnitPrice({
+        retailPrice: money(product.price),
+        wholesalePrice: product.wholesalePrice == null ? null : money(product.wholesalePrice),
+        customerPrice: special ? money(special.unitPrice) : null,
+        quantity: line.quantity,
+        tiers: tiers.map((tier) => ({ minimumQuantity: Number(tier.minimumQuantity), unitPrice: money(tier.unitPrice), isActive: tier.isActive })),
+      });
+      lines.push({ productId: line.productId, quantity: line.quantity, ...resolved });
+    }
+    return json({ customerId: customer.id, lines });
   }
   const id = parts[2] ? int(parts[2]) : null;
   // The register is read-only; do not run stock DDL before returning history.
@@ -53860,6 +54410,7 @@ async function handleSalesInvoices(
       to,
       status,
       paymentStatus,
+      saleType,
       paymentMethod,
       employeeId,
       scope,
@@ -53875,6 +54426,7 @@ async function handleSalesInvoices(
     if (from) baseConds.push(gte(salesInvoicesTable.date, from));
     if (to) baseConds.push(lte(salesInvoicesTable.date, to));
     if (status) baseConds.push(eq(salesInvoicesTable.status, status));
+    if (saleType) baseConds.push(eq(salesInvoicesTable.saleType, saleType));
     if (paymentMethod)
       baseConds.push(eq(salesInvoicesTable.paymentMethod, paymentMethod));
     if (employeeId) baseConds.push(eq(salesInvoicesTable.createdBy, employeeId));
@@ -53995,6 +54547,18 @@ async function handleSalesInvoices(
         conds,
       ),
     ]);
+    const topProducts = saleType === "wholesale" && rows.length
+      ? await db.select({
+          productName: salesInvoiceItemsTable.productName,
+          quantity: sql<string>`COALESCE(SUM(${salesInvoiceItemsTable.quantity}::numeric), 0)::text`,
+          revenue: sql<string>`COALESCE(SUM(${salesInvoiceItemsTable.total}::numeric), 0)::text`,
+        })
+          .from(salesInvoiceItemsTable)
+          .where(inArray(salesInvoiceItemsTable.invoiceId, rows.map((row) => row.id)))
+          .groupBy(salesInvoiceItemsTable.productName)
+          .orderBy(desc(sql`SUM(${salesInvoiceItemsTable.quantity}::numeric)`))
+          .limit(10)
+      : [];
     const data = await attachSalesInvoiceTracking(rows.map(invoiceRegisterView));
     const employees = await db
       .select({ id: staffTable.id, name: staffTable.fullName, username: staffTable.username, role: staffTable.role })
@@ -54006,6 +54570,7 @@ async function handleSalesInvoices(
       data,
       total: countRow?.c ?? 0,
       summary,
+      ...(saleType === "wholesale" ? { topProducts: topProducts.map((row) => ({ ...row, quantity: money(row.quantity), revenue: money(row.revenue) })) } : {}),
       filters: { employees: employees.map((employee) => ({ id: employee.id, name: employee.name || employee.username, role: employee.role })) },
       exportTruncated: exportQ === "true" && Number(countRow?.c ?? 0) > 5_000,
     });
@@ -54080,7 +54645,7 @@ async function handleSalesInvoices(
             409,
           );
         const productItems = items.filter(
-          (item) => Number(item.productId ?? 0) > 0 && money(item.quantity) > 0,
+          (item) => invoiceLineTracksInventory((item as any).trackInventorySnapshot) && Number(item.productId ?? 0) > 0 && money(item.quantity) > 0,
         );
         // A bundle has one customer-facing invoice line but many stock lines.
         // Restore the immutable sale snapshot, never the bundle's current BOM.
@@ -54785,7 +55350,47 @@ async function handleSalesInvoices(
     if (!parsed.success) return validationError("sales-invoice.create", parsed);
     const b = parsed.data;
     const a = actor(auth);
-    let items = salesInvoiceItems(b.items);
+    let customerId = optionalPositiveId(b.customerId);
+    let wholesaleCustomer: typeof customersTable.$inferSelect | null = null;
+    if (b.saleType === "wholesale") {
+      if (!customerId) return error("اختر عميلاً مسجلاً من عملاء الجملة", 400);
+      wholesaleCustomer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) }) ?? null;
+      if (!wholesaleCustomer || wholesaleCustomer.status !== "active" || wholesaleCustomer.customerType !== "wholesale")
+        return error("العميل المختار ليس عميلاً نشطاً للجملة", 400);
+    }
+    let items = await resolveSalesInvoiceProductLines(salesInvoiceItems(b.items), b.items, auth);
+    let specialWholesaleDiscount = 0;
+    if (b.saleType === "wholesale") {
+      for (const [itemIndex, item] of items.entries()) {
+        if (item.bundleId) return error("بيع الباقات غير متاح في وضع الجملة حالياً", 400);
+        if (!item.productId) return error("كل صنف جملة يجب أن يرتبط بمنتج المخزون", 400);
+        const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, item.productId) });
+        if (!product || !product.isActive) return error("يوجد منتج غير متاح ضمن الفاتورة", 404);
+        const tiers = await db.select().from(productWholesalePriceTiersTable).where(and(
+          eq(productWholesalePriceTiersTable.productId, item.productId),
+          eq(productWholesalePriceTiersTable.isActive, true),
+        ));
+        const [special] = await db.select({ unitPrice: customerProductPricesTable.unitPrice }).from(customerProductPricesTable).where(and(
+          eq(customerProductPricesTable.customerId, wholesaleCustomer!.id),
+          eq(customerProductPricesTable.productId, item.productId),
+          eq(customerProductPricesTable.isActive, true),
+        )).limit(1);
+        const resolved = resolveWholesaleUnitPrice({
+          retailPrice: money(product.price),
+          wholesalePrice: product.wholesalePrice == null ? null : money(product.wholesalePrice),
+          customerPrice: special ? money(special.unitPrice) : null,
+          quantity: item.quantity,
+          tiers: tiers.map((tier) => ({ minimumQuantity: Number(tier.minimumQuantity), unitPrice: money(tier.unitPrice), isActive: tier.isActive })),
+        });
+        item.unitPrice = b.items[item.sourceIndex]?.priceOverride && hasPermission(auth, "accounting")
+          ? money(b.items[item.sourceIndex].unitPrice)
+          : resolved.unitPrice;
+        item.discount = Math.min(item.quantity * item.unitPrice, item.quantity * item.unitPrice * item.discountPct / 100);
+        item.total = Math.max(item.quantity * item.unitPrice - item.discount, 0);
+      }
+      const wholesaleGross = items.reduce((sum, item) => sum + item.quantity * item.unitPrice - item.discount, 0);
+      specialWholesaleDiscount = money(wholesaleGross * Number(wholesaleCustomer?.specialDiscountPercent ?? 0) / 100);
+    }
     const bundleResolution = await resolveSalesInvoiceBundleLines(items);
     items = bundleResolution.items;
     const idempotencyKey =
@@ -54799,7 +55404,7 @@ async function handleSalesInvoices(
       (sum, item) => sum + item.quantity * item.unitPrice,
       0,
     );
-    let discountAmount = money(b.discountAmount);
+    let discountAmount = money(b.discountAmount) + specialWholesaleDiscount;
     const couponPreview = b.couponCode
       ? await calculateCouponDiscount(b.couponCode, subtotal, 0)
       : null;
@@ -54881,11 +55486,8 @@ async function handleSalesInvoices(
       : null;
     if (supplierId && !supplier) return error("المورد المختار غير موجود", 400);
     const supplierName = nullableText(b.supplierName ?? supplier?.name);
-    let customerId = optionalPositiveId(b.customerId);
     if (customerId) {
-      const customer = await db.query.customersTable.findFirst({
-        where: eq(customersTable.id, customerId),
-      });
+      const customer = wholesaleCustomer ?? await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
       if (!customer) return error("العميل المحدد غير موجود", 400);
     }
 
@@ -54933,12 +55535,20 @@ async function handleSalesInvoices(
           // transaction, so a failed invoice cannot leave a stray customer row.
           customerId = (await getOrCreateSalesCashCustomer(tx)).id;
         }
+        if (b.saleType === "wholesale" && wholesaleCustomer?.creditLimit != null && auth.role !== "admin" && auth.role !== "manager") {
+          traceInvoiceSave("wholesale_credit_limit_check");
+          await tx.execute(sql`SELECT id FROM customers WHERE id = ${wholesaleCustomer.id} FOR UPDATE`);
+          const account = await getCustomerAccountSummary({ id: wholesaleCustomer.id, phone: wholesaleCustomer.phone }, tx);
+          if (account.currentBalance + total > money(wholesaleCustomer.creditLimit))
+            throw new CheckoutError("تجاوزت الفاتورة حد الائتمان المسموح لهذا العميل", 409, { code: "CONFLICT", retryable: false });
+        }
         traceInvoiceSave("invoice_insert");
         const inserted = await tx
           .insert(salesInvoicesTable)
           .values({
             invoiceNo: await nextSalesInvoiceNo(tx, dateVal),
             idempotencyKey,
+            saleType: b.saleType,
             date: dateVal,
             customerName: b.customerName ?? "",
             customerPhone,
@@ -55025,6 +55635,8 @@ async function handleSalesInvoices(
                 bundleId: item.bundleId ?? null,
                 productName: item.productName ?? "",
                 barcode: item.barcode ?? null,
+                unitSnapshot: item.unitSnapshot ?? null,
+                trackInventorySnapshot: item.trackInventorySnapshot ?? null,
                 quantity: String(item.quantity),
                 unitPrice: String(item.unitPrice),
                 discount: String(item.discount),
@@ -55338,7 +55950,12 @@ async function handleSalesInvoices(
       .from(salesInvoiceItemsTable)
       .where(eq(salesInvoiceItemsTable.invoiceId, id));
     const parsedItems =
-      b.items !== undefined ? salesInvoiceItems(b.items) : null;
+      b.items !== undefined ? await resolveSalesInvoiceProductLines(
+        salesInvoiceItems(b.items),
+        b.items,
+        auth,
+        new Map(oldItems.filter((item) => item.productId != null).map((item) => [Number(item.productId), { unitSnapshot: item.unitSnapshot ?? null, trackInventorySnapshot: item.trackInventorySnapshot ?? null }])),
+      ) : null;
     if (parsedItems && parsedItems.length === 0)
       return error("أضف منتجاً واحداً على الأقل إلى الفاتورة", 400);
     const subtotal = parsedItems
@@ -55506,6 +56123,8 @@ async function handleSalesInvoices(
             productId: item.productId ?? null,
             productName: item.productName ?? "",
             barcode: item.barcode ?? null,
+            unitSnapshot: item.unitSnapshot ?? null,
+            trackInventorySnapshot: item.trackInventorySnapshot ?? null,
             quantity: String(item.quantity ?? 1),
             unitPrice: String(item.unitPrice ?? 0),
             discount: String(item.discount ?? 0),
@@ -56400,6 +57019,9 @@ async function handlePurchaseInvoices(
         processedItems.push({ ...item, productId });
       }
 
+      const variantPreparedItems = await preparePurchaseInvoiceVariantItemsInTransaction(tx, processedItems);
+      processedItems.splice(0, processedItems.length, ...(variantPreparedItems as any[]));
+
       if (processedItems.length > 0) {
         const insertedItems = await tx
           .insert(purchaseInvoiceItemsTable)
@@ -56407,6 +57029,9 @@ async function handlePurchaseInvoices(
             processedItems.map((item: any) => ({
               invoiceId: inv.id,
               productId: item.productId ?? null,
+              variantId: item.variantId ?? null,
+              variantLabel: item.variantLabel ?? null,
+              variantSku: item.variantSku ?? null,
               costCategory: item.costCategory ?? null,
               koshaId: item.koshaId ?? null,
               constructionProjectId: item.constructionProjectId ?? null,
@@ -56431,14 +57056,19 @@ async function handlePurchaseInvoices(
         // Update product stock on purchase
         for (const item of processedItems) {
           if (item.productId && item.quantity > 0) {
-            const updateVals: any = { costPrice: String(item.costPrice) };
-            if (item.salePrice > 0) {
-              updateVals.price = String(item.salePrice);
+            if (item.variantId) {
+              await tx.execute(sql`
+                UPDATE product_variants
+                SET cost = ${String(item.costPrice)},
+                    price = CASE WHEN ${Number(item.salePrice) > 0} THEN ${String(item.salePrice)}::numeric ELSE price END,
+                    updated_at = now()
+                WHERE id = ${item.variantId} AND product_id = ${item.productId}
+              `);
+            } else {
+              const updateVals: any = { costPrice: String(item.costPrice) };
+              if (item.salePrice > 0) updateVals.price = String(item.salePrice);
+              await tx.update(productsTable).set(updateVals).where(eq(productsTable.id, item.productId));
             }
-            await tx
-              .update(productsTable)
-              .set(updateVals)
-              .where(eq(productsTable.id, item.productId));
             // Integration — reflect the purchase on the asset's passport timeline.
             void addEntityTimeline({
               entityType: "asset",
@@ -56559,6 +57189,8 @@ async function handlePurchaseInvoices(
     // stock movement atomic. A failed edit must leave the original invoice and
     // inventory untouched rather than temporarily zeroing a product.
     const { final, finalItems } = await db.transaction(async (tx) => {
+      const oldItems = await tx.select().from(purchaseInvoiceItemsTable)
+        .where(eq(purchaseInvoiceItemsTable.invoiceId, id));
       const processedItems: typeof newItems = [];
       for (const item of newItems) {
         let productId = item.productId;
@@ -56583,8 +57215,12 @@ async function handlePurchaseInvoices(
         processedItems.push({ ...item, productId });
       }
 
-      const oldItems = await tx.select().from(purchaseInvoiceItemsTable)
-        .where(eq(purchaseInvoiceItemsTable.invoiceId, id));
+      const variantPreparedItems = await preparePurchaseInvoiceVariantItemsInTransaction(
+        tx,
+        processedItems,
+        new Set(oldItems.map((item: any) => Number(item.variantId)).filter((value: number) => value > 0)),
+      );
+      processedItems.splice(0, processedItems.length, ...(variantPreparedItems as any[]));
       await tx.update(purchaseInvoicesTable).set({
         date: b.date ?? existing.date, supplierName: b.supplierName ?? existing.supplierName,
         supplierId: b.supplierId ?? existing.supplierId, subtotal: String(subtotal),
@@ -56597,7 +57233,9 @@ async function handlePurchaseInvoices(
       await tx.delete(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, id));
       const insertedItems = await tx.insert(purchaseInvoiceItemsTable).values(
         processedItems.map((item: any) => ({
-          invoiceId: id, productId: item.productId ?? null, productName: item.productName ?? "",
+          invoiceId: id, productId: item.productId ?? null, variantId: item.variantId ?? null,
+          variantLabel: item.variantLabel ?? null, variantSku: item.variantSku ?? null,
+          productName: item.productName ?? "",
           costCategory: item.costCategory ?? null, koshaId: item.koshaId ?? null,
           constructionProjectId: item.constructionProjectId ?? null,
           bookingId: item.bookingId ?? null, assetProductId: item.assetProductId ?? null,
@@ -56608,9 +57246,19 @@ async function handlePurchaseInvoices(
       await addPurchaseInvoiceStockInTransaction(tx, insertedItems, id, a);
       for (const item of processedItems) {
         if (!item.productId || item.quantity <= 0) continue;
-        const updateVals: any = { costPrice: String(item.costPrice) };
-        if (item.salePrice > 0) updateVals.price = String(item.salePrice);
-        await tx.update(productsTable).set(updateVals).where(eq(productsTable.id, item.productId));
+        if (item.variantId) {
+          await tx.execute(sql`
+            UPDATE product_variants
+            SET cost = ${String(item.costPrice)},
+                price = CASE WHEN ${Number(item.salePrice) > 0} THEN ${String(item.salePrice)}::numeric ELSE price END,
+                updated_at = now()
+            WHERE id = ${item.variantId} AND product_id = ${item.productId}
+          `);
+        } else {
+          const updateVals: any = { costPrice: String(item.costPrice) };
+          if (item.salePrice > 0) updateVals.price = String(item.salePrice);
+          await tx.update(productsTable).set(updateVals).where(eq(productsTable.id, item.productId));
+        }
       }
       const [final] = await tx.select().from(purchaseInvoicesTable)
         .where(eq(purchaseInvoicesTable.id, id)).limit(1);
@@ -56652,27 +57300,25 @@ async function handlePurchaseInvoices(
     if (current.status === "deleted")
       return json({ message: "الفاتورة محذوفة مسبقاً" });
     const a = actor(auth);
-    // Reverse the stock this invoice added, so deletion keeps inventory correct.
-    const items = await db
-      .select()
-      .from(purchaseInvoiceItemsTable)
-      .where(eq(purchaseInvoiceItemsTable.invoiceId, id));
-    for (const it of items as any[]) {
-      if (it.productId && Number(it.quantity) > 0) {
-        await adjustProductStock(Number(it.productId), -Number(it.quantity), {
-          reason: "purchase_invoice_deleted_reversal",
-          relatedType: "purchase_invoice",
-          relatedId: id,
-          createdBy: a.id,
-          createdByName: a.name,
-        });
-      }
-    }
-    const [deleted] = await db
-      .update(purchaseInvoicesTable)
-      .set({ status: "deleted" } as any)
-      .where(eq(purchaseInvoicesTable.id, id))
-      .returning();
+    // Reverse the invoice's exact product/variant stock and mark it deleted
+    // under one row lock so retries cannot reverse inventory twice.
+    const { items, deleted } = await db.transaction(async (tx) => {
+      const locked: any = await tx.execute(sql`
+        SELECT id, status FROM purchase_invoices WHERE id = ${id} FOR UPDATE
+      `);
+      const lockedInvoice = (locked?.rows ?? locked ?? [])[0];
+      if (!lockedInvoice || lockedInvoice.status === "deleted")
+        return { items: [], deleted: null };
+      const items = await tx.select().from(purchaseInvoiceItemsTable)
+        .where(eq(purchaseInvoiceItemsTable.invoiceId, id));
+      await reversePurchaseInvoiceStockInTransaction(tx, items as any[], id, a, "purchase_invoice_deleted_reversal");
+      const [deleted] = await tx.update(purchaseInvoicesTable)
+        .set({ status: "deleted" } as any)
+        .where(eq(purchaseInvoicesTable.id, id))
+        .returning();
+      return { items, deleted };
+    });
+    if (!deleted) return json({ message: "الفاتورة محذوفة مسبقاً" });
     if (deleted) {
       await syncSourcePaymentTarget(
         {

@@ -11,7 +11,6 @@ import {
   PackageCheck,
   Palette,
   Ruler,
-  ScanLine,
   Scissors,
 } from "lucide-react";
 
@@ -21,18 +20,17 @@ export const GRADUATION_STEPS = [
   { label: "الألوان", icon: Palette },
   { label: "القماش", icon: Layers3 },
   { label: "الطباعة / التطريز", icon: Scissors },
-  { label: "النصوص", icon: FileImage },
+  { label: "التخصيص", icon: FileImage },
   { label: "الإكسسوارات", icon: PackageCheck },
   { label: "خدمات إضافية", icon: Gift },
-  { label: "المعاينة", icon: ScanLine },
   { label: "ملخص السعر", icon: CircleDollarSign },
   { label: "التأكيد", icon: ClipboardCheck },
 ] as const;
 
 export const GRADUATION_THEME_STYLE = {
-  "--primary": "43 59% 59%",
-  "--primary-foreground": "240 24% 6%",
-  "--ring": "43 59% 59%",
+  "--primary": "334 100% 23%",
+  "--primary-foreground": "0 0% 100%",
+  "--ring": "334 100% 23%",
 } as CSSProperties;
 
 export function GraduationStepRail({
@@ -42,16 +40,17 @@ export function GraduationStepRail({
   current: number;
   onStepChange?: (step: number) => void;
 }) {
+  const visualCurrent = current >= 10 ? 9 : current >= 8 ? 8 : current;
   return (
-    <div className="overflow-x-auto border-b border-border bg-card/95 px-3 py-3 backdrop-blur md:sticky md:top-0 md:z-30">
+    <div className="overflow-x-auto border-b border-[#f0e7e9] bg-white/95 px-3 py-4 backdrop-blur md:sticky md:top-0 md:z-30">
       <div
-        className="mx-auto flex min-w-[840px] max-w-7xl items-start justify-between"
+        className="mx-auto flex min-w-[920px] max-w-7xl items-start justify-between"
         dir="rtl"
       >
         {GRADUATION_STEPS.map((step, index) => {
           const Icon = step.icon;
-          const active = index === current;
-          const done = index < current;
+          const active = index === visualCurrent;
+          const done = index < visualCurrent;
           const content = (
             <>
               {index < GRADUATION_STEPS.length - 1 ? (
@@ -62,12 +61,12 @@ export function GraduationStepRail({
               <motion.span
                 animate={{ scale: active ? 1.08 : 1 }}
                 transition={{ duration: 0.18 }}
-                className={`relative z-10 flex h-9 w-9 items-center justify-center rounded-full border text-xs font-bold transition-colors ${active ? "border-primary bg-primary text-primary-foreground shadow-[0_0_18px_hsl(var(--primary)/.22)]" : done ? "border-primary bg-background text-primary" : "border-border bg-card text-muted-foreground"}`}
+                className={`relative z-10 flex h-10 w-10 items-center justify-center rounded-full border text-xs font-bold transition-colors ${active ? "border-primary bg-primary text-primary-foreground shadow-[0_5px_16px_rgba(104,0,47,.2)]" : done ? "border-primary bg-white text-primary" : "border-[#e9dfe2] bg-white text-[#8a747c]"}`}
               >
                 {done ? (
                   <Check className="h-4 w-4" />
                 ) : (
-                  <Icon className="h-4 w-4" />
+                  <span className="flex flex-col items-center gap-0.5"><Icon className="h-4 w-4" /><span className="text-[9px]">{index + 1}</span></span>
                 )}
               </motion.span>
               <span

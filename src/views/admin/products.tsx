@@ -26,6 +26,9 @@ type Category = { id: number; name: string; nameAr: string; slug: string; parent
 
 type ProductForm = {
   id?: number;
+  itemType?: "product" | "service";
+  serviceUnit?: string;
+  trackInventory?: boolean;
   name: string; nameAr: string;
   nameKu?: string; nameTr?: string;
   description?: string; descriptionAr?: string;
@@ -55,6 +58,7 @@ type RentalBookingRow = {
 };
 
 const blank: ProductForm = {
+  itemType: "product", serviceUnit: "", trackInventory: true,
   name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
   isRental: false, pricePerDay: "0", isAsset: false,
   sharedStockProductId: null, sharedStockLinkedProductIds: [],
@@ -259,6 +263,9 @@ export default function ProductsPage() {
     const body = {
       name: form.name.trim(),
       nameAr: form.nameAr.trim(),
+      itemType: form.itemType ?? "product",
+      serviceUnit: form.itemType === "service" ? form.serviceUnit?.trim() ?? "" : null,
+      trackInventory: form.itemType === "service" ? false : form.trackInventory !== false,
       nameKu: form.nameKu?.trim() || "",
       nameTr: form.nameTr?.trim() || "",
       description: form.description?.trim() || "",
@@ -620,6 +627,9 @@ export default function ProductsPage() {
                         <div className="flex items-center gap-2">
                           <button onClick={() => setEditing({
                             id: p.id, name: p.name, nameAr: p.nameAr,
+                            itemType: (p as any).itemType === "service" ? "service" : "product",
+                            serviceUnit: (p as any).serviceUnit ?? "",
+                            trackInventory: (p as any).trackInventory !== false,
                             nameKu: (p as any).nameKu ?? "", nameTr: (p as any).nameTr ?? "",
                             description: p.description ?? "", descriptionAr: p.descriptionAr ?? "",
                             descriptionKu: (p as any).descriptionKu ?? "", descriptionTr: (p as any).descriptionTr ?? "",
@@ -679,7 +689,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 }) {
   const [busy, setBusy] = useState(false);
   const [subcategorySearch, setSubcategorySearch] = useState("");
-  const [activeTab, setActiveTab] = useState<"details" | "rentals" | "recipe" | "variants">("details");
+  const [activeTab, setActiveTab] = useState<"details" | "rentals" | "recipe" | "variants" | "wholesale">("details");
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewVideo, setPreviewVideo] = useState<string | null>(null);
   const [draggedImage, setDraggedImage] = useState<number | null>(null);
@@ -887,7 +897,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
         className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto p-6 space-y-4"
       >
         <div className="flex items-center justify-between">
-          <h3 className="font-bold text-foreground">{form.id ? "تعديل منتج" : "منتج جديد"}</h3>
+          <h3 className="font-bold text-foreground">{form.id ? "تعديل العنصر" : "عنصر جديد"}</h3>
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
 
@@ -921,6 +931,13 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
             >
               🎨 المتغيّرات
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("wholesale")}
+              className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "wholesale" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              أسعار الجملة
+            </button>
           </div>
         )}
 
@@ -934,6 +951,10 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 
         {activeTab === "variants" && form.id ? (
           <VariantsTab productId={form.id} />
+        ) : null}
+
+        {activeTab === "wholesale" && form.id ? (
+          <WholesalePricesTab productId={form.id} />
         ) : null}
 
         {activeTab === "rentals" ? (
@@ -1012,12 +1033,69 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           </div>
         ) : activeTab === "details" ? (
           <>
+        <div className="rounded-xl border border-primary/25 bg-primary/5 p-3 space-y-3">
+          <label className="block text-sm font-medium text-foreground">
+            نوع العنصر
+            <select
+              value={form.itemType ?? "product"}
+              onChange={(event) => {
+                const itemType = event.target.value as "product" | "service";
+                onChange({
+                  ...form,
+                  itemType,
+                  serviceUnit: itemType === "service" ? form.serviceUnit ?? "" : "",
+                  trackInventory: itemType === "service" ? false : true,
+                  stock: itemType === "service" ? "0" : form.stock,
+                  minStock: itemType === "service" ? "0" : form.minStock,
+                  isRental: itemType === "service" ? false : form.isRental,
+                  sharedStockProductId: itemType === "service" ? null : form.sharedStockProductId,
+                  sharedStockLinkedProductIds: itemType === "service" ? [] : form.sharedStockLinkedProductIds,
+                });
+                if (itemType === "service") setSharedStockEnabled(false);
+              }}
+              className="mt-1 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="product">منتج</option>
+              <option value="service">خدمة</option>
+            </select>
+          </label>
+          {form.itemType === "service" ? (
+            <>
+              <label className="block text-sm text-foreground">
+                وحدة البيع
+                <input
+                  list="service-unit-suggestions"
+                  value={form.serviceUnit ?? ""}
+                  onChange={(event) => onChange({ ...form, serviceUnit: event.target.value })}
+                  placeholder="مثال: لقطة، جلسة، ساعة، ألبوم"
+                  className="mt-1 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  required
+                />
+                <datalist id="service-unit-suggestions">
+                  {["لقطة", "جلسة", "ساعة", "فيديو", "ألبوم", "تصميم", "خدمة"].map((unit) => <option key={unit} value={unit} />)}
+                </datalist>
+              </label>
+              <p className="text-xs text-muted-foreground">الخدمة تُباع بالكمية ولا تخصم من المخزون.</p>
+            </>
+          ) : (
+            <label className="inline-flex items-center gap-2 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={form.trackInventory !== false}
+                onChange={(event) => onChange({ ...form, trackInventory: event.target.checked })}
+                className="accent-primary"
+              />
+              تتبع المخزون
+            </label>
+          )}
+        </div>
         <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-3">
           <h4 className="text-sm font-semibold text-foreground">إعدادات الإيجار</h4>
           <label className="inline-flex items-center gap-2 text-sm text-foreground">
             <input
               type="checkbox"
               checked={form.isRental === true}
+              disabled={form.itemType === "service"}
               onChange={(event) => onChange({
                 ...form,
                 isRental: event.target.checked,
@@ -1028,7 +1106,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
             />
             منتج للإيجار
           </label>
-          {form.isRental && (
+          {form.isRental && form.itemType !== "service" && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Inp label="سعر الإيجار لليوم" type="number" value={form.pricePerDay ?? "0"} onChange={v => onChange({ ...form, pricePerDay: v })} />
               <Inp label="الكمية" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
@@ -1056,10 +1134,10 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <Inp label="السعر" type="number" value={form.price} onChange={v => onChange({ ...form, price: v })} />
           <Inp label="السعر الأصلي (اختياري)" type="number" value={form.originalPrice ?? ""} onChange={v => onChange({ ...form, originalPrice: v })} />
           <Inp label="سعر الشراء" type="number" value={form.costPrice ?? "0"} onChange={v => onChange({ ...form, costPrice: v })} />
-          <Inp label="المخزون" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
-          <Inp label="حد التنبيه للمخزون" type="number" value={form.minStock ?? "0"} onChange={v => onChange({ ...form, minStock: v })} />
+          {form.itemType !== "service" && form.trackInventory !== false && <Inp label="المخزون" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />}
+          {form.itemType !== "service" && form.trackInventory !== false && <Inp label="حد التنبيه للمخزون" type="number" value={form.minStock ?? "0"} onChange={v => onChange({ ...form, minStock: v })} />}
           <Inp label="الباركود (اختياري)" value={form.barcode ?? ""} onChange={v => onChange({ ...form, barcode: v })} />
-          <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
+          {form.itemType !== "service" && form.trackInventory !== false && <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
             <label className="flex items-center justify-between gap-3 text-sm text-foreground">
               <span className="inline-flex items-center gap-2">
                 <input
@@ -1132,8 +1210,8 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                 </p>
               </div>
             )}
-          </div>
-          {form.id && !sharedStockEnabled && (
+          </div>}
+          {form.id && form.itemType !== "service" && form.trackInventory !== false && !sharedStockEnabled && (
             <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <label className="text-sm text-foreground inline-flex items-center gap-2">
@@ -1849,6 +1927,91 @@ function RecipeTab({ productId, sellingPrice, products }: { productId: number; s
       )}
     </div>
   );
+}
+
+type WholesalePriceData = { wholesalePrice: number | null; tiers: Array<{ id?: number; minimumQuantity: number; unitPrice: number; isActive?: boolean }> };
+
+function WholesalePricesTab({ productId }: { productId: number }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const key = ["admin", "products", productId, "wholesale-prices"];
+  const { data, isLoading, error } = useQuery<WholesalePriceData>({
+    queryKey: key,
+    queryFn: () => adminFetch(`/products/${productId}/wholesale-prices`),
+  });
+  const [basePrice, setBasePrice] = useState("");
+  const [tiers, setTiers] = useState<Array<{ minimumQuantity: string; unitPrice: string }>>([]);
+  const [customerId, setCustomerId] = useState("");
+  const [customerPrice, setCustomerPrice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const { data: customerRows, error: wholesaleCustomersError } = useQuery<Array<{ id: number; name: string; businessName?: string | null; customerType?: string }>>({
+    queryKey: ["admin", "wholesale-customers-for-product-price"],
+    queryFn: () => adminFetch("/customers?limit=500"),
+    select: (customers) => customers.filter((customer) => customer.customerType === "wholesale"),
+  });
+  const wholesaleCustomers = customerRows?.filter((customer) => customer.customerType === "wholesale") ?? [];
+  const customerPriceKey = ["admin", "products", productId, "customer-prices"];
+  const { data: customerPrices = [], refetch: refetchCustomerPrices, error: customerPricesError } = useQuery<Array<{ customerId: number; customerName?: string | null; ownerName?: string | null; unitPrice: number }>>({
+    queryKey: customerPriceKey,
+    queryFn: async () => (await adminFetch<{ prices: Array<{ customerId: number; customerName?: string | null; ownerName?: string | null; unitPrice: number }> }>(`/products/${productId}/customer-prices`)).prices,
+  });
+  useEffect(() => {
+    if (!data) return;
+    setBasePrice(data.wholesalePrice == null ? "" : String(data.wholesalePrice));
+    setTiers(data.tiers.map((tier) => ({ minimumQuantity: String(tier.minimumQuantity), unitPrice: String(tier.unitPrice) })));
+  }, [data]);
+  async function save() {
+    setBusy(true);
+    try {
+      await adminFetch(`/products/${productId}/wholesale-prices`, {
+        method: "PUT",
+        body: JSON.stringify({ wholesalePrice: basePrice.trim() === "" ? null : Number(basePrice), tiers: tiers.map((tier) => ({ minimumQuantity: Number(tier.minimumQuantity), unitPrice: Number(tier.unitPrice) })) }),
+      });
+      await qc.invalidateQueries({ queryKey: key });
+      toast({ title: "تم حفظ أسعار الجملة" });
+    } catch (e: any) {
+      toast({ title: "تعذر حفظ الأسعار", description: apiErrorMessage(e), variant: "destructive" });
+    } finally { setBusy(false); }
+  }
+  async function saveCustomerPrice() {
+    if (!customerId || customerPrice.trim() === "") return;
+    setBusy(true);
+    try {
+      await adminFetch(`/products/${productId}/customer-prices`, { method: "POST", body: JSON.stringify({ customerId: Number(customerId), unitPrice: Number(customerPrice) }) });
+      setCustomerPrice("");
+      await refetchCustomerPrices();
+      toast({ title: "تم حفظ السعر الخاص بالعميل" });
+    } catch (e: any) {
+      toast({ title: "تعذر حفظ السعر الخاص", description: apiErrorMessage(e), variant: "destructive" });
+    } finally { setBusy(false); }
+  }
+  async function removeCustomerPrice(id: number) {
+    try {
+      await adminFetch(`/products/${productId}/customer-prices/${id}`, { method: "DELETE" });
+      await refetchCustomerPrices();
+    } catch (e: any) { toast({ title: "تعذر حذف السعر الخاص", description: apiErrorMessage(e), variant: "destructive" }); }
+  }
+  return <div className="rounded-xl border border-border/30 bg-background/40 p-4 space-y-4">
+    <div><h4 className="text-sm font-semibold">أسعار الجملة</h4><p className="mt-1 text-xs text-muted-foreground">تُطبق أعلى شريحة كمية مستحقة عند إنشاء فاتورة جملة.</p></div>
+    {isLoading ? <p className="text-sm text-muted-foreground">جارٍ التحميل…</p> : error ? <p className="text-sm text-status-danger">تعذر تحميل الأسعار. أعد المحاولة.</p> : <>
+      <label className="block text-xs">سعر الجملة الأساسي <input type="number" min="0" step="0.01" value={basePrice} onChange={(event) => setBasePrice(event.target.value)} placeholder="يستخدم سعر المفرد إن ترك فارغاً" className="mt-1 w-full rounded-lg border border-border/40 bg-card px-3 py-2 text-sm" /></label>
+      <div className="space-y-2"><div className="flex items-center justify-between"><span className="text-xs font-medium">شرائح الكمية</span><Button type="button" size="sm" variant="outline" onClick={() => setTiers((current) => [...current, { minimumQuantity: "", unitPrice: "" }])}><Plus className="ml-1 h-3.5 w-3.5" />إضافة شريحة</Button></div>
+        {tiers.length === 0 && <p className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">لا توجد شرائح كمية.</p>}
+        {tiers.map((tier, index) => <div key={index} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2"><label className="text-[11px] text-muted-foreground">أقل كمية<input aria-label="أقل كمية" type="number" min="0.001" step="0.001" value={tier.minimumQuantity} onChange={(event) => setTiers((all) => all.map((item, i) => i === index ? { ...item, minimumQuantity: event.target.value } : item))} className="mt-1 w-full rounded-lg border border-border/40 bg-card px-3 py-2 text-sm text-foreground" /></label><label className="text-[11px] text-muted-foreground">سعر الوحدة<input aria-label="سعر الوحدة" type="number" min="0" step="0.01" value={tier.unitPrice} onChange={(event) => setTiers((all) => all.map((item, i) => i === index ? { ...item, unitPrice: event.target.value } : item))} className="mt-1 w-full rounded-lg border border-border/40 bg-card px-3 py-2 text-sm text-foreground" /></label><Button type="button" size="icon" variant="ghost" aria-label="حذف الشريحة" onClick={() => setTiers((all) => all.filter((_, i) => i !== index))}><Trash2 className="h-4 w-4 text-status-danger" /></Button></div>)}
+      </div>
+      <div className="flex justify-end"><Button type="button" disabled={busy || isLoading} onClick={save}><Save className="ml-1 h-4 w-4" />{busy ? "جارٍ الحفظ…" : "حفظ أسعار الجملة"}</Button></div>
+      <div className="border-t border-border/30 pt-4 space-y-3">
+        <div><h5 className="text-sm font-semibold">سعر خاص لعميل جملة</h5><p className="mt-1 text-xs text-muted-foreground">له أولوية على شرائح الكمية لهذا العميل فقط.</p></div>
+        {(wholesaleCustomersError || customerPricesError) && <p role="alert" className="rounded-lg border border-status-danger/30 bg-status-danger/10 p-2 text-xs text-status-danger">تعذر تحميل العملاء أو الأسعار الخاصة. تحقق من صلاحية العملاء والمنتجات ثم أعد فتح القسم.</p>}
+        <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
+          <label className="text-[11px] text-muted-foreground">العميل<select value={customerId} onChange={(event) => setCustomerId(event.target.value)} className="mt-1 w-full rounded-lg border border-border/40 bg-card px-2 py-2 text-sm text-foreground"><option value="">اختر عميل جملة</option>{wholesaleCustomers.map((customer) => <option key={customer.id} value={customer.id}>{customer.businessName || customer.name}</option>)}</select></label>
+          <label className="text-[11px] text-muted-foreground">سعر الوحدة<input type="number" min="0" step="0.01" value={customerPrice} onChange={(event) => setCustomerPrice(event.target.value)} className="mt-1 w-full rounded-lg border border-border/40 bg-card px-3 py-2 text-sm text-foreground" /></label>
+          <Button type="button" disabled={busy || !customerId || customerPrice.trim() === ""} onClick={saveCustomerPrice}><Plus className="ml-1 h-4 w-4" />حفظ</Button>
+        </div>
+        {customerPrices.map((price) => <div key={price.customerId} className="flex items-center justify-between rounded-lg border border-border/25 bg-card/60 p-2 text-xs"><span>{price.customerName || price.ownerName || `عميل #${price.customerId}`}</span><span className="flex items-center gap-2 font-semibold">{formatCurrency(price.unitPrice)}<button type="button" aria-label="حذف السعر الخاص" onClick={() => removeCustomerPrice(price.customerId)} className="text-status-danger"><Trash2 className="h-3.5 w-3.5" /></button></span></div>)}
+      </div>
+    </>}
+  </div>;
 }
 
 // ───── 🎨 Product Variants tab ─────

@@ -8,6 +8,9 @@ const fixture: PurchaseInvoiceStatementInput = {
   paymentStatus: "partial",
   items: [{
     productName: "منتج طويل جداً <img src=x onerror=alert(1)>",
+    variantLabel: "أبيض / كبير",
+    variantSku: "FLOWER-W-L",
+    barcode: "V-001",
     quantity: "123456789.75",
     unitPrice: "987654321000",
     total: "8765432109876.75",
@@ -32,6 +35,10 @@ assert.match(thermal, /flex-wrap: wrap/);
 assert.match(thermal, /overflow-wrap: anywhere/);
 assert.doesNotMatch(thermal, /\.num[^}]*white-space: nowrap/);
 assert.doesNotMatch(thermal, /<script>alert\(1\)<\/script>/);
+assert.match(a4, /أبيض \/ كبير/);
+assert.match(a4, /FLOWER-W-L/);
+assert.match(thermal, /أبيض \/ كبير/);
+assert.match(thermal, /V-001/);
 assert.match(thermal, /&lt;script&gt;alert\(2\)&lt;\/script&gt;/);
 
 console.log("Purchase invoice A4 and 80mm print compositions verified.");

@@ -1,4 +1,5 @@
-import { date, pgTable, serial, text, boolean, varchar, timestamp, jsonb, integer, numeric } from "drizzle-orm/pg-core";
+import { date, pgTable, serial, text, boolean, varchar, timestamp, jsonb, integer, numeric, index } from "drizzle-orm/pg-core";
+import { productsTable } from "./products";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -55,6 +56,23 @@ export const serviceOrdersTable = pgTable("service_orders", {
   financiallyReversed: boolean("financially_reversed").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+export const serviceOrderItemsTable = pgTable("service_order_items", {
+  id: serial("id").primaryKey(),
+  serviceOrderId: integer("service_order_id")
+    .notNull()
+    .references(() => serviceOrdersTable.id, { onDelete: "cascade" }),
+  productId: integer("product_id").references(() => productsTable.id, {
+    onDelete: "set null",
+  }),
+  productName: text("product_name").notNull(),
+  unit: text("unit").notNull(),
+  quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
+  unitPrice: numeric("unit_price", { precision: 14, scale: 2 }).notNull(),
+  discount: numeric("discount", { precision: 14, scale: 2 }).notNull().default("0"),
+  total: numeric("total", { precision: 14, scale: 2 }).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [index("service_order_items_order_idx").on(table.serviceOrderId)]);
 
 export const serviceOrderStatusHistoryTable = pgTable("service_order_status_history", {
   id: serial("id").primaryKey(),

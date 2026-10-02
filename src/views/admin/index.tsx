@@ -49,6 +49,7 @@ const ProductionPage = lazy(() => import("./production"));
 const ProductionReportsPage = lazy(() => import("./production-reports"));
 const ReservedStockPage = lazy(() => import("./reserved-stock"));
 const POSPage = lazy(() => import("./pos"));
+const WholesalePage = lazy(() => import("./wholesale"));
 const SalesPage = lazy(() => import("./sales"));
 const PurchasesPage = lazy(() => import("./purchases"));
 const SuppliersPage = lazy(() => import("./suppliers"));
@@ -607,6 +608,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="invoices">
                 <POSPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/wholesale">
+            {() => (
+              <Guard me={me} perm="invoices">
+                <WholesalePage />
               </Guard>
             )}
           </Route>

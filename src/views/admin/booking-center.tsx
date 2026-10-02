@@ -34,6 +34,7 @@ import {
   QrCode,
   ReceiptText,
   Search,
+  Save,
   Send,
   ShoppingBag,
   SlidersHorizontal,
@@ -126,6 +127,7 @@ const FLOWER_SECTIONS: Array<{ key: FlowerSection; label: string }> = [
 type FlowerCatalogVariant = { id: number; color: string | null; colorHex: string | null; image?: string | null; price: number | null; available?: number; stock: number; isActive?: boolean };
 type FlowerCatalogProduct = { id: number; name: string; nameAr: string; price: number; stock: number; designerSection: FlowerSection; images: string[]; variants: FlowerCatalogVariant[] };
 type FlowerBookingItem = { key: string; productId: number; variantId: number | null; name: string; variantLabel: string | null; section: FlowerSection; quantity: number; unitPrice: number };
+type PhotographyServiceLine = { productId: number; productName: string; unit: string; quantity: number; unitPrice: number; discount: number };
 
 function flowerItemsTotal(items: FlowerBookingItem[]): number {
   return items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
@@ -179,6 +181,7 @@ type ServiceOrder = {
   notes: string | null;
   status: string;
   totalAmount?: number;
+  serviceItems?: Array<{ id: number; productId: number | null; productName: string; unit: string; quantity: number; unitPrice: number; discount: number; total: number }>;
   depositAmount?: number;
   remainingAmount?: number;
   paymentStatus?: string;
@@ -1198,6 +1201,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
   const [photographyDelivery, setPhotographyDelivery] = useState<"album" | "shots">("shots");
   const [photographyShotsCount, setPhotographyShotsCount] = useState("");
   const [photographyReelsRequested, setPhotographyReelsRequested] = useState(false);
+  const [photographyServiceItems, setPhotographyServiceItems] = useState<PhotographyServiceLine[]>([]);
   const [soundItems, setSoundItems] = useState<SoundBookingItem[]>([]);
   const [transportationMode, setTransportationMode] = useState<"ajn" | "customer" | null>(null);
   const [transportationFee, setTransportationFee] = useState("");
@@ -1231,6 +1235,12 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
     queryKey: ["admin", "products-all", "booking-sound-picker"],
     queryFn: () => adminFetch("/admin/products?limit=2000"),
     enabled: soundSelected,
+    staleTime: 30_000,
+  });
+  const photographyProductsQuery = useQuery<any[]>({
+    queryKey: ["admin", "products-all", "booking-photography-services"],
+    queryFn: () => adminFetch("/admin/products?limit=2000"),
+    enabled: selected.includes("photography"),
     staleTime: 30_000,
   });
   const categoriesQuery = useQuery<any[]>({
@@ -1277,7 +1287,9 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
       const transportFee = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
       // Chosen flower products are part of the booking total, like AJN transport.
       const flowersTotal = selected.includes("flowers") ? flowerItemsTotal(flowerItems) : 0;
-      const grandTotal = num(totalAmount) + transportFee + flowersTotal;
+      const baseTotal = num(totalAmount) + transportFee + flowersTotal;
+      const serviceLinesTotal = photographyServiceItems.reduce((sum, item) => sum + Math.max(0, item.quantity * item.unitPrice - item.discount), 0);
+      const grandTotal = baseTotal + serviceLinesTotal;
       return adminFetch("/admin/service-orders", {
         method: "POST",
         body: JSON.stringify({
@@ -1287,6 +1299,8 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
           eventDate,
           eventLocation: hallName,
           totalAmount: grandTotal,
+          baseTotalAmount: baseTotal,
+          serviceItems: photographyServiceItems.map(({ productId, quantity, discount }) => ({ productId, quantity, discount })),
           depositAmount: Math.min(num(depositAmount), grandTotal),
           paymentStatus:
             num(depositAmount) <= 0
@@ -1360,7 +1374,9 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
   const transportFeeValue = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
   const flowersTotalValue = flowersSelected ? flowerItemsTotal(flowerItems) : 0;
   const baseTotalValue = num(totalAmount);
-  const totalValue = baseTotalValue + transportFeeValue + flowersTotalValue;
+  const photographyServicesTotalValue = photographyServiceItems.reduce((sum, item) => sum + Math.max(0, item.quantity * item.unitPrice - item.discount), 0);
+  const baseBookingTotalValue = baseTotalValue + transportFeeValue + flowersTotalValue;
+  const totalValue = baseBookingTotalValue + photographyServicesTotalValue;
   const depositValue = num(depositAmount);
   const depositTooHigh = depositValue > totalValue;
   const remainingValue = Math.max(
@@ -1383,6 +1399,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
     if (type === "transportation") { setTransportationMode(null); setTransportationFee(""); }
     if (type === "kosha") { setKoshaMode(null); setKoshaPick(null); setKoshaSearch(""); }
     if (type === "flowers") setFlowerItems([]);
+    if (type === "photography") setPhotographyServiceItems([]);
   };
   const toggle = (type: ServiceKey) => {
     if (selected.includes(type)) {
@@ -1418,7 +1435,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
             <div className="space-y-2"><Label htmlFor="booking-time">وقت المناسبة</Label><Input id="booking-time" type="time" value={eventTime} onChange={(event) => setEventTime(event.target.value)} /></div>
             <div className="space-y-2"><Label htmlFor="booking-hall">القاعة / الموقع</Label><Input id="booking-hall" value={hallName} onChange={(event) => setHallName(event.target.value)} placeholder="اسم القاعة والعنوان" /></div>
             <div className="space-y-2"><Label htmlFor="booking-map">رابط Google Maps</Label><Input id="booking-map" dir="ltr" value={mapUrl} onChange={(event) => setMapUrl(event.target.value)} placeholder="https://maps.google.com/..." /></div>
-            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الكلي</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}{transportFeeValue > 0 || flowersTotalValue > 0 ? <p className="text-xs text-muted-foreground">{transportFeeValue > 0 ? `+ أجرة النقل ${formatCurrency(transportFeeValue)} ` : ""}{flowersTotalValue > 0 ? `+ الورد ${formatCurrency(flowersTotalValue)} ` : ""}= الإجمالي <b className="text-foreground">{formatCurrency(totalValue)}</b></p> : null}</div>
+            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الأساسي قبل الخدمات الإضافية</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}{transportFeeValue > 0 || flowersTotalValue > 0 || photographyServicesTotalValue > 0 ? <p className="text-xs text-muted-foreground">{transportFeeValue > 0 ? `+ أجرة النقل ${formatCurrency(transportFeeValue)} ` : ""}{flowersTotalValue > 0 ? `+ الورد ${formatCurrency(flowersTotalValue)} ` : ""}{photographyServicesTotalValue > 0 ? `+ خدمات التصوير ${formatCurrency(photographyServicesTotalValue)} ` : ""}= الإجمالي <b className="text-foreground">{formatCurrency(totalValue)}</b></p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-deposit">العربون</Label><Input id="booking-deposit" inputMode="decimal" aria-invalid={depositTooHigh} className={depositTooHigh ? "border-destructive" : ""} value={depositAmount} onChange={(event) => setDepositAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" />{depositTooHigh ? <p className="text-xs text-destructive">لا يمكن أن يتجاوز العربون المبلغ الكلي.</p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-remaining">المتبقي</Label><Input id="booking-remaining" value={formatCurrency(remainingValue)} readOnly className="bg-muted/35 tabular-nums" dir="ltr" /><p className="text-xs font-medium text-primary">{paymentStatusLabel}</p></div>
           </div>
@@ -1500,6 +1517,13 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
               <div className="space-y-1.5"><Label htmlFor="booking-photography-shots">عدد اللقطات</Label><Input id="booking-photography-shots" inputMode="numeric" min="1" type="number" value={photographyShotsCount} onChange={(event) => setPhotographyShotsCount(event.target.value.replace(/[^0-9]/g, ""))} placeholder="مثال: 30" /></div>
             </> : null}
             <label className="flex cursor-pointer items-center justify-between rounded-lg border border-border/45 bg-background/80 px-3 py-2 text-sm"><span>هل تريد ريلز معها؟</span><input type="checkbox" checked={photographyReelsRequested} onChange={(event) => setPhotographyReelsRequested(event.target.checked)} className="h-4 w-4 accent-rose-600" /><span className="sr-only">طلب ريلز</span></label>
+            <PhotographyServiceItemsSelector
+              products={photographyProductsQuery.data ?? []}
+              loading={photographyProductsQuery.isLoading}
+              error={photographyProductsQuery.isError ? apiErrorMessage(photographyProductsQuery.error, "تعذر تحميل خدمات التصوير") : ""}
+              items={photographyServiceItems}
+              onChange={setPhotographyServiceItems}
+            />
           </section> : null}
           {soundSelected ? <SoundItemsSelector products={soundProductsQuery.data ?? []} categories={categoriesQuery.data ?? []} loading={soundProductsQuery.isLoading || categoriesQuery.isLoading} items={soundItems} onChange={setSoundItems} /> : null}
           {selected.includes("transportation") ? <section id="booking-transportation-settings" className="mt-4 space-y-3 rounded-xl border border-amber-200/70 bg-amber-50/45 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
@@ -1790,6 +1814,82 @@ function FlowerCatalogSection({ catalog, loading, error, onRetry, items, onChang
   );
 }
 
+function PhotographyServiceItemsSelector({ products, loading, error, items, onChange }: {
+  products: any[];
+  loading: boolean;
+  error: string;
+  items: PhotographyServiceLine[];
+  onChange: (items: PhotographyServiceLine[]) => void;
+}) {
+  const candidates = products.filter((product) => product?.itemType === "service" && product?.isActive !== false && String(product?.serviceUnit ?? "").trim());
+  const selected = new Set(items.map((item) => item.productId));
+  const add = (product: any) => onChange([...items, {
+    productId: Number(product.id),
+    productName: product.nameAr || product.name || "خدمة تصوير",
+    unit: String(product.serviceUnit).trim(),
+    quantity: 1,
+    unitPrice: Number(product.price) || 0,
+    discount: 0,
+  }]);
+  const update = (productId: number, patch: Partial<PhotographyServiceLine>) => onChange(items.map((item) => item.productId === productId ? { ...item, ...patch } : item));
+  return <div className="space-y-2 rounded-lg border border-border/50 bg-background/75 p-3">
+    <div><h4 className="text-sm font-semibold">خدمات التصوير المسعّرة</h4><p className="mt-1 text-xs text-muted-foreground">اختر الخدمات من المنتجات مرة واحدة؛ يُضاف مجموعها تلقائياً لإجمالي الحجز.</p></div>
+    {loading ? <p className="text-xs text-muted-foreground">جارٍ تحميل الخدمات…</p> : error ? <p role="alert" className="text-xs text-destructive">{error}</p> : candidates.length ? <div className="flex flex-wrap gap-2">{candidates.filter((product) => !selected.has(Number(product.id))).map((product) => <Button key={product.id} type="button" size="sm" variant="outline" onClick={() => add(product)}><Plus className="h-3.5 w-3.5" />{product.nameAr || product.name} · {formatCurrency(Number(product.price) || 0)} / {product.serviceUnit}</Button>)}</div> : <p className="text-xs text-muted-foreground">لا توجد خدمة فعالة؛ أضف عنصراً من نوع خدمة في إدارة المنتجات.</p>}
+    {items.length ? <div className="space-y-2">{items.map((item) => <div key={item.productId} className="grid grid-cols-[minmax(0,1fr)_5rem_5rem_6rem_auto] items-center gap-2 rounded-md border border-border/40 p-2 text-sm">
+      <div className="min-w-0"><p className="truncate font-medium">{item.productName}</p><p className="text-xs text-muted-foreground">{formatCurrency(item.unitPrice)} / {item.unit}</p></div>
+      <Input aria-label={`كمية ${item.productName}`} type="number" min="0.001" step="0.001" value={item.quantity} onChange={(event) => update(item.productId, { quantity: Math.max(0.001, Number(event.target.value) || 0.001) })} />
+      <Input aria-label={`خصم ${item.productName}`} type="number" min="0" step="1" value={item.discount} onChange={(event) => update(item.productId, { discount: Math.max(0, Number(event.target.value) || 0) })} />
+      <span className="text-left font-semibold tabular-nums">{formatCurrency(Math.max(0, item.quantity * item.unitPrice - item.discount))}</span>
+      <Button type="button" variant="ghost" size="icon" className="text-destructive" aria-label={`حذف ${item.productName}`} onClick={() => onChange(items.filter((current) => current.productId !== item.productId))}><X className="h-4 w-4" /></Button>
+      </div>)}</div> : null}
+    {items.length ? <div className="flex justify-between border-t border-border/50 pt-2 text-sm"><span>مجموع خدمات التصوير</span><strong className="text-primary">{formatCurrency(items.reduce((sum, item) => sum + Math.max(0, item.quantity * item.unitPrice - item.discount), 0))}</strong></div> : null}
+  </div>;
+}
+
+function ServiceOrderItemsEditor({ order }: { order: ServiceOrder }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const productsQuery = useQuery<any[]>({ queryKey: ["admin", "products-all", "booking-photography-services"], queryFn: () => adminFetch("/admin/products?limit=2000") });
+  const [items, setItems] = useState(() => order.serviceItems ?? []);
+  const baseTotalAmount = Math.max(0, num(order.totalAmount) - (order.serviceItems ?? []).reduce((sum, item) => sum + item.total, 0));
+  const serviceTotal = items.reduce((sum, item) => sum + Math.max(0, item.quantity * item.unitPrice - item.discount), 0);
+  const products = (productsQuery.data ?? []).filter((product) => product?.itemType === "service" && product?.isActive !== false && String(product?.serviceUnit ?? "").trim());
+  const save = useMutation({
+    mutationFn: () => adminFetch<any>(`/admin/service-orders/${order.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        baseTotalAmount,
+        serviceItems: items.map((item) => ({ productId: item.productId, quantity: item.quantity, discount: item.discount })),
+      }),
+    }),
+    onSuccess: (response) => {
+      setItems(response.serviceItems ?? []);
+      queryClient.invalidateQueries({ queryKey: ["admin", "booking-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "booking-center"] });
+      toast({ title: "تم تحديث خدمات التصوير وإجمالي الحجز" });
+    },
+    onError: (error: any) => toast({ title: "تعذر حفظ خدمات التصوير", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  const addProduct = (product: any) => setItems((current) => [...current, {
+    id: -Number(product.id), productId: Number(product.id), productName: product.nameAr || product.name,
+    unit: product.serviceUnit, quantity: 1, unitPrice: Number(product.price) || 0, discount: 0, total: Number(product.price) || 0,
+  }]);
+  return <section className="ajn-panel space-y-3">
+    <div className="ajn-panel-title"><div><Camera /><span><small>تفاصيل مفوترة ضمن الحجز</small><h2>خدمات التصوير المسعّرة</h2></span></div></div>
+    <p className="text-xs text-muted-foreground">المبلغ الأساسي المحفوظ: {formatCurrency(baseTotalAmount)}. تُضاف الخدمات أدناه إليه مع بقاء سجل الدفع الحالي للحجز.</p>
+    {productsQuery.isLoading ? <p className="text-sm text-muted-foreground">جارٍ تحميل الخدمات…</p> : productsQuery.isError ? <p className="text-sm text-destructive">تعذر تحميل كتالوج الخدمات.</p> : <div className="flex flex-wrap gap-2">{products.filter((product) => !items.some((item) => item.productId === Number(product.id))).map((product) => <Button type="button" key={product.id} size="sm" variant="outline" onClick={() => addProduct(product)}><Plus className="h-3.5 w-3.5" />{product.nameAr || product.name} · {formatCurrency(Number(product.price) || 0)} / {product.serviceUnit}</Button>)}</div>}
+    {items.map((item, index) => <div key={`${item.productId}-${index}`} className="grid grid-cols-[minmax(0,1fr)_5rem_5rem_6rem_auto] items-center gap-2 rounded-lg border border-border/40 p-2">
+      <div className="min-w-0"><p className="truncate text-sm font-medium">{item.productName}</p><p className="text-xs text-muted-foreground">{formatCurrency(item.unitPrice)} / {item.unit}</p></div>
+      <Input aria-label={`كمية ${item.productName}`} type="number" min="0.001" step="0.001" value={item.quantity} onChange={(event) => setItems((current) => current.map((line, rowIndex) => rowIndex === index ? { ...line, quantity: Math.max(.001, Number(event.target.value) || .001) } : line))} />
+      <Input aria-label={`خصم ${item.productName}`} type="number" min="0" step="1" value={item.discount} onChange={(event) => setItems((current) => current.map((line, rowIndex) => rowIndex === index ? { ...line, discount: Math.max(0, Number(event.target.value) || 0) } : line))} />
+      <strong className="text-left text-sm tabular-nums">{formatCurrency(Math.max(0, item.quantity * item.unitPrice - item.discount))}</strong>
+      <Button type="button" variant="ghost" size="icon" className="text-destructive" aria-label={`حذف ${item.productName}`} onClick={() => setItems((current) => current.filter((_, rowIndex) => rowIndex !== index))}><X className="h-4 w-4" /></Button>
+    </div>)}
+    <div className="flex items-center justify-between border-t border-border/50 pt-2"><span>إجمالي الحجز بعد التحديث</span><strong className="text-primary">{formatCurrency(baseTotalAmount + serviceTotal)}</strong></div>
+    <Button type="button" onClick={() => save.mutate()} disabled={save.isPending || productsQuery.isError}><Save className="h-4 w-4" />{save.isPending ? "جارٍ الحفظ…" : "حفظ خدمات التصوير"}</Button>
+  </section>;
+}
+
 function SoundItemsSelector({ products, categories, loading, items, onChange }: { products: any[]; categories: any[]; loading: boolean; items: SoundBookingItem[]; onChange: (items: SoundBookingItem[]) => void }) {
   const [source, setSource] = useState<SoundItemSource>("store");
   const [search, setSearch] = useState("");
@@ -1923,6 +2023,7 @@ function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; i
                 <div className="ajn-readiness-details"><div><span>حالة التنفيذ</span><h2>{readiness >= 80 ? "الحجز قريب من الجاهزية" : readiness >= 55 ? "التجهيز يسير وفق الخطة" : "الحجز يحتاج متابعة"}</h2><p>النسبة محسوبة من الدفع، الخدمات، العقد، الموظفين والمستودع.</p></div><div className="ajn-readiness-bars">{readinessParts.map((item) => <div key={item.label}><span>{item.label}<b>{item.value}%</b></span><i><em style={{ width: `${Math.min(100, item.value)}%` }} /></i></div>)}</div></div>
               </section>
               <section className="ajn-panel"><div className="ajn-panel-title"><div><Sparkles /><span><small>الخدمات</small><h2>الخدمات المطلوبة في هذا الحجز</h2></span></div></div><div className="ajn-selected-services">{data.services.map((service) => <ServiceWorkspaceCard key={service.type} service={service} editable={source === "service"} onStatus={(status) => updateService.mutate({ type: service.type, status })} />)}</div></section>
+              {data.source === "service" && data.services.some((service) => service.type === "photography") ? <ServiceOrderItemsEditor order={data.raw as ServiceOrder} /> : null}
               <section className="ajn-panel"><div className="ajn-panel-title"><div><Clock3 /><span><small>مباشر</small><h2>آخر أحداث الحجز</h2></span></div><Button variant="ghost" onClick={() => document.querySelector('[data-state="inactive"][value="timeline"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }))}>عرض الكل</Button></div><TimelineRows history={history} data={data} compact /></section>
             </TabsContent>
             {data.services.map((service) => <TabsContent key={service.type} value={service.type}><section className="ajn-panel"><ServiceDetail service={service} booking={data} editable={source === "service"} onStatus={(status) => updateService.mutate({ type: service.type, status })} /></section></TabsContent>)}

@@ -30,6 +30,8 @@ import {
 
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
+  itemType?: "product" | "service"; serviceUnit?: string | null; trackInventory?: boolean;
+  wholesalePrice?: string | null;
   stock: string; barcode?: string; images?: string[];
   bundleId?: number | null; offerDeliveryFee?: number;
   categoryId?: number | null; subcategoryId?: number | null; subcategoryIds?: number[];
@@ -42,17 +44,21 @@ type Category = { id: number; name: string; nameAr: string; slug?: string; paren
 type CartItem = {
   productId: number; bundleId?: number | null; productName: string; barcode: string;
   quantity: number; unitPrice: number; discount: number; discountPct: number;
-  total: number; costPrice: number; stock: number; offerDeliveryFee?: number;
+  total: number; costPrice: number; stock: number; offerDeliveryFee?: number; priceOverride?: boolean;
+  wholesalePriceSource?: string; tierMinimumQuantity?: number;
+  itemType?: "product" | "service"; serviceUnit?: string | null; trackInventory?: boolean;
 };
 
 type HeldInvoice = {
   id: string; customerName: string; customerPhone: string;
   items: CartItem[]; createdAt: string; grandTotal: number;
+  saleType?: "retail" | "wholesale"; customerId?: number | null;
 };
 
 type Customer = {
   id: number; name: string; phone?: string; email?: string;
   totalInvoices?: number; totalDebt?: number;
+  customerType?: "retail" | "wholesale"; businessName?: string | null; specialDiscountPercent?: number | null;
 };
 
 type PrintSize = "80mm" | "58mm" | "a4" | "pdf";
@@ -145,19 +151,21 @@ function NumPad({
 // ─── Customer Panel ───────────────────────────────────────────────────────────
 
 function CustomerPanel({
-  name, phone, onName, onPhone,
-  customers, onSelectCustomer, customerStats,
+  name, phone, onName, onPhone, saleType,
+  customers, onSelectCustomer, customerStats, projectedDebt,
 }: {
   name: string; phone: string;
   onName: (v: string) => void; onPhone: (v: string) => void;
+  saleType: "retail" | "wholesale";
   customers: Customer[];
   onSelectCustomer: (c: Customer) => void;
   customerStats: { invoices: number; debt: number } | null;
+  projectedDebt: number | null;
 }) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const filtered = name.trim().length >= 2
-    ? customers.filter(c => c.name.toLowerCase().includes(name.toLowerCase()) || c.phone?.includes(name)).slice(0, 6)
+    ? customers.filter(c => (saleType !== "wholesale" || c.customerType === "wholesale") && `${c.name} ${c.businessName ?? ""}`.toLowerCase().includes(name.toLowerCase()) || (saleType !== "wholesale" || c.customerType === "wholesale") && c.phone?.includes(name)).slice(0, 6)
     : [];
 
   return (
@@ -182,7 +190,7 @@ function CustomerPanel({
                   className="w-full flex items-center justify-between px-3 py-2 hover:bg-primary/10 text-sm text-right"
                 >
                   <div>
-                    <p className="font-medium text-foreground">{c.name}</p>
+                    <p className="font-medium text-foreground">{c.businessName || c.name}</p>
                     {c.phone && <p className="text-xs text-muted-foreground">{c.phone}</p>}
                   </div>
                   {(c.totalDebt ?? 0) > 0 && (
@@ -200,14 +208,14 @@ function CustomerPanel({
           dir="ltr"
           className="w-32 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
-        <button
+        {saleType === "retail" ? <button
           type="button"
           onClick={() => setAddOpen(true)}
           title="إضافة عميل جديد"
           className="flex shrink-0 items-center gap-1 rounded-lg border border-border/40 bg-background px-2.5 text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground"
         >
           <UserPlus className="w-4 h-4" />
-        </button>
+        </button> : null}
       </div>
       <CustomerQuickAddDialog
         open={addOpen}
@@ -219,11 +227,12 @@ function CustomerPanel({
         <div className="flex gap-3 mt-1.5 text-xs text-muted-foreground">
           <span className="flex items-center gap-1"><FileText className="w-3 h-3" />{customerStats.invoices} فاتورة</span>
           {customerStats.debt > 0 && (
-            <span className="flex items-center gap-1 text-status-danger"><AlertCircle className="w-3 h-3" />دين: {formatCurrency(customerStats.debt)}</span>
+            <span className="flex items-center gap-1 text-status-danger"><AlertCircle className="w-3 h-3" />الرصيد السابق: {formatCurrency(customerStats.debt)}</span>
           )}
           {customerStats.debt <= 0 && customerStats.invoices > 0 && (
             <span className="flex items-center gap-1 text-status-success"><CheckCircle2 className="w-3 h-3" />حساب نظيف</span>
           )}
+          {projectedDebt != null && <span className="text-status-warning">الرصيد بعد الفاتورة قبل اعتماد القبض: {formatCurrency(projectedDebt)}</span>}
         </div>
       )}
     </div>
@@ -234,7 +243,8 @@ function CustomerPanel({
 
 function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product) => void }) {
   const stock = parseFloat(product.stock) || 0;
-  const outOfStock = stock <= 0;
+  const tracksInventory = product.itemType !== "service" && product.trackInventory !== false;
+  const outOfStock = tracksInventory && stock <= 0;
   const img = product.images?.[0];
 
   return (
@@ -256,10 +266,9 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product)
       <div className="p-2 flex-1 space-y-0.5">
         <p className="text-xs font-semibold text-foreground line-clamp-2 leading-tight">{product.nameAr || product.name}</p>
         <p className="text-sm font-bold text-primary">{formatCurrency(product.price)}</p>
+        {product.itemType === "service" && <p className="text-[11px] text-muted-foreground">لكل {product.serviceUnit || "خدمة"}</p>}
         {(product.offerDeliveryFee ?? 0) > 0 && <p className="text-[10px] text-muted-foreground">+ توصيل {formatCurrency(product.offerDeliveryFee)}</p>}
-        <p className={`text-[11px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>
-          {outOfStock ? "نفذ المخزون" : `${stock} متبقي`}
-        </p>
+        {tracksInventory ? <p className={`text-[11px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>{outOfStock ? "نفذ المخزون" : `${stock} متبقي`}</p> : <p className="text-[11px] text-emerald-700">خدمة — لا تخصم من المخزون</p>}
       </div>
       {!outOfStock && (
         <div className="absolute top-1.5 left-1.5 w-6 h-6 rounded-full bg-primary/90 text-black flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -314,8 +323,9 @@ function openPrintWindow(
   invoiceNo: string,
   size: PrintSize,
   settings: any,
-  options: { showLogo?: boolean; qrDataUrl?: string; delivery?: any } = {},
+  options: { showLogo?: boolean; qrDataUrl?: string; delivery?: any; saleType?: "retail" | "wholesale"; previousCustomerDebt?: number; projectedCustomerDebt?: number } = {},
 ) {
+  const documentTitle = options.saleType === "wholesale" ? "فاتورة مبيعات جملة" : "فاتورة مبيعات";
   const logo = options.showLogo === false ? "" : logoSrc(settings);
   const companyName = settings?.site_name ?? "مجموعة علي جان";
   const companyPhone = settings?.phones?.[0] ?? "";
@@ -351,6 +361,7 @@ function openPrintWindow(
       companyName,
       companyPhone,
       companyAddress,
+      documentTitle,
       showLogo: options.showLogo !== false,
     });
     return;
@@ -358,9 +369,12 @@ function openPrintWindow(
     const itemHead = size === "58mm"
       ? `<tr><th class="name">الصنف</th><th>المبلغ</th></tr>`
       : `<tr><th class="name">الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>`;
-    const itemRows = cart.map((i) => size === "58mm"
-      ? `<tr><td class="name" colspan="2">${esc(i.productName)}</td></tr><tr class="ln2"><td class="num">${formatMoney(i.quantity)} × ${formatMoney(i.unitPrice)}</td><td class="num" style="text-align:left">${formatMoney(i.total)}</td></tr>`
-      : `<tr><td class="name">${esc(i.productName)}</td><td class="num center">${formatMoney(i.quantity)}</td><td class="num center">${formatMoney(i.unitPrice)}</td><td class="num" style="text-align:left">${formatMoney(i.total)}</td></tr>`
+    const itemRows = cart.map((i) => {
+      const itemName = i.itemType === "service" ? `${i.productName} (${i.serviceUnit || "خدمة"})` : i.productName;
+      return size === "58mm"
+      ? `<tr><td class="name" colspan="2">${esc(itemName)}</td></tr><tr class="ln2"><td class="num">${formatMoney(i.quantity)} × ${formatMoney(i.unitPrice)}</td><td class="num" style="text-align:left">${formatMoney(i.total)}</td></tr>`
+      : `<tr><td class="name">${esc(itemName)}</td><td class="num center">${formatMoney(i.quantity)}</td><td class="num center">${formatMoney(i.unitPrice)}</td><td class="num" style="text-align:left">${formatMoney(i.total)}</td></tr>`;
+    }
     ).join("");
 
     html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>فاتورة ${esc(invoiceNo)}</title>
@@ -374,6 +388,7 @@ function openPrintWindow(
       </div>
       <hr class="rule" />
       <div class="kv"><span>رقم الفاتورة</span><span class="v big num">${esc(invoiceNo)}</span></div>
+      <div class="kv"><span>نوع البيع</span><span class="v">${esc(documentTitle)}</span></div>
       <div class="kv"><span>التاريخ</span><span class="v num">${esc(form.date)}</span></div>
       ${form.customerName ? `<div class="kv"><span>العميل</span><span class="v">${esc(form.customerName)}</span></div>` : ""}
       ${form.customerPhone ? `<div class="kv"><span>الهاتف</span><span class="v num">${esc(form.customerPhone)}</span></div>` : ""}
@@ -404,7 +419,7 @@ function openPrintWindow(
 
   // ─── A4 / PDF sheet (unchanged) ───
   const rows = cart.map(i =>
-    `<tr><td>${esc(i.productName)}</td><td style="text-align:center">${formatMoney(i.quantity)}</td><td style="text-align:center">${formatMoney(i.unitPrice)}</td><td style="text-align:center">${i.discount > 0 ? formatMoney(i.discount) : "—"}</td><td style="text-align:left">${formatMoney(i.total)}</td></tr>`
+    `<tr><td>${esc(i.itemType === "service" ? `${i.productName} (${i.serviceUnit || "خدمة"})` : i.productName)}</td><td style="text-align:center">${formatMoney(i.quantity)}</td><td style="text-align:center">${formatMoney(i.unitPrice)}</td><td style="text-align:center">${i.discount > 0 ? formatMoney(i.discount) : "—"}</td><td style="text-align:left">${formatMoney(i.total)}</td></tr>`
   ).join("");
   const tableHeader = `<tr><th>المنتج</th><th>الكمية</th><th>السعر</th><th>خصم</th><th>الإجمالي</th></tr>`;
 
@@ -436,9 +451,12 @@ function openPrintWindow(
     ${companyPhone ? `<div class="meta">${esc(companyPhone)}</div>` : ""}
   </div>
   <div class="meta">رقم الفاتورة: <strong>${esc(invoiceNo)}</strong></div>
+  <div class="meta">نوع البيع: ${esc(documentTitle)}</div>
   <div class="meta">التاريخ: ${esc(form.date)}</div>
   ${form.customerName ? `<div class="meta">العميل: ${esc(form.customerName)}</div>` : ""}
   ${form.customerPhone ? `<div class="meta">الهاتف: ${esc(form.customerPhone)}</div>` : ""}
+  ${options.saleType === "wholesale" && options.previousCustomerDebt != null ? `<div class="meta">الرصيد السابق للعميل: ${formatCurrency(options.previousCustomerDebt)}</div>` : ""}
+  ${options.saleType === "wholesale" && options.projectedCustomerDebt != null ? `<div class="meta">إجمالي الرصيد بعد الفاتورة (قبل اعتماد القبض): ${formatCurrency(options.projectedCustomerDebt)}</div>` : ""}
   <hr class="divider" />
   <table><thead>${tableHeader}</thead><tbody>${rows}</tbody></table>
   <hr class="divider" />
@@ -476,6 +494,7 @@ export default function POSPage() {
   // ── State ──────────────────────────────────────────────────────────────────
   const [form, setForm] = useState(newForm());
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [saleType, setSaleType] = useState<"retail" | "wholesale">("retail");
   const [saving, setSaving] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   const [categoryId, setCategoryId] = useState<number | null>(null);
@@ -484,6 +503,9 @@ export default function POSPage() {
   const [lastSavedCart, setLastSavedCart] = useState<CartItem[]>([]);
   const [lastSavedForm, setLastSavedForm] = useState<ReturnType<typeof newForm> | null>(null);
   const [lastSavedTotals, setLastSavedTotals] = useState<Totals | null>(null);
+  const [lastSavedSaleType, setLastSavedSaleType] = useState<"retail" | "wholesale">("retail");
+  const [lastSavedCustomerDebt, setLastSavedCustomerDebt] = useState(0);
+  const [lastSavedProjectedDebt, setLastSavedProjectedDebt] = useState(0);
 
   // Hold/retrieve
   const [held, setHeld] = useState<HeldInvoice[]>(() => {
@@ -503,6 +525,7 @@ export default function POSPage() {
 
   // Customer stats
   const [customerStats, setCustomerStats] = useState<{ invoices: number; debt: number } | null>(null);
+  const wholesaleQuoteRequest = useRef(0);
 
   // Print modal
   const [showPrint, setShowPrint] = useState(false);
@@ -548,6 +571,7 @@ export default function POSPage() {
     const receiptCart = lastSavedCart.length ? lastSavedCart : cart;
     return {
       paperSize: size,
+      documentTitle: lastSavedSaleType === "wholesale" ? "فاتورة مبيعات جملة" : "فاتورة مبيعات",
       invoiceNo: lastInvoiceNo,
       issuedAt: receiptForm.date,
       customerName: receiptForm.customerName,
@@ -558,6 +582,7 @@ export default function POSPage() {
       employeeName: null,
       items: receiptCart.map((item) => ({
         productName: item.productName,
+        unit: item.itemType === "service" ? item.serviceUnit : null,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         total: item.total,
@@ -610,7 +635,7 @@ export default function POSPage() {
     return product.categoryId === category.id || Boolean(category.slug && product.category === category.slug);
   }, []);
   const saleCatalog: Product[] = [
-    ...products,
+      ...products,
     ...productBundles
       .filter((bundle) => bundle.isActive && bundle.showInSalesInvoices && !bundle.archivedAt)
       .map((bundle) => ({
@@ -624,9 +649,12 @@ export default function POSPage() {
         barcode: bundle.barcode ?? "",
         images: bundle.image ? [bundle.image] : [],
         offerDeliveryFee: Number(bundle.deliveryFee ?? 0),
+        itemType: "product" as const,
+        trackInventory: true,
       })),
   ];
   const visibleProducts = saleCatalog.filter(p => {
+    if (saleType === "wholesale" && p.bundleId) return false;
     const matchCat = categoryMatches(p, selectedCategory);
     const matchQ = !q || p.nameAr?.toLowerCase().includes(q) || p.name?.toLowerCase().includes(q) || p.barcode?.includes(q);
     return matchCat && matchQ;
@@ -637,7 +665,11 @@ export default function POSPage() {
   const itemDisc   = cart.reduce((s, i) => s + i.discount, 0);
   const extraDisc  = parseFloat(form.discountAmount || "0");
   const couponDisc = parseFloat(form.couponDiscountAmount || "0");
-  const totalDisc  = itemDisc + extraDisc + couponDisc;
+  const selectedCustomer = customers.find((customer) => customer.id === selectedCustomerId);
+  const wholesaleCustomerDiscount = saleType === "wholesale" && selectedCustomer
+    ? Math.min(Math.max(subtotal - itemDisc, 0), Math.max(0, Number(selectedCustomer.specialDiscountPercent ?? 0)) * Math.max(subtotal - itemDisc, 0) / 100)
+    : 0;
+  const totalDisc  = itemDisc + extraDisc + couponDisc + wholesaleCustomerDiscount;
   const taxPct     = parseFloat(form.taxPct || "0");
   const taxAmount  = +((subtotal - totalDisc) * taxPct / 100).toFixed(2);
   const offerDeliveryFee = +cart.reduce((sum, item) => sum + item.quantity * (item.offerDeliveryFee ?? 0), 0).toFixed(2);
@@ -661,7 +693,7 @@ export default function POSPage() {
       if (idx >= 0) {
         const updated = [...prev];
         const item = { ...updated[idx] };
-        item.quantity = Math.min(item.quantity + 1, stock > 0 ? stock : 9999);
+        item.quantity = p.itemType === "service" || p.trackInventory === false ? item.quantity + 1 : Math.min(item.quantity + 1, stock > 0 ? stock : 9999);
         item.total = +(item.quantity * item.unitPrice - item.discount).toFixed(2);
         updated[idx] = item;
         return updated;
@@ -669,8 +701,9 @@ export default function POSPage() {
       return [...prev, {
         productId: p.bundleId ? 0 : p.id, bundleId: p.bundleId ?? null, productName: p.nameAr || p.name,
         barcode: p.barcode || "", quantity: 1,
-        unitPrice: price, discount: 0, discountPct: 0,
+        unitPrice: price, discount: 0, discountPct: 0, priceOverride: false,
         total: price, costPrice: cost, stock, offerDeliveryFee: p.offerDeliveryFee ?? 0,
+        itemType: p.itemType ?? "product", serviceUnit: p.serviceUnit ?? null, trackInventory: p.itemType === "service" ? false : p.trackInventory !== false,
       }];
     });
     setSearchQ("");
@@ -682,6 +715,7 @@ export default function POSPage() {
       const updated = [...prev];
       const item = { ...updated[idx] } as any;
       item[field] = val;
+      if (field === "unitPrice") item.priceOverride = true;
       if (field === "discountPct") {
         item.discount = +(item.unitPrice * item.quantity * val / 100).toFixed(2);
       } else if (field === "discount") {
@@ -749,18 +783,20 @@ export default function POSPage() {
     const h: HeldInvoice = {
       id: Date.now().toString(),
       customerName: form.customerName, customerPhone: form.customerPhone,
-      items: cart, createdAt: new Date().toISOString(), grandTotal,
+      items: cart, createdAt: new Date().toISOString(), grandTotal, saleType, customerId: selectedCustomerId,
     };
     const updated = [...held, h];
     setHeld(updated);
     localStorage.setItem("ajn_held_invoices", JSON.stringify(updated));
-    setCart([]); setForm(newForm());
+    setCart([]); setForm(newForm()); setSaleType("retail"); setSelectedCustomerId(null); setCustomerStats(null);
     toast({ title: "تم تعليق الفاتورة", description: `${cart.length} صنف` });
   }
 
   function retrieveHeld(h: HeldInvoice) {
     if (cart.length > 0 && !confirm("سيتم مسح الفاتورة الحالية، الاسترجاع؟")) return;
     setCart(h.items);
+    setSaleType(h.saleType ?? "retail");
+    setSelectedCustomerId(h.customerId ?? null);
     setForm(f => ({ ...f, customerName: h.customerName, customerPhone: h.customerPhone }));
     const updated = held.filter(x => x.id !== h.id);
     setHeld(updated);
@@ -777,23 +813,53 @@ export default function POSPage() {
 
   // ── Customer select ────────────────────────────────────────────────────────
   async function handleSelectCustomer(c: Customer) {
-    setForm(f => ({ ...f, customerName: c.name, customerPhone: c.phone ?? "" }));
+    setForm(f => ({ ...f, customerName: c.businessName || c.name, customerPhone: c.phone ?? "" }));
     setSelectedCustomerId(c.id);
+    setCustomerStats(null);
     try {
-      const res = await adminFetch<{ data: any[]; total: number }>(
-        `/admin/sales-invoices?limit=200`
-      );
-      const cInvoices = (res.data ?? []).filter((inv: any) =>
-        inv.customerName?.toLowerCase() === c.name.toLowerCase()
-      );
-      const debt = cInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.remainingAmount) || 0), 0);
-      setCustomerStats({ invoices: cInvoices.length, debt });
-    } catch { setCustomerStats(null); }
+      const res = await adminFetch<{ account: { documentCount: number; currentBalance: number } }>(`/admin/customers/${c.id}/account`);
+      setCustomerStats({ invoices: res.account.documentCount, debt: res.account.currentBalance });
+    } catch (error) {
+      setCustomerStats(null);
+      toast({ title: "تعذر تحميل رصيد العميل", description: error instanceof Error ? error.message : "تحقق من الصلاحيات ثم أعد المحاولة", variant: "destructive" });
+    }
   }
+
+  useEffect(() => {
+    if (saleType !== "wholesale" || !selectedCustomerId || !cart.length || cart.some((item) => item.bundleId)) return;
+    const requestId = ++wholesaleQuoteRequest.current;
+    const timer = window.setTimeout(async () => {
+      try {
+        const quote = await adminFetch<{ lines: Array<{ productId: number; quantity: number; unitPrice: number; source: string; tierMinimumQuantity?: number }> }>("/admin/sales-invoices/wholesale-price-quote", {
+          method: "POST",
+          body: JSON.stringify({ customerId: selectedCustomerId, items: cart.map(({ productId, quantity }) => ({ productId, quantity })) }),
+        });
+        if (requestId !== wholesaleQuoteRequest.current) return;
+        const prices = new Map(quote.lines.map((line) => [`${line.productId}:${line.quantity}`, line]));
+        setCart((current) => {
+          let changed = false;
+          const updated = current.map((item) => {
+            const line = prices.get(`${item.productId}:${item.quantity}`);
+            if (!line || item.priceOverride) return item;
+            if (line.unitPrice === item.unitPrice && line.source === item.wholesalePriceSource && line.tierMinimumQuantity === item.tierMinimumQuantity) return item;
+            changed = true;
+            const discount = line.unitPrice * item.quantity * item.discountPct / 100;
+            return { ...item, unitPrice: line.unitPrice, discount, total: Math.max(item.quantity * line.unitPrice - discount, 0), wholesalePriceSource: line.source, tierMinimumQuantity: line.tierMinimumQuantity };
+          });
+          return changed ? updated : current;
+        });
+      } catch (error) {
+        if (requestId === wholesaleQuoteRequest.current) toast({ title: "تعذر تحديث أسعار الجملة", description: error instanceof Error ? error.message : "أعد المحاولة", variant: "destructive" });
+      }
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [saleType, selectedCustomerId, cart, toast]);
 
   // ── Save ───────────────────────────────────────────────────────────────────
   async function saveInvoice(andPrint?: PrintSize, remotePrintOptions?: RemotePrintOptions | null) {
-    if (cart.length === 0) { toast({ title: "الفاتورة فارغة", variant: "destructive" }); return; }
+      if (cart.length === 0) { toast({ title: "الفاتورة فارغة", variant: "destructive" }); return; }
+    if (saleType === "wholesale" && selectedCustomer?.customerType !== "wholesale") { toast({ title: "اختر عميلاً مسجلاً للجملة", variant: "destructive" }); return; }
+    if (saleType === "wholesale" && cart.some((item) => item.bundleId)) { toast({ title: "الباقات غير متاحة للبيع بالجملة", variant: "destructive" }); return; }
     // Block completion when province delivery is chosen but incomplete.
     if (delivery.method === "province" && !delivery.valid) {
       toast({ title: "بيانات التوصيل ناقصة", description: "أكمل تفاصيل توصيل المحافظة", variant: "destructive" });
@@ -802,10 +868,11 @@ export default function POSPage() {
     setSaving(true);
     try {
       const payload = {
+        saleType,
         date: form.date,
         customerName: form.customerName, customerPhone: form.customerPhone,
         customerId: selectedCustomerId ?? undefined,
-        subtotal, discountAmount: totalDisc, taxAmount, total: grandTotal,
+        subtotal, discountAmount: itemDisc + extraDisc + couponDisc, taxAmount, total: grandTotal,
         couponCode: form.couponCode || undefined,
         paidAmount: paidAmt, remainingAmount: remaining,
         paymentMethod: form.paymentMethod, paymentStatus: autoStatus,
@@ -814,7 +881,7 @@ export default function POSPage() {
         items: cart.map(i => ({
           productId: i.bundleId ? null : i.productId, bundleId: i.bundleId ?? null, productName: i.productName, barcode: i.barcode,
           quantity: i.quantity, unitPrice: i.unitPrice, discount: i.discount,
-          discountPct: i.discountPct, total: i.total, costPrice: i.costPrice,
+          discountPct: i.discountPct, total: i.total, costPrice: i.costPrice, priceOverride: Boolean(i.priceOverride),
         })),
       };
       const res = await adminFetch<{ invoice: { id: number; invoiceNo: string; qr?: { dataUrl?: string } }; delivery?: any }>("/admin/sales-invoices", {
@@ -824,6 +891,9 @@ export default function POSPage() {
       const qrDataUrl = res?.invoice?.qr?.dataUrl;
       const savedDelivery = res?.delivery ?? null;
       if (!invoiceNo) throw new Error("تم حفظ الفاتورة لكن لم يرجع رقمها من الخادم");
+      setLastSavedSaleType(saleType);
+      setLastSavedCustomerDebt(customerStats?.debt ?? 0);
+      setLastSavedProjectedDebt((customerStats?.debt ?? 0) + grandTotal);
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "product-bundles"] });
@@ -853,7 +923,7 @@ export default function POSPage() {
         }
         const copies = andPrint ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 5);
         for (let index = 0; index < copies; index++) {
-          openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false, qrDataUrl, delivery: savedDelivery });
+          openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false, qrDataUrl, delivery: savedDelivery, saleType, previousCustomerDebt: customerStats?.debt ?? 0, projectedCustomerDebt: (customerStats?.debt ?? 0) + grandTotal });
         }
       }
       // Print the A6 delivery label for a province delivery order.
@@ -869,7 +939,7 @@ export default function POSPage() {
       setLastSavedCart([...cart]);
       setLastSavedForm({ ...form });
       setLastSavedTotals({ ...totals });
-      setCart([]); setForm(newForm()); setCustomerStats(null); setSearchQ("");
+      setCart([]); setForm(newForm()); setSaleType("retail"); setSelectedCustomerId(null); setCustomerStats(null); setSearchQ("");
       setSelectedCustomerId(null);
       setDelivery({ method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, payload: null, summary: null });
       // Return focus to the barcode field so the next sale can be scanned/typed with no mouse.
@@ -911,7 +981,7 @@ export default function POSPage() {
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "F4") { e.preventDefault(); setCart([]); setForm(newForm()); setCustomerStats(null); }
+      if (e.key === "F4") { e.preventDefault(); setCart([]); setForm(newForm()); setSaleType("retail"); setSelectedCustomerId(null); setCustomerStats(null); }
       if (e.key === "F9") { e.preventDefault(); holdInvoice(); }
       if (e.key === "F10") { e.preventDefault(); saveInvoice(); }
       if (e.key === "F11") { e.preventDefault(); setShowHeld(true); }
@@ -1009,7 +1079,7 @@ export default function POSPage() {
                         lastInvoiceNo,
                         size,
                         settings,
-                        { showLogo: printerSettings?.showLogo !== false },
+                        { showLogo: printerSettings?.showLogo !== false, saleType: lastSavedSaleType, previousCustomerDebt: lastSavedCustomerDebt, projectedCustomerDebt: lastSavedProjectedDebt },
                       );
                     }
                   }}
@@ -1026,6 +1096,16 @@ export default function POSPage() {
 
       {/* ══ TOP BAR ══ */}
       <div className="flex flex-wrap items-center gap-3">
+        <div className="flex shrink-0 rounded-lg border border-border/40 bg-card p-1" aria-label="نوع البيع">
+          {([["retail", "مفرد"], ["wholesale", "جملة"]] as const).map(([type, label]) => <button key={type} type="button" onClick={() => {
+            if (type === "wholesale" && cart.some((item) => item.bundleId)) { toast({ title: "أزل الباقات أولاً", description: "بيع الباقات بالجملة غير متاح حالياً.", variant: "destructive" }); return; }
+            setSaleType(type);
+            if ((type === "retail" && selectedCustomer?.customerType === "wholesale") || (type === "wholesale" && selectedCustomer?.customerType !== "wholesale")) {
+              setSelectedCustomerId(null);
+              setForm((current) => ({ ...current, customerName: "", customerPhone: "" }));
+            }
+          }} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${saleType === type ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>{label}</button>)}
+        </div>
         {/* Barcode / Search */}
         <div className="relative flex-1 min-w-48 max-w-xs">
           <Barcode className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary" />
@@ -1050,8 +1130,8 @@ export default function POSPage() {
             name={form.customerName} phone={form.customerPhone}
             onName={v => setForm(f => ({ ...f, customerName: v }))}
             onPhone={v => setForm(f => ({ ...f, customerPhone: v }))}
-            customers={customers} onSelectCustomer={handleSelectCustomer}
-            customerStats={customerStats}
+            customers={customers} saleType={saleType} onSelectCustomer={handleSelectCustomer}
+            customerStats={customerStats} projectedDebt={customerStats && cart.length ? customerStats.debt + grandTotal : null}
           />
         </div>
 
@@ -1077,7 +1157,7 @@ export default function POSPage() {
             <PauseCircle className="w-4 h-4" />تعليق
           </button>
           <button
-            onClick={() => { setCart([]); setForm(newForm()); setCustomerStats(null); }}
+            onClick={() => { setCart([]); setForm(newForm()); setSaleType("retail"); setSelectedCustomerId(null); setCustomerStats(null); }}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-card border border-border/40 text-sm text-muted-foreground hover:text-foreground hover:border-border transition-colors"
           >
             <RefreshCw className="w-4 h-4" />جديدة
@@ -1136,21 +1216,23 @@ export default function POSPage() {
               <div className="divide-y divide-border/20">
                 {visibleProducts.slice(0, 200).map(p => {
                   const stock = parseFloat(p.stock) || 0;
+                  const tracksInventory = p.itemType !== "service" && p.trackInventory !== false;
                   return (
                     <button
                       key={p.id}
-                      onClick={() => stock > 0 && addToCart(p)}
-                      disabled={stock <= 0}
+                      onClick={() => (!tracksInventory || stock > 0) && addToCart(p)}
+                      disabled={tracksInventory && stock <= 0}
                       className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-primary/5 text-right transition-colors disabled:opacity-50"
                     >
                       {p.images?.[0] && <img src={p.images[0]} alt="" className="w-8 h-8 rounded object-cover shrink-0" />}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{p.nameAr || p.name}</p>
+                        {p.itemType === "service" && <p className="text-[11px] text-muted-foreground">لكل {p.serviceUnit || "خدمة"} · لا تخصم من المخزون</p>}
                         {p.barcode && <p className="text-[11px] text-muted-foreground font-mono">{p.barcode}</p>}
                       </div>
                       <div className="text-left shrink-0">
                         <p className="text-sm font-bold text-primary">{formatCurrency(p.price)}</p>
-                        <p className={`text-[11px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>{stock > 0 ? `${stock} متبقي` : "نفذ"}</p>
+                        {tracksInventory ? <p className={`text-[11px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>{stock > 0 ? `${stock} متبقي` : "نفذ"}</p> : null}
                       </div>
                     </button>
                   );
@@ -1192,6 +1274,7 @@ export default function POSPage() {
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-foreground truncate">{item.productName}</p>
+                            {item.itemType === "service" && <p className="text-[11px] text-muted-foreground">{item.serviceUnit || "خدمة"} · لا تخصم من المخزون</p>}
                             <p className="text-xs text-primary font-bold">{formatCurrency(item.total)}</p>
                           </div>
                           <button onClick={() => removeItem(idx)} className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity mt-0.5 shrink-0">
@@ -1219,8 +1302,9 @@ export default function POSPage() {
                             onClick={() => { setNumpadField({ idx, field: "unitPrice" }); setNumpadVal(item.unitPrice.toString()); }}
                             className="text-xs text-muted-foreground hover:text-primary border border-transparent hover:border-primary/30 rounded px-1.5 py-0.5 transition-colors"
                           >
-                            {formatCurrency(item.unitPrice)}
+                            {formatCurrency(item.unitPrice)}{item.itemType === "service" ? ` / ${item.serviceUnit || "خدمة"}` : ""}
                           </button>
+                          {saleType === "wholesale" && <span className="text-[10px] text-muted-foreground">{item.priceOverride ? "سعر معدل" : item.wholesalePriceSource === "customer" ? "سعر خاص" : item.wholesalePriceSource === "tier" ? `شريحة ${item.tierMinimumQuantity}+` : item.wholesalePriceSource === "base" ? "جملة" : "سعر مفرد"}</span>}
                           {/* Discount */}
                           <button
                             onClick={() => { setNumpadField({ idx, field: "discount" }); setNumpadVal(item.discount.toString()); }}

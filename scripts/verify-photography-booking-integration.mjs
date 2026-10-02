@@ -1,12 +1,14 @@
 // Contract tests for Photography Booking detection and idempotent central linking.
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const { build } = require("../node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js");
+const esbuildDir = readdirSync("node_modules/.pnpm").find((name) => name.startsWith("esbuild@"));
+if (!esbuildDir) throw new Error("The installed esbuild package is unavailable");
+const { build } = require(`../node_modules/.pnpm/${esbuildDir}/node_modules/esbuild/lib/main.js`);
 const bundle = await build({
   entryPoints: ["src/server/sound-detection.ts"],
   bundle: true,

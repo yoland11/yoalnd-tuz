@@ -63,6 +63,9 @@ export const purchaseInvoiceItemsTable = pgTable("purchase_invoice_items", {
     .notNull()
     .references(() => purchaseInvoicesTable.id, { onDelete: "cascade" }),
   productId: integer("product_id").references(() => productsTable.id),
+  variantId: integer("variant_id"),
+  variantLabel: text("variant_label"),
+  variantSku: varchar("variant_sku", { length: 80 }),
   costCategory: varchar("cost_category", { length: 20 }),
   koshaId: integer("kosha_id").references(() => koshasTable.id, { onDelete: "set null" }),
   constructionProjectId: integer("construction_project_id").references(() => koshaConstructionProjectsTable.id, { onDelete: "set null" }),

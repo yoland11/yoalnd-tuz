@@ -157,7 +157,7 @@ const STEPS = [
   { label: "الألوان", icon: Palette },
   { label: "القماش", icon: Layers3 },
   { label: "الطباعة / التطريز", icon: Scissors },
-  { label: "النصوص", icon: FileImage },
+  { label: "التخصيص", icon: FileImage },
   { label: "الإكسسوارات", icon: PackageCheck },
   { label: "خدمات إضافية", icon: Gift },
   { label: "المعاينة", icon: ScanLine },
@@ -166,9 +166,9 @@ const STEPS = [
 ] as const;
 
 const GRADUATION_THEME_STYLE = {
-  "--primary": "43 59% 59%",
-  "--primary-foreground": "240 24% 6%",
-  "--ring": "43 59% 59%",
+  "--primary": "334 100% 23%",
+  "--primary-foreground": "0 0% 100%",
+  "--ring": "334 100% 23%",
 } as CSSProperties;
 
 const MEASUREMENTS = [
@@ -1099,43 +1099,35 @@ function GraduationConfigurator() {
 
   return (
     <div
-      className="min-h-dvh bg-background pb-24"
+      className="min-h-dvh overflow-x-hidden bg-[#fffdfb] pb-10 text-[#2c1720]"
       dir="rtl"
       style={GRADUATION_THEME_STYLE}
     >
       <GraduationStepRail current={step} />
-      <div className="container mx-auto max-w-[1500px] px-3 py-5 sm:px-5">
-        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium text-primary">تجهيزات التخرج</p>
-            <h1 className="mt-1 text-2xl font-bold text-foreground">
-              {STEPS[step].label}
-            </h1>
+      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:py-12">
+        <div className="relative mb-8 text-center">
+          <div className="mb-3 flex justify-center gap-2 md:absolute md:left-0 md:top-0 md:mb-0">
+            {config.aiAvailable ? (
+              <>
+                <Button variant="outline" size="sm" className="border-[#eadde1] bg-white text-primary hover:bg-[#fff3f5]" onClick={() => setSizeOpen(true)}>
+                  <ScanLine className="ml-2 h-4 w-4" /> مسح القياسات
+                </Button>
+                <Button variant="outline" size="sm" className="border-[#eadde1] bg-white text-primary hover:bg-[#fff3f5]" onClick={() => setDesignerOpen(true)}>
+                  <WandSparkles className="ml-2 h-4 w-4" /> مصمم ذكي
+                </Button>
+              </>
+            ) : null}
           </div>
-          {config.aiAvailable ? (
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setSizeOpen(true)}
-              >
-                <ScanLine className="ml-2 h-4 w-4" />
-                مسح القياسات
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setDesignerOpen(true)}
-              >
-                <WandSparkles className="ml-2 h-4 w-4" />
-                مصمم ذكي
-              </Button>
-            </div>
-          ) : null}
+          <p className="text-sm font-semibold text-[#bd9145]">الخطوة {step >= 8 ? 9 : step + 1} من 10</p>
+          <h1 className="mt-2 text-3xl font-extrabold tracking-tight text-[#261219] sm:text-4xl">{step === 0 ? "اختر نوع الوشاح" : STEPS[step]?.label}</h1>
+          <p className="mx-auto mt-3 max-w-2xl text-sm leading-7 text-[#80666f] sm:text-base">
+            {step === 0 ? "اختر الشكل الذي يعجبك، ونفصّله على قياساتك." : "أكمل اختياراتك بتأنٍ، وسيبقى ملخص السعر محدثاً مع كل تغيير."}
+          </p>
+          <div className="mx-auto mt-5 h-px w-28 bg-gradient-to-l from-transparent via-[#bd9145] to-transparent" />
         </div>
 
-        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <section className="min-w-0 rounded-xl border border-border bg-card p-4 sm:p-5">
+        <div className="mx-auto max-w-5xl">
+          <section className="min-w-0 rounded-[28px] border border-[#f0e4e7] bg-white p-4 shadow-[0_16px_50px_rgba(69,20,39,.055)] sm:p-8">
             <AnimatePresence mode="wait" initial={false}>
               <motion.div
                 key={step}
@@ -1149,23 +1141,36 @@ function GraduationConfigurator() {
                   <div className="space-y-7">
                     {!customBuilderActive ? (
                       <>
-                        <div>
-                          <h2 className="mb-3 font-bold">اختر نوع التخرج</h2>
-                          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                        <div className="space-y-6">
+                          <div className="flex snap-x gap-2 overflow-x-auto rounded-2xl border border-[#f1d3db] bg-[#fff4f5] p-1.5 sm:grid sm:grid-cols-4 sm:overflow-visible">
                             {config.styles.map((item) => (
-                              <OptionCard
+                              <button
+                                type="button"
                                 key={item.key}
-                                item={item}
-                                selected={form.styleKey === item.key}
+                                aria-pressed={form.styleKey === item.key}
                                 onClick={() =>
                                   setForm((current) => ({
                                     ...current,
                                     styleKey: item.key,
                                   }))
                                 }
-                              />
+                                className={`min-w-[125px] flex-1 snap-start rounded-xl px-5 py-3.5 text-center text-sm font-bold transition-all sm:min-w-0 sm:text-base ${form.styleKey === item.key ? "bg-primary text-white shadow-[0_7px_18px_rgba(104,0,47,.2)]" : "text-[#765d66] hover:bg-white"}`}
+                              >{item.name}</button>
                             ))}
                           </div>
+                          <div className="mx-auto flex max-w-4xl justify-center">
+                            <div className="flex aspect-[4/4.6] max-h-[560px] w-full max-w-[520px] items-center justify-center overflow-hidden rounded-[28px] bg-[#f7f5f5] shadow-[0_18px_38px_rgba(60,26,39,.09)]">
+                              {selectedStyle?.imageUrl ? <img src={selectedStyle.imageUrl} alt={selectedStyle.name} className="h-full w-full object-contain" /> : <div className="flex flex-col items-center gap-3 text-center text-[#927c84]"><Shirt className="h-24 w-24 text-primary/60" /><span>اختر نوع الوشاح لعرض صورته</span></div>}
+                            </div>
+                          </div>
+                          {selectedStyle ? (
+                            <div className="text-center">
+                              <h2 className="text-2xl font-extrabold text-[#261219]">{selectedStyle.name}</h2>
+                              {selectedStyle.description ? <p className="mt-2 text-sm text-[#80666f]">{selectedStyle.description}</p> : null}
+                              <p className="mt-3 text-2xl font-extrabold text-primary">{formatCurrency(selectedStyle.price)}</p>
+                              <span className="mt-3 inline-flex rounded-full border border-[#e8c999] bg-[#fff9ef] px-3 py-1 text-xs font-medium text-[#a87830]">{pricing.discount > 0 ? "يشمل السعر خصماً" : "يتحدث السعر مع اختياراتك"}</span>
+                            </div>
+                          ) : null}
                         </div>
                         {config.packages.length ? (
                           <div>
@@ -1905,9 +1910,7 @@ function GraduationConfigurator() {
               ) : null}
             </div>
           </section>
-          <div className="space-y-4 lg:sticky lg:top-24">
-            <PreviewPanel config={config} form={form} />
-            <section className="rounded-xl border border-border bg-card p-4">
+          <section className="mt-5 rounded-2xl border border-[#f0e4e7] bg-white p-4 shadow-[0_8px_24px_rgba(69,20,39,.035)] sm:px-6">
               {customBuilderActive && customSummary.lines.length ? (
                 <div className="mb-3 space-y-1.5 border-b border-border pb-3 text-sm">
                   <div className="mb-1 flex items-center gap-2 font-bold">
@@ -1940,10 +1943,9 @@ function GraduationConfigurator() {
               </div>
               <Progress
                 className="mt-3"
-                value={((step + 1) / STEPS.length) * 100}
+                value={step >= 10 ? 100 : (Math.min(step, 8) / 9) * 100}
               />
-            </section>
-          </div>
+          </section>
         </div>
       </div>
 

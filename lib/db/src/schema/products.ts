@@ -39,7 +39,12 @@ export const productsTable = pgTable("products", {
   descriptionKu: text("description_ku"),
   descriptionTr: text("description_tr"),
 
+  itemType: varchar("item_type", { length: 20 }).notNull().default("product"),
+  serviceUnit: text("service_unit"),
+  trackInventory: boolean("track_inventory").notNull().default(true),
+
   price: numeric("price", { precision: 10, scale: 2 }).notNull(),
+  wholesalePrice: numeric("wholesale_price", { precision: 14, scale: 2 }),
   originalPrice: numeric("original_price", { precision: 10, scale: 2 }),
   costPrice: numeric("cost_price", { precision: 14, scale: 2 })
     .notNull()

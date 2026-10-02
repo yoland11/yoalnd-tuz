@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDownCircle, ArrowUpCircle, Download, FileText, Loader2, Wallet } from "lucide-react";
+import { ArrowDownCircle, ArrowUpCircle, Download, FileText, Loader2, MessageCircle, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -79,6 +79,8 @@ export function CustomerStatement({
   const [voucherAmount, setVoucherAmount] = useState("");
   const [voucherMethod, setVoucherMethod] = useState("cash");
   const [voucherNote, setVoucherNote] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   const submitVoucher = useMutation({
     mutationFn: () => {
@@ -130,17 +132,34 @@ export function CustomerStatement({
 
   if (!customerId) return null;
 
-  const entries = query.data?.statement.entries ?? [];
-  const closing = query.data?.statement.closingBalance ?? 0;
+  const allEntries = query.data?.statement.entries ?? [];
+  const entries = allEntries.filter((entry) => {
+    const day = entry.date?.slice(0, 10) ?? "";
+    return (!dateFrom || day >= dateFrom) && (!dateTo || day <= dateTo);
+  });
+  const openingBalance = dateFrom
+    ? [...allEntries].filter((entry) => (entry.date?.slice(0, 10) ?? "") < dateFrom).at(-1)?.balance ?? 0
+    : 0;
+  const currentBalance = query.data?.statement.closingBalance ?? 0;
+  const closing = entries.at(-1)?.balance ?? openingBalance;
   const totalDebit = entries.reduce((sum, entry) => sum + (Number(entry.debit) || 0), 0);
   const totalCredit = entries.reduce((sum, entry) => sum + (Number(entry.credit) || 0), 0);
 
   const openVoucher = (type: "receipt" | "payment" = "receipt") => {
     setVoucherType(type);
-    setVoucherAmount(String(Math.max(0, Math.round(closing)) || ""));
+    setVoucherAmount(String(Math.max(0, Math.round(currentBalance)) || ""));
     setVoucherMethod("cash");
     setVoucherNote("");
     setVoucherOpen(true);
+  };
+
+  const shareWhatsApp = () => {
+    if (!customerPhone) return;
+    const digits = customerPhone.replace(/\D/g, "");
+    const internationalPhone = digits.startsWith("0") ? `964${digits.slice(1)}` : digits.startsWith("964") ? digits : `964${digits}`;
+    const period = dateFrom || dateTo ? ` (${dateFrom || "البداية"} — ${dateTo || "اليوم"})` : "";
+    const text = `كشف حساب ${customerName || "العميل"}${period}\nالرصيد المستحق: ${formatCurrency(closing)}\nإجمالي المدين: ${formatCurrency(totalDebit)}\nإجمالي الدائن: ${formatCurrency(totalCredit)}`;
+    window.open(`https://wa.me/${internationalPhone}?text=${encodeURIComponent(text)}`, "_blank", "noopener,noreferrer");
   };
 
   const downloadPdf = async () => {
@@ -168,6 +187,9 @@ export function CustomerStatement({
           <FileText className="h-4 w-4 text-primary" /> كشف حساب العميل
         </h4>
         <div className="flex items-center gap-2">
+          <label className="text-[10px] text-muted-foreground">من<input aria-label="من تاريخ كشف الحساب" type="date" value={dateFrom} max={dateTo || undefined} onChange={(event) => setDateFrom(event.target.value)} className="mr-1 rounded border bg-background px-1.5 py-1 text-xs text-foreground" /></label>
+          <label className="text-[10px] text-muted-foreground">إلى<input aria-label="إلى تاريخ كشف الحساب" type="date" value={dateTo} min={dateFrom || undefined} onChange={(event) => setDateTo(event.target.value)} className="mr-1 rounded border bg-background px-1.5 py-1 text-xs text-foreground" /></label>
+          <Button type="button" variant="outline" size="sm" disabled={!customerPhone} onClick={shareWhatsApp}><MessageCircle className="h-3.5 w-3.5" />واتساب</Button>
           <Button type="button" variant="outline" size="sm" onClick={() => openVoucher("receipt")}>
             <Wallet className="h-3.5 w-3.5" /> قبض / صرف
           </Button>
@@ -198,6 +220,7 @@ export function CustomerStatement({
               </tr>
             </thead>
             <tbody>
+              {(dateFrom || dateTo) && <tr className="border-t border-border/20 bg-muted/20"><td className="p-2" colSpan={4}>رصيد أول المدة</td><td className="p-2">{openingBalance > 0 ? formatCurrency(openingBalance) : "—"}</td><td className="p-2">—</td><td className="p-2 font-bold">{formatCurrency(openingBalance)}</td></tr>}
               {entries.map((entry, index) => (
                 <tr key={index} className="border-t border-border/20">
                   <td className="p-2 whitespace-nowrap">{fmtDate(entry.date)}</td>
@@ -216,8 +239,8 @@ export function CustomerStatement({
                 onClick={() => openVoucher("receipt")}
                 title="اضغط لتسجيل سند قبض أو صرف"
               >
-                <td className="p-2" colSpan={6}>
-                  الرصيد الحالي في الذمة
+                  <td className="p-2" colSpan={6}>
+                  {(dateFrom || dateTo) ? "الرصيد حتى نهاية الفترة" : "الرصيد الحالي في الذمة"}
                   <span className="mr-2 text-[11px] font-normal text-primary">(اضغط للقبض/الصرف)</span>
                 </td>
                 <td className="p-2 tabular-nums text-status-danger">{formatCurrency(closing)}</td>
@@ -226,7 +249,7 @@ export function CustomerStatement({
           </table>
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">لا توجد حركات في كشف الحساب.</p>
+        <p className="text-xs text-muted-foreground">{dateFrom || dateTo ? "لا توجد حركات ضمن الفترة المحددة." : "لا توجد حركات في كشف الحساب."}</p>
       )}
 
       {/* Hidden, theme-independent A4 layout used only for the PDF export. */}
@@ -253,6 +276,7 @@ export function CustomerStatement({
                 {customerName ? <div><b>العميل:</b> {customerName}</div> : null}
                 {customerPhone ? <div dir="ltr" style={{ textAlign: "left" }}><b>الهاتف:</b> {customerPhone}</div> : null}
                 {customerCode ? <div dir="ltr" style={{ textAlign: "left" }}><b>الكود:</b> {customerCode}</div> : null}
+                {(dateFrom || dateTo) ? <div><b>الفترة:</b> {dateFrom || "البداية"} — {dateTo || "اليوم"}</div> : null}
                 <div><b>تاريخ الطباعة:</b> {printedAt()}</div>
               </div>
             </div>
@@ -266,6 +290,7 @@ export function CustomerStatement({
                 </tr>
               </thead>
               <tbody>
+                {(dateFrom || dateTo) ? <tr><td style={{ border: "1px solid #d1d5db", padding: "5px 6px" }}>—</td><td colSpan={3} style={{ border: "1px solid #d1d5db", padding: "5px 6px", fontWeight: 700 }}>رصيد أول المدة</td><td style={{ border: "1px solid #d1d5db", padding: "5px 6px" }}>{openingBalance > 0 ? formatCurrency(openingBalance) : "—"}</td><td style={{ border: "1px solid #d1d5db", padding: "5px 6px" }}>—</td><td style={{ border: "1px solid #d1d5db", padding: "5px 6px", fontWeight: 700 }}>{formatCurrency(openingBalance)}</td></tr> : null}
                 {entries.map((entry, index) => (
                   <tr key={index} style={{ breakInside: "avoid" }}>
                     <td style={{ border: "1px solid #d1d5db", padding: "5px 6px", whiteSpace: "nowrap" }}>{fmtDate(entry.date)}</td>
@@ -326,7 +351,7 @@ export function CustomerStatement({
               </button>
             </div>
             <div className="rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
-              الرصيد الحالي في الذمة: <b className="text-foreground tabular-nums" dir="ltr">{formatCurrency(closing)}</b>
+              الرصيد الحالي في الذمة: <b className="text-foreground tabular-nums" dir="ltr">{formatCurrency(currentBalance)}</b>
             </div>
             <label className="block text-sm">
               <span className="mb-1 block font-medium">المبلغ (د.ع)</span>

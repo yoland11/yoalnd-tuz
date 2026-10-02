@@ -85,6 +85,9 @@ export const ListProductsResponseItem = zod.object({
   description: zod.string().nullish(),
   descriptionAr: zod.string().nullish(),
   price: zod.number(),
+  itemType: zod.enum(["product", "service"]).optional(),
+  serviceUnit: zod.string().nullish().optional(),
+  trackInventory: zod.boolean().optional(),
   originalPrice: zod.number().nullish(),
   costPrice: zod.number().optional(),
   stock: zod.number(),
@@ -141,6 +144,9 @@ export const CreateProductBody = zod.object({
   description: zod.string().optional(),
   descriptionAr: zod.string().optional(),
   price: zod.number().optional(),
+  itemType: zod.enum(["product", "service"]).optional(),
+  serviceUnit: zod.string().nullish().optional(),
+  trackInventory: zod.boolean().optional(),
   originalPrice: zod.number().optional(),
   costPrice: zod.number().optional(),
   stock: zod.number().optional(),
@@ -180,6 +186,13 @@ export const CreateProductBody = zod.object({
   isBouquetTemplate: zod.boolean().optional(),
   isActive: zod.boolean().optional(),
   sortOrder: zod.number().optional(),
+}).superRefine((value, context) => {
+  if (value.itemType === "service" && !value.serviceUnit?.trim()) {
+    context.addIssue({ code: zod.ZodIssueCode.custom, path: ["serviceUnit"], message: "Service unit is required" });
+  }
+  if (value.itemType === "service" && value.trackInventory === true) {
+    context.addIssue({ code: zod.ZodIssueCode.custom, path: ["trackInventory"], message: "Services cannot track inventory" });
+  }
 });
 
 /**
@@ -196,6 +209,9 @@ export const GetProductResponse = zod.object({
   description: zod.string().nullish(),
   descriptionAr: zod.string().nullish(),
   price: zod.number(),
+  itemType: zod.enum(["product", "service"]).optional(),
+  serviceUnit: zod.string().nullish().optional(),
+  trackInventory: zod.boolean().optional(),
   originalPrice: zod.number().nullish(),
   costPrice: zod.number().optional(),
   stock: zod.number(),
@@ -256,6 +272,9 @@ export const UpdateProductBody = zod.object({
   description: zod.string().optional(),
   descriptionAr: zod.string().optional(),
   price: zod.number().optional(),
+  itemType: zod.enum(["product", "service"]).optional(),
+  serviceUnit: zod.string().nullish().optional(),
+  trackInventory: zod.boolean().optional(),
   originalPrice: zod.number().optional(),
   costPrice: zod.number().optional(),
   stock: zod.number().optional(),
@@ -290,6 +309,13 @@ export const UpdateProductBody = zod.object({
   isBouquetTemplate: zod.boolean().optional(),
   isActive: zod.boolean().optional(),
   sortOrder: zod.number().optional(),
+}).superRefine((value, context) => {
+  if (value.itemType === "service" && !value.serviceUnit?.trim()) {
+    context.addIssue({ code: zod.ZodIssueCode.custom, path: ["serviceUnit"], message: "Service unit is required" });
+  }
+  if (value.itemType === "service" && value.trackInventory === true) {
+    context.addIssue({ code: zod.ZodIssueCode.custom, path: ["trackInventory"], message: "Services cannot track inventory" });
+  }
 });
 
 export const UpdateProductResponse = zod.object({
@@ -299,6 +325,9 @@ export const UpdateProductResponse = zod.object({
   description: zod.string().nullish(),
   descriptionAr: zod.string().nullish(),
   price: zod.number(),
+  itemType: zod.enum(["product", "service"]).optional(),
+  serviceUnit: zod.string().nullish().optional(),
+  trackInventory: zod.boolean().optional(),
   originalPrice: zod.number().nullish(),
   costPrice: zod.number().optional(),
   stock: zod.number(),
@@ -435,6 +464,13 @@ export const CreateServiceOrderBody = zod.object({
   eventLocation: zod.string().optional(),
   notes: zod.string().optional(),
   customFields: zod.object({}).passthrough().optional(),
+  serviceItems: zod.array(zod.object({
+    productId: zod.number().int().positive(),
+    quantity: zod.number().positive().max(1000000),
+    discount: zod.number().min(0).optional(),
+    unitPrice: zod.number().min(0).optional(),
+  })).max(100).optional(),
+  baseTotalAmount: zod.number().min(0).max(100000000).optional(),
 });
 
 /**

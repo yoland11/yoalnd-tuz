@@ -25,6 +25,7 @@ export * from "./admin-activity";
 export * from "./rewards";
 export * from "./suppliers";
 export * from "./sales-invoices";
+export * from "./wholesale";
 export * from "./purchase-invoices";
 export * from "./print-templates";
 export * from "./report-templates";

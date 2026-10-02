@@ -26,6 +26,7 @@ export const salesInvoicesTable = pgTable("sales_invoices", {
   customerName: text("customer_name").notNull().default(""),
   customerPhone: varchar("customer_phone", { length: 30 }),
   customerId: integer("customer_id").references(() => customersTable.id),
+  saleType: varchar("sale_type", { length: 20 }),
   supplierId: integer("supplier_id").references(() => suppliersTable.id, {
     onDelete: "set null",
   }),
@@ -113,6 +114,8 @@ export const salesInvoiceItemsTable = pgTable("sales_invoice_items", {
   bundleId: integer("bundle_id"),
   productName: text("product_name").notNull(),
   barcode: varchar("barcode", { length: 100 }),
+  unitSnapshot: text("unit_snapshot"),
+  trackInventorySnapshot: boolean("track_inventory_snapshot"),
   quantity: numeric("quantity", { precision: 12, scale: 3 })
     .notNull()
     .default("1"),

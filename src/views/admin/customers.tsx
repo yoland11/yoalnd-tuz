@@ -16,7 +16,17 @@ import { useToast } from "@/hooks/use-toast";
 type Customer = {
   id: number; name: string; phone: string; role: string;
   createdAt: string; orderCount: number; totalSpent: number;
+  customerType?: "retail" | "wholesale"; businessName?: string | null;
+  ownerName?: string | null; province?: string | null; creditLimit?: number | null;
+  specialDiscountPercent?: number | null; wholesaleNotes?: string | null;
   rewardPoints?: number; rewardLevelLabel?: string;
+};
+
+type CustomerEditForm = {
+  id: number | null; name: string; phone: string; fullName: string; email: string;
+  address: string; city: string; customerType: "retail" | "wholesale";
+  businessName: string; ownerName: string; province: string; creditLimit: string;
+  specialDiscountPercent: string; notes: string;
 };
 
 type CustomerDetail = Customer & {
@@ -59,12 +69,13 @@ export default function CustomersPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [search, setSearch] = useState("");
+  const [customerTypeFilter, setCustomerTypeFilter] = useState<"all" | "retail" | "wholesale">(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("type") === "wholesale" ? "wholesale" : "all");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [pointsDelta, setPointsDelta] = useState("");
   const [pointsNote, setPointsNote] = useState("");
   const [noteBody, setNoteBody] = useState("");
   const [notePriority, setNotePriority] = useState("normal");
-  const [editing, setEditing] = useState<null | { id: number | null; name: string; phone: string; fullName: string; email: string; address: string; city: string }>(null);
+  const [editing, setEditing] = useState<CustomerEditForm | null>(null);
 
   // Deep links from booking finance summaries open the matching customer.
   useEffect(() => {
@@ -97,7 +108,7 @@ export default function CustomersPage() {
   const saveCustomer = useMutation({
     mutationFn: (c: NonNullable<typeof editing>) => adminFetch(c.id ? `/admin/customers/${c.id}` : "/admin/customers", {
       method: c.id ? "PATCH" : "POST",
-      body: JSON.stringify({ name: c.name, phone: c.phone, fullName: c.fullName, email: c.email, address: c.address, city: c.city }),
+      body: JSON.stringify({ name: c.name, phone: c.phone, fullName: c.fullName, email: c.email, address: c.address, city: c.city, customerType: c.customerType, businessName: c.businessName, ownerName: c.ownerName, province: c.province, creditLimit: c.creditLimit === "" ? null : Number(c.creditLimit), specialDiscountPercent: c.specialDiscountPercent === "" ? null : Number(c.specialDiscountPercent), notes: c.notes }),
     }),
     onSuccess: (_res, c) => {
       queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
@@ -138,6 +149,8 @@ export default function CustomersPage() {
     onError: (err: any) => toast({ title: "تعذر حذف الملاحظة", description: err?.message, variant: "destructive" }),
   });
 
+  const visibleCustomers = (data ?? []).filter((customer) => customerTypeFilter === "all" || (customer.customerType ?? "retail") === customerTypeFilter);
+
   function exportCustomerCsv(detail: CustomerDetail) {
     const rows = [
       ["الاسم", detail.fullName || detail.name || ""],
@@ -166,7 +179,7 @@ export default function CustomersPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-foreground">العملاء</h1>
-        <Button onClick={() => setEditing({ id: null, name: "", phone: "", fullName: "", email: "", address: "", city: "" })} className="gap-1">
+        <Button onClick={() => setEditing({ id: null, name: "", phone: "", fullName: "", email: "", address: "", city: "", customerType: "retail", businessName: "", ownerName: "", province: "", creditLimit: "", specialDiscountPercent: "", notes: "" })} className="gap-1">
           <Plus className="w-4 h-4" /> إضافة عميل
         </Button>
       </div>
@@ -178,14 +191,21 @@ export default function CustomersPage() {
           className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
       </div>
 
+      <div className="flex flex-wrap gap-2" role="group" aria-label="نوع العميل">
+        {[{ id: "all", label: "الكل" }, { id: "retail", label: "عميل مفرد" }, { id: "wholesale", label: "عملاء الجملة" }].map((item) => (
+          <Button key={item.id} size="sm" variant={customerTypeFilter === item.id ? "default" : "outline"} onClick={() => setCustomerTypeFilter(item.id as typeof customerTypeFilter)}>{item.label}</Button>
+        ))}
+      </div>
+
       {isLoading ? <div className="space-y-3">{[1,2,3,4].map(i => <Skeleton key={i} className="h-14 rounded-xl" />)}</div>
-      : !data || data.length === 0 ? <EmptyState message="لا يوجد عملاء" /> : (
+      : visibleCustomers.length === 0 ? <EmptyState message="لا يوجد عملاء ضمن هذا النوع" /> : (
         <div className="bg-card rounded-xl border border-border/30 overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-background/50">
               <tr className="text-muted-foreground border-b border-border/30">
                 <th className="text-right p-3 font-medium">الاسم</th>
                 <th className="text-right p-3 font-medium">الهاتف</th>
+                <th className="text-right p-3 font-medium">النوع / المتجر</th>
                 <th className="text-right p-3 font-medium">عدد الطلبات</th>
                 <th className="text-right p-3 font-medium">الإنفاق الإجمالي</th>
                 <th className="text-right p-3 font-medium">النقاط</th>
@@ -193,23 +213,24 @@ export default function CustomersPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/20">
-              {data.map(c => (
+              {visibleCustomers.map(c => (
                 <tr key={c.id} className="hover:bg-background/30 cursor-pointer" onClick={() => setSelectedId(c.id)}>
                   <td className="p-3 text-foreground">{c.name || "—"}</td>
                   <td className="p-3 text-muted-foreground" dir="ltr">{formatIraqiPhone(c.phone)}</td>
+                  <td className="p-3 text-muted-foreground">{c.customerType === "wholesale" ? <>{c.businessName || c.name}<small className="mr-2 rounded bg-primary/10 px-1.5 py-0.5 text-primary">جملة</small></> : "مفرد"}</td>
                   <td className="p-3"><span className="text-primary font-semibold">{c.orderCount}</span></td>
                   <td className="p-3 text-primary">{formatCurrency(c.totalSpent)}</td>
                   <td className="p-3 text-xs text-muted-foreground">{(c.rewardPoints ?? 0).toLocaleString("ar-IQ-u-nu-latn")} نقطة</td>
                   <td className="p-3" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-center gap-1">
-                      <button onClick={() => setEditing({ id: c.id, name: c.name, phone: c.phone, fullName: "", email: "", address: "", city: "" })} className="p-1.5 rounded text-muted-foreground hover:text-primary hover:bg-background/50" title="تعديل"><Pencil className="w-4 h-4" /></button>
+                      <button onClick={() => setEditing({ id: c.id, name: c.name, phone: c.phone, fullName: "", email: "", address: "", city: "", customerType: c.customerType ?? "retail", businessName: c.businessName ?? "", ownerName: c.ownerName ?? "", province: c.province ?? "", creditLimit: c.creditLimit == null ? "" : String(c.creditLimit), specialDiscountPercent: c.specialDiscountPercent == null ? "" : String(c.specialDiscountPercent), notes: c.wholesaleNotes ?? "" })} className="p-1.5 rounded text-muted-foreground hover:text-primary hover:bg-background/50" title="تعديل"><Pencil className="w-4 h-4" /></button>
                       <button onClick={() => { if (confirm(`حذف العميل ${c.name || c.phone}؟`)) deleteCustomer.mutate(c.id); }} className="p-1.5 rounded text-destructive hover:bg-background/50" title="حذف"><Trash2 className="w-4 h-4" /></button>
                     </div>
                   </td>
                 </tr>
               ))}
             </tbody>
-            <TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
+          <TableTotalsFooter rows={visibleCustomers} allRows={visibleCustomers} labelColSpan={3} cells={[
               { key: "orders", label: "إجمالي الطلبات", value: (customer) => Number(customer.orderCount ?? 0) },
               { key: "sales", label: "إجمالي المبيعات", value: (customer) => Number(customer.totalSpent ?? 0), format: formatCurrency },
               { key: "points", label: "إجمالي النقاط", value: (customer) => Number(customer.rewardPoints ?? 0) },
@@ -233,6 +254,10 @@ export default function CustomersPage() {
                   <Info label="الهاتف" value={formatIraqiPhone(detail.phone)} ltr />
                   <Info label="البريد" value={detail.email || "—"} />
                   <Info label="المدينة" value={detail.city || detail.address || "—"} />
+                  <Info label="نوع العميل" value={detail.customerType === "wholesale" ? "عميل جملة" : "عميل مفرد"} />
+                  {detail.customerType === "wholesale" && <Info label="المتجر / صاحب المتجر" value={`${detail.businessName || "—"} / ${detail.ownerName || "—"}`} />}
+                  {detail.customerType === "wholesale" && <Info label="حد الائتمان" value={detail.creditLimit == null ? "غير محدد" : formatCurrency(detail.creditLimit)} />}
+                  {detail.customerType === "wholesale" && <Info label="الخصم الخاص" value={`${detail.specialDiscountPercent ?? 0}%`} />}
                   <Info label="منذ" value={new Date(detail.createdAt).toLocaleDateString("ar-IQ-u-nu-latn")} />
                   <Info label="النوع" value={detail.role} />
                   <Info label="المستوى" value={`${detail.rewardLevelLabel ?? "برونزي"} · ${(detail.rewardPoints ?? 0).toLocaleString("ar-IQ-u-nu-latn")} نقطة`} />
@@ -502,10 +527,10 @@ export default function CustomersPage() {
 }
 
 function CustomerFormModal({ initial, saving, onClose, onSave }: {
-  initial: { id: number | null; name: string; phone: string; fullName: string; email: string; address: string; city: string };
+  initial: CustomerEditForm;
   saving: boolean;
   onClose: () => void;
-  onSave: (c: { id: number | null; name: string; phone: string; fullName: string; email: string; address: string; city: string }) => void;
+  onSave: (c: CustomerEditForm) => void;
 }) {
   const [form, setForm] = useState(initial);
   // When editing an existing customer, load full data so optional fields aren't wiped.
@@ -523,6 +548,13 @@ function CustomerFormModal({ initial, saving, onClose, onSave }: {
         email: detail.data!.email || "",
         address: detail.data!.address || "",
         city: detail.data!.city || "",
+        customerType: detail.data!.customerType ?? "retail",
+        businessName: detail.data!.businessName ?? "",
+        ownerName: detail.data!.ownerName ?? "",
+        province: detail.data!.province ?? "",
+        creditLimit: detail.data!.creditLimit == null ? "" : String(detail.data!.creditLimit),
+        specialDiscountPercent: detail.data!.specialDiscountPercent == null ? "" : String(detail.data!.specialDiscountPercent),
+        notes: detail.data!.wholesaleNotes ?? "",
       }));
     }
   }, [detail.data]);
@@ -532,7 +564,7 @@ function CustomerFormModal({ initial, saving, onClose, onSave }: {
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={onClose}>
-      <div className="bg-card border border-border/40 rounded-2xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-card border border-border/40 rounded-2xl max-w-xl w-full max-h-[90dvh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-border/30 p-4">
           <h2 className="text-lg font-bold text-foreground">{initial.id ? "تعديل بيانات العميل" : "إضافة عميل جديد"}</h2>
           <button onClick={onClose}><X className="w-5 h-5 text-muted-foreground" /></button>
@@ -542,6 +574,23 @@ function CustomerFormModal({ initial, saving, onClose, onSave }: {
             <label className="block text-xs text-muted-foreground mb-1">الاسم *</label>
             <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} placeholder="اسم العميل" />
           </div>
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">نوع العميل</label>
+            <select value={form.customerType} onChange={(e) => setForm({ ...form, customerType: e.target.value as "retail" | "wholesale" })} className={inputCls}>
+              <option value="retail">عميل مفرد</option>
+              <option value="wholesale">عميل جملة</option>
+            </select>
+          </div>
+          {form.customerType === "wholesale" && <>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs text-muted-foreground">اسم المتجر *<input required value={form.businessName} onChange={(e) => setForm({ ...form, businessName: e.target.value })} className={`${inputCls} mt-1`} /></label>
+              <label className="text-xs text-muted-foreground">اسم صاحب المتجر *<input required value={form.ownerName} onChange={(e) => setForm({ ...form, ownerName: e.target.value })} className={`${inputCls} mt-1`} /></label>
+              <label className="text-xs text-muted-foreground">المحافظة<input value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value })} className={`${inputCls} mt-1`} /></label>
+              <label className="text-xs text-muted-foreground">حد الائتمان<input type="number" min="0" value={form.creditLimit} onChange={(e) => setForm({ ...form, creditLimit: e.target.value })} className={`${inputCls} mt-1`} /></label>
+              <label className="text-xs text-muted-foreground">خصم خاص %<input type="number" min="0" max="100" step="0.01" value={form.specialDiscountPercent} onChange={(e) => setForm({ ...form, specialDiscountPercent: e.target.value })} className={`${inputCls} mt-1`} /></label>
+            </div>
+            <label className="block text-xs text-muted-foreground">ملاحظات الجملة<textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className={`${inputCls} mt-1`} rows={3} /></label>
+          </>}
           <div>
             <label className="block text-xs text-muted-foreground mb-1">رقم الهاتف *</label>
             <input value={form.phone} onChange={(e) => setForm({ ...form, phone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" dir="ltr" />
