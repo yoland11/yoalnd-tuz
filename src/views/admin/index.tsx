@@ -880,7 +880,7 @@ export default function Admin() {
           </Route>
           <Route path="/admin/staff">
             {() => (
-              <Guard me={me} perm="staff">
+              <Guard me={me} perm="staff.view">
                 <StaffPage />
               </Guard>
             )}

@@ -570,7 +570,7 @@ export const NAV: NavItem[] = [
     perm: "customers",
   },
   { href: "/admin/crews", label: "إدارة الكادر", icon: UserCog, perm: "staff" },
-  { href: "/admin/staff", label: "الموظفون", icon: UserCog, perm: "staff" },
+  { href: "/admin/staff", label: "الموظفون", icon: UserCog, perm: "staff.view" },
   { href: "/admin/employee-performance", label: "أداء الموظفين", icon: Trophy, perm: "staff" },
   { href: "/admin/invitations", label: "استوديو الدعوات", icon: Mail, perm: "koshas" },
   { href: "/admin/catering", label: "تجهيز حفلات الطعام", icon: ChefHat, perm: "catering_view", anyPerm: ["catering_manage", "catering_kitchen", "catering_delivery", "catering_cashier", "catering_supervisor", "catering_warehouse"] },

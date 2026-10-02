@@ -4,6 +4,7 @@ import {
   type ImageProcessOptions,
 } from "@/lib/image-tools";
 import { queryClient } from "@/lib/query-client";
+import { hasStaffPermission, type StaffPermission } from "@/lib/staff-permissions";
 export { formatCurrency, formatMoney } from "@/lib/money";
 
 // ───── Cookie-based admin auth client ─────
@@ -75,6 +76,10 @@ export const ALL_PERMISSIONS = [
   "delivery",
   "customers",
   "staff",
+  "staff.view",
+  "staff.create",
+  "staff.edit",
+  "staff.delete",
   "salary_settings_view",
   "salary_settings_edit",
   "salary_settings_approve",
@@ -552,6 +557,10 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   doc_scanner_view_original: "عرض الصورة الأصلية",
   customers: "إدارة العملاء",
   staff: "إدارة الموظفين",
+  "staff.view": "عرض قائمة الموظفين",
+  "staff.create": "إضافة موظف",
+  "staff.edit": "تعديل بيانات الموظف",
+  "staff.delete": "إيقاف حساب الموظف مع حفظ سجله",
   settings: "إدارة الإعدادات",
   invoices: "طباعة الفواتير",
   "print.sales_invoice": "الطباعة المباشرة لفواتير المبيعات",
@@ -1087,6 +1096,7 @@ export function hasPerm(
   if (user.role === "admin") return true;
   if (!perm) return true;
   if (user.permissions.includes(perm)) return true;
+  if (perm.startsWith("staff.") && hasStaffPermission(user.permissions, perm as StaffPermission)) return true;
   // Mirror the server: the "graduation" module gate implies its granular
   // sub-permissions so existing holders keep access after the split.
   if ((perm.startsWith("graduation_") || perm.startsWith("graduation.")) && user.permissions.includes("graduation"))

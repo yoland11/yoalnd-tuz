@@ -12,6 +12,7 @@ import {
 } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { staffPhotoUpdateSchema } from "./staff-photo";
+import { hasStaffPermission, type StaffPermission } from "@/lib/staff-permissions";
 import { normalizeProductItemSettings } from "./product-item-settings";
 import { calculateServiceLine, invoiceLineTracksInventory, serviceOrderTotal } from "./service-item-lines";
 import { groupPurchaseInvoiceStockChanges, preparePurchaseVariantLines, type PurchaseVariantProduct } from "./purchase-variant-lines";
@@ -786,6 +787,10 @@ export const ALL_PERMISSIONS = [
   "delivery",
   "customers",
   "staff",
+  "staff.view",
+  "staff.create",
+  "staff.edit",
+  "staff.delete",
   "salary_settings_view",
   "salary_settings_edit",
   "salary_settings_approve",
@@ -2078,6 +2083,11 @@ function hasPermission(
   if (user.role === "admin") return true;
   if (!perm) return true;
   if (user.permissions.includes(perm)) return true;
+  if (
+    perm.startsWith("staff.") &&
+    hasStaffPermission(user.permissions, perm as StaffPermission)
+  )
+    return true;
   // The "graduation" module gate implies its granular sub-permissions, so
   // staff granted the module before the split keep full access.
   if (
@@ -8443,6 +8453,46 @@ function formatStaff(s: any) {
     lastActivityAt: s.lastActivityAt?.toISOString?.() ?? null,
     createdAt: s.createdAt?.toISOString?.() ?? s.created_at?.toISOString?.() ?? null,
   };
+}
+
+function canViewStaffPay(viewer: AdminUser) {
+  return (
+    viewer.role === "admin" ||
+    viewer.permissions.includes("staff") ||
+    hasPermission(viewer, "salary_settings_view") ||
+    hasPermission(viewer, "salary_settings_edit") ||
+    hasPermission(viewer, "employee_salaries_view") ||
+    hasPermission(viewer, "payroll_view")
+  );
+}
+
+function formatStaffForViewer(s: any, viewer: AdminUser) {
+  const formatted = formatStaff(s);
+  if (canViewStaffPay(viewer)) return formatted;
+  const {
+    baseSalary: _baseSalary,
+    salaryType: _salaryType,
+    currency: _currency,
+    workingDaysPerWeek: _workingDaysPerWeek,
+    dailyWorkingHours: _dailyWorkingHours,
+    hourlyRate: _hourlyRate,
+    overtimeRate: _overtimeRate,
+    attendanceAllowance: _attendanceAllowance,
+    transportationAllowance: _transportationAllowance,
+    foodAllowance: _foodAllowance,
+    phoneAllowance: _phoneAllowance,
+    housingAllowance: _housingAllowance,
+    otherFixedAllowances: _otherFixedAllowances,
+    fixedDeduction: _fixedDeduction,
+    salesCommissionPercentage: _salesCommissionPercentage,
+    profitCommissionPercentage: _profitCommissionPercentage,
+    paymentMethod: _paymentMethod,
+    paymentReference: _paymentReference,
+    salaryStatus: _salaryStatus,
+    salaryNotes: _salaryNotes,
+    ...staff
+  } = formatted;
+  return staff;
 }
 
 function formatCrew(c: any) {
@@ -48425,7 +48475,7 @@ async function handleAdmin(
   }
 
   if (section === "staff") {
-    const auth = await requirePermission(req, "staff");
+    const auth = await requirePermission(req, "staff.view");
     if (isResponse(auth)) return auth;
     await ensureStaffTableShape();
 
@@ -48437,6 +48487,8 @@ async function handleAdmin(
       parts[3] === "sessions" &&
       parts[4] === "logout-all"
     ) {
+      if (!hasPermission(auth, "staff.edit"))
+        return error("ليس لديك صلاحية تعديل حسابات الموظفين", 403);
       const targetId = int(parts[2]);
       if (!targetId) return error("معرف الموظف غير صحيح", 400);
       const employee = await db.query.staffTable.findFirst({
@@ -48861,18 +48913,22 @@ async function handleAdmin(
         summaries.set(advance.employeeId, current);
       }
       return json(
-        rows.map((row) => ({
-          ...formatStaff(row),
-          advanceSummary: summaries.get(row.id) ?? {
-            totalAdvances: 0,
-            outstandingBalance: 0,
-            paidAmount: 0,
-            lastAdvanceDate: null,
-          },
-        })),
+        rows.map((row) => {
+          const formatted: Record<string, any> = formatStaffForViewer(row, auth);
+          if (canViewStaffPay(auth))
+            formatted.advanceSummary = summaries.get(row.id) ?? {
+              totalAdvances: 0,
+              outstandingBalance: 0,
+              paidAmount: 0,
+              lastAdvanceDate: null,
+            };
+          return formatted;
+        }),
       );
     }
     if (method === "POST") {
+      if (!hasPermission(auth, "staff.create"))
+        return error("ليس لديك صلاحية إضافة موظف", 403);
       const payload = await body(req);
       const username = staffUsername(payload?.username);
       const password = String(payload?.password ?? "");
@@ -48882,11 +48938,17 @@ async function handleAdmin(
       const cleanPassword = password.trim();
       const photoUpdate = staffPhotoUpdateSchema({ storageUrl: STORAGE_URL, bucket: STORAGE_BUCKET }).safeParse(payload);
       if (!photoUpdate.success) return validationError("staff.create", photoUpdate);
-      const normalizedRole = normalizeStaffRole(payload?.role);
-      const explicitPermissions = validateStaffPermissions(
-        payload?.permissions,
-      );
-      if (payload?.permissions !== undefined && explicitPermissions === null)
+      const canEditStaffPay = auth.role === "admin" || auth.permissions.includes("staff") || hasPermission(auth, "salary_settings_edit");
+      if (!canEditStaffPay && ["baseSalary", "salaryType", "currency", "workingDaysPerWeek", "dailyWorkingHours", "hourlyRate", "overtimeRate", "attendanceAllowance", "transportationAllowance", "foodAllowance", "phoneAllowance", "housingAllowance", "otherFixedAllowances", "fixedDeduction", "salesCommissionPercentage", "profitCommissionPercentage", "paymentMethod", "paymentReference", "salaryStatus", "salaryNotes"].some((key) => payload?.[key] !== undefined))
+        return error("ليس لديك صلاحية إدارة بيانات الرواتب", 403);
+      const canManageStaffRoles = auth.role === "admin" || auth.permissions.includes("staff");
+      const normalizedRole = canManageStaffRoles
+        ? normalizeStaffRole(payload?.role)
+        : "employee";
+      const explicitPermissions = canManageStaffRoles
+        ? validateStaffPermissions(payload?.permissions)
+        : undefined;
+      if (canManageStaffRoles && payload?.permissions !== undefined && explicitPermissions === null)
         return error("صلاحيات غير صحيحة", 400);
       try {
         const duplicate = await db.query.staffTable.findFirst({
@@ -48992,7 +49054,9 @@ async function handleAdmin(
             salaryNotes: String(payload?.salaryNotes ?? "").trim() || null,
             permissions: permissionsForRole(
               normalizedRole,
-              explicitPermissions ?? payload?.permissions,
+              canManageStaffRoles
+                ? explicitPermissions ?? payload?.permissions
+                : undefined,
             ),
             isActive: payload?.isActive === false ? false : true,
           })
@@ -49001,7 +49065,7 @@ async function handleAdmin(
           username,
           role: normalizedRole,
         });
-        return json(formatStaff(row), 201);
+        return json(formatStaffForViewer(row, auth), 201);
       } catch (err: any) {
         logStaffApiFailure("create", err, { username, role: normalizedRole });
         if (isUniqueViolation(err, "username"))
@@ -49016,7 +49080,16 @@ async function handleAdmin(
         where: eq(staffTable.id, id),
       });
       if (!existing) return error("غير موجود", 404);
+      if (
+        method === "PATCH" &&
+        existing.role === "admin" &&
+        auth.role !== "admin" &&
+        !auth.permissions.includes("staff")
+      )
+        return error("لا تملك صلاحية تعديل حساب المدير الرئيسي", 403);
       if (method === "DELETE") {
+        if (!hasPermission(auth, "staff.delete"))
+          return error("ليس لديك صلاحية إيقاف حساب الموظف", 403);
         if (existing.role === "admin")
           return error("لا يمكن حذف المدير الرئيسي", 403);
         try {
@@ -49034,13 +49107,18 @@ async function handleAdmin(
             username: existing.username,
             previousIsActive: existing.isActive,
           });
-          return json({ message: "تم إيقاف الموظف مع حفظ سجله", staff: formatStaff(row) });
+          return json({ message: "تم إيقاف الموظف مع حفظ سجله", staff: formatStaffForViewer(row, auth) });
         } catch (err) {
           logStaffApiFailure("archive", err, { id });
           return error("فشل الاتصال بالخادم أثناء إيقاف الموظف", 500);
         }
       }
       const b = await body(req);
+      if (!hasPermission(auth, "staff.edit"))
+        return error("ليس لديك صلاحية تعديل بيانات الموظفين", 403);
+      const canEditStaffPay = auth.role === "admin" || auth.permissions.includes("staff") || hasPermission(auth, "salary_settings_edit");
+      if (!canEditStaffPay && ["baseSalary", "salaryType", "currency", "workingDaysPerWeek", "dailyWorkingHours", "hourlyRate", "overtimeRate", "attendanceAllowance", "transportationAllowance", "foodAllowance", "phoneAllowance", "housingAllowance", "otherFixedAllowances", "fixedDeduction", "salesCommissionPercentage", "profitCommissionPercentage", "paymentMethod", "paymentReference", "salaryStatus", "salaryNotes"].some((key) => b?.[key] !== undefined))
+        return error("ليس لديك صلاحية إدارة بيانات الرواتب", 403);
       const photoUpdate = staffPhotoUpdateSchema({ storageUrl: STORAGE_URL, bucket: STORAGE_BUCKET }).safeParse(b);
       if (!photoUpdate.success) return validationError("staff.update", photoUpdate);
       const update: any = { ...photoUpdate.data };
@@ -49132,6 +49210,9 @@ async function handleAdmin(
         update.username = nextUsername;
       }
       if (existing.role !== "admin") {
+        const canManageStaffRoles = auth.role === "admin" || auth.permissions.includes("staff");
+        if (!canManageStaffRoles && (b?.role !== undefined || b?.permissions !== undefined))
+          return error("ليس لديك صلاحية تعديل أدوار وصلاحيات الموظفين", 403);
         const nextRole =
           b?.role !== undefined ? normalizeStaffRole(b.role) : existing.role;
         if (b?.role !== undefined) update.role = nextRole;
@@ -49160,7 +49241,7 @@ async function handleAdmin(
         void logAdminActivity(req, "staff_updated", "staff", id, {
           fields: Object.keys(update),
         });
-        return json(formatStaff(row));
+        return json(formatStaffForViewer(row, auth));
       } catch (err: any) {
         logStaffApiFailure("update", err, { id });
         if (isUniqueViolation(err, "username"))

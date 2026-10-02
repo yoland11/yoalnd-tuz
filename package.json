@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test:employee-salaries": "node ./scripts/test-employee-salary-logic.mjs",
     "test:staff-password-toggle": "node ./scripts/test-staff-password-toggle.mjs",
+    "test:staff-permissions": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-staff-permissions.ts",
     "test:payroll-movement-schema": "node ./scripts/test-payroll-movement-schema.mjs",
     "test:payroll-periods": "pnpm --filter @workspace/db exec tsx ../../scripts/test-payroll-periods.ts",
     "test:payroll-lifecycle": "pnpm --filter @workspace/db exec tsx ../../scripts/test-payroll-lifecycle.ts",

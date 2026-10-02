@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmployeeAvatar } from "@/components/employee-avatar";
 import { ImageUploadEditor } from "@/components/image-upload-editor";
-import { adminFetch, ALL_PERMISSIONS, PERMISSION_LABELS } from "./_lib";
+import { adminFetch, ALL_PERMISSIONS, hasPerm, PERMISSION_LABELS, type AdminMe } from "./_lib";
 import { employeePhotoUrlFromUpload } from "@/lib/employee-identity";
 import { EmptyState } from "./_layout";
 import ScanDocumentButton from "./scan-document-button";
@@ -73,7 +73,7 @@ const PERMISSION_CATEGORIES: Array<{
   { key: "catalog", title: "العملاء والخدمات والمنتجات", match: (id) => ["customers", "services", "products"].includes(id) },
   { key: "accounting", title: "المحاسبة والسندات", match: (id) => id === "accounting" || id.startsWith("voucher_") || id.startsWith("expenses_") },
   { key: "approvals", title: "الموافقات", match: (id) => id.startsWith("approvals.") },
-  { key: "hr", title: "الموظفون والرواتب", match: (id) => ["staff", "hr"].includes(id) || startsWithAny(id, ["payroll_", "employee_salaries_", "bonus_", "salary_settings_"]) },
+  { key: "hr", title: "الموظفون والرواتب", match: (id) => ["staff", "hr"].includes(id) || id.startsWith("staff.") || startsWithAny(id, ["payroll_", "employee_salaries_", "bonus_", "salary_settings_"]) },
   { key: "tasks", title: "المهام", match: (id) => id === "tasks" || id.startsWith("task_") },
   { key: "koshas", title: "الكوشات", match: (id) => id === "koshas" || id.startsWith("koshat_tasks.") },
   { key: "photography", title: "التصوير", match: (id) => id.startsWith("photography") },
@@ -337,6 +337,17 @@ function PermissionSections({
 export default function StaffPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const currentUserQuery = useQuery({
+    queryKey: ["admin", "staff-page-current-user"],
+    queryFn: () => adminFetch<{ user: AdminMe }>("/admin/auth/me").then((response) => response.user),
+  });
+  const currentUser = currentUserQuery.data ?? null;
+  const canCreateStaff = hasPerm(currentUser, "staff.create");
+  const canEditStaff = hasPerm(currentUser, "staff.edit");
+  const canDeleteStaff = hasPerm(currentUser, "staff.delete");
+  const canManageStaffRoles = currentUser?.role === "admin" || Boolean(currentUser?.permissions.includes("staff"));
+  const canViewStaffPay = Boolean(currentUser?.role === "admin" || currentUser?.permissions.includes("staff") || hasPerm(currentUser, "salary_settings_view") || hasPerm(currentUser, "salary_settings_edit") || hasPerm(currentUser, "employee_salaries_view") || hasPerm(currentUser, "payroll_view"));
+  const canEditStaffPay = Boolean(currentUser?.role === "admin" || currentUser?.permissions.includes("staff") || hasPerm(currentUser, "salary_settings_edit"));
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "staff"],
     queryFn: () => adminFetch<Staff[]>("/admin/staff"),
@@ -373,13 +384,38 @@ export default function StaffPage() {
         fullName: e.fullName ?? "",
         photoUrl: e.photoUrl ?? null,
         department: e.department ?? "general",
-        baseSalary: Number(e.baseSalary ?? 0),
         hiredAt: e.hiredAt || undefined,
-        jobTitle: e.jobTitle, salaryType: e.salaryType, currency: e.currency, workingDaysPerWeek: Number(e.workingDaysPerWeek), dailyWorkingHours: Number(e.dailyWorkingHours), hourlyRate: Number(e.hourlyRate), overtimeRate: Number(e.overtimeRate), attendanceAllowance: Number(e.attendanceAllowance), transportationAllowance: Number(e.transportationAllowance), foodAllowance: Number(e.foodAllowance), phoneAllowance: Number(e.phoneAllowance), housingAllowance: Number(e.housingAllowance), otherFixedAllowances: Number(e.otherFixedAllowances), fixedDeduction: Number(e.fixedDeduction), salesCommissionPercentage: Number(e.salesCommissionPercentage), profitCommissionPercentage: Number(e.profitCommissionPercentage), paymentMethod: e.paymentMethod, paymentReference: e.paymentReference, salaryStatus: e.salaryStatus, salaryNotes: e.salaryNotes,
-        role: e.role,
-        permissions: e.permissions ?? [],
+        jobTitle: e.jobTitle,
         isActive: e.isActive,
       };
+      if (canEditStaffPay) {
+        body.baseSalary = Number(e.baseSalary ?? 0);
+        Object.assign(body, {
+          salaryType: e.salaryType,
+          currency: e.currency,
+          workingDaysPerWeek: Number(e.workingDaysPerWeek),
+          dailyWorkingHours: Number(e.dailyWorkingHours),
+          hourlyRate: Number(e.hourlyRate),
+          overtimeRate: Number(e.overtimeRate),
+          attendanceAllowance: Number(e.attendanceAllowance),
+          transportationAllowance: Number(e.transportationAllowance),
+          foodAllowance: Number(e.foodAllowance),
+          phoneAllowance: Number(e.phoneAllowance),
+          housingAllowance: Number(e.housingAllowance),
+          otherFixedAllowances: Number(e.otherFixedAllowances),
+          fixedDeduction: Number(e.fixedDeduction),
+          salesCommissionPercentage: Number(e.salesCommissionPercentage),
+          profitCommissionPercentage: Number(e.profitCommissionPercentage),
+          paymentMethod: e.paymentMethod,
+          paymentReference: e.paymentReference,
+          salaryStatus: e.salaryStatus,
+          salaryNotes: e.salaryNotes,
+        });
+      }
+      if (canManageStaffRoles) {
+        body.role = e.role;
+        body.permissions = e.permissions ?? [];
+      }
       if (e.password) body.password = e.password;
       if (e.id)
         return adminFetch(`/admin/staff/${e.id}`, {
@@ -447,13 +483,13 @@ export default function StaffPage() {
         <h1 className="text-2xl font-bold text-foreground">
           الموظفون والصلاحيات
         </h1>
-        <Button
-          onClick={() => { setShowPassword(false); setEditorTab("profile"); setEditing({ ...blank }); }}
+        {canCreateStaff ? <Button
+          onClick={() => { setShowPassword(false); setEditorTab("profile"); setEditing({ ...blank, role: canManageStaffRoles ? blank.role : "employee", permissions: canManageStaffRoles ? blank.permissions : ROLE_PRESETS.employee }); }}
           size="sm"
           className="gap-2"
         >
           <Plus className="w-4 h-4" /> إضافة موظف
-        </Button>
+        </Button> : null}
       </div>
 
       {isLoading ? (
@@ -507,13 +543,13 @@ export default function StaffPage() {
                   </div>
                 </div>
                 <label
-                  className={`inline-flex items-center gap-1 ${s.role === "admin" ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
+                  className={`inline-flex items-center gap-1 ${s.role === "admin" || !canEditStaff ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
                 >
                   <input
                     type="checkbox"
                     checked={s.isActive}
-                    onChange={() => s.role !== "admin" && toggle.mutate(s)}
-                    disabled={s.role === "admin"}
+                    onChange={() => s.role !== "admin" && canEditStaff && toggle.mutate(s)}
+                    disabled={s.role === "admin" || !canEditStaff}
                     className="accent-primary"
                   />
                   <span
@@ -535,7 +571,7 @@ export default function StaffPage() {
                   ))}
                 </div>
               )}
-              <div className="mb-3 rounded-lg border border-primary/15 bg-primary/5 p-2 text-xs">
+              {canViewStaffPay ? <div className="mb-3 rounded-lg border border-primary/15 bg-primary/5 p-2 text-xs">
                 <div className="mb-1 flex items-center justify-between font-medium text-primary">
                   <span>سلف الموظف</span>
                   <div className="flex items-center gap-2">
@@ -555,12 +591,13 @@ export default function StaffPage() {
                   <span>مسدد: {Number(s.advanceSummary?.paidAmount ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span>
                   <span>متبقي: {Number(s.advanceSummary?.outstandingBalance ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span>
                 </div>
-              </div>
-              <div className="mb-3 rounded-lg border border-border/40 bg-muted/40 p-2 text-xs">
+              </div> : null}
+              {canViewStaffPay ? <div className="mb-3 rounded-lg border border-border/40 bg-muted/40 p-2 text-xs">
                 <div className="mb-1 flex items-center justify-between font-medium"><span>ملخص الراتب</span><span className={s.salaryStatus === "active" ? "text-status-success" : "text-status-warning"}>{s.salaryStatus === "active" ? "نشط" : "غير نشط"}</span></div>
                 <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-muted-foreground"><span>الأساسي: {Number(s.baseSalary ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span><span>الدفع: {s.paymentMethod ?? "—"}</span><span>البدلات: {(Number(s.transportationAllowance ?? 0) + Number(s.foodAllowance ?? 0) + Number(s.housingAllowance ?? 0) + Number(s.phoneAllowance ?? 0) + Number(s.otherFixedAllowances ?? 0)).toLocaleString("ar-IQ-u-nu-latn")}</span><span>الخصم الثابت: {Number(s.fixedDeduction ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span><span className="col-span-2 font-medium text-foreground">الصافي التقديري: {Math.max(0, Number(s.baseSalary ?? 0) + Number(s.transportationAllowance ?? 0) + Number(s.foodAllowance ?? 0) + Number(s.housingAllowance ?? 0) + Number(s.phoneAllowance ?? 0) + Number(s.otherFixedAllowances ?? 0) - Number(s.fixedDeduction ?? 0)).toLocaleString("ar-IQ-u-nu-latn")} د.ع</span></div>
-              </div>
-              <div className="flex items-center gap-2">
+              </div> : null}
+              {(canEditStaff || canDeleteStaff) ? <div className="flex items-center gap-2">
+                {canEditStaff ? <>
                 <button
                   onClick={() => {
                     setShowPassword(false);
@@ -583,7 +620,8 @@ export default function StaffPage() {
                 >
                   <Edit2 className="w-3.5 h-3.5" /> تعديل
                 </button>
-                {s.role !== "admin" && (
+                </> : null}
+                {canDeleteStaff && s.role !== "admin" && (
                   <button
                     onClick={() =>
                       confirm(
@@ -597,7 +635,7 @@ export default function StaffPage() {
                     <Archive className="w-3.5 h-3.5" />
                   </button>
                 )}
-              </div>
+              </div> : null}
             </div>
                 ))}
               </div>
@@ -628,7 +666,7 @@ export default function StaffPage() {
                 <X className="w-5 h-5 text-muted-foreground" />
               </button>
             </div>
-            {editing.id && <div className="grid grid-cols-3 rounded-lg bg-muted p-1 text-sm"><button type="button" onClick={() => setEditorTab("profile")} className={`rounded-md px-3 py-2 ${editorTab === "profile" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>بيانات الموظف</button><button type="button" onClick={() => setEditorTab("salary")} className={`rounded-md px-3 py-2 ${editorTab === "salary" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>💰 إعدادات الراتب</button><button type="button" onClick={() => setEditorTab("devices")} className={`rounded-md px-3 py-2 ${editorTab === "devices" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>الأجهزة</button></div>}
+            {editing.id && <div className={`grid ${canEditStaffPay ? "grid-cols-3" : "grid-cols-2"} rounded-lg bg-muted p-1 text-sm`}><button type="button" onClick={() => setEditorTab("profile")} className={`rounded-md px-3 py-2 ${editorTab === "profile" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>بيانات الموظف</button>{canEditStaffPay ? <button type="button" onClick={() => setEditorTab("salary")} className={`rounded-md px-3 py-2 ${editorTab === "salary" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>💰 إعدادات الراتب</button> : null}<button type="button" onClick={() => setEditorTab("devices")} className={`rounded-md px-3 py-2 ${editorTab === "devices" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>الأجهزة</button></div>}
             {editorTab === "devices" && editing.id ? <EmployeeSessionsManager staffId={editing.id} employeeName={editing.fullName} /> : editorTab === "salary" && editing.id ? <SalarySettingsTab employee={{ ...editing, id: editing.id }} onSaved={() => qc.invalidateQueries({ queryKey: ["admin", "staff"] })} /> : <>
             <section className="rounded-xl border border-border/40 bg-muted/20 p-4">
               <div className="mb-3 flex items-center gap-3">
@@ -658,15 +696,15 @@ export default function StaffPage() {
             />
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="القسم" value={editing.department} onChange={(v) => setEditing((s) => ({ ...s!, department: v }))} />
-              <Field label="الراتب الأساسي (IQD)" type="number" value={editing.baseSalary} onChange={(v) => setEditing((s) => ({ ...s!, baseSalary: v }))} />
+              {canEditStaffPay ? <Field label="الراتب الأساسي (IQD)" type="number" value={editing.baseSalary} onChange={(v) => setEditing((s) => ({ ...s!, baseSalary: v }))} /> : null}
             </div>
             <Field label="تاريخ التعيين" type="date" value={editing.hiredAt} onChange={(v) => setEditing((s) => ({ ...s!, hiredAt: v }))} />
-            <section className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
+            {canEditStaffPay ? <section className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
               <h4 className="font-semibold text-primary">Salary Settings · إعدادات الراتب</h4>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><Field label="المسمى الوظيفي" value={editing.jobTitle} onChange={(v) => setEditing((s) => ({ ...s!, jobTitle: v }))} /><Field label="العملة" value={editing.currency} onChange={(v) => setEditing((s) => ({ ...s!, currency: v }))} /><Field label="أيام العمل أسبوعياً" type="number" value={editing.workingDaysPerWeek} onChange={(v) => setEditing((s) => ({ ...s!, workingDaysPerWeek: v }))} /><Field label="ساعات العمل اليومية" type="number" value={editing.dailyWorkingHours} onChange={(v) => setEditing((s) => ({ ...s!, dailyWorkingHours: v }))} /><Field label="الأجر بالساعة" type="number" value={editing.hourlyRate} onChange={(v) => setEditing((s) => ({ ...s!, hourlyRate: v }))} /><Field label="سعر الساعة الإضافية" type="number" value={editing.overtimeRate} onChange={(v) => setEditing((s) => ({ ...s!, overtimeRate: v }))} /></div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><div><label className="mb-1 block text-xs text-muted-foreground">نوع الراتب</label><select value={editing.salaryType} onChange={(e) => setEditing((s) => ({ ...s!, salaryType: e.target.value }))} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="monthly">شهري</option><option value="weekly">أسبوعي</option><option value="daily">يومي</option><option value="hourly">بالساعة</option></select></div><div><label className="mb-1 block text-xs text-muted-foreground">حالة الراتب</label><select value={editing.salaryStatus} onChange={(e) => setEditing((s) => ({ ...s!, salaryStatus: e.target.value }))} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="active">نشط</option><option value="suspended">معلّق</option></select></div></div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><Field label="بدل الحضور" type="number" value={editing.attendanceAllowance} onChange={(v) => setEditing((s) => ({ ...s!, attendanceAllowance: v }))} /><Field label="بدل النقل" type="number" value={editing.transportationAllowance} onChange={(v) => setEditing((s) => ({ ...s!, transportationAllowance: v }))} /><Field label="بدل الطعام" type="number" value={editing.foodAllowance} onChange={(v) => setEditing((s) => ({ ...s!, foodAllowance: v }))} /><Field label="بدل الهاتف" type="number" value={editing.phoneAllowance} onChange={(v) => setEditing((s) => ({ ...s!, phoneAllowance: v }))} /><Field label="بدل السكن" type="number" value={editing.housingAllowance} onChange={(v) => setEditing((s) => ({ ...s!, housingAllowance: v }))} /><Field label="بدلات ثابتة أخرى" type="number" value={editing.otherFixedAllowances} onChange={(v) => setEditing((s) => ({ ...s!, otherFixedAllowances: v }))} /><Field label="خصم ثابت" type="number" value={editing.fixedDeduction} onChange={(v) => setEditing((s) => ({ ...s!, fixedDeduction: v }))} /><Field label="عمولة المبيعات %" type="number" value={editing.salesCommissionPercentage} onChange={(v) => setEditing((s) => ({ ...s!, salesCommissionPercentage: v }))} /><Field label="عمولة الأرباح %" type="number" value={editing.profitCommissionPercentage} onChange={(v) => setEditing((s) => ({ ...s!, profitCommissionPercentage: v }))} /><Field label="طريقة الدفع المفضلة" value={editing.paymentMethod} onChange={(v) => setEditing((s) => ({ ...s!, paymentMethod: v }))} /><Field label="الحساب البنكي / المرجع" value={editing.paymentReference} onChange={(v) => setEditing((s) => ({ ...s!, paymentReference: v }))} /><Field label="ملاحظات الراتب" value={editing.salaryNotes} onChange={(v) => setEditing((s) => ({ ...s!, salaryNotes: v }))} /></div>
-            </section>
+            </section> : null}
             {!editing.id && (
               <Field
                 label="اسم المستخدم"
@@ -715,7 +753,7 @@ export default function StaffPage() {
                     permissions: ROLE_PRESETS[role] ?? s!.permissions,
                   }));
                 }}
-                disabled={editing.role === "admin"}
+                disabled={editing.role === "admin" || !canManageStaffRoles}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-70"
               >
                 {ROLES.map((r) => (
@@ -735,13 +773,13 @@ export default function StaffPage() {
               </p>
               <PermissionSections
                 selected={editing.permissions}
-                disabled={editing.role === "admin"}
+                disabled={editing.role === "admin" || !canManageStaffRoles}
                 onChange={(permissions) =>
                   setEditing((current) => ({ ...current!, permissions }))
                 }
               />
             </div>
-            {editing.id && <ApprovalPermissionsPanel staff={editing} />}
+            {editing.id && canManageStaffRoles && <ApprovalPermissionsPanel staff={editing} />}
             <label
               className={`flex items-center gap-2 text-sm ${editing.role === "admin" ? "opacity-70" : ""}`}
             >
