@@ -46,6 +46,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
+import {
+  hasExactPurchaseCatalogProduct,
+  purchaseInvoiceErrorDescription,
+} from "@/lib/purchase-invoice-errors";
 import { usePublicSettings } from "@/lib/public-settings";
 import { downloadElementPdf } from "@/lib/pdf";
 import {
@@ -532,6 +536,19 @@ export default function PurchasesPage() {
       toast({ title: "أضف أصناف للفاتورة", variant: "destructive" });
       return;
     }
+    const unselectedCatalogItem = validItems.find(
+      (item) =>
+        !item.productId &&
+        hasExactPurchaseCatalogProduct(item.productName, products),
+    );
+    if (unselectedCatalogItem) {
+      toast({
+        title: "اختر المنتج من القائمة",
+        description: `اضغط على نتيجة «${unselectedCatalogItem.productName}» حتى تظهر خيارات المتغيرات ثم احفظ الفاتورة.`,
+        variant: "destructive",
+      });
+      return;
+    }
     const selectedQueries = validItems
       .map((item) => item.productId)
       .filter((productId): productId is number => Boolean(productId))
@@ -642,7 +659,7 @@ export default function PurchasesPage() {
     } catch (e: any) {
       toast({
         title: "خطأ في الحفظ",
-        description: e.message,
+        description: purchaseInvoiceErrorDescription(e.message, e.requestId),
         variant: "destructive",
       });
     } finally {

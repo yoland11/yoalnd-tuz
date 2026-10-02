@@ -15,6 +15,7 @@ import { staffPhotoUpdateSchema } from "./staff-photo";
 import { normalizeProductItemSettings } from "./product-item-settings";
 import { calculateServiceLine, invoiceLineTracksInventory, serviceOrderTotal } from "./service-item-lines";
 import { groupPurchaseInvoiceStockChanges, preparePurchaseVariantLines, type PurchaseVariantProduct } from "./purchase-variant-lines";
+import { mapPurchaseInvoiceCheckoutError } from "@/lib/purchase-invoice-errors";
 import { koshaManagerList, koshaManagerDetail, resolveKoshaManagerProblem, mayResolveKoshaProblem, type KoshaLookups } from "./kosha-manager";
 import {
   createKoshaInstructionStore,
@@ -38495,7 +38496,7 @@ async function handleAdmin(
   if (section === "sales-invoices")
     return handleSalesInvoices(req, parts, section);
   if (section === "purchase-invoices")
-    return handlePurchaseInvoices(req, parts, section);
+    return handlePurchaseInvoicesWithErrorMapping(req, parts, section);
 
   if (section === "bouquet-designer")
     return handleBouquetDesignerAdmin(req, parts.slice(2));
@@ -52547,7 +52548,7 @@ async function handleAdmin(
   const salesResult = await handleSalesInvoices(req, parts, section);
   if (salesResult) return salesResult;
 
-  const purchasesResult = await handlePurchaseInvoices(req, parts, section);
+  const purchasesResult = await handlePurchaseInvoicesWithErrorMapping(req, parts, section);
   if (purchasesResult) return purchasesResult;
 
   const suppliersResult = await handleSuppliers(req, parts, section);
@@ -56508,6 +56509,20 @@ const purchaseInvoiceSupplierPaymentSchema = z.object({
   notes: z.string().trim().max(2_000).optional().nullable(),
   attachments: z.array(z.string().trim().max(2_000)).max(20).optional().default([]),
 });
+
+async function handlePurchaseInvoicesWithErrorMapping(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  try {
+    return await handlePurchaseInvoices(req, parts, section);
+  } catch (cause) {
+    const checkoutError = mapPurchaseInvoiceCheckoutError(cause);
+    if (checkoutError) return error(checkoutError.message, checkoutError.status);
+    throw cause;
+  }
+}
 
 async function handlePurchaseInvoices(
   req: NextRequest,

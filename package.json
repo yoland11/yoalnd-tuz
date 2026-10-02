@@ -76,7 +76,7 @@
     "test:remote-printing": "node ./scripts/verify-remote-printing.mjs",
     "test:sales-invoice-print-template": "node ./scripts/verify-sales-invoice-print-template.mjs",
     "test:purchase-invoice-print": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-purchase-invoice-print.ts",
-    "test:purchase-variants": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-purchase-variant-invoice.ts && node ./scripts/test-purchase-variant-schema.mjs && pnpm run test:purchase-invoice-print",
+    "test:purchase-variants": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-purchase-invoice-error-mapping.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-purchase-variant-invoice.ts && node ./scripts/test-purchase-variant-schema.mjs && pnpm run test:purchase-invoice-print",
     "test:booking-finance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-finance.ts",
     "test:booking-center-delete": "node ./scripts/verify-booking-center-delete.mjs",
     "test:expense-category-access": "node ./scripts/verify-expense-category-access.mjs",
