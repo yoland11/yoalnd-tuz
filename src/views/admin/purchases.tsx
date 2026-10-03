@@ -279,7 +279,7 @@ export default function PurchasesPage() {
   const productVariantQueries = useQueries({
     queries: selectedProductIds.map((productId) => ({
       queryKey: ["admin", "product-variants", productId],
-      queryFn: () => adminFetch<ProductVariantResponse>(`/admin/products/${productId}/variants`),
+      queryFn: () => adminFetch<ProductVariantResponse>(`/products/${productId}/variants`),
       enabled: !listMode,
       staleTime: 60_000,
     })),

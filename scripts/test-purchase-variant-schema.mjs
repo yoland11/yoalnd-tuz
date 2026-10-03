@@ -26,6 +26,7 @@ assert.match(api, /reversePurchaseInvoiceStockInTransaction\(tx, items as any\[\
 assert.match(api, /variantLabel: purchaseInvoiceItemsTable\.variantLabel/);
 assert.match(purchases, /aria-label="متغير المنتج"/);
 assert.match(purchases, /required\s+aria-label="متغير المنتج"/);
+assert.match(purchases, /adminFetch<ProductVariantResponse>\(`\/products\/\$\{productId\}\/variants`\)/, "purchase form must use the root products variant endpoint, not the admin list route");
 assert.match(purchases, /variantId: it\.variantId \?\? null/);
 assert.match(purchases, /variantLabel: item\.variantLabel \|\| null/);
 assert.match(printing, /variantLabel\?: string \| null/);
