@@ -27839,7 +27839,9 @@ async function handleHrAdmin(
           }),
         );
       }
-      if (method === "GET" && id) {
+      // Only the bare /payroll/:id path; sub-resources such as
+      // /payroll/:id/lines/:lineId/management have their own GET handlers below.
+      if (method === "GET" && id && !parts[4]) {
         const denied = requirePayroll("payroll_view");
         if (denied) return denied;
         const run = await getPayrollRun(id);
