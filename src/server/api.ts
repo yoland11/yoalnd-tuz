@@ -416,7 +416,6 @@ import {
   previewPayrollRun,
   recalculatePayrollRun,
   recalculatePayrollDraftsForAttendance,
-  reversePayrollRunPayment,
   submitPayrollForApproval,
   reviewPayrollRun,
   rejectPayrollRun,
@@ -434,6 +433,7 @@ import {
   linkHistoricalSalaryPayment,
   payEmployeeSalary,
   reverseEmployeeSalaryPayment,
+  reverseEmployeeSalaryRun,
 } from "@/server/employee-salaries";
 import {
   computeEmployeeScores,
@@ -28705,7 +28705,7 @@ async function handleHrAdmin(
         if (denied) return denied;
         const payload = await body(req);
         const oldRun = await getPayrollRun(id);
-        const run = await reversePayrollRunPayment(id, actor, payload);
+        const run = await reverseEmployeeSalaryRun(id, actor, payload);
         const metadata = {
           oldValues: oldRun,
           newValues: run,
@@ -28769,11 +28769,9 @@ async function handleHrAdmin(
       return json(event, 201);
     }
   } catch (err: any) {
-    console.error("HR operation failed", {
-      resource,
-      id,
-      message: err?.message,
-    });
+    const requestId = makeRequestId(req.headers.get("x-request-id"));
+    const safeError = safeServerError(err);
+    console.error("HR operation failed", { requestId, resource, id, error: safeError });
     if (
       resource === "incentives" &&
       (err?.name === "BonusValidationError" || err?.name === "ZodError")
@@ -28813,9 +28811,23 @@ async function handleHrAdmin(
         },
         400,
       );
+    // Query failures carry SQL text and bound values (names, notes, amounts);
+    // they are never echoed to the browser. Business-rule errors still are.
+    const isQueryFailure =
+      typeof err?.cause?.code === "string" ||
+      /^Failed query:/i.test(String(err?.message || ""));
+    if (isQueryFailure) {
+      const mapped = mapWriteError(err?.cause ?? err);
+      return error(`${mapped.message} (رمز ${safeError.code})`, mapped.status, {
+        code: mapped.code,
+        requestId,
+        retryable: mapped.retryable,
+      });
+    }
     return error(
       String(err?.message || "تعذر إكمال عملية الموارد البشرية"),
       400,
+      { requestId },
     );
   }
   return error("المسار غير مدعوم", 404);

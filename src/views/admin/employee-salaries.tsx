@@ -171,16 +171,20 @@ function downloadBlob(blob: Blob, filename: string) { const url = URL.createObje
 
 const payrollLabels: Record<string, string> = {
   draft: "مسودة", calculated: "محسوب", under_review: "قيد المراجعة",
-  pending_manager_approval: "بانتظار اعتماد المدير", approved: "معتمد",
+  pending_manager_approval: "بانتظار اعتماد المدير", approved: "معتمد", ready_to_pay: "جاهز للصرف",
   processing: "قيد الصرف", paid: "مدفوع", partially_paid: "مدفوع جزئياً",
-  rejected: "مرفوض", cancelled: "ملغي", reversed: "معكوس",
+  rejected: "مرفوض", reopened: "أعيد فتحه", cancelled: "ملغي", reversed: "معكوس", closed: "مقفل",
 };
+// Statuses the server accepts for submit-for-approval (submitPayrollForApproval).
+const submittableStatuses = ["draft", "calculated", "under_review", "reopened", "rejected"];
+// Statuses the server accepts for an installment payment (payEmployeeSalary).
+const payableStatuses = ["approved", "ready_to_pay", "partially_paid"];
 const paymentLabels: Record<string, string> = { unpaid: "غير مدفوع", partially_paid: "مدفوع جزئياً", paid: "مدفوع", reversed: "معكوس" };
 
 function statusTone(status: string) {
   if (["paid", "approved"].includes(status)) return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20";
   if (["rejected", "cancelled", "reversed"].includes(status)) return "bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/20";
-  if (["pending_manager_approval", "processing", "partially_paid"].includes(status)) return "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/20";
+  if (["pending_manager_approval", "ready_to_pay", "processing", "partially_paid"].includes(status)) return "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/20";
   return "bg-muted text-muted-foreground";
 }
 
@@ -291,8 +295,11 @@ function EmployeeSalariesPageInner() {
       await adminFetch(`/admin/hr/payroll/${row.runId}/submit`, { method: "POST", body: JSON.stringify({}) });
       return adminFetch(`/admin/hr/payroll/${row.runId}/approve`, { method: "POST", body: JSON.stringify({}) });
     },
-    onSuccess: () => { toast.success("تم اعتماد الراتب"); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); },
+    onSuccess: () => toast.success("تم اعتماد الراتب"),
     onError: (error: Error) => toast.error(error.message),
+    // Submit may succeed while approve fails; refresh either way so the row shows
+    // its real status (pending approval) instead of a stale draft.
+    onSettled: () => qc.invalidateQueries({ queryKey: ["employee-salaries"] }),
   });
   const editMutation = useMutation({
     mutationFn: ({ row, payload }: { row: SalaryRow; payload: unknown }) => adminFetch(`/admin/hr/payroll/${row.runId}/lines/${row.id}`, { method: "PATCH", body: JSON.stringify(payload) }),
@@ -311,7 +318,7 @@ function EmployeeSalariesPageInner() {
   });
   const reverseMutation = useMutation({
     mutationFn: ({ row, reason }: { row: SalaryRow; reason: string }) => adminFetch(`/admin/hr/payroll/${row.runId}/reverse`, { method: "POST", body: JSON.stringify({ reason }) }),
-    onSuccess: () => { toast.success("تم عكس الصرف وحركة الصندوق والقيود واسترجاع خصومات السلف"); setReverseRow(null); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); },
+    onSuccess: () => { toast.success("تم عكس الصرف وحركة الصندوق والقيود واسترجاع خصومات السلف"); setReverseRow(null); qc.invalidateQueries({ queryKey: ["employee-salaries"] }); qc.invalidateQueries({ queryKey: ["employee-salary-management"] }); },
     onError: (error: Error) => toast.error(error.message),
   });
   const paymentMutation = useMutation({
@@ -526,7 +533,7 @@ function EmployeeSalariesPageInner() {
 
   const canEdit = (row: SalaryRow) => ["draft", "calculated", "under_review", "reopened", "rejected"].includes(row.payrollStatus) && !row.financial_transaction_id && n(row.amountPaid) === 0;
   const canAdjust = (row: SalaryRow) => !["cancelled", "reversed"].includes(row.payrollStatus);
-  const canDelete = (row: SalaryRow) => ["draft", "calculated", "under_review", "pending_manager_approval", "rejected"].includes(row.payrollStatus) && !row.financial_transaction_id && n(row.amountPaid) === 0;
+  const canDelete = (row: SalaryRow) => ["draft", "calculated", "under_review", "pending_manager_approval", "rejected", "reopened"].includes(row.payrollStatus) && !row.financial_transaction_id && n(row.amountPaid) === 0;
   const metrics = [
     ["إجمالي الرواتب", totals.net, WalletCards, "text-primary"], ["المدفوع", totals.paid, CheckCircle2, "text-emerald-600"],
     ["المتبقي", totals.remaining, Banknote, "text-amber-600"], ["بانتظار الموافقة", filtered.filter((r) => r.payrollStatus === "pending_manager_approval").length, FileClock, "text-sky-600"],
@@ -563,7 +570,7 @@ function EmployeeSalariesPageInner() {
           <td className="px-3 py-2.5">
             <div className="flex items-center justify-start gap-1.5">
               <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={() => setSelected(row)}><Eye className="h-4 w-4" />التفاصيل</Button>
-              {row.paymentStatus !== "paid" && ["approved", "partially_paid"].includes(row.payrollStatus) && row.remainingSalary > 0
+              {row.paymentStatus !== "paid" && payableStatuses.includes(row.payrollStatus) && row.remainingSalary > 0
                 ? <Button size="sm" className="h-8 gap-1.5" onClick={() => setPaymentRow(row)}><Banknote className="h-4 w-4" />تسديد</Button>
                 : null}
               <DropdownMenu>
@@ -577,9 +584,9 @@ function EmployeeSalariesPageInner() {
                   <DropdownMenuItem disabled={!canEdit(row)} onClick={() => openEditor("edit", row)}><Pencil />تعديل الراتب</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setAttachmentRow(row)}><Paperclip />إرفاق مستند</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => printSalary(row)}><Printer />طباعة القسيمة</DropdownMenuItem>
-                  {(me?.role === "admin" || me?.role === "manager") && ["draft", "calculated"].includes(row.payrollStatus) && <DropdownMenuItem onClick={() => approveDirect.mutate(row)}><CheckCircle2 />اعتماد الراتب (مباشر)</DropdownMenuItem>}
-                  {["draft", "calculated"].includes(row.payrollStatus) && <DropdownMenuItem onClick={() => runAction.mutate({ row, action: "submit" })}><FileClock />إرسال لاعتماد المدير</DropdownMenuItem>}
-                  {row.payrollStatus === "pending_manager_approval" && <DropdownMenuItem onClick={() => runAction.mutate({ row, action: "approve" })}><CheckCircle2 />اعتماد الدورة دون صرف</DropdownMenuItem>}
+                  {(me?.role === "admin" || me?.role === "manager") && submittableStatuses.includes(row.payrollStatus) && <DropdownMenuItem disabled={approveDirect.isPending} onClick={() => approveDirect.mutate(row)}><CheckCircle2 />اعتماد الراتب (مباشر)</DropdownMenuItem>}
+                  {submittableStatuses.includes(row.payrollStatus) && <DropdownMenuItem disabled={runAction.isPending} onClick={() => runAction.mutate({ row, action: "submit" })}><FileClock />إرسال لاعتماد المدير</DropdownMenuItem>}
+                  {row.payrollStatus === "pending_manager_approval" && <DropdownMenuItem disabled={runAction.isPending} onClick={() => runAction.mutate({ row, action: "approve" })}><CheckCircle2 />اعتماد الدورة دون صرف</DropdownMenuItem>}
                   {row.legacyIssues.some((issue) => issue.includes("غير مربوط ماليًا")) && <DropdownMenuItem onClick={() => setReconcileRow(row)}><Link2 />مطابقة راتب قديم مع حركة</DropdownMenuItem>}
                   {n(row.amountPaid) > 0 && <DropdownMenuItem onClick={() => setCorrectionRow(row)}><Wrench />تصحيح راتب مصروف</DropdownMenuItem>}
                   {n(row.amountPaid) > 0 && !["reversed", "cancelled"].includes(row.payrollStatus) && (me?.role === "admin" || hasPerm(me ?? null, "employee_salaries_reverse")) && <DropdownMenuItem onClick={() => setReverseRow(row)} className="text-destructive focus:text-destructive"><Undo2 />عكس الصرف (الدورة كاملة)</DropdownMenuItem>}

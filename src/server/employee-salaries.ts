@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import { ensureHrTables, type HrActor } from "@/server/hr-intelligence";
+import { ensureHrTables, getPayrollRun, reversePayrollRunPayment, type HrActor } from "@/server/hr-intelligence";
 import { ensureMasterCashBoxTables, reverseFinancialTransaction } from "@/server/master-cash-box";
 
 const rows = <T = any>(value: any): T[] => (value?.rows ?? []) as T[];
@@ -102,7 +102,7 @@ async function applyAdvanceInsideTransaction(tx: any, line: any, payrollReferenc
     const nextRemaining = num(advance.remaining_amount) - deduction;
     const nextRepaid = num(advance.repaid_amount) + deduction;
     await tx.execute(sql`insert into employee_advance_repayments(advance_id,employee_id,payment_date,amount,method,kind,notes,payroll_reference,received_by,received_by_name) values(${advance.id},${line.staff_id},${todayBaghdad()},${deduction},'payroll','payroll',${`خصم من راتب ${payrollReference}`},${payrollReference},${actor.id},${actor.name})`);
-    await tx.execute(sql`update employee_advances set repaid_amount=${nextRepaid},remaining_amount=${nextRemaining},status=case when ${nextRemaining}=0 then 'completed' else 'paid' end,last_deduction_at=now(),payroll_reference=${payrollReference},updated_at=now() where id=${advance.id}`);
+    await tx.execute(sql`update employee_advances set repaid_amount=${nextRepaid},remaining_amount=${nextRemaining},status=case when ${nextRemaining}::numeric=0 then 'completed' else 'paid' end,last_deduction_at=now(),payroll_reference=${payrollReference},updated_at=now() where id=${advance.id}`);
     budget = num(budget - deduction); applied = num(applied + deduction);
   }
   return applied;
@@ -117,7 +117,7 @@ async function restoreAdvanceInsideTransaction(tx: any, payrollReference: string
     const amount = num(repayment.amount);
     const nextRepaid = Math.max(0, num(advance.repaid_amount) - amount);
     const nextRemaining = Math.min(num(advance.amount), num(advance.remaining_amount) + amount);
-    await tx.execute(sql`update employee_advances set repaid_amount=${nextRepaid},remaining_amount=${nextRemaining},status=case when ${nextRemaining}>0 then 'paid' else 'completed' end,last_deduction_at=null,updated_at=now() where id=${Number(advance.id)}`);
+    await tx.execute(sql`update employee_advances set repaid_amount=${nextRepaid},remaining_amount=${nextRemaining},status=case when ${nextRemaining}::numeric>0 then 'paid' else 'completed' end,last_deduction_at=null,updated_at=now() where id=${Number(advance.id)}`);
     await tx.execute(sql`update employee_advance_repayments set kind='reversed_payroll',notes=concat_ws(E'\n',notes,${`عكس خصم الراتب بواسطة ${actor.name}: ${reason}`}::text) where id=${Number(repayment.id)} and kind='payroll'`);
     restored = num(restored + amount);
   }
@@ -234,7 +234,7 @@ export async function addEmployeeSalaryMovement(runId: number, lineId: number, i
     if (data.movementType !== "base_salary_adjustment" && !affectsCurrentLine) {
       throw new Error("المكافأة أو الاستقطاع يضافان إلى سجل الشهر المحدد؛ اختر سجل الراتب للشهر المقصود");
     }
-    if (affectsCurrentLine && !["draft", "calculated", "under_review", "pending_manager_approval", "rejected", "approved", "ready_to_pay"].includes(String(line.run_status))) {
+    if (affectsCurrentLine && !["draft", "calculated", "under_review", "pending_manager_approval", "rejected", "reopened", "approved", "ready_to_pay"].includes(String(line.run_status))) {
       throw new Error("حالة الراتب لا تسمح بإضافة حركة حالياً");
     }
 
@@ -369,8 +369,37 @@ export async function correctPaidEmployeeSalary(runId: number, lineId: number, i
     line.base_salary = data.baseSalary; line.overtime_amount = data.overtimeAmount; line.bonus_amount = data.bonusAmount; line.manual_earnings = data.manualAddition; line.manual_deduction = data.manualDeduction; line.advance_deduction = data.advanceDeduction;
     const numbers = salaryNumbers(line);
     await tx.execute(sql`update payroll_lines set base_salary=${data.baseSalary},overtime_amount=${data.overtimeAmount},bonus_amount=${data.bonusAmount},manual_earnings=${data.manualAddition},manual_deduction=${data.manualDeduction},advance_deduction=${data.advanceDeduction},gross_salary=${numbers.gross},net_salary=${numbers.net},amount_paid=0,payment_status='unpaid',line_notes=${data.notes || line.line_notes},financial_transaction_id=null,calculation_details=jsonb_set(coalesce(calculation_details,'{}'::jsonb),'{paidCorrection}',${JSON.stringify({ reason: data.reason, actorId: actor.id, actorName: actor.name, at: new Date().toISOString() })}::jsonb,true) where id=${lineId}`);
-    await tx.execute(sql`update payroll_runs set status='approved',total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${runId}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${runId}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${runId}),paid_at=null,updated_at=now() where id=${runId}`);
+    // Other employees on a shared run may still hold paid salaries; the run must
+    // not look fully unpaid ("approved") while their payments remain in place.
+    await tx.execute(sql`update payroll_runs set status=case when exists(select 1 from payroll_lines where payroll_run_id=${runId} and amount_paid>0) then 'partially_paid' else 'approved' end,total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${runId}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${runId}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${runId}),paid_at=null,updated_at=now() where id=${runId}`);
     await addEvent(tx, line, actor, "paid_salary_corrected", data.reason, before, { ...numbers, amountPaid: 0, paymentStatus: "unpaid" });
     return { before, after: numbers, status: "approved" };
   });
+}
+
+/**
+ * Reverses every paid salary on a run. Installments recorded by the salaries
+ * module each carry their own Cash Box movement, so each one is reversed through
+ * the per-payment path (cash, ledger, line balance, payroll advance deductions)
+ * inside one transaction. Runs paid by the legacy one-shot settlement have no
+ * payment rows and keep the original run-level reversal.
+ */
+export async function reverseEmployeeSalaryRun(runId: number, actor: HrActor, input: unknown) {
+  if (!["admin", "manager"].includes(actor.role)) throw new Error("عكس صرف الراتب متاح للمدير فقط");
+  await ensureEmployeeSalaryManagementTables();
+  const data = reasonSchema.parse(input);
+  const active = rows<any>(await db.execute(sql`select id from employee_salary_payments where payroll_run_id=${runId} and status='paid' limit 1`));
+  if (!active.length) return reversePayrollRunPayment(runId, actor, data);
+  await db.transaction(async (tx) => {
+    const run = rows<any>(await tx.execute(sql`select id,status from payroll_runs where id=${runId} and deleted_at is null for update`))[0];
+    if (!run) throw new Error("دورة الرواتب غير موجودة");
+    if (["cancelled", "reversed"].includes(String(run.status))) throw new Error("لا يمكن عكس راتب ملغي أو معكوس");
+    const payments = rows<any>(await tx.execute(sql`select id,payroll_line_id from employee_salary_payments where payroll_run_id=${runId} and status='paid' order by id for update`));
+    for (const payment of payments) await reverseEmployeeSalaryPayment(runId, Number(payment.payroll_line_id), Number(payment.id), { reason: data.reason }, actor, tx);
+    const unreversed = rows<any>(await tx.execute(sql`select id from payroll_lines where payroll_run_id=${runId} and amount_paid>0 limit 1`));
+    if (unreversed.length) throw new Error("يوجد مبلغ مصروف غير مرتبط بدفعة قابلة للعكس؛ اعكس الدفعات من تفاصيل الراتب أو طابق السجل القديم أولاً");
+    await tx.execute(sql`update payroll_lines set payment_status='reversed' where payroll_run_id=${runId}`);
+    await tx.execute(sql`update payroll_runs set status='reversed',paid_at=null,updated_at=now() where id=${runId}`);
+  });
+  return getPayrollRun(runId);
 }

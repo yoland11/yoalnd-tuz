@@ -418,7 +418,7 @@ export async function reversePayrollAdvanceDeductions(payrollReference: string, 
       const restored = asNumber(repayment.amount);
       const nextRepaid = Math.max(0, asNumber(advance.repaid_amount) - restored);
       const nextRemaining = Math.min(asNumber(advance.amount), asNumber(advance.remaining_amount) + restored);
-      await tx.execute(sql`update employee_advances set repaid_amount=${nextRepaid},remaining_amount=${nextRemaining},status=case when ${nextRemaining} > 0 then 'paid' else 'completed' end,last_deduction_at=null,updated_at=now() where id=${Number(advance.id)}`);
+      await tx.execute(sql`update employee_advances set repaid_amount=${nextRepaid},remaining_amount=${nextRemaining},status=case when ${nextRemaining}::numeric > 0 then 'paid' else 'completed' end,last_deduction_at=null,updated_at=now() where id=${Number(advance.id)}`);
       await tx.execute(sql`update employee_advance_repayments set kind='reversed_payroll',notes=concat_ws(E'\n',notes,${`عكس خصم الراتب بواسطة ${actor.name}: ${cleanReason}`}::text) where id=${Number(repayment.id)} and kind='payroll'`);
     }
     return { restored: repayments.length, payrollReference };
