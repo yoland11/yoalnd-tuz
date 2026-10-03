@@ -118,7 +118,7 @@ async function restoreAdvanceInsideTransaction(tx: any, payrollReference: string
     const nextRepaid = Math.max(0, num(advance.repaid_amount) - amount);
     const nextRemaining = Math.min(num(advance.amount), num(advance.remaining_amount) + amount);
     await tx.execute(sql`update employee_advances set repaid_amount=${nextRepaid},remaining_amount=${nextRemaining},status=case when ${nextRemaining}>0 then 'paid' else 'completed' end,last_deduction_at=null,updated_at=now() where id=${Number(advance.id)}`);
-    await tx.execute(sql`update employee_advance_repayments set kind='reversed_payroll',notes=concat_ws(E'\n',notes,${`عكس خصم الراتب بواسطة ${actor.name}: ${reason}`}) where id=${Number(repayment.id)} and kind='payroll'`);
+    await tx.execute(sql`update employee_advance_repayments set kind='reversed_payroll',notes=concat_ws(E'\n',notes,${`عكس خصم الراتب بواسطة ${actor.name}: ${reason}`}::text) where id=${Number(repayment.id)} and kind='payroll'`);
     restored = num(restored + amount);
   }
   return restored;
@@ -199,7 +199,7 @@ export async function addEmployeeSalaryAdjustment(runId: number, lineId: number,
       if (data.direction === "addition") line.manual_earnings = num(line.manual_earnings) + data.amount;
       else line.manual_deduction = num(line.manual_deduction) + data.amount;
       const after = salaryNumbers(line);
-      await tx.execute(sql`update payroll_lines set manual_earnings=${line.manual_earnings},manual_deduction=${line.manual_deduction},gross_salary=${after.gross},net_salary=${after.net},payment_status='unpaid',line_notes=concat_ws(E'\n',line_notes,${`${data.direction === "addition" ? "إضافة" : "خصم"}: ${data.reason} (${data.amount})`}) where id=${lineId}`);
+      await tx.execute(sql`update payroll_lines set manual_earnings=${line.manual_earnings},manual_deduction=${line.manual_deduction},gross_salary=${after.gross},net_salary=${after.net},payment_status='unpaid',line_notes=concat_ws(E'\n',line_notes,${`${data.direction === "addition" ? "إضافة" : "خصم"}: ${data.reason} (${data.amount})`}::text) where id=${lineId}`);
       await tx.execute(sql`update payroll_runs set total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${runId}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${runId}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${runId}),updated_at=now() where id=${runId}`);
       await addEvent(tx, line, actor, data.direction === "addition" ? "salary_amount_added" : "salary_amount_reduced", data.reason, before, after);
     }
@@ -251,7 +251,7 @@ export async function addEmployeeSalaryMovement(runId: number, lineId: number, i
       if (data.movementType === "deduction") next.manual_deduction = num(next.manual_deduction) + amount;
       if (isBase) next.base_salary = amount;
       const after = salaryNumbers(next);
-      await tx.execute(sql`update payroll_lines set base_salary=${next.base_salary},bonus_amount=${next.bonus_amount},manual_deduction=${next.manual_deduction},gross_salary=${after.gross},net_salary=${after.net},payment_status='unpaid',line_notes=concat_ws(E'\n',line_notes,${`${isBase ? "تعديل راتب أساسي" : data.movementType === "bonus" ? "مكافأة" : "استقطاع"}: ${data.reason} (${amount})`}) where id=${lineId}`);
+      await tx.execute(sql`update payroll_lines set base_salary=${next.base_salary},bonus_amount=${next.bonus_amount},manual_deduction=${next.manual_deduction},gross_salary=${after.gross},net_salary=${after.net},payment_status='unpaid',line_notes=concat_ws(E'\n',line_notes,${`${isBase ? "تعديل راتب أساسي" : data.movementType === "bonus" ? "مكافأة" : "استقطاع"}: ${data.reason} (${amount})`}::text) where id=${lineId}`);
       await tx.execute(sql`update payroll_runs set total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${runId}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${runId}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${runId}),updated_at=now() where id=${runId}`);
       next = { ...next, ...after };
     }
@@ -292,7 +292,7 @@ export async function cancelEmployeeSalaryMovement(runId: number, lineId: number
       await tx.execute(sql`update payroll_lines set base_salary=${next.base_salary},bonus_amount=${next.bonus_amount},manual_deduction=${next.manual_deduction},gross_salary=${after.gross},net_salary=${after.net},payment_status='unpaid' where id=${lineId}`);
       await tx.execute(sql`update payroll_runs set total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${runId}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${runId}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${runId}),updated_at=now() where id=${runId}`);
     }
-    await tx.execute(sql`update employee_salary_adjustments set status='cancelled',notes=concat_ws(E'\n',notes,${`ألغيت بواسطة ${actor.name}: ${data.reason}`}) where id=${adjustmentId}`);
+    await tx.execute(sql`update employee_salary_adjustments set status='cancelled',notes=concat_ws(E'\n',notes,${`ألغيت بواسطة ${actor.name}: ${data.reason}`}::text) where id=${adjustmentId}`);
     await addEvent(tx, line, actor, "salary_movement_cancelled", data.reason, before, { ...salaryNumbers(next), adjustmentId, affectsCurrentLine });
     return { adjustmentId, staffId: Number(line.staff_id), cancelled: true, before, after: salaryNumbers(next) };
   });
