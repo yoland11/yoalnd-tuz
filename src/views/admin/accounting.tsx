@@ -1,7 +1,7 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { shortBookingNumber } from "@/lib/booking-number";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search, Download, FileSpreadsheet } from "lucide-react";
+import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search, Download, FileSpreadsheet, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useSearch } from "wouter";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { findAccountingReferenceTransaction } from "./accounting-reference-details";
 import {
   customerStatementDateInRange,
   customerStatementTransactionTotals,
@@ -95,11 +96,11 @@ export default function AccountingPage() {
           const Icon = t.icon;
           const active = tab === t.id;
           return (
-            <button key={t.id} onClick={() => setTab(t.id)}
+            <Button variant="ghost" key={t.id} onClick={() => setTab(t.id)}
               className={`flex items-center gap-2 px-3 py-2 text-sm border-b-2 -mb-px transition-colors
                 ${active ? "border-primary text-primary font-medium" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
               <Icon className="w-4 h-4" />{t.label}
-            </button>
+            </Button>
           );
         })}
       </div>
@@ -176,8 +177,8 @@ function ReceiptsTab() {
             methodLabel(r.method),
             r.createdByName || "—",
             <div className="flex gap-1 justify-end">
-              <button onClick={() => printReceipt(r)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary" title="طباعة"><Printer className="w-4 h-4" /></button>
-              <button onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive" title="حذف"><Trash2 className="w-4 h-4" /></button>
+              <Button variant="ghost" onClick={() => printReceipt(r)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary" title="طباعة"><Printer className="w-4 h-4" /></Button>
+              <Button variant="ghost" onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive" title="حذف"><Trash2 className="w-4 h-4" /></Button>
             </div>,
           ])}
           footer={<TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
@@ -304,8 +305,8 @@ function PaymentsTab() {
             methodLabel(r.method),
             r.createdByName || "—",
             <div className="flex gap-1 justify-end">
-              <button onClick={() => printPayment(r)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary"><Printer className="w-4 h-4" /></button>
-              <button onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></button>
+              <Button variant="ghost" onClick={() => printPayment(r)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary"><Printer className="w-4 h-4" /></Button>
+              <Button variant="ghost" onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></Button>
             </div>,
           ])}
           footer={<TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
@@ -401,8 +402,8 @@ function ExpensesTab() {
             <span className="text-muted-foreground text-xs">{e.notes ?? ""}</span>,
             e.createdByName || "—",
             <div className="flex gap-1 justify-end">
-              <button onClick={() => printExpense(e)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary" title="طباعة"><Printer className="w-4 h-4" /></button>
-              <button onClick={() => { if (confirm("حذف المصروف؟")) del.mutate(e.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></button>
+              <Button variant="ghost" onClick={() => printExpense(e)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary" title="طباعة"><Printer className="w-4 h-4" /></Button>
+              <Button variant="ghost" onClick={() => { if (confirm("حذف المصروف؟")) del.mutate(e.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></Button>
             </div>,
           ])}
           footer={<TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
@@ -483,8 +484,8 @@ function CategoriesTab() {
               ? <span className="text-status-success text-xs">مفعّل</span>
               : <span className="text-muted-foreground text-xs">معطّل</span>,
             <div className="flex gap-1 justify-end">
-              <button onClick={() => setEditing({ id: c.id, name: c.name, nameAr: c.nameAr, isActive: c.isActive === 1 })} className="px-2 py-1 text-xs hover:bg-background/50 rounded text-muted-foreground hover:text-primary">تعديل</button>
-              <button onClick={() => { if (confirm("حذف النوع؟")) del.mutate(c.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></button>
+              <Button variant="ghost" onClick={() => setEditing({ id: c.id, name: c.name, nameAr: c.nameAr, isActive: c.isActive === 1 })} className="px-2 py-1 text-xs hover:bg-background/50 rounded text-muted-foreground hover:text-primary">تعديل</Button>
+              <Button variant="ghost" onClick={() => { if (confirm("حذف النوع؟")) del.mutate(c.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></Button>
             </div>,
           ])}
         />
@@ -662,7 +663,7 @@ function VoucherCustomerPicker({
           <div className="text-sm font-semibold text-foreground">{includeSuppliers ? "بحث بحساب العميل أو المورد" : "بحث باسم العميل"}</div>
           <div className="text-xs text-muted-foreground">{includeSuppliers ? "الاسم، الهاتف، رقم الفاتورة أو رقم الحساب" : "ابحث بالاسم أو الهاتف بصيغة 077 أو 964 أو +964"}</div>
         </div>
-        {hasSelection && <button type="button" onClick={onClear} className="text-xs text-destructive hover:underline">إزالة الربط</button>}
+        {hasSelection && <Button variant="ghost" type="button" onClick={onClear} className="text-xs text-destructive hover:underline">إزالة الربط</Button>}
       </div>
       <div className="relative">
         <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -673,7 +674,7 @@ function VoucherCustomerPicker({
           {accounts.isLoading ? <div className="p-3 text-xs text-muted-foreground">جارٍ البحث…</div>
           : !accounts.data?.length ? <div className="p-3 text-xs text-muted-foreground">لا يوجد حساب مطابق</div>
           : accounts.data.slice(0, 20).map((account) => (
-            <button
+            <Button variant="ghost"
               key={`${account.type}-${account.id}`}
               type="button"
               onClick={() => { onSelect(account); setSearch(""); }}
@@ -684,7 +685,7 @@ function VoucherCustomerPicker({
                 <span className="block text-[11px] text-muted-foreground">{account.type === "supplier" ? "مورد" : "عميل"} · {account.accountNumber ?? "—"} · {formatCurrency(account.currentBalance)}</span>
               </span>
               <span className="shrink-0 text-xs text-muted-foreground" dir="ltr">{account.phone ? formatIraqiPhone(account.phone) : "—"}</span>
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -746,6 +747,7 @@ function StatementTab() {
   const [selected, setSelected] = useState<CustomerLite | null>(null);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [expandedReferenceKey, setExpandedReferenceKey] = useState<string | null>(null);
 
   const customers = useQuery({
     queryKey: ["admin", "customers-picker", search],
@@ -768,6 +770,11 @@ function StatementTab() {
     () => invalidDateRange ? [] : (data?.entries ?? []).filter((entry) => customerStatementDateInRange(entry.date, fromDate, toDate)),
     [data?.entries, fromDate, invalidDateRange, toDate],
   );
+  const expandedEntryIndex = filteredEntries.findIndex((entry) => statementEntryKey(entry) === expandedReferenceKey);
+  const expandedEntry = expandedEntryIndex >= 0 ? filteredEntries[expandedEntryIndex] : null;
+  const expandedTransaction = expandedEntry
+    ? findAccountingReferenceTransaction(expandedEntry.ref, data?.transactions ?? [])
+    : null;
   const filteredTotals = useMemo(
     () => customerStatementTransactionTotals(filteredTransactions),
     [filteredTransactions],
@@ -815,7 +822,7 @@ function StatementTab() {
             <div className="text-sm text-foreground bg-card rounded-lg border border-border/30 px-3 py-2">
               <strong className="text-primary">{selected.name || "—"}</strong>
               <span className="text-muted-foreground mr-2">{formatIraqiPhone(selected.phone)}</span>
-              <button onClick={() => setSelected(null)} className="text-destructive text-xs mr-3 hover:underline">إزالة</button>
+              <Button variant="ghost" onClick={() => setSelected(null)} className="text-destructive text-xs mr-3 hover:underline">إزالة</Button>
             </div>
             {data && <Button type="button" disabled={invalidDateRange} onClick={printStatement} className="mr-auto"><Printer className="ml-1 h-4 w-4" />طباعة</Button>}
           </>
@@ -844,11 +851,11 @@ function StatementTab() {
             {customers.isLoading ? <div className="p-4 text-sm text-muted-foreground">جارٍ التحميل…</div>
             : !customers.data || customers.data.length === 0 ? <div className="p-4 text-sm text-muted-foreground text-center">لا توجد نتائج</div>
             : customers.data.map(c => (
-              <button key={c.id} onClick={() => { setSelected({ id: c.id, name: c.name, phone: c.phone }); setPickerOpen(false); }}
+              <Button variant="ghost" key={c.id} onClick={() => { setSelected({ id: c.id, name: c.name, phone: c.phone }); setPickerOpen(false); }}
                 className="w-full text-right p-3 hover:bg-background/50 flex justify-between items-center">
                 <span className="text-foreground">{c.name || "—"}</span>
                 <span className="text-xs text-muted-foreground">{formatIraqiPhone(c.phone)}</span>
-              </button>
+              </Button>
             ))}
           </div>
         </Modal>
@@ -874,16 +881,29 @@ function StatementTab() {
               rows={filteredEntries.map(e => [
                 new Date(e.date).toLocaleDateString("ar-IQ-u-nu-latn"),
                 e.kind === "order" ? "طلب" : e.kind === "booking" ? "حجز" : e.kind === "invoice" ? "فاتورة" : e.kind === "invoice_payment" ? "دفعة" : "قبض",
-                <span className="inline-flex items-center gap-1.5 text-primary">
+                <div className="flex flex-wrap items-center gap-2 text-primary">
                   <code className="text-xs">{e.ref}</code>
-                  {e.href ? <FileText className="h-3.5 w-3.5" aria-hidden="true" /> : null}
-                </span>,
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    aria-expanded={expandedReferenceKey === statementEntryKey(e)}
+                    onClick={() => setExpandedReferenceKey((current) => current === statementEntryKey(e) ? null : statementEntryKey(e))}
+                    className="h-7 gap-1 px-2 text-xs"
+                  >
+                    {expandedReferenceKey === statementEntryKey(e) ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    {expandedReferenceKey === statementEntryKey(e) ? "إخفاء التفاصيل" : "عرض التفاصيل"}
+                  </Button>
+                </div>,
                 e.description,
                 e.debit ? formatCurrency(e.debit) : "—",
                 e.credit ? <span className="text-status-success">{formatCurrency(e.credit)}</span> : "—",
                 <strong>{formatCurrency(e.balance)}</strong>,
               ])}
-              rowHrefs={filteredEntries.map((entry) => entry.href ?? null)}
+              expandedRow={expandedEntry && expandedEntryIndex >= 0 ? {
+                index: expandedEntryIndex,
+                content: <AccountingReferenceDetails entry={expandedEntry} transaction={expandedTransaction} />,
+              } : null}
               footer={<TableTotalsFooter rows={filteredEntries} allRows={filteredEntries} labelColSpan={4} cells={[
                 { key: "debit", label: "إجمالي المدين", value: (entry) => Number(entry.debit ?? 0), format: formatCurrency },
                 { key: "credit", label: "إجمالي الدائن", value: (entry) => Number(entry.credit ?? 0), format: formatCurrency },
@@ -894,6 +914,56 @@ function StatementTab() {
         </div>
       )}
     </div>
+  );
+}
+
+function statementEntryKey(entry: StatementEntry) {
+  return `${entry.kind}:${entry.ref}:${entry.date}:${entry.description}`;
+}
+
+function AccountingReferenceDetails({ entry, transaction }: {
+  entry: StatementEntry;
+  transaction: StatementData["transactions"][number] | null;
+}) {
+  return (
+    <section className="space-y-3 rounded-xl border border-primary/15 bg-primary/[0.03] p-3" aria-label={`تفاصيل المرجع ${entry.ref}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-foreground">تفاصيل الحركة المرتبطة بالمرجع</h3>
+        <code className="text-xs text-primary">{entry.ref}</code>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <MiniAccountStat label="الوصف" value={entry.description || "—"} />
+        <MiniAccountStat label="التاريخ" value={new Date(entry.date).toLocaleString("ar-IQ-u-nu-latn")} />
+        <MiniAccountStat label="مدين الحركة" value={entry.debit ? formatCurrency(entry.debit) : "—"} />
+        <MiniAccountStat label="دائن الحركة" value={entry.credit ? formatCurrency(entry.credit) : "—"} />
+      </div>
+      {transaction ? (
+        <div className="space-y-2 border-t border-border/30 pt-3">
+          <div className="text-xs font-semibold text-muted-foreground">ملخص {transaction.serviceType}</div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <MiniAccountStat label="الإجمالي" value={formatCurrency(transaction.total)} />
+            <MiniAccountStat label="المدفوع" value={formatCurrency(transaction.paid)} />
+            <MiniAccountStat label="المتبقي" value={formatCurrency(transaction.remaining)} />
+          </div>
+          {!!transaction.paymentHistory?.length && (
+            <div className="space-y-1.5">
+              <div className="text-xs font-semibold text-muted-foreground">سجل الدفعات المسجل</div>
+              <div className="grid gap-1.5 sm:grid-cols-2">
+                {transaction.paymentHistory.map((payment, index) => (
+                  <div key={`${payment.reference ?? "payment"}-${payment.date}-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/20 bg-card px-3 py-2 text-xs">
+                    <span>{new Date(payment.date).toLocaleString("ar-IQ-u-nu-latn")}</span>
+                    {payment.reference && <code className="text-muted-foreground">{payment.reference}</code>}
+                    <strong className="text-status-success">{formatCurrency(payment.amount)}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">هذه الحركة مسجلة في كشف الحساب ولا توجد لها تفاصيل فاتورة إضافية ضمن السجل الحالي.</p>
+      )}
+    </section>
   );
 }
 
@@ -1136,7 +1206,7 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
       <div className="bg-card rounded-xl border border-border/40 w-full max-w-2xl my-6 p-5 space-y-3 max-h-[calc(100dvh-3rem)] overflow-y-auto pb-safe" onClick={e => e.stopPropagation()}>
         <div className="flex justify-between items-center">
           <h2 className="text-lg font-bold">{title}</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">×</button>
+          <Button variant="ghost" onClick={onClose} className="text-muted-foreground hover:text-foreground">×</Button>
         </div>
         {children}
       </div>
@@ -1153,7 +1223,7 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
   );
 }
 
-function DataTable({ columns, rows, rowHrefs, footer }: { columns: string[]; rows: React.ReactNode[][]; rowHrefs?: Array<string | null>; footer?: React.ReactNode }) {
+function DataTable({ columns, rows, expandedRow, footer }: { columns: string[]; rows: React.ReactNode[][]; expandedRow?: { index: number; content: React.ReactNode } | null; footer?: React.ReactNode }) {
   return (
     <div className="bg-card rounded-xl border border-border/30 overflow-hidden overflow-x-auto">
       <table className="w-full text-sm">
@@ -1163,30 +1233,14 @@ function DataTable({ columns, rows, rowHrefs, footer }: { columns: string[]; row
           </tr>
         </thead>
         <tbody className="divide-y divide-border/20">
-          {rows.map((cells, i) => {
-            const href = rowHrefs?.[i] ?? null;
-            const openDocument = () => {
-              if (href) window.open(href, "_blank", "noopener,noreferrer");
-            };
-            return (
-            <tr
-              key={i}
-              className={href ? "cursor-pointer transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60" : "hover:bg-background/30"}
-              role={href ? "link" : undefined}
-              tabIndex={href ? 0 : undefined}
-              title={href ? "فتح الفاتورة المرتبطة" : undefined}
-              onClick={href ? openDocument : undefined}
-              onKeyDown={href ? (event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  openDocument();
-                }
-              } : undefined}
-            >
-              {cells.map((cell, j) => <td key={j} className="p-3 align-middle">{cell}</td>)}
-            </tr>
-            );
-          })}
+          {rows.map((cells, i) => (
+            <Fragment key={i}>
+              <tr className="transition-colors hover:bg-background/30">
+                {cells.map((cell, j) => <td key={j} className="p-3 align-middle">{cell}</td>)}
+              </tr>
+              {expandedRow?.index === i && <tr><td colSpan={columns.length} className="p-3 pt-0">{expandedRow.content}</td></tr>}
+            </Fragment>
+          ))}
         </tbody>
         {footer}
       </table>
