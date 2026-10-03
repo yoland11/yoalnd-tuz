@@ -9,4 +9,9 @@ assert.match(source, /إدارة التصنيفات/, "the category field must p
 assert.match(source, /method: draft\.id \? "PATCH" : "POST"/, "the category manager must keep create and update operations available");
 assert.match(source, /method: "DELETE"/, "the category manager must keep the guarded delete operation available");
 
-console.log("Expense category access checks passed.");
+assert.match(source, /useState\(\{ from: "", to: "", categoryId: "", paymentMethod: "", search: "", user: "" \}\)/, "expenses must show all dates by default");
+assert.match(source, /if \(filters\.from\) params\.set\("from", filters\.from\)/, "the expense query must omit the lower date bound when cleared");
+assert.match(source, /if \(filters\.to\) params\.set\("to", filters\.to\)/, "the expense query must omit the upper date bound when cleared");
+assert.match(source, /aria-label="مسح التاريخين وعرض جميع المصاريف"[\s\S]*setFilters\(\(f\) => \(\{ \.\.\.f, from: "", to: "" \}\)\)/, "the date reset control must clear only the date bounds");
+
+console.log("Expense category and date filter checks passed.");

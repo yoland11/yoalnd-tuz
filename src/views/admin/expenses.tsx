@@ -15,7 +15,6 @@ type ExpenseForm = { id?: number; date: string; name: string; categoryId: string
 
 const inputCls = "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50";
 const today = () => new Date().toISOString().slice(0, 10);
-const monthStart = () => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
 const blankForm = (): ExpenseForm => ({ date: today(), name: "", categoryId: "", amount: "", paymentMethod: "cash", notes: "", receiptImage: "", costCategory: "", koshaId: "", bookingId: "", constructionProjectId: "", expenseType: "", beneficiaryName: "" });
 const costCategories = [{ value: "investment", label: "استثمار الكوشة" }, { value: "operating", label: "تشغيل الكوشة" }, { value: "booking", label: "تكلفة حجز" }];
 const paymentMethods = [
@@ -28,13 +27,13 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
   const qc = useQueryClient();
   const { toast } = useToast();
   const { data: settings } = usePublicSettings();
-  const [filters, setFilters] = useState({ from: monthStart(), to: today(), categoryId: "", paymentMethod: "", search: "", user: "" });
+  const [filters, setFilters] = useState({ from: "", to: "", categoryId: "", paymentMethod: "", search: "", user: "" });
   const [showCategories, setShowCategories] = useState(false);
   const [form, setForm] = useState<ExpenseForm | null>(() => startNew ? blankForm() : null);
   const query = useMemo(() => {
     const params = new URLSearchParams();
-    params.set("from", filters.from);
-    params.set("to", filters.to);
+    if (filters.from) params.set("from", filters.from);
+    if (filters.to) params.set("to", filters.to);
     if (filters.categoryId) params.set("categoryId", filters.categoryId);
     if (filters.paymentMethod) params.set("paymentMethod", filters.paymentMethod);
     if (filters.search.trim()) params.set("search", filters.search.trim());
@@ -135,7 +134,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
     await exportReport<Expense>({
       options: {
         title: "تقرير المصاريف",
-        subtitle: `الفترة: ${filters.from} — ${filters.to}`,
+        subtitle: `الفترة: ${expenseDateRangeLabel(filters.from, filters.to)}`,
         orientation: "landscape",
         logoUrl: logoSrc(settings),
         totalsLabel: "إجمالي المصاريف المعتمدة",
@@ -144,7 +143,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
       },
       columns,
       rows: expenses,
-      filename: `expenses-${filters.from}-${filters.to}.pdf`,
+      filename: `expenses-${filters.from || "all"}-${filters.to || "all"}.pdf`,
       mode: "download",
     });
   }
@@ -158,7 +157,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
     setTimeout(() => win.print(), 250);
   }
   function exportExcel() {
-    downloadCsv(`expenses-${filters.from}-${filters.to}.csv`, ["التاريخ", "العنوان", "التصنيف", "طريقة الدفع", "المبلغ", "بواسطة", "ملاحظات"], expenses.map((e) => [e.date, e.name, e.categoryName, paymentLabel(e.paymentMethod), e.amount, e.createdByName, e.notes ?? ""]));
+    downloadCsv(`expenses-${filters.from || "all"}-${filters.to || "all"}.csv`, ["التاريخ", "العنوان", "التصنيف", "طريقة الدفع", "المبلغ", "بواسطة", "ملاحظات"], expenses.map((e) => [e.date, e.name, e.categoryName, paymentLabel(e.paymentMethod), e.amount, e.createdByName, e.notes ?? ""]));
   }
 
   return (
@@ -190,9 +189,10 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
         </div>
       )}
 
-      <div className="bg-card rounded-xl border border-border/30 p-4 grid grid-cols-1 md:grid-cols-6 gap-3">
-        <input type="date" value={filters.from} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} className={inputCls} />
-        <input type="date" value={filters.to} onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))} className={inputCls} />
+      <div className="bg-card rounded-xl border border-border/30 p-4 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-7 gap-3">
+        <input aria-label="من تاريخ المصاريف" type="date" value={filters.from} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} className={inputCls} />
+        <input aria-label="إلى تاريخ المصاريف" type="date" value={filters.to} onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))} className={inputCls} />
+        <button type="button" aria-label="مسح التاريخين وعرض جميع المصاريف" title="عرض جميع المصاريف" disabled={!filters.from && !filters.to} onClick={() => setFilters((f) => ({ ...f, from: "", to: "" }))} className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-border/40 px-2 text-xs text-muted-foreground hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-40"><X className="h-3.5 w-3.5" />عرض الكل</button>
         <select value={filters.categoryId} onChange={(e) => setFilters((f) => ({ ...f, categoryId: e.target.value }))} className={inputCls}><option value="">كل التصنيفات</option>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.nameAr}</option>)}</select>
         <select value={filters.paymentMethod} onChange={(e) => setFilters((f) => ({ ...f, paymentMethod: e.target.value }))} className={inputCls}><option value="">كل طرق الدفع</option>{paymentMethods.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select>
         {canSeeAllExpenses ? <input value={filters.user} onChange={(e) => setFilters((f) => ({ ...f, user: e.target.value }))} className={inputCls} placeholder="الموظف" /> : null}
@@ -205,7 +205,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
             <img src={logoSrc(settings)} alt="AJN" className="h-12 w-20 object-contain rounded-lg bg-background/60 border border-border/30" />
             <div><p className="text-xs text-muted-foreground">مجموعة علي جان</p><h2 className="font-bold text-foreground">تقرير المصاريف</h2></div>
           </div>
-          <div className="text-xs text-muted-foreground text-left"><p>{filters.from} إلى {filters.to}</p><p>{new Date().toLocaleString("ar-IQ-u-nu-latn")}</p></div>
+          <div className="text-xs text-muted-foreground text-left"><p>{expenseDateRangeLabel(filters.from, filters.to)}</p><p>{new Date().toLocaleString("ar-IQ-u-nu-latn")}</p></div>
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -326,6 +326,12 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 function paymentLabel(value: string) {
   return paymentMethods.find((item) => item.value === value)?.label ?? value;
 }
+function expenseDateRangeLabel(from: string, to: string) {
+  if (from && to) return `${from} إلى ${to}`;
+  if (from) return `من ${from} إلى الآن`;
+  if (to) return `من البداية إلى ${to}`;
+  return "جميع التواريخ";
+}
 function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]) {
   const escape = (v: string | number) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const csv = [headers, ...rows].map((row) => row.map(escape).join(",")).join("\r\n");
@@ -339,7 +345,7 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
 }
 function buildExpensesPrintHtml(expenses: Expense[], filters: { from: string; to: string }, total: number, logo: string, thermal: boolean) {
   const rows = expenses.map((e) => `<tr><td>${escapeHtml(e.date)}</td><td>${escapeHtml(e.name)}</td><td>${escapeHtml(e.categoryName)}</td><td>${escapeHtml(formatCurrency(e.amount))}</td>${thermal ? "" : `<td>${escapeHtml(paymentLabel(e.paymentMethod))}</td><td>${escapeHtml(e.createdByName)}</td>`}</tr>`).join("");
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>@page{size:${thermal ? "80mm auto" : "A4"};margin:${thermal ? "4mm" : "12mm"}}*{color:#000!important;box-shadow:none!important}body{font-family:Arial,sans-serif;width:${thermal ? "72mm" : "auto"};background:#fff}.head{display:flex;justify-content:space-between;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:12px}img{width:64px;height:50px;object-fit:contain}h1{font-size:${thermal ? "15px" : "20px"};margin:0}.meta{font-size:11px}.total{border:1px solid #000;padding:8px;margin-bottom:10px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:${thermal ? "10px" : "12px"}}td,th{border:1px solid #000;padding:5px;font-weight:700}</style></head><body><div class="head"><div><img src="${escapeHtml(logo)}"><h1>تقرير المصاريف</h1></div><div class="meta">${filters.from} إلى ${filters.to}<br>${new Date().toLocaleString("ar-IQ-u-nu-latn")}</div></div><div class="total">الإجمالي: ${escapeHtml(formatCurrency(total))}</div><table><thead><tr><th>التاريخ</th><th>العنوان</th><th>التصنيف</th><th>المبلغ</th>${thermal ? "" : "<th>الدفع</th><th>بواسطة</th>"}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>@page{size:${thermal ? "80mm auto" : "A4"};margin:${thermal ? "4mm" : "12mm"}}*{color:#000!important;box-shadow:none!important}body{font-family:Arial,sans-serif;width:${thermal ? "72mm" : "auto"};background:#fff}.head{display:flex;justify-content:space-between;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:12px}img{width:64px;height:50px;object-fit:contain}h1{font-size:${thermal ? "15px" : "20px"};margin:0}.meta{font-size:11px}.total{border:1px solid #000;padding:8px;margin-bottom:10px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:${thermal ? "10px" : "12px"}}td,th{border:1px solid #000;padding:5px;font-weight:700}</style></head><body><div class="head"><div><img src="${escapeHtml(logo)}"><h1>تقرير المصاريف</h1></div><div class="meta">${escapeHtml(expenseDateRangeLabel(filters.from, filters.to))}<br>${new Date().toLocaleString("ar-IQ-u-nu-latn")}</div></div><div class="total">الإجمالي: ${escapeHtml(formatCurrency(total))}</div><table><thead><tr><th>التاريخ</th><th>العنوان</th><th>التصنيف</th><th>المبلغ</th>${thermal ? "" : "<th>الدفع</th><th>بواسطة</th>"}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
 }
 function escapeHtml(value: unknown) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char] as string));
