@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { Fragment, useDeferredValue, useEffect, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -963,7 +963,8 @@ export default function PurchasesPage() {
                           .slice(0, 8)
                       : [];
                     return (
-                      <tr key={idx} className="hover:bg-muted/10">
+                      <Fragment key={idx}>
+                      <tr className="hover:bg-muted/10">
                         <td className="px-3 py-2 text-muted-foreground">
                           {idx + 1}
                         </td>
@@ -1154,6 +1155,17 @@ export default function PurchasesPage() {
                           </button>
                         </td>
                       </tr>
+                      <tr className="bg-muted/10">
+                        <td colSpan={8} className="px-3 pb-2 pt-0">
+                          <div className="flex items-center justify-between rounded-md bg-muted/30 px-3 py-1.5 text-xs">
+                            <span className="text-muted-foreground">مجموع السطر</span>
+                            <strong className="font-semibold text-primary">
+                              {formatCurrency(item.total)}
+                            </strong>
+                          </div>
+                        </td>
+                      </tr>
+                      </Fragment>
                     );
                   })}
                 </tbody>
