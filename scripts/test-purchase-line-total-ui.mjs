@@ -2,26 +2,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const source = readFileSync("src/views/admin/purchases.tsx", "utf8");
-const tableStart = source.indexOf('<tbody className="divide-y divide-border/20">');
-const tableEnd = source.indexOf("</tbody>", tableStart);
+const tableStart = source.indexOf('<table className="w-full text-sm">');
+const tableEnd = source.indexOf("</table>", tableStart);
 assert.notEqual(tableStart, -1, "purchase invoice item table exists");
-assert.notEqual(tableEnd, -1, "purchase invoice item table body is closed");
+assert.notEqual(tableEnd, -1, "purchase invoice item table is closed");
 
-const body = source.slice(tableStart, tableEnd);
-assert.match(
-  body,
-  /formatCurrency\(item\.total\)/,
-  "each purchase line summary displays the existing line total",
-);
-assert.match(
-  body,
-  /مجموع السطر/,
-  "each purchase line has a labeled total summary beneath its editable row",
-);
-assert.match(
-  body,
-  /colSpan=\{8\}/,
-  "the line total summary spans the full purchase table row",
-);
+const table = source.slice(tableStart, tableEnd);
+assert.match(table, /<tfoot[\s\S]*<\/tfoot>/, "purchase item table has a totals footer");
+assert.match(table, /مجموع الكميات/, "footer labels the total quantity");
+assert.match(table, /مجموع سعر التكلفة/, "footer labels cost-column total");
+assert.match(table, /مجموع سعر البيع/, "footer labels sale-column total");
+assert.match(table, /مجموع الخصم/, "footer labels discount-column total");
+assert.match(table, /مجموع الأصناف/, "footer labels the existing line-total sum");
+assert.doesNotMatch(table, /مجموع السطر/, "totals are consolidated at the table bottom, not repeated under each item");
 
-console.log("Purchase invoice line total UI contract passed.");
+console.log("Purchase invoice column totals UI contract passed.");

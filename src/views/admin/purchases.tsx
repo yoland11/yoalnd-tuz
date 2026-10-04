@@ -1,4 +1,4 @@
-import { Fragment, useDeferredValue, useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -385,6 +385,18 @@ export default function PurchasesPage() {
 
   // ── Totals ───────────────────────────────────────────────────────────────
   const subtotal = items.reduce((s, i) => s + i.total, 0);
+  const itemColumnTotals = items
+    .filter((item) => item.productName.trim().length > 0)
+    .reduce(
+      (totals, item) => ({
+        quantity: totals.quantity + item.quantity,
+        costPrice: totals.costPrice + item.costPrice,
+        salePrice: totals.salePrice + item.salePrice,
+        discount: totals.discount + item.discount,
+        total: totals.total + item.total,
+      }),
+      { quantity: 0, costPrice: 0, salePrice: 0, discount: 0, total: 0 },
+    );
   const extraDiscount = parseFloat(form.discountAmount || "0");
   const shipping = parseFloat(form.shippingCost || "0");
   const taxPct = parseFloat(form.taxPct || "0");
@@ -963,8 +975,7 @@ export default function PurchasesPage() {
                           .slice(0, 8)
                       : [];
                     return (
-                      <Fragment key={idx}>
-                      <tr className="hover:bg-muted/10">
+                      <tr key={idx} className="hover:bg-muted/10">
                         <td className="px-3 py-2 text-muted-foreground">
                           {idx + 1}
                         </td>
@@ -1155,20 +1166,37 @@ export default function PurchasesPage() {
                           </Button>
                         </td>
                       </tr>
-                      <tr className="bg-muted/10">
-                        <td colSpan={8} className="px-3 pb-2 pt-0">
-                          <div className="flex items-center justify-between rounded-md bg-muted/30 px-3 py-1.5 text-xs">
-                            <span className="text-muted-foreground">مجموع السطر</span>
-                            <strong className="font-semibold text-primary">
-                              {formatCurrency(item.total)}
-                            </strong>
-                          </div>
-                        </td>
-                      </tr>
-                      </Fragment>
                     );
                   })}
                 </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-border/40 bg-muted/30 text-xs font-semibold">
+                    <td colSpan={2} className="px-3 py-3 text-right text-foreground">
+                      إجمالي الأعمدة
+                    </td>
+                    <td className="px-3 py-2 text-center" aria-label="مجموع الكميات">
+                      <span className="mb-1 block text-[10px] text-muted-foreground">مجموع الكميات</span>
+                      {itemColumnTotals.quantity.toLocaleString("en-US", { maximumFractionDigits: 3 })}
+                    </td>
+                    <td className="px-3 py-2 text-center" aria-label="مجموع سعر التكلفة">
+                      <span className="mb-1 block text-[10px] text-muted-foreground">مجموع سعر التكلفة</span>
+                      {formatCurrency(itemColumnTotals.costPrice)}
+                    </td>
+                    <td className="px-3 py-2 text-center" aria-label="مجموع سعر البيع">
+                      <span className="mb-1 block text-[10px] text-muted-foreground">مجموع سعر البيع</span>
+                      {formatCurrency(itemColumnTotals.salePrice)}
+                    </td>
+                    <td className="px-3 py-2 text-center" aria-label="مجموع الخصم">
+                      <span className="mb-1 block text-[10px] text-muted-foreground">مجموع الخصم</span>
+                      {formatCurrency(itemColumnTotals.discount)}
+                    </td>
+                    <td className="px-3 py-2 text-center text-primary" aria-label="مجموع الأصناف">
+                      <span className="mb-1 block text-[10px] text-muted-foreground">مجموع الأصناف</span>
+                      {formatCurrency(itemColumnTotals.total)}
+                    </td>
+                    <td className="px-3 py-2" />
+                  </tr>
+                </tfoot>
               </table>
             </div>
             <div className="px-4 py-2 border-t border-border/20">
