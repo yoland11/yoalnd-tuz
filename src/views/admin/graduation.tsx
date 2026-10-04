@@ -75,6 +75,7 @@ import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { formatCurrency } from "@/lib/money";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { processImageFile } from "@/lib/image-tools";
+import { STUDENT_REFERENCE_PLACEMENTS } from "@/lib/graduation-student-flow";
 import {
   GRADUATION_STAGES,
   GRADUATION_STAGE_LABELS,
@@ -901,6 +902,37 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
                   ))}
               </div>
             </div>
+            {order.previewAssets?.studentReference && (
+              <div className="rounded-xl border border-border bg-[#fcfaf7] p-4">
+                <h3 className="font-semibold">صورة وملاحظة الطالب للتجهيز</h3>
+                <p className="mt-2 text-sm">
+                  الموضع: {STUDENT_REFERENCE_PLACEMENTS.find(
+                    (item) => item.key === order.previewAssets.studentReference.placement,
+                  )?.label || "غير محدد"}
+                </p>
+                {order.previewAssets.studentReference.note && (
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">
+                    {order.previewAssets.studentReference.note}
+                  </p>
+                )}
+                {typeof order.previewAssets.studentReference.imageUrl === "string" &&
+                  /^https?:\/\//i.test(order.previewAssets.studentReference.imageUrl) && (
+                  <a
+                    href={order.previewAssets.studentReference.imageUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-3 inline-block"
+                  >
+                    <img
+                      src={order.previewAssets.studentReference.imageUrl}
+                      alt="الصورة المرجعية المرفقة بطلب الطالب"
+                      className="max-h-64 max-w-full rounded-xl border object-contain"
+                    />
+                    <span className="mt-1 block text-xs text-primary">فتح الصورة بالحجم الكامل</span>
+                  </a>
+                )}
+              </div>
+            )}
           </TabsContent>
           <TabsContent value="production" className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">

@@ -749,7 +749,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
             <div className="mt-5 rounded-xl border border-border bg-muted/20 p-4">
               <h3 className="font-semibold">اختيار الوشاح للطلبة</h3>
               <p className="mt-1 text-sm text-muted-foreground">
-                اختر وشاحاً موحّداً للمجموعة أو اترك لكل طالب حرية الاختيار.
+                اختر نوعاً موحّداً أو دع كل طالب يختار نوع الوشاح؛ لون الوشاح والتطريز يبقيان كما حددهما ممثل الدفعة أعلاه.
               </p>
               <div
                 className="mt-3 grid gap-2 sm:grid-cols-2"
@@ -788,7 +788,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                   }
                   className="h-auto min-h-12 whitespace-normal"
                 >
-                  كل طالب يختار وشاحه
+                  كل طالب يختار نوع الوشاح
                 </Button>
               </div>
               {form.sashSelectionMode === "fixed" ? (
@@ -1884,8 +1884,8 @@ export function GraduationGroupStudentRegistration({
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
               الروب والقماش من اختيار ممثل الدفعة.{" "}
               {locked.sashSelectionMode === "fixed"
-                ? "الوشاح موحّد للمجموعة، ويمكن تخصيص الاسم والإضافات لكل طالب."
-                : "يختار كل طالب وشاحه وإضافاته بنفسه."}
+                ? "نوع الوشاح ولونه ولون التطريز ثابتة للمجموعة، ويمكن تخصيص الاسم والإضافات لكل طالب."
+                : "يختار كل طالب نوع الوشاح وإضافاته؛ لون الوشاح والتطريز موحّدان للمجموعة."}
             </p>
             <div className="mt-4 flex justify-center rounded-lg border border-border bg-card p-3">
               <GraduationRobePreview

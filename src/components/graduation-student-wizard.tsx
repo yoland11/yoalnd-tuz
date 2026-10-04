@@ -7,11 +7,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatCurrency } from "@/lib/money";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { vocalizeArabicName } from "@/lib/graduation-name";
+import { processImageFile } from "@/lib/image-tools";
 import {
   MEASUREMENTS,
   newStudent,
   SASH_FONTS,
   SASH_TYPES,
+  STUDENT_REFERENCE_PLACEMENTS,
   STUDENT_STEPS,
   studentIssue,
   studentPayload,
@@ -51,6 +53,7 @@ export function GraduationStudentSummary({
 }) {
   const text = order.customText || {};
   const measurements = order.measurements || {};
+  const reference = order.previewAssets?.studentReference;
   return (
     <div className="grid gap-4 text-sm sm:grid-cols-[1fr_180px]">
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
@@ -77,6 +80,11 @@ export function GraduationStudentSummary({
           ],
           ["لون الوشاح", order.colors?.sash],
           ["لون التطريز", order.colors?.embroidery],
+          [
+            "موضع الصورة أو الملاحظة",
+            STUDENT_REFERENCE_PLACEMENTS.find((item) => item.key === reference?.placement)?.label,
+          ],
+          ["ملاحظة الصورة", reference?.note],
           [
             "القياس",
             measurements.readySize ||
@@ -117,6 +125,13 @@ export function GraduationStudentSummary({
               <dd>{formatCurrency(line.amount)}</dd>
             </div>
           ))}
+        {typeof reference?.imageUrl === "string" && /^https?:\/\//i.test(reference.imageUrl) && (
+          <div className="col-span-2">
+            <a href={reference.imageUrl} target="_blank" rel="noopener noreferrer">
+              <img src={reference.imageUrl} alt="الصورة المرجعية للطلب" className="h-28 w-28 rounded-xl border object-cover" />
+            </a>
+          </div>
+        )}
       </dl>
       {text.sashType && (
         <div className="h-56 rounded-lg bg-muted/40 p-2">
@@ -250,6 +265,8 @@ export function GraduationStudentWizard({
   const storageKey = `ajn-student-wizard:${scope}`;
   const sashPolicy = resolveGroupSashPolicy(base);
   const fixedGroupSash = scope !== "individual" && sashPolicy.mode === "fixed";
+  const lockedGroupSashColor = scope !== "individual" && Boolean(sashPolicy.sashColor);
+  const lockedGroupEmbroideryColor = scope !== "individual" && Boolean(sashPolicy.embroideryColor);
   const showDetailedMeasurements =
     scope === "individual" || base.showDetailedMeasurements !== false;
   const seed = (): StudentForm => ({
@@ -272,10 +289,8 @@ export function GraduationStudentWizard({
         }
       : {}),
     sashType: fixedGroupSash ? sashPolicy.sashType : "standard",
-    sashColor: fixedGroupSash
-      ? sashPolicy.sashColor
-      : base.colors?.sash || "#182539",
-    embroideryColor: base.colors?.embroidery || "#D4AF37",
+    sashColor: sashPolicy.sashColor || base.colors?.sash || "#182539",
+    embroideryColor: sashPolicy.embroideryColor || base.colors?.embroidery || "#D4AF37",
   });
   const baseSeed = useRef(seed());
   const [form, setForm] = useState<StudentForm>(seed);
@@ -283,6 +298,7 @@ export function GraduationStudentWizard({
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [imageBusy, setImageBusy] = useState(false);
   const [error, setError] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [attempt, setAttempt] = useState<{ key: string; body: string } | null>(
@@ -386,17 +402,41 @@ export function GraduationStudentWizard({
     setForm({
       ...newStudent(),
       sashType: fixedGroupSash ? sashPolicy.sashType : "standard",
-      sashColor: fixedGroupSash
-        ? sashPolicy.sashColor
-        : base.colors?.sash || "#182539",
-      embroideryColor: base.colors?.embroidery || "#D4AF37",
+      sashColor: sashPolicy.sashColor || base.colors?.sash || "#182539",
+      embroideryColor: sashPolicy.embroideryColor || base.colors?.embroidery || "#D4AF37",
     });
     setDone(false);
     go(0);
   }
+  async function selectReferenceImage(file: File) {
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setError("اختر صورة JPG أو PNG أو WEBP");
+      return;
+    }
+    setImageBusy(true);
+    setError("");
+    try {
+      const image = await processImageFile(file, {
+        maxSize: 1600,
+        quality: 0.82,
+        maxBytes: 900_000,
+      });
+      if (image.length > 4_000_000)
+        throw new Error("الصورة كبيرة جداً، اختر صورة أصغر");
+      change({ referenceImage: image, referenceFileName: file.name.slice(0, 180) });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "تعذر تجهيز الصورة");
+    } finally {
+      setImageBusy(false);
+    }
+  }
   async function save(addAnother: boolean) {
     if (saving.current) return;
-    for (const index of [0, 2]) {
+    if (imageBusy) {
+      setError("انتظر حتى تجهز الصورة المرجعية");
+      return;
+    }
+    for (const index of [0, 2, 3]) {
       const issue = studentIssue(submissionForm, index);
       if (issue) {
         setStep(index);
@@ -461,8 +501,9 @@ export function GraduationStudentWizard({
       setReceipts(updated);
       const cleared = {
         ...newStudent(),
-        sashColor: base.colors?.sash || "#182539",
-        embroideryColor: base.colors?.embroidery || "#D4AF37",
+        sashType: fixedGroupSash ? sashPolicy.sashType : "standard",
+        sashColor: sashPolicy.sashColor || base.colors?.sash || "#182539",
+        embroideryColor: sashPolicy.embroideryColor || base.colors?.embroidery || "#D4AF37",
       };
       // Record the receipt before resetting, so a reload cannot restore a submitted student.
       try {
@@ -499,7 +540,8 @@ export function GraduationStudentWizard({
     }
   }
   const displayedSashType = fixedGroupSash ? sashPolicy.sashType : form.sashType;
-  const displayedSashColor = fixedGroupSash ? sashPolicy.sashColor : form.sashColor;
+  const displayedSashColor = lockedGroupSashColor ? sashPolicy.sashColor! : form.sashColor;
+  const displayedEmbroideryColor = lockedGroupEmbroideryColor ? sashPolicy.embroideryColor! : form.embroideryColor;
   return (
     <section className="space-y-6" dir="rtl">
       {receipts.length > 0 && (
@@ -691,7 +733,7 @@ export function GraduationStudentWizard({
                             label={image.label}
                             src={image.src}
                             color={displayedSashColor}
-                            thread={form.embroideryColor}
+                            thread={displayedEmbroideryColor}
                           />
                         ))}
                       </div>
@@ -950,9 +992,9 @@ export function GraduationStudentWizard({
                         }
                       />
                     </div>
-                    {fixedGroupSash ? (
+                    {lockedGroupSashColor ? (
                       <p className="text-sm text-muted-foreground">
-                        لون الوشاح ثابت حسب اختيار المجموعة.
+                        لون الوشاح ثابت حسب اختيار ممثل الدفعة.
                       </p>
                     ) : (
                       <div>
@@ -968,28 +1010,36 @@ export function GraduationStudentWizard({
                         />
                       </div>
                     )}
-                    <div>
-                      <Label>لون التطريز</Label>
-                      <div className="mt-2 flex gap-2">
-                        {[
-                          ["#D4AF37", "ذهبي"],
-                          ["#C0C0C0", "فضي"],
-                        ].map(([color, label]) => (
-                          <Button
-                            key={color}
-                            variant={
-                              form.embroideryColor === color
-                                ? "default"
-                                : "outline"
-                            }
-                            aria-pressed={form.embroideryColor === color}
-                            onClick={() => change({ embroideryColor: color })}
-                          >
-                            {label}
-                          </Button>
-                        ))}
+                    {lockedGroupEmbroideryColor ? (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        لون التطريز ثابت حسب اختيار ممثل الدفعة
+                        <span
+                          aria-label={`لون التطريز ${displayedEmbroideryColor}`}
+                          className="h-6 w-6 rounded-full border border-black/10"
+                          style={{ backgroundColor: displayedEmbroideryColor }}
+                        />
                       </div>
-                    </div>
+                    ) : (
+                      <div>
+                        <Label>لون التطريز</Label>
+                        <div className="mt-2 flex gap-2">
+                          {[
+                            ["#D4AF37", "ذهبي"],
+                            ["#C0C0C0", "فضي"],
+                          ].map(([color, label]) => (
+                            <Button
+                              key={color}
+                              type="button"
+                              variant={form.embroideryColor === color ? "default" : "outline"}
+                              aria-pressed={form.embroideryColor === color}
+                              onClick={() => change({ embroideryColor: color })}
+                            >
+                              {label}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <div>
                       <Label htmlFor="sash-font">الخط</Label>
                       <select
@@ -1017,7 +1067,7 @@ export function GraduationStudentWizard({
                     <SashPreview
                       type={displayedSashType}
                       color={displayedSashColor}
-                      thread={form.embroideryColor}
+                      thread={displayedEmbroideryColor}
                       name={form.sashName}
                       font={form.font}
                     />
@@ -1027,6 +1077,73 @@ export function GraduationStudentWizard({
                     </p>
                   </div>
                 </div>
+                {scope !== "individual" && (
+                  <div className="space-y-4 rounded-2xl border border-[#e9dfd3] bg-[#fcfaf7] p-4 sm:p-5">
+                    <div>
+                      <h4 className="font-semibold">صورة وملاحظة للتجهيز</h4>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        أرفق صورة توضيحية واحدة إن أردت، وحدد مكان تنفيذها ليظهر طلبك واضحاً للفريق.
+                      </p>
+                    </div>
+                    <div role="group" aria-label="موضع الصورة أو الملاحظة" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {STUDENT_REFERENCE_PLACEMENTS.map((placement) => (
+                        <Button
+                          key={placement.key}
+                          type="button"
+                          variant={form.referencePlacement === placement.key ? "selected" : "outline"}
+                          aria-pressed={form.referencePlacement === placement.key}
+                          disabled={Boolean(attempt)}
+                          className="min-h-11 whitespace-normal"
+                          onClick={() => change({ referencePlacement: placement.key })}
+                        >
+                          {placement.label}
+                        </Button>
+                      ))}
+                    </div>
+                    <div>
+                      <Label htmlFor={`student-reference-image-${scope}`}>صورة مرجعية (اختياري)</Label>
+                      <Input
+                        id={`student-reference-image-${scope}`}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        disabled={imageBusy || Boolean(attempt)}
+                        className="mt-2 h-auto min-h-11 py-2"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file) void selectReferenceImage(file);
+                          event.target.value = "";
+                        }}
+                      />
+                      {imageBusy && <p role="status" className="mt-2 text-sm text-muted-foreground">جاري تجهيز الصورة…</p>}
+                    </div>
+                    {form.referenceImage && (
+                      <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-3">
+                        <img src={form.referenceImage} alt="معاينة الصورة المرجعية" className="h-24 w-24 rounded-lg border object-cover" />
+                        <div className="min-w-0 flex-1 text-sm">
+                          <p className="truncate font-medium">{form.referenceFileName}</p>
+                          <p className="text-muted-foreground">صورة واحدة مرتبطة بهذا الطالب فقط</p>
+                        </div>
+                        <Button type="button" variant="outline" disabled={Boolean(attempt)} onClick={() => change({ referenceImage: "", referenceFileName: "" })}>
+                          إزالة الصورة
+                        </Button>
+                      </div>
+                    )}
+                    <div>
+                      <Label htmlFor={`student-reference-note-${scope}`}>
+                        ملاحظة على الصورة أو الموضع{form.referencePlacement === "other" ? " *" : " (اختياري)"}
+                      </Label>
+                      <Textarea
+                        id={`student-reference-note-${scope}`}
+                        value={form.referenceNote}
+                        maxLength={500}
+                        disabled={Boolean(attempt)}
+                        className="mt-2 min-h-20"
+                        placeholder="مثال: ثبّت الزهرة في هذا المكان مثل الصورة"
+                        onChange={(event) => change({ referenceNote: event.target.value })}
+                      />
+                    </div>
+                  </div>
+                )}
                 {form.photography && (
                   <div className="rounded-lg border p-3 text-sm">
                     <p>
@@ -1083,25 +1200,25 @@ export function GraduationStudentWizard({
           <div className="flex flex-wrap justify-between gap-3 border-t pt-5">
             <Button
               variant="outline"
-              disabled={step === 0 || busy || Boolean(attempt)}
+              disabled={step === 0 || busy || imageBusy || Boolean(attempt)}
               onClick={() => go(step - 1)}
             >
               رجوع
             </Button>
             {step < 3 ? (
-              <Button disabled={busy || !hydrated} onClick={next}>
+              <Button disabled={busy || imageBusy || !hydrated} onClick={next}>
                 التالي
               </Button>
             ) : (
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
-                  disabled={busy}
+                  disabled={busy || imageBusy}
                   onClick={() => void save(true)}
                 >
                   {busy ? "جاري الحفظ…" : "إضافة طالب آخر"}
                 </Button>
-                <Button disabled={busy} onClick={() => void save(false)}>
+                <Button disabled={busy || imageBusy} onClick={() => void save(false)}>
                   {busy ? "جاري الحفظ…" : "اكتمال"}
                 </Button>
               </div>

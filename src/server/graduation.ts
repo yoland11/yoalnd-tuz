@@ -2,6 +2,7 @@ import {
   SASH_TYPES,
   resolveGroupSashPolicy,
   studentSashOverrides,
+  withoutStudentReferencePreview,
 } from "../lib/graduation-student-flow";
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
@@ -22,6 +23,8 @@ import {
   sql,
 } from "drizzle-orm";
 import { readRequestBody } from "@/server/request-body";
+import { createApiErrorPayload, makeRequestId } from "@/server/write-safety";
+import { safeServerError } from "@/server/safe-server-log";
 import {
   adminActivityLogsTable,
   customersTable,
@@ -207,6 +210,18 @@ function json(data: unknown, status = 200) {
 }
 function error(message: string, status = 400, details?: unknown) {
   return json({ error: message, ...(details ? { details } : {}) }, status);
+}
+function studentReferenceError(message: string, status: number, requestId: string) {
+  const payload = createApiErrorPayload({
+    message,
+    status,
+    requestId,
+    code: status >= 500 ? "NETWORK_ERROR" : "VALIDATION_ERROR",
+  });
+  return NextResponse.json(payload, {
+    status,
+    headers: { "x-request-id": requestId },
+  });
 }
 async function requestBody(req: NextRequest) {
   return readRequestBody(req);
@@ -1271,6 +1286,10 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       } as any,
     };
   }
+  data = {
+    ...data,
+    previewAssets: withoutStudentReferencePreview(data.previewAssets),
+  };
   const config = await getConfig();
   if (!config.styles.some((item) => item.key === data.styleKey))
     return { response: error("نوع التخرج المختار غير متاح", 400) };
@@ -1525,6 +1544,40 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   }
   const inventoryItems = [...groupedInventory.values()];
   const groupId = group?.id ?? null;
+  if (data.studentReference) {
+    const reference = data.studentReference;
+    const requestId = makeRequestId();
+    let imageUrl = "";
+    if (reference.imageData) {
+      const parsedImage = parseDataUrl(reference.imageData);
+      if (!parsedImage || !GRADUATION_IMAGE_MIMES.has(parsedImage.mime) || parsedImage.bytes.byteLength > GRADUATION_IMAGE_BYTES)
+        return { response: studentReferenceError("صورة الطالب غير صالحة أو حجمها كبير", 400, requestId) };
+      try {
+        imageUrl = String(await persistMedia(reference.imageData, "graduation/student-references"));
+      } catch (uploadError) {
+        console.error("graduation student reference upload failed", {
+          requestId,
+          error: safeServerError(uploadError),
+        });
+        return { response: studentReferenceError("تعذر رفع الصورة المرجعية، حاول مرة أخرى", 503, requestId) };
+      }
+      if (imageUrl.startsWith("data:")) {
+        console.error("graduation student reference storage unavailable", { requestId });
+        return { response: studentReferenceError("خدمة رفع الصور غير متاحة حالياً", 503, requestId) };
+      }
+    }
+    data = {
+      ...data,
+      previewAssets: {
+        ...data.previewAssets,
+        studentReference: {
+          placement: reference.placement,
+          note: reference.note,
+          ...(imageUrl ? { imageUrl, fileName: reference.fileName || "" } : {}),
+        },
+      },
+    };
+  }
   const decoration = { ...data.decoration } as Record<string, any>;
   const orderMeasurements = withGraduationMeasurementStatus(data.measurements);
   if (decoration.file)

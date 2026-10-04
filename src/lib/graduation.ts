@@ -420,6 +420,18 @@ export const graduationOrderInputSchema = z
     groupToken: optionalString,
     status: z.enum(["draft", "submitted"]).default("submitted"),
     measurements: graduationMeasurementsSchema.default({}),
+    studentReference: z
+      .object({
+        placement: z.enum(["cap_edge", "cap_top", "sash_back", "other"]),
+        note: z.string().trim().max(500).default(""),
+        imageData: z.string().max(4_000_000).regex(/^data:image\/(?:jpeg|png|webp);base64,/i).optional(),
+        fileName: z.string().trim().max(180).optional(),
+      })
+      .refine((reference) => reference.placement !== "other" || Boolean(reference.note), {
+        message: "اكتب ملاحظة توضّح الموضع الآخر",
+        path: ["note"],
+      })
+      .optional(),
     colors: z.record(z.string(), z.string()).default({}),
     fabric: z.object({ key: z.string().min(1) }).passthrough(),
     decoration: z

@@ -4,6 +4,16 @@ export const STUDENT_STEPS = [
   "قياسات",
   "اسمك على الوشاح",
 ];
+
+export const STUDENT_REFERENCE_PLACEMENTS = [
+  { key: "cap_edge", label: "طرف القبعة" },
+  { key: "cap_top", label: "فوق القبعة" },
+  { key: "sash_back", label: "خلف الوشاح" },
+  { key: "other", label: "أخرى" },
+] as const;
+
+export type StudentReferencePlacement =
+  (typeof STUDENT_REFERENCE_PLACEMENTS)[number]["key"];
 export const SASH_TYPES = [
   {
     key: "standard",
@@ -105,6 +115,10 @@ export function newStudent() {
     sashType: "standard",
     sashColor: "#182539",
     embroideryColor: "#D4AF37",
+    referencePlacement: "" as StudentReferencePlacement | "",
+    referenceNote: "",
+    referenceImage: "",
+    referenceFileName: "",
     font: "naskh",
     flowers: [] as StudentFlower[],
     photography: null as Record<string, unknown> | null,
@@ -160,14 +174,29 @@ export function studentIssue(student: StudentForm, step: number) {
         return `${label}: أدخل قيمة بين ${min} و${max}`;
     }
   }
+  if (step === 3) {
+    if ((student.referenceImage || student.referenceNote.trim()) && !student.referencePlacement)
+      return "حدد موضع الصورة أو الملاحظة";
+    if (student.referencePlacement === "other" && !student.referenceNote.trim())
+      return "اكتب ملاحظة توضّح الموضع الآخر";
+  }
   return undefined;
 }
 
 export type GroupSashPolicy = {
   mode: "fixed" | "per_student";
   sashType: string;
-  sashColor: string;
+  sashColor?: string;
+  embroideryColor?: string;
 };
+
+export function withoutStudentReferencePreview(
+  previewAssets: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(previewAssets || {}).filter(([key]) => key !== "studentReference"),
+  );
+}
 
 export function resolveGroupSashPolicy(
   configuration: Record<string, unknown>,
@@ -177,17 +206,23 @@ export function resolveGroupSashPolicy(
       ? (configuration.colors as Record<string, unknown>)
       : {};
   const fixedColor = colors.sash;
+  const embroideryColor = colors.embroidery;
   const fixedType = configuration.sashType;
+  const mode =
+    configuration.sashSelectionMode === "fixed" ? "fixed" : "per_student";
   return {
-    mode:
-      configuration.sashSelectionMode === "fixed" ? "fixed" : "per_student",
+    mode,
     sashType: SASH_TYPES.some((type) => type.key === fixedType)
       ? String(fixedType)
       : "standard",
     sashColor:
       typeof fixedColor === "string" && /^#[0-9a-f]{6}$/i.test(fixedColor)
         ? fixedColor
-        : "#182539",
+        : mode === "fixed" ? "#182539" : undefined,
+    embroideryColor:
+      typeof embroideryColor === "string" && /^#[0-9a-f]{6}$/i.test(embroideryColor)
+        ? embroideryColor
+        : mode === "fixed" ? "#D4AF37" : undefined,
   };
 }
 
@@ -199,21 +234,22 @@ export function studentSashOverrides(
   const result: Record<string, string> = {};
   if (policy?.mode === "fixed") {
     result.sashType = policy.sashType;
-    result.sashColor = policy.sashColor;
   } else {
     if (SASH_TYPES.some((type) => type.key === text.sashType))
       result.sashType = String(text.sashType);
-    if (
+  }
+  if (policy?.sashColor) result.sashColor = policy.sashColor;
+  else if (
       typeof text.sashColor === "string" &&
       /^#[0-9a-f]{6}$/i.test(text.sashColor)
-    )
-      result.sashColor = text.sashColor;
-  }
+    ) result.sashColor = text.sashColor;
+  if (policy?.embroideryColor) result.embroideryColor = policy.embroideryColor;
+  else if (
+    typeof text.embroideryColor === "string" &&
+    /^#[0-9a-f]{6}$/i.test(text.embroideryColor)
+  ) result.embroideryColor = text.embroideryColor;
   if (SASH_FONTS.some((font) => font.key === text.font))
     result.font = String(text.font);
-  for (const key of ["embroideryColor"])
-    if (typeof text[key] === "string" && /^#[0-9a-f]{6}$/i.test(text[key]))
-      result[key] = String(text[key]);
   return result;
 }
 export function studentPayload(
@@ -222,7 +258,7 @@ export function studentPayload(
 ) {
   const baseCustomText = { ...base.customText };
   delete baseCustomText.studentId;
-  const sashPolicy = resolveGroupSashPolicy(base);
+  const sashPolicy = base.groupToken ? resolveGroupSashPolicy(base) : undefined;
   const sash = studentSashOverrides(
     {
       sashType: student.sashType,
@@ -234,10 +270,22 @@ export function studentPayload(
   );
   return {
     ...base,
+    previewAssets: withoutStudentReferencePreview(base.previewAssets),
     status: "submitted",
     customerName: student.customerName.trim(),
     phone: student.phone,
     notes: student.notes,
+    ...(student.referencePlacement
+      ? {
+          studentReference: {
+            placement: student.referencePlacement,
+            note: student.referenceNote.trim(),
+            ...(student.referenceImage
+              ? { imageData: student.referenceImage, fileName: student.referenceFileName }
+              : {}),
+          },
+        }
+      : {}),
     measurements: {
       ...Object.fromEntries(
         MEASUREMENTS.filter(([key]) => student.measurements[key]?.trim()).map(

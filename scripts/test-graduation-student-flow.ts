@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import * as flow from "../src/lib/graduation-student-flow";
+import { graduationOrderInputSchema } from "../src/lib/graduation";
 
 assert.equal(
   typeof flow.newStudent,
@@ -112,38 +113,137 @@ assert.equal(
 const fixedSashPolicy = flow.resolveGroupSashPolicy({
   sashSelectionMode: "fixed",
   sashType: "royal",
-  colors: { sash: "#AA2233" },
+  colors: { sash: "#AA2233", embroidery: "#C0C0C0" },
 });
 assert.deepEqual(fixedSashPolicy, {
   mode: "fixed",
   sashType: "royal",
   sashColor: "#AA2233",
+  embroideryColor: "#C0C0C0",
 });
 assert.deepEqual(
   flow.studentSashOverrides(
-    { sashType: "american", sashColor: "#FFFFFF", font: "thuluth" },
+    { sashType: "american", sashColor: "#FFFFFF", embroideryColor: "#D4AF37", font: "thuluth" },
     fixedSashPolicy,
   ),
-  { sashType: "royal", sashColor: "#AA2233", font: "thuluth" },
-  "fixed group policy must override submitted sash type/color but retain personal font",
+  { sashType: "royal", sashColor: "#AA2233", embroideryColor: "#C0C0C0", font: "thuluth" },
+  "fixed group policy must override submitted type and both colors but retain personal font",
+);
+const perStudentSashPolicy = flow.resolveGroupSashPolicy({
+  sashSelectionMode: "per_student",
+  colors: { sash: "#AA2233", embroidery: "#C0C0C0" },
+});
+assert.deepEqual(
+  flow.studentSashOverrides(
+    { sashType: "american", sashColor: "#FFFFFF", embroideryColor: "#D4AF37" },
+    perStudentSashPolicy,
+  ),
+  { sashType: "american", sashColor: "#AA2233", embroideryColor: "#C0C0C0" },
+  "student may choose the sash type but not the representative's colors",
+);
+assert.deepEqual(
+  flow.studentSashOverrides(
+    { sashType: "american", sashColor: "#FFFFFF", embroideryColor: "#D4AF37" },
+    flow.resolveGroupSashPolicy({ sashSelectionMode: "per_student" }),
+  ),
+  { sashType: "american", sashColor: "#FFFFFF", embroideryColor: "#D4AF37" },
+  "legacy groups without representative colors must retain their existing customization",
 );
 const fixedPayload = flow.studentPayload(
-  { ...first, sashType: "american", sashColor: "#FFFFFF" },
+  { ...first, sashType: "american", sashColor: "#FFFFFF", embroideryColor: "#D4AF37" },
   {
+    groupToken: "group-a",
     sashSelectionMode: "fixed",
     sashType: "royal",
-    colors: { robe: "#123456", sash: "#AA2233" },
+    colors: { robe: "#123456", sash: "#AA2233", embroidery: "#C0C0C0" },
   },
 );
 assert.equal(fixedPayload.customText.sashType, "royal");
 assert.equal(fixedPayload.customText.sashColor, "#AA2233");
 assert.equal(fixedPayload.colors.sash, "#AA2233");
+assert.equal(fixedPayload.customText.embroideryColor, "#C0C0C0");
+assert.equal(fixedPayload.colors.embroidery, "#C0C0C0");
+const personalGroupPayload = flow.studentPayload(
+  { ...first, sashType: "american", sashColor: "#FFFFFF", embroideryColor: "#D4AF37" },
+  {
+    groupToken: "group-a",
+    sashSelectionMode: "per_student",
+    colors: { sash: "#AA2233", embroidery: "#C0C0C0" },
+  },
+);
+assert.equal(personalGroupPayload.customText.sashType, "american");
+assert.equal(personalGroupPayload.colors.sash, "#AA2233");
+assert.equal(personalGroupPayload.colors.embroidery, "#C0C0C0");
 const personalPayload = flow.studentPayload(
   { ...first, sashType: "american", sashColor: "#FFFFFF" },
   {},
 );
 assert.equal(personalPayload.customText.sashType, "american");
 assert.equal(personalPayload.colors.sash, "#FFFFFF");
+const referenceImage = "data:image/png;base64,AAAA";
+const referencePayload = flow.studentPayload(
+  {
+    ...first,
+    referencePlacement: "cap_top",
+    referenceNote: "ثبت الزهرة بالمنتصف",
+    referenceImage,
+    referenceFileName: "cap.png",
+  },
+  { groupToken: "group-a" },
+);
+assert.deepEqual(referencePayload.studentReference, {
+  placement: "cap_top",
+  note: "ثبت الزهرة بالمنتصف",
+  imageData: referenceImage,
+  fileName: "cap.png",
+});
+assert.equal(
+  flow.studentIssue({ ...first, referencePlacement: "other", referenceNote: "" }, 3),
+  "اكتب ملاحظة توضّح الموضع الآخر",
+);
+assert.equal(
+  flow.studentIssue({ ...first, referenceImage, referencePlacement: "" }, 3),
+  "حدد موضع الصورة أو الملاحظة",
+);
+assert.equal(flow.studentPayload(first, { groupToken: "group-a" }).studentReference, undefined);
+const untrustedPreviewPayload = flow.studentPayload(first, {
+  groupToken: "group-a",
+  previewAssets: {
+    robe: "existing-preview",
+    studentReference: { imageUrl: "javascript:alert(1)" },
+  },
+});
+assert.deepEqual(untrustedPreviewPayload.previewAssets, { robe: "existing-preview" });
+const orderInput = {
+  customerName: "علي أحمد",
+  phone: "07712345678",
+  styleKey: "standard",
+  fabric: { key: "standard" },
+};
+assert.equal(
+  graduationOrderInputSchema.safeParse({
+    ...orderInput,
+    studentReference: { placement: "other", note: "" },
+  }).success,
+  false,
+  "other placement requires a note",
+);
+assert.equal(
+  graduationOrderInputSchema.safeParse({
+    ...orderInput,
+    studentReference: { placement: "cap_top", note: "", imageData: referenceImage },
+  }).success,
+  true,
+  "a reference image and a known placement are valid without a note",
+);
+assert.equal(
+  graduationOrderInputSchema.safeParse({
+    ...orderInput,
+    studentReference: { placement: "cap_top", imageData: "https://example.com/private.jpg" },
+  }).success,
+  false,
+  "student reference upload must not accept an arbitrary remote URL",
+);
 console.log(
   "Graduation student isolation, payload, validation and legacy customization passed.",
 );
