@@ -412,13 +412,13 @@ export function ImageUploadEditor({
                 {currentMetadata?.objectFit ? ` · ${currentMetadata.objectFit}` : ""}
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" onClick={() => inputRef.current?.click()} className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs text-primary hover:bg-primary/20">
+                <Button variant="ghost" type="button" onClick={() => inputRef.current?.click()} className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs text-primary hover:bg-primary/20">
                   استبدال الصورة
-                </button>
+                </Button>
                 {onRemove && (
-                  <button type="button" onClick={onRemove} className="rounded-lg border border-status-danger/25 bg-status-danger/10 px-3 py-1.5 text-xs text-status-danger hover:bg-status-danger/20">
+                  <Button variant="ghost" type="button" onClick={onRemove} className="rounded-lg border border-status-danger/25 bg-status-danger/10 px-3 py-1.5 text-xs text-status-danger hover:bg-status-danger/20">
                     حذف
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>
@@ -448,13 +448,13 @@ export function ImageUploadEditor({
 
       {showCameraAction ? (
         <>
-          <button
+          <Button variant="ghost"
             type="button"
             onClick={() => cameraInputRef.current?.click()}
             className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-border/40 bg-background/55 px-4 py-3 text-sm text-foreground hover:border-primary/50"
           >
             <Camera className="h-4 w-4 text-primary" /> التقاط صورة بالكاميرا
-          </button>
+          </Button>
           <input
             ref={cameraInputRef}
             type="file"
@@ -508,14 +508,14 @@ export function ImageUploadEditor({
                 <h3 className="truncate text-sm font-bold text-foreground sm:text-base">تعديل الصورة</h3>
                 <p className="truncate text-[11px] text-muted-foreground">{source.fileName} · {queue.length > 1 ? `${queue.length} صور` : "صورة واحدة"}</p>
               </div>
-              <button
+              <Button size="iconSm" variant="ghost"
                 type="button"
                 onClick={() => closeEditor(true)}
                 className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/35 bg-card text-muted-foreground transition-colors hover:border-status-danger/35 hover:bg-status-danger/10 hover:text-status-danger"
                 aria-label="إغلاق"
               >
                 <X className="h-4 w-4" />
-              </button>
+              </Button>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-5">
@@ -572,7 +572,7 @@ export function ImageUploadEditor({
                   <Panel title="الأبعاد الجاهزة">
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-2">
                       {PRESETS.map((preset) => (
-                        <button
+                        <Button variant="ghost"
                           key={preset.id}
                           type="button"
                           onClick={() => setPreset(preset.id)}
@@ -584,7 +584,7 @@ export function ImageUploadEditor({
                         >
                           <PresetIcon preset={preset} active={editor.preset === preset.id} />
                           <span className="mt-1 block leading-4">{preset.label}</span>
-                        </button>
+                        </Button>
                       ))}
                     </div>
                   </Panel>
@@ -593,21 +593,21 @@ export function ImageUploadEditor({
                     <div className="space-y-3">
                       <Stepper label="العرض" value={editor.width} min={96} max={3200} onChange={changeWidth} />
                       <Stepper label="الارتفاع" value={editor.height} min={96} max={3200} onChange={changeHeight} />
-                      <button
+                      <Button variant="ghost"
                         type="button"
                         onClick={() => setEditor({ ...editor, lockRatio: !editor.lockRatio })}
                         className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-border/35 bg-card px-3 py-2 text-xs text-foreground transition-colors hover:border-primary/40"
                       >
                         {editor.lockRatio ? <Lock className="h-3.5 w-3.5 text-primary" /> : <Unlock className="h-3.5 w-3.5 text-muted-foreground" />}
                         {editor.lockRatio ? "النسبة مقفلة" : "قفل النسبة"}
-                      </button>
+                      </Button>
                     </div>
                   </Panel>
 
                   <Panel title="طريقة العرض">
                     <div className="grid grid-cols-3 gap-1.5">
                       {(["cover", "contain", "fill"] as ImageObjectFit[]).map((fit) => (
-                        <button
+                        <Button variant="ghost"
                           type="button"
                           key={fit}
                           onClick={() => setEditor({ ...editor, objectFit: fit, zoom: fit === "cover" ? editor.zoom : 1 })}
@@ -618,7 +618,7 @@ export function ImageUploadEditor({
                           }`}
                         >
                           {fit}
-                        </button>
+                        </Button>
                       ))}
                     </div>
                     <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
@@ -652,9 +652,9 @@ export function ImageUploadEditor({
               {transfer || error ? <div className="w-full rounded-lg bg-muted/50 px-3 py-2 text-xs" aria-live="polite"><div className="flex items-center justify-between gap-2"><span className={error ? "text-destructive" : "text-muted-foreground"}>{error || (transfer ? uploadProgressLabel(transfer) : "")}</span>{uploadAbortRef.current && !error ? <Button type="button" size="sm" variant="ghost" className="h-7 text-destructive" onClick={() => uploadAbortRef.current?.abort()}><X className="ml-1 h-3.5 w-3.5" />إلغاء</Button> : error ? <Button type="button" size="sm" variant="ghost" onClick={() => void applyEdits()}><RotateCcw className="ml-1 h-3.5 w-3.5" />إعادة المحاولة</Button> : null}</div>{transfer ? <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-primary/15"><div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${transfer.percent}%` }} /></div> : null}</div> : null}
               <p className="text-[11px] text-muted-foreground">اسحب الصورة داخل الإطار ثم احفظ النتيجة.</p>
               <div className="flex gap-2">
-                <button type="button" onClick={reset} className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-border/35 bg-card px-3 py-2 text-xs text-foreground hover:border-primary/40">
+                <Button variant="ghost" type="button" onClick={reset} className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-border/35 bg-card px-3 py-2 text-xs text-foreground hover:border-primary/40">
                   <RotateCcw className="h-3.5 w-3.5" /> Reset
-                </button>
+                </Button>
                 <Button type="button" onClick={() => void applyEdits()} className="min-h-10 flex-1 gap-2 sm:flex-none">
                   <ImageIcon className="h-4 w-4" /> حفظ الصورة
                 </Button>
@@ -705,13 +705,13 @@ function Stepper({ label, value, min, max, onChange }: { label: string; value: n
       <div className="mb-2 flex items-center justify-between gap-2">
         <label className="text-xs text-muted-foreground">{label}</label>
         <div className="flex items-center gap-1">
-          <button type="button" onClick={() => onChange(value - 32)} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/30 text-muted-foreground hover:text-foreground" aria-label={`تقليل ${label}`}>
+          <Button size="iconSm" variant="ghost" type="button" onClick={() => onChange(value - 32)} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/30 text-muted-foreground hover:text-foreground" aria-label={`تقليل ${label}`}>
             <Minus className="h-3 w-3" />
-          </button>
+          </Button>
           <span title={`${label}: ${value}px`} className="w-20 rounded-md border border-border/30 bg-card px-2 py-1.5 text-center text-xs text-foreground">{value}px</span>
-          <button type="button" onClick={() => onChange(value + 32)} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/30 text-muted-foreground hover:text-foreground" aria-label={`زيادة ${label}`}>
+          <Button size="iconSm" variant="ghost" type="button" onClick={() => onChange(value + 32)} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/30 text-muted-foreground hover:text-foreground" aria-label={`زيادة ${label}`}>
             <Plus className="h-3 w-3" />
-          </button>
+          </Button>
         </div>
       </div>
       <input type="range" min={min} max={max} step={16} value={value} onChange={(event) => onChange(Number(event.target.value))} className="w-full accent-primary" />

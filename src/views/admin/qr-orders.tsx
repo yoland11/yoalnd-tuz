@@ -133,7 +133,7 @@ function QrDetailsModal({ row, onClose }: { row: QrRow; onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl">
-      <button type="button" className="absolute inset-0 cursor-default" onClick={onClose} aria-label="إغلاق" />
+      <Button size="flush" variant="ghost" type="button" className="absolute inset-0 cursor-default" onClick={onClose} aria-label="إغلاق" />
       <div className="relative w-full max-w-2xl bg-card border border-border/40 rounded-xl shadow-xl overflow-hidden">
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-border/30">
           <div>

@@ -144,15 +144,15 @@ export default function NotificationsPage() {
                     <td className="p-3 text-muted-foreground whitespace-nowrap">{formatDate(row.createdAt)}</td>
                     <td className="p-3">
                       <div className="flex items-center gap-1">
-                        <button type="button" onClick={() => patch.mutate({ id: row.id, body: { read: !row.readAt } })} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-primary">
+                        <Button variant="ghost" type="button" onClick={() => patch.mutate({ id: row.id, body: { read: !row.readAt } })} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-primary">
                           <CheckCheck className="w-4 h-4" />
-                        </button>
-                        <button type="button" onClick={() => patch.mutate({ id: row.id, body: { archived: true } })} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-primary">
+                        </Button>
+                        <Button variant="ghost" type="button" onClick={() => patch.mutate({ id: row.id, body: { archived: true } })} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-primary">
                           <Archive className="w-4 h-4" />
-                        </button>
-                        <button type="button" onClick={() => remove.mutate(row.id)} className="rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+                        </Button>
+                        <Button variant="ghost" type="button" onClick={() => remove.mutate(row.id)} className="rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
                           <Trash2 className="w-4 h-4" />
-                        </button>
+                        </Button>
                       </div>
                     </td>
                   </tr>

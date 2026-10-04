@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { useListGallery, useListGalleryCategories } from "@workspace/api-client-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -47,7 +48,7 @@ export default function Gallery() {
       <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/20 py-3">
         <div className="container mx-auto px-4">
           <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-            <button
+            <Button variant="ghost"
               onClick={() => setActiveCategory(undefined)}
               className={`flex-shrink-0 px-4 py-2 rounded-full text-sm transition-colors ${
                 !activeCategory
@@ -56,9 +57,9 @@ export default function Gallery() {
               }`}
             >
               الكل
-            </button>
+            </Button>
             {categories?.map(cat => (
-              <button
+              <Button variant="ghost"
                 key={cat.name}
                 onClick={() => setActiveCategory(cat.name)}
                 className={`flex-shrink-0 px-4 py-2 rounded-full text-sm transition-colors ${
@@ -68,7 +69,7 @@ export default function Gallery() {
                 }`}
               >
                 {cat.name} ({cat.count})
-              </button>
+              </Button>
             ))}
           </div>
         </div>
@@ -136,25 +137,25 @@ export default function Gallery() {
           className="fixed inset-0 z-50 bg-black/97 flex items-center justify-center"
           onClick={closePreview}
         >
-          <button
+          <Button variant="ghost"
             className="absolute top-4 right-4 text-white/60 hover:text-white z-10"
             onClick={closePreview}
           >
             <X className="w-8 h-8" />
-          </button>
+          </Button>
 
-          <button
+          <Button variant="ghost"
             className="absolute left-4 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white p-3 rounded-full transition-colors z-10"
             onClick={(e) => { e.stopPropagation(); prev(); }}
           >
             <ChevronLeft className="w-6 h-6" />
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             className="absolute right-4 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white p-3 rounded-full transition-colors z-10"
             onClick={(e) => { e.stopPropagation(); next(); }}
           >
             <ChevronRight className="w-6 h-6" />
-          </button>
+          </Button>
 
           <div className="max-w-5xl w-full px-16" onClick={e => e.stopPropagation()}>
             {allItems[previewIndex].mediaType === "video" ? (
@@ -173,10 +174,10 @@ export default function Gallery() {
 
           <div className="absolute bottom-6 flex gap-1.5">
             {allItems.map((_, i) => (
-              <button
+              <Button size="flush" variant="ghost"
                 key={i}
                 onClick={(e) => { e.stopPropagation(); setPreviewIndex(i); }}
-                className={`w-1.5 h-1.5 rounded-full transition-colors ${i === previewIndex ? "bg-primary" : "bg-white/30"}`}
+                className={`min-h-0 max-md:min-h-0 w-1.5 h-1.5 rounded-full transition-colors ${i === previewIndex ? "bg-primary" : "bg-white/30"}`}
               />
             ))}
           </div>

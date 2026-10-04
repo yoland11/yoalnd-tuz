@@ -716,13 +716,13 @@ export default function AssetNewPage() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <button
+          <Button variant="ghost"
             type="button"
             onClick={() => setLocation(returnTo === "depreciation" ? "/admin/assets/depreciation" : "/admin/assets")}
             className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 mb-1"
           >
             <ArrowRight className="w-3.5 h-3.5" /> {returnTo === "depreciation" ? "رجوع إلى قائمة الإهلاك" : "رجوع إلى الأصول"}
-          </button>
+          </Button>
           <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
             <Boxes className="w-6 h-6 text-primary" /> {isEditMode ? "Edit Asset" : "إضافة أصل جديد"}
           </h1>
@@ -791,7 +791,7 @@ export default function AssetNewPage() {
               <Field label="الفئة">
                 <Popover open={categorySelectOpen} onOpenChange={setCategorySelectOpen}>
                   <PopoverTrigger asChild>
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       role="combobox"
                       aria-expanded={categorySelectOpen}
@@ -813,7 +813,7 @@ export default function AssetNewPage() {
                         </span>
                       )}
                       <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
-                    </button>
+                    </Button>
                   </PopoverTrigger>
                   <PopoverContent align="start" dir="rtl" className="w-[var(--radix-popover-trigger-width)] min-w-[16rem] p-0">
                     <Command>
@@ -847,7 +847,7 @@ export default function AssetNewPage() {
                                 <CategoryIcon icon={category.icon} color={category.color} />
                                 <span className="min-w-0 flex-1 truncate">{category.name}</span>
                                 <span className="flex shrink-0 items-center gap-0.5" dir="ltr">
-                                  <button
+                                  <Button variant="ghost"
                                     type="button"
                                     className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     aria-label={`تعديل فئة ${category.name}`}
@@ -861,8 +861,8 @@ export default function AssetNewPage() {
                                     }}
                                   >
                                     <Edit3 className="h-3.5 w-3.5" />
-                                  </button>
-                                  <button
+                                  </Button>
+                                  <Button variant="ghost"
                                     type="button"
                                     className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     aria-label={`حذف فئة ${category.name}`}
@@ -876,7 +876,7 @@ export default function AssetNewPage() {
                                     }}
                                   >
                                     <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
+                                  </Button>
                                 </span>
                               </div>
                             </CommandItem>
@@ -885,13 +885,13 @@ export default function AssetNewPage() {
                       </CommandList>
                     </Command>
                     <div className="border-t border-border/40 p-1">
-                      <button
+                      <Button variant="ghost"
                         type="button"
                         className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-sm font-medium text-primary outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring"
                         onClick={() => openCategoryDialog()}
                       >
                         <Plus className="h-4 w-4" /> إضافة فئة جديدة
-                      </button>
+                      </Button>
                     </div>
                   </PopoverContent>
                 </Popover>
@@ -998,13 +998,13 @@ export default function AssetNewPage() {
                   {additionalPhotos.map((img, i) => (
                     <div key={i} className="relative">
                       <img src={img} alt="" className="w-16 h-16 rounded-lg object-cover border border-border/40" />
-                      <button
+                      <Button variant="ghost"
                         type="button"
                         onClick={() => setAdditionalPhotos((a) => a.filter((_, idx) => idx !== i))}
                         className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full p-0.5"
                       >
                         <X className="w-3 h-3" />
-                      </button>
+                      </Button>
                     </div>
                   ))}
                   <label className="w-16 h-16 rounded-lg border border-dashed border-border/50 grid place-items-center cursor-pointer hover:border-primary/50">
@@ -1106,9 +1106,9 @@ export default function AssetNewPage() {
                     <span className="flex items-center gap-2">
                       <CheckSquare className="w-4 h-4 text-primary" /> {item}
                     </span>
-                    <button type="button" onClick={() => setChecklist((c) => c.filter((_, idx) => idx !== i))} className="text-muted-foreground hover:text-red-500">
+                    <Button variant="ghost" type="button" onClick={() => setChecklist((c) => c.filter((_, idx) => idx !== i))} className="text-muted-foreground hover:text-red-500">
                       <Trash2 className="w-4 h-4" />
-                    </button>
+                    </Button>
                   </li>
                 ))}
               </ul>
@@ -1129,7 +1129,7 @@ export default function AssetNewPage() {
                 accessoryProducts.map((p) => {
                   const active = accessories.includes(p.id);
                   return (
-                    <button
+                    <Button variant="ghost"
                       key={p.id}
                       type="button"
                       onClick={() => setAccessories((a) => (active ? a.filter((x) => x !== p.id) : [...a, p.id]))}
@@ -1139,7 +1139,7 @@ export default function AssetNewPage() {
                     >
                       <span className="truncate text-foreground">{p.nameAr || p.name}</span>
                       {active ? <CheckSquare className="w-4 h-4 text-primary shrink-0" /> : <Plus className="w-4 h-4 text-muted-foreground shrink-0" />}
-                    </button>
+                    </Button>
                   );
                 })
               )}
@@ -1256,13 +1256,13 @@ export default function AssetNewPage() {
                     className="h-6 w-7 cursor-pointer rounded border-0 bg-transparent p-0"
                     aria-label="لون الفئة"
                   />
-                  <button
+                  <Button variant="ghost"
                     type="button"
                     onClick={() => setCategoryEditor((current) => current && { ...current, color: "" })}
                     className="text-xs text-muted-foreground hover:text-foreground"
                   >
                     بدون لون
-                  </button>
+                  </Button>
                 </span>
               </label>
               <label className="grid gap-1.5 text-sm">
@@ -1397,9 +1397,9 @@ function ImageSlot({
       {value ? (
         <div className="relative w-full">
           <img src={value} alt={label} className="w-full h-28 rounded-lg object-cover border border-border/40" />
-          <button type="button" onClick={onClear} className="absolute top-1.5 right-1.5 bg-red-500 text-white rounded-full p-1">
+          <Button variant="ghost" type="button" onClick={onClear} className="absolute top-1.5 right-1.5 bg-red-500 text-white rounded-full p-1">
             <X className="w-3.5 h-3.5" />
-          </button>
+          </Button>
         </div>
       ) : (
         <label className="w-full h-28 rounded-lg border border-dashed border-border/50 grid place-items-center cursor-pointer hover:border-primary/50">

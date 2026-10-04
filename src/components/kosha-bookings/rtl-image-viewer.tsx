@@ -69,7 +69,7 @@ export function RtlImageViewer({
     <>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         {thumbnails.map(({ image, index, label }) => (
-          <button
+          <Button size="flush" variant="ghost"
             key={image.id}
             type="button"
             onClick={() => setActiveIndex(index)}
@@ -91,7 +91,7 @@ export function RtlImageViewer({
                 {image.uploader || "AJN"} · {displayTimestamp(image.timestamp)}
               </span>
             </span>
-          </button>
+          </Button>
         ))}
       </div>
       <Dialog open={active !== null} onOpenChange={(open) => !open && setActiveIndex(null)}>

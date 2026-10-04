@@ -282,7 +282,7 @@ function StatCard({ label, value, icon: Icon, onClick, active }: { label: string
   );
   const base = `rounded-xl border bg-card p-4 transition-colors ${active ? "border-primary/50" : "border-border/30"}`;
   if (onClick) return (
-    <button type="button" onClick={onClick} aria-label={`${label}: ${typeof value === "string" || typeof value === "number" ? value : ""}`} className={`${base} block w-full text-right cursor-pointer hover:border-primary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring`}>{inner}</button>
+    <Button variant="ghost" type="button" onClick={onClick} aria-label={`${label}: ${typeof value === "string" || typeof value === "number" ? value : ""}`} className={`${base} block w-full text-right cursor-pointer hover:border-primary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring`}>{inner}</Button>
   );
   return <div className={base}>{inner}</div>;
 }
@@ -1024,22 +1024,22 @@ export function AssetsPage() {
         ) : null}
         <div className="flex gap-2 overflow-x-auto pb-1" aria-label="فلاتر سريعة للأصول">
           {ASSET_QUICK_FILTERS.map(([value, label]) => (
-            <button
+            <Button variant="ghost"
               key={value}
               type="button"
               onClick={() => setQuick(value)}
               className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition ${quickFilter === value ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"}`}
             >
               {label}
-            </button>
+            </Button>
           ))}
         </div>
         <div className="flex gap-2 overflow-x-auto border-t border-border/30 pt-3" aria-label="أقسام الأصول">
-          <button type="button" onClick={() => setFilter("categoryId", "")} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition ${!assetFilters.categoryId ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}>الكل</button>
+          <Button variant="ghost" type="button" onClick={() => setFilter("categoryId", "")} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition ${!assetFilters.categoryId ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}>الكل</Button>
           {(data?.filters.assetCategories ?? []).filter((category) => category.isActive !== false).map((category) => (
-            <button key={category.id} type="button" onClick={() => setFilter("categoryId", String(category.id))} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition ${assetFilters.categoryId === String(category.id) ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}>
+            <Button variant="ghost" key={category.id} type="button" onClick={() => setFilter("categoryId", String(category.id))} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition ${assetFilters.categoryId === String(category.id) ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}>
               {category.name} <span className="mr-1 opacity-70">{category.count}</span>
-            </button>
+            </Button>
           ))}
           <span className="shrink-0 px-2 py-1.5 text-xs text-muted-foreground">غير مصنف: {(data?.filters.categories ?? []).includes("غير مصنف") ? "موجود" : "0"}</span>
         </div>
@@ -1338,7 +1338,7 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
             <Package className="h-5 w-5 text-primary" />
             {asset ? "تعديل الإهلاك" : "إضافة سجل إهلاك"}
           </h2>
-          <button onClick={onClose} className="rounded-lg p-1 text-muted-foreground hover:bg-background/60"><X className="h-5 w-5" /></button>
+          <Button variant="ghost" onClick={onClose} className="rounded-lg p-1 text-muted-foreground hover:bg-background/60"><X className="h-5 w-5" /></Button>
         </div>
         <div className="space-y-3">
           <div>
@@ -1360,7 +1360,7 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
                     {assetResults.length === 0 ? (
                       <div className="px-3 py-2 text-xs text-muted-foreground">لا توجد نتائج</div>
                     ) : assetResults.map((row) => (
-                      <button
+                      <Button variant="ghost"
                         key={row.productId}
                         type="button"
                         onMouseDown={(e) => e.preventDefault()}
@@ -1369,7 +1369,7 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
                       >
                         <span className="truncate">{row.name}</span>
                         {row.serialNumber ? <span className="shrink-0 font-mono text-[11px] text-muted-foreground">SN: {row.serialNumber}</span> : null}
-                      </button>
+                      </Button>
                     ))}
                   </div>
                 )}
@@ -1390,14 +1390,14 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
             <label className="mb-1 block text-xs text-muted-foreground">القيمة المتبقية</label>
             <div className="flex gap-2">
               <input type="number" min={0} className={inputClass} value={currentValue} onChange={(e) => setCurrentValue(e.target.value)} />
-              <button
+              <Button variant="ghost"
                 type="button"
                 onClick={() => setCurrentValue(String(Math.round(computedValue)))}
                 className="flex shrink-0 items-center gap-1 rounded-lg border border-border/40 bg-background px-3 text-xs text-muted-foreground hover:text-primary"
                 title="احتساب القيمة من سعر الشراء والاستخدام"
               >
                 <RotateCcw className="h-3.5 w-3.5" /> احتساب
-              </button>
+              </Button>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">القيمة المحتسبة: {formatCurrency(computedValue)} · الاستخدام الحالي {usageCount} / {life}</p>
           </div>
@@ -1872,7 +1872,7 @@ export function AssetMovementsPage() {
             ) : (
               <div className="max-h-72 space-y-2 overflow-y-auto">
                 {scanned.map((asset) => (
-                  <button
+                  <Button size="flush" variant="ghost"
                     key={asset.productId}
                     type="button"
                     onClick={() => selectAsset(asset)}
@@ -1887,7 +1887,7 @@ export function AssetMovementsPage() {
                       <span className="block truncate text-sm font-medium text-foreground">{asset.productName}</span>
                       <span className="block font-mono text-[11px] text-muted-foreground">{asset.assetCode}</span>
                     </span>
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}

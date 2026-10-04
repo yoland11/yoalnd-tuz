@@ -295,22 +295,22 @@ function PermissionSections({
             </summary>
             <div className="border-t border-border/40 p-3">
               <div className="mb-2 flex gap-3">
-                <button
+                <Button variant="ghost"
                   type="button"
                   disabled={disabled || count === ids.length}
                   onClick={() => toggle(ids, true)}
                   className="text-xs text-primary underline disabled:no-underline disabled:opacity-50"
                 >
                   تحديد الكل
-                </button>
-                <button
+                </Button>
+                <Button variant="ghost"
                   type="button"
                   disabled={disabled || count === 0}
                   onClick={() => toggle(ids, false)}
                   className="text-xs text-muted-foreground underline disabled:no-underline disabled:opacity-50"
                 >
                   إلغاء الكل
-                </button>
+                </Button>
               </div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {section.permissions.map((permission) => (
@@ -606,7 +606,7 @@ export default function StaffPage() {
               </div> : null}
               {(canEditStaff || canDeleteStaff) ? <div className="flex items-center gap-2">
                 {canEditStaff ? <>
-                <button
+                <Button variant="ghost"
                   onClick={() => {
                     setShowPassword(false);
                     setEditorTab("profile"); setEditing({
@@ -627,10 +627,10 @@ export default function StaffPage() {
                   className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20"
                 >
                   <Edit2 className="w-3.5 h-3.5" /> تعديل
-                </button>
+                </Button>
                 </> : null}
                 {canDeleteStaff && s.role !== "admin" && (
-                  <button
+                  <Button variant="ghost"
                     onClick={() =>
                       confirm(
                         "إيقاف حساب الموظف؟ سيُمنع من الدخول مع الاحتفاظ بالرواتب والحجوزات والسجل التاريخي. يمكنك إعادة تفعيله لاحقاً.",
@@ -641,7 +641,7 @@ export default function StaffPage() {
                     aria-label="إيقاف الموظف مع حفظ سجله"
                   >
                     <Archive className="w-3.5 h-3.5" />
-                  </button>
+                  </Button>
                 )}
               </div> : null}
             </div>
@@ -670,11 +670,11 @@ export default function StaffPage() {
               <h3 className="font-bold text-foreground">
                 {editing.id ? "تعديل موظف" : "موظف جديد"}
               </h3>
-              <button type="button" onClick={() => setEditing(null)}>
+              <Button variant="ghost" type="button" onClick={() => setEditing(null)}>
                 <X className="w-5 h-5 text-muted-foreground" />
-              </button>
+              </Button>
             </div>
-            {editing.id && <div className={`grid ${canEditStaffPay ? "grid-cols-3" : "grid-cols-2"} rounded-lg bg-muted p-1 text-sm`}><button type="button" onClick={() => setEditorTab("profile")} className={`rounded-md px-3 py-2 ${editorTab === "profile" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>بيانات الموظف</button>{canEditStaffPay ? <button type="button" onClick={() => setEditorTab("salary")} className={`rounded-md px-3 py-2 ${editorTab === "salary" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>💰 إعدادات الراتب</button> : null}<button type="button" onClick={() => setEditorTab("devices")} className={`rounded-md px-3 py-2 ${editorTab === "devices" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>الأجهزة</button></div>}
+            {editing.id && <div className={`grid ${canEditStaffPay ? "grid-cols-3" : "grid-cols-2"} rounded-lg bg-muted p-1 text-sm`}><Button variant="ghost" type="button" onClick={() => setEditorTab("profile")} className={`rounded-md px-3 py-2 ${editorTab === "profile" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>بيانات الموظف</Button>{canEditStaffPay ? <Button variant="ghost" type="button" onClick={() => setEditorTab("salary")} className={`rounded-md px-3 py-2 ${editorTab === "salary" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>💰 إعدادات الراتب</Button> : null}<Button variant="ghost" type="button" onClick={() => setEditorTab("devices")} className={`rounded-md px-3 py-2 ${editorTab === "devices" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>الأجهزة</Button></div>}
             {editorTab === "devices" && editing.id ? <EmployeeSessionsManager staffId={editing.id} employeeName={editing.fullName} /> : editorTab === "salary" && editing.id ? <SalarySettingsTab employee={{ ...editing, id: editing.id }} onSaved={() => qc.invalidateQueries({ queryKey: ["admin", "staff"] })} /> : <>
             <section className="rounded-xl border border-border/40 bg-muted/20 p-4">
               <div className="mb-3 flex items-center gap-3">
@@ -735,7 +735,7 @@ export default function StaffPage() {
                   onChange={(event) => setEditing((current) => ({ ...current!, password: event.target.value }))}
                   className="w-full rounded-lg border border-border/40 bg-background py-2 pe-3 ps-11 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 />
-                <button
+                <Button variant="ghost"
                   type="button"
                   aria-label={showPassword ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
                   aria-pressed={showPassword}
@@ -743,7 +743,7 @@ export default function StaffPage() {
                   className="absolute left-1 top-1/2 -translate-y-1/2 rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
+                </Button>
               </div>
               {editing.id ? <p className="mt-1 text-xs text-muted-foreground">كلمة المرور الحالية لا يمكن استرجاعها؛ اكتب كلمة جديدة أو اترك الحقل فارغاً.</p> : null}
             </div>

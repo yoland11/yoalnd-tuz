@@ -214,7 +214,7 @@ export default function DeliveryProvinces({ me }: { me: AdminMe | null }) {
                 <div className="flex items-center gap-2 p-3 flex-wrap">
                   {canManage && (
                     <div className="flex flex-col">
-                      <button
+                      <Button variant="ghost"
                         type="button"
                         aria-label="تحريك للأعلى"
                         disabled={index === 0 || reorder.isPending}
@@ -222,8 +222,8 @@ export default function DeliveryProvinces({ me }: { me: AdminMe | null }) {
                         className="text-muted-foreground hover:text-primary disabled:opacity-30"
                       >
                         <ChevronUp className="w-4 h-4" />
-                      </button>
-                      <button
+                      </Button>
+                      <Button variant="ghost"
                         type="button"
                         aria-label="تحريك للأسفل"
                         disabled={index === sorted.length - 1 || reorder.isPending}
@@ -231,21 +231,21 @@ export default function DeliveryProvinces({ me }: { me: AdminMe | null }) {
                         className="text-muted-foreground hover:text-primary disabled:opacity-30"
                       >
                         <ChevronDown className="w-4 h-4" />
-                      </button>
+                      </Button>
                     </div>
                   )}
 
-                  <button
+                  <Button variant="ghost"
                     type="button"
                     onClick={() => setExpanded(open ? null : p.id)}
-                    className="flex-1 min-w-[140px] text-right"
+                    className="block whitespace-normal flex-1 min-w-[140px] text-right"
                   >
                     <p className="font-semibold text-foreground">{p.governorateAr}</p>
                     <p className="text-xs text-muted-foreground">
                       {formatCurrency(p.price)} • {p.estimatedDays} يوم
                       {p.deliveryCompany ? ` • ${p.deliveryCompany}` : ""}
                     </p>
-                  </button>
+                  </Button>
 
                   <span
                     className={`text-[11px] px-2 py-1 rounded-full border ${
@@ -269,14 +269,14 @@ export default function DeliveryProvinces({ me }: { me: AdminMe | null }) {
                     </label>
                   )}
 
-                  <button
+                  <Button variant="ghost"
                     type="button"
                     onClick={() => setExpanded(open ? null : p.id)}
                     aria-label={open ? "طي" : "توسيع"}
                     className="text-muted-foreground hover:text-primary"
                   >
                     {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                  </button>
+                  </Button>
                 </div>
 
                 {open && (
@@ -420,14 +420,14 @@ function AreaEditor({
           placeholder="أضف قضاء / منطقة..."
           className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
-        <button
+        <Button variant="ghost"
           type="button"
           disabled={disabled}
           onClick={onAdd}
           className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs hover:bg-primary/20 disabled:opacity-50"
         >
           + إضافة
-        </button>
+        </Button>
       </div>
       {areas.length > 0 ? (
         <div className="flex gap-1.5 flex-wrap">
@@ -438,9 +438,9 @@ function AreaEditor({
             >
               {a}
               {!disabled && (
-                <button type="button" onClick={() => onRemove(i)} className="hover:text-status-danger" aria-label="حذف">
+                <Button variant="ghost" type="button" onClick={() => onRemove(i)} className="hover:text-status-danger" aria-label="حذف">
                   <X className="w-3 h-3" />
-                </button>
+                </Button>
               )}
             </span>
           ))}

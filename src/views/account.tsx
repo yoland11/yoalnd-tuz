@@ -174,13 +174,13 @@ export default function Account() {
                 {formatIraqiPhone(me.phone)}
               </p>
             </div>
-            <button
+            <Button variant="ghost"
               onClick={handleLogout}
               className="flex items-center gap-2 text-sm text-muted-foreground hover:text-destructive transition-colors"
             >
               <LogOut className="w-4 h-4" />
               خروج
-            </button>
+            </Button>
           </div>
 
           <div className="bg-card rounded-2xl border border-border/30 p-5 mb-6 flex items-center justify-between gap-4">
@@ -450,7 +450,7 @@ export default function Account() {
               >
                 {verifyOtp.isPending ? "جاري التحقق..." : "تأكيد الدخول"}
               </Button>
-              <button
+              <Button variant="ghost"
                 type="button"
                 onClick={() => {
                   setStep("phone");
@@ -459,7 +459,7 @@ export default function Account() {
                 className="w-full text-center text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
                 تغيير رقم الهاتف
-              </button>
+              </Button>
             </form>
           )}
         </div>

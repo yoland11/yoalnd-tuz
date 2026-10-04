@@ -3,6 +3,8 @@ import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, GripVertical, Maximize2, Pin, Plus, Settings2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
+import { IconFrame } from "@/components/ui/icon-frame";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, type AdminMe } from "./_lib";
 import { NAV, canSeeItem } from "./_layout";
@@ -141,13 +143,13 @@ export default function WorkspacePage({ me }: { me: AdminMe }) {
                     className={`group relative min-h-[290px] overflow-hidden rounded-2xl border border-border/60 bg-card p-5 shadow-[0_4px_14px_rgba(16,24,40,0.04)] transition-[border-color,transform] duration-200 hover:-translate-y-0.5 hover:border-primary/35 ${SIZE_SPAN[it.size]} ${dragKey === it.key ? "opacity-50" : ""} ${big ? "sm:min-h-[330px]" : ""}`}
                   >
                     {customizing ? <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-lg border border-border/50 bg-background/95 p-1 shadow-sm">
-                      <button type="button" onClick={() => cycleSize(it.key)} title={`الحجم: ${SIZE_LABEL[it.size]}`} className="grid h-7 w-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"><Maximize2 className="h-3.5 w-3.5" /></button>
-                      <button type="button" onClick={() => unpin(it.key)} title="إلغاء التثبيت" className="grid h-7 w-7 place-items-center rounded-md text-destructive hover:bg-destructive/10"><X className="h-3.5 w-3.5" /></button>
+                      <IconButton type="button" onClick={() => cycleSize(it.key)} aria-label={`الحجم: ${SIZE_LABEL[it.size]}`} title={`الحجم: ${SIZE_LABEL[it.size]}`} size="compact" className="h-8 w-8 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"><Maximize2 className="h-3.5 w-3.5" /></IconButton>
+                      <IconButton type="button" onClick={() => unpin(it.key)} aria-label="إلغاء التثبيت" title="إلغاء التثبيت" size="compact" variant="destructive" className="h-8 w-8 rounded-lg"><X className="h-3.5 w-3.5" /></IconButton>
                       <span className="grid h-7 w-7 cursor-grab place-items-center rounded-md text-muted-foreground" title="اسحب لإعادة الترتيب"><GripVertical className="h-3.5 w-3.5" /></span>
                     </div> : null}
                     <Link href={mod.href} className="flex h-full flex-col items-center text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
                       <span className={`grid place-items-center rounded-full ${tone.halo} ${big ? "h-40 w-40" : "h-32 w-32"}`}>
-                        <span className={`grid place-items-center rounded-[1.35rem] shadow-sm ${tone.icon} ${big ? "h-20 w-20" : "h-16 w-16"}`}><Icon className={big ? "h-10 w-10" : "h-8 w-8"} /></span>
+                        <IconFrame size={big ? "lg" : "default"} className={`rounded-[1.35rem] shadow-sm ${tone.icon} ${big ? "h-20 w-20" : "h-16 w-16"}`}><Icon className={big ? "h-10 w-10" : "h-8 w-8"} /></IconFrame>
                       </span>
                       <span className={`mt-5 font-bold text-foreground ${big ? "text-xl" : "text-lg"}`}>{mod.label}</span>
                       <span className="mt-2 max-w-[22ch] text-sm leading-6 text-muted-foreground">افتح إدارة {mod.label} وتابع العمليات المرتبطة بها.</span>
@@ -165,7 +167,7 @@ export default function WorkspacePage({ me }: { me: AdminMe }) {
           <aside className="rounded-2xl border border-border/60 bg-card p-4 shadow-[0_4px_14px_rgba(16,24,40,0.04)] xl:sticky xl:top-4 xl:max-h-[calc(100vh-6rem)] xl:overflow-y-auto">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-bold text-foreground">الأقسام المتاحة</h2>
-              <button type="button" onClick={() => setCustomizing(false)} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+              <IconButton type="button" onClick={() => setCustomizing(false)} aria-label="إغلاق التخصيص" size="compact"><X className="h-4 w-4" /></IconButton>
             </div>
             <p className="mb-3 text-xs text-muted-foreground">اختر الأقسام التي تريد ظهورها في واجهتك.</p>
             <div className="space-y-1.5">
@@ -173,18 +175,19 @@ export default function WorkspacePage({ me }: { me: AdminMe }) {
                 const Icon = m.icon;
                 const pinned = pinnedKeys.has(m.href);
                 return (
-                  <button
+                  <Button
                     key={m.href}
                     type="button"
                     onClick={() => (pinned ? unpin(m.href) : pin(m.href))}
-                    className={`flex w-full items-center gap-2.5 rounded-xl border p-2.5 text-right transition-colors ${pinned ? "border-primary/40 bg-primary/5" : "border-border/40 hover:border-primary/30"}`}
+                    variant={pinned ? "selected" : "outline"}
+                    className="h-auto min-h-12 w-full justify-start gap-2.5 rounded-xl p-2.5 text-right"
                   >
-                    <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Icon className="h-4 w-4" /></span>
+                    <IconFrame size="sm" className="h-8 w-8 rounded-lg bg-primary/10 text-primary"><Icon className="h-4 w-4" /></IconFrame>
                     <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{m.label}</span>
                     <span className={`grid h-6 w-6 flex-shrink-0 place-items-center rounded-full ${pinned ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
                       {pinned ? <Check className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
                     </span>
-                  </button>
+                  </Button>
                 );
               })}
             </div>

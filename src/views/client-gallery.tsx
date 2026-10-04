@@ -189,7 +189,7 @@ export default function ClientGalleryPage() {
                   </div>
                 )}
                 <figcaption className="flex items-center justify-between gap-1 p-2">
-                  <button
+                  <Button size="iconSm" variant="ghost"
                     type="button"
                     onClick={() => toggleFavorite(item)}
                     aria-label={isFavorite ? "إزالة من المفضلة" : "إضافة للمفضلة"}
@@ -197,7 +197,7 @@ export default function ClientGalleryPage() {
                     className="grid h-9 w-9 place-items-center rounded-lg"
                   >
                     <Heart className={`h-4 w-4 ${isFavorite ? "fill-destructive text-destructive" : "text-muted-foreground"}`} />
-                  </button>
+                  </Button>
                   {item.downloadUrl ? (
                     <a
                       href={item.downloadUrl}

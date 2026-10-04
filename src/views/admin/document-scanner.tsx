@@ -339,7 +339,7 @@ export default function DocumentScannerPage() {
             <span className="block text-xs text-muted-foreground mb-1.5">الوجه</span>
             <div className="grid grid-cols-2 gap-2">
               {(["front", "back"] as const).map((s) => (
-                <button
+                <Button variant="ghost"
                   key={s}
                   type="button"
                   onClick={() => startSide(s)}
@@ -351,7 +351,7 @@ export default function DocumentScannerPage() {
                 >
                   {s === "front" ? "الوجه الأمامي" : "الوجه الخلفي"}
                   {scans[s] ? " ✓" : ""}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -539,14 +539,14 @@ export default function DocumentScannerPage() {
                     <span className="text-xs font-medium text-foreground">
                       {s === "front" ? "الوجه الأمامي" : "الوجه الخلفي"}
                     </span>
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       onClick={() => removeScan(s)}
                       className="text-muted-foreground hover:text-status-danger"
                       aria-label="حذف"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    </Button>
                   </div>
                   <img src={scans[s]!.dataUrl} alt="" className="w-full rounded bg-white" />
                 </div>
@@ -567,47 +567,47 @@ export default function DocumentScannerPage() {
               <div key={index} className="rounded-lg border border-border/20 bg-background/40 p-2 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-medium text-foreground">صفحة {index + 1}</span>
-                  <button
+                  <Button variant="ghost"
                     type="button"
                     onClick={() => removePage(index)}
                     className="text-muted-foreground hover:text-status-danger"
                     aria-label="حذف الصفحة"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  </Button>
                 </div>
                 <img src={page.dataUrl} alt="" className="w-full rounded bg-white" />
                 <div className="flex items-center justify-center gap-1">
-                  <button
+                  <Button variant="ghost"
                     type="button" aria-label="تحريك لليمين"
                     disabled={index === 0}
                     onClick={() => movePage(index, -1)}
                     className="p-1 rounded text-muted-foreground hover:text-primary disabled:opacity-30"
                   >
                     <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                  <button
+                  </Button>
+                  <Button variant="ghost"
                     type="button" aria-label="تدوير يسار"
                     onClick={() => void rotatePage(index, -90)}
                     className="p-1 rounded text-muted-foreground hover:text-primary"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
-                  </button>
-                  <button
+                  </Button>
+                  <Button variant="ghost"
                     type="button" aria-label="تدوير يمين"
                     onClick={() => void rotatePage(index, 90)}
                     className="p-1 rounded text-muted-foreground hover:text-primary"
                   >
                     <RotateCw className="w-3.5 h-3.5" />
-                  </button>
-                  <button
+                  </Button>
+                  <Button variant="ghost"
                     type="button" aria-label="تحريك لليسار"
                     disabled={index === extraPages.length - 1}
                     onClick={() => movePage(index, 1)}
                     className="p-1 rounded text-muted-foreground hover:text-primary disabled:opacity-30"
                   >
                     <ChevronLeft className="w-3.5 h-3.5" />
-                  </button>
+                  </Button>
                 </div>
               </div>
             ))}
@@ -868,7 +868,7 @@ function CornerEditor({
           />
         </svg>
         {corners.map((p, i) => (
-          <button
+          <Button size="iconSm" variant="ghost"
             key={i}
             type="button"
             aria-label={`زاوية ${i + 1}`}
@@ -911,7 +911,7 @@ function ModeAndSliders({
         <span className="block text-xs text-muted-foreground mb-1.5">نمط المسح</span>
         <div className="flex gap-1.5 flex-wrap">
           {SCAN_MODES.map((m) => (
-            <button
+            <Button variant="ghost"
               key={m.value}
               type="button"
               onClick={() => onMode(m.value)}
@@ -922,7 +922,7 @@ function ModeAndSliders({
               }`}
             >
               {m.label}
-            </button>
+            </Button>
           ))}
         </div>
       </div>

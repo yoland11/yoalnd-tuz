@@ -270,7 +270,7 @@ export default function DocumentSave({
 
         <div className="flex gap-1.5 flex-wrap">
           {OCR_LANGUAGES.map((l) => (
-            <button
+            <Button variant="ghost"
               key={l.value}
               type="button"
               onClick={() => toggleLang(l.value)}
@@ -283,7 +283,7 @@ export default function DocumentSave({
             >
               {l.label}
               <span className="opacity-70"> · {l.quality}</span>
-            </button>
+            </Button>
           ))}
         </div>
 

@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
@@ -136,9 +137,9 @@ function MusicButton({ src, gold }: { src: string; gold: string }) {
   return (
     <>
       <audio ref={ref} src={src} loop preload="none" />
-      <button type="button" onClick={toggle} aria-label="الموسيقى" className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full text-white shadow-lg" style={{ background: gold }}>
+      <Button size="iconSm" variant="ghost" type="button" onClick={toggle} aria-label="الموسيقى" className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full text-white shadow-lg" style={{ background: gold }}>
         {playing ? "❚❚" : "♪"}
-      </button>
+      </Button>
     </>
   );
 }
@@ -178,7 +179,7 @@ export function InvitationCard({ data, qrDataUrl, experience }: { data: Invitati
           )}
           <div className="pointer-events-none absolute inset-x-0 top-0 h-1" style={{ background: `linear-gradient(90deg, transparent, ${gold}, transparent)` }} />
           {data.musicUrl ? <MusicButton src={data.musicUrl} gold={gold} /> : null}
-          <button type="button" onClick={fullScreen} aria-label="ملء الشاشة" className="absolute left-3 top-3 grid h-9 w-9 place-items-center rounded-full bg-black/35 text-sm text-white backdrop-blur-sm">⛶</button>
+          <Button size="iconSm" variant="ghost" type="button" onClick={fullScreen} aria-label="ملء الشاشة" className="absolute left-3 top-3 grid h-9 w-9 place-items-center rounded-full bg-black/35 text-sm text-white backdrop-blur-sm">⛶</Button>
         </div>
 
         <div className="space-y-5 px-6 py-7 text-center">
@@ -217,7 +218,7 @@ export function InvitationCard({ data, qrDataUrl, experience }: { data: Invitati
 
           <div className="flex flex-wrap items-center justify-center gap-2">
             {data.mapUrl ? <a href={data.mapUrl} target="_blank" rel="noreferrer" className="rounded-full px-4 py-1.5 text-sm font-bold text-white" style={{ background: gold }}>الموقع على الخريطة</a> : null}
-            {data.eventDate ? <button type="button" onClick={addCalendar} className="rounded-full border px-4 py-1.5 text-sm font-bold" style={{ borderColor: gold, color: gold }}>أضف للتقويم</button> : null}
+            {data.eventDate ? <Button variant="ghost" type="button" onClick={addCalendar} className="rounded-full border px-4 py-1.5 text-sm font-bold" style={{ borderColor: gold, color: gold }}>أضف للتقويم</Button> : null}
             {data.customerPhone ? <a href={`https://wa.me/${String(data.customerPhone).replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="rounded-full border px-4 py-1.5 text-sm font-bold" style={{ borderColor: gold, color: gold }}>واتساب</a> : null}
             {data.customerPhone ? <a href={`tel:${data.customerPhone}`} className="rounded-full border px-4 py-1.5 text-sm font-bold" style={{ borderColor: gold, color: gold }}>اتصال</a> : null}
           </div>
@@ -322,7 +323,7 @@ function RsvpForm({ slug, guestToken, thankYou, defaultName }: { slug: string; g
         <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="رقم الهاتف (اختياري)" dir="ltr" className="w-full rounded-lg border border-white/15 bg-neutral-800 px-3 py-2 text-sm outline-none" />
         <div className="grid grid-cols-3 gap-2">
           {([["confirmed", "سأحضر", "bg-emerald-600"], ["maybe", "ربما", "bg-amber-600"], ["declined", "أعتذر", "bg-rose-600"]] as const).map(([v, l, c]) => (
-            <button key={v} type="button" onClick={() => setStatus(v)} className={`rounded-lg py-2 text-sm font-bold transition ${status === v ? `${c} text-white` : "bg-neutral-800 text-white/70"}`}>{l}</button>
+            <Button variant="ghost" key={v} type="button" onClick={() => setStatus(v)} className={`rounded-lg py-2 text-sm font-bold transition ${status === v ? `${c} text-white` : "bg-neutral-800 text-white/70"}`}>{l}</Button>
           ))}
         </div>
         {status === "confirmed" ? (
@@ -332,7 +333,7 @@ function RsvpForm({ slug, guestToken, thankYou, defaultName }: { slug: string; g
         ) : null}
         <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={2} placeholder="رسالة للعروسين (اختياري)" className="w-full rounded-lg border border-white/15 bg-neutral-800 px-3 py-2 text-sm outline-none" />
         {err ? <p className="text-center text-xs text-rose-400">{err}</p> : null}
-        <button type="button" onClick={submit} disabled={busy} className="w-full rounded-lg bg-amber-500 py-2.5 text-sm font-bold text-black disabled:opacity-60">{busy ? "جارٍ الإرسال…" : "إرسال الرد"}</button>
+        <Button variant="ghost" type="button" onClick={submit} disabled={busy} className="w-full rounded-lg bg-amber-500 py-2.5 text-sm font-bold text-black disabled:opacity-60">{busy ? "جارٍ الإرسال…" : "إرسال الرد"}</Button>
       </div>
     </div>
   );

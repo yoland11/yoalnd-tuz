@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { MessageCircle, Send, X } from "lucide-react";
@@ -45,14 +46,14 @@ export function CustomerMessageWidget() {
 
   return (
     <>
-      <button
+      <Button variant="ghost"
         type="button"
         onClick={() => setOpen(true)}
         aria-label="رسالة للمحل"
         className="fixed bottom-[calc(10.5rem+env(safe-area-inset-bottom))] left-3 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-primary/30 bg-primary text-primary-foreground shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-[10.5rem] md:left-4 lg:bottom-20"
       >
         <MessageCircle className="h-6 w-6" />
-      </button>
+      </Button>
       {open && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm md:items-center md:p-4" dir="rtl" onClick={() => setOpen(false)}>
           <form
@@ -65,9 +66,9 @@ export function CustomerMessageWidget() {
                 <h2 className="text-base font-bold text-foreground">رسالة للمحل</h2>
                 <p className="text-xs text-muted-foreground mt-1">اكتب رسالتك وسنرد عليك من لوحة الإدارة.</p>
               </div>
-              <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
+              <Button variant="ghost" type="button" onClick={() => setOpen(false)} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
                 <X className="w-4 h-4" />
-              </button>
+              </Button>
             </div>
             <div className="space-y-3">
               <input
@@ -92,13 +93,13 @@ export function CustomerMessageWidget() {
               />
               {error && <p className="text-xs text-destructive">{error}</p>}
               {status === "sent" && <p className="text-xs text-primary">تم إرسال الرسالة</p>}
-              <button
+              <Button variant="ghost"
                 type="submit"
                 disabled={status === "sending" || !message.trim()}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
               >
                 <Send className="w-4 h-4" /> إرسال
-              </button>
+              </Button>
             </div>
           </form>
         </div>

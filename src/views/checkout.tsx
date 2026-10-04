@@ -293,15 +293,17 @@ export default function Checkout() {
                 <MapPin className="w-3.5 h-3.5" /> {t("رابط الموقع على Google Maps (اختياري لكن يُسرّع التوصيل)")}
               </label>
               <div className="flex gap-2 mb-2 flex-wrap">
-                <button
+                <Button
                   type="button"
                   onClick={detectLocation}
                   disabled={geoState === "loading"}
-                  className="inline-flex items-center gap-2 text-xs px-3 py-2 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-60"
+                  variant="outline"
+                  size="compact"
+                  className="gap-2 border-primary/30 bg-primary/10 text-primary hover:bg-primary/20"
                 >
                   <MapPin className="w-3.5 h-3.5" />
                   {geoState === "loading" ? t("جاري التحديد...") : geoState === "ok" ? t("تم تحديد موقعك ✓") : t("حدد موقعي تلقائياً")}
-                </button>
+                </Button>
                 {form.mapsUrl && (
                   <a href={form.mapsUrl} target="_blank" rel="noreferrer"
                     className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-border/40 text-muted-foreground hover:text-primary hover:border-primary/40 transition-colors">
@@ -425,14 +427,16 @@ export default function Checkout() {
                     className="flex-1 bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                   />
-                  <button
+                  <Button
                     type="button"
                     onClick={applyCoupon}
                     disabled={couponLoading || subtotal <= 0}
-                    className="rounded-lg border border-primary/40 px-3 py-2 text-xs text-primary hover:bg-primary/10 disabled:opacity-50"
+                    variant="outline"
+                    size="compact"
+                    className="border-primary/40 text-primary hover:bg-primary/10"
                   >
                     {couponLoading ? "..." : t("تطبيق")}
-                  </button>
+                  </Button>
                 </div>
                 {couponError && <p className="text-xs text-status-danger">{couponError}</p>}
                 {coupon && <p className="text-xs text-status-success">{coupon.message}</p>}

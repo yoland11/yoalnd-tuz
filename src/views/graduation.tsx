@@ -321,7 +321,7 @@ function OptionCard({
   compact?: boolean;
 }) {
   return (
-    <button
+    <Button size="flush" variant="ghost"
       type="button"
       onClick={onClick}
       className={`group relative min-w-0 overflow-hidden rounded-xl border text-right transition-all duration-200 ${selected ? "border-primary bg-primary/10 shadow-[0_0_22px_hsl(var(--primary)/.12)]" : "border-border bg-card hover:border-primary/50"}`}
@@ -364,7 +364,7 @@ function OptionCard({
           </p>
         ) : null}
       </div>
-    </button>
+    </Button>
   );
 }
 
@@ -1144,7 +1144,7 @@ function GraduationConfigurator() {
                         <div className="space-y-6">
                           <div className="flex snap-x gap-2 overflow-x-auto rounded-2xl border border-[#f1d3db] bg-[#fff4f5] p-1.5 sm:grid sm:grid-cols-4 sm:overflow-visible">
                             {config.styles.map((item) => (
-                              <button
+                              <Button variant="ghost"
                                 type="button"
                                 key={item.key}
                                 aria-pressed={form.styleKey === item.key}
@@ -1155,7 +1155,7 @@ function GraduationConfigurator() {
                                   }))
                                 }
                                 className={`min-w-[125px] flex-1 snap-start rounded-xl px-5 py-3.5 text-center text-sm font-bold transition-all sm:min-w-0 sm:text-base ${form.styleKey === item.key ? "bg-primary text-white shadow-[0_7px_18px_rgba(104,0,47,.2)]" : "text-[#765d66] hover:bg-white"}`}
-                              >{item.name}</button>
+                              >{item.name}</Button>
                             ))}
                           </div>
                           <div className="mx-auto flex max-w-4xl justify-center">
@@ -1193,18 +1193,18 @@ function GraduationConfigurator() {
                             <h2 className="mb-3 font-bold">باقات المتجر الجاهزة</h2>
                             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                               {config.enterpriseCatalog.packages.map((pack) => (
-                                <button
+                                <Button variant="ghost"
                                   type="button"
                                   key={pack.id}
                                   onClick={() => chooseEnterprisePackage(pack)}
-                                  className={`rounded-xl border p-4 text-right transition-colors ${form.customPackage.enterprisePackageId === pack.id ? "border-primary bg-primary/10" : "border-border hover:border-primary/50"}`}
+                                  className={`block whitespace-normal rounded-xl border p-4 text-right transition-colors ${form.customPackage.enterprisePackageId === pack.id ? "border-primary bg-primary/10" : "border-border hover:border-primary/50"}`}
                                 >
                                   <div className="flex items-start justify-between gap-3">
                                     <div><strong>{pack.name}</strong><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{pack.description || "باقة تخرج جاهزة قابلة للتخصيص"}</p></div>
                                     {form.customPackage.enterprisePackageId === pack.id ? <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" /> : <PackageCheck className="h-5 w-5 shrink-0 text-muted-foreground" />}
                                   </div>
                                   <p className="mt-3 text-sm font-bold text-primary">{formatCurrency(pack.defaultPrice)}</p>
-                                </button>
+                                </Button>
                               ))}
                             </div>
                           </div>
@@ -1484,7 +1484,7 @@ function GraduationConfigurator() {
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {config.colors.map((color) => (
-                              <button
+                              <Button variant="ghost"
                                 key={color.key}
                                 type="button"
                                 title={color.name}
@@ -1663,7 +1663,7 @@ function GraduationConfigurator() {
                           {key === "studentName" && (() => {
                             const suggestion = vocalizeArabicName(form.customText.studentName);
                             return suggestion && suggestion !== form.customText.studentName ? (
-                              <button
+                              <Button variant="ghost"
                                 type="button"
                                 onClick={() => setForm((current) => ({ ...current, customText: { ...current.customText, studentName: suggestion } }))}
                                 className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs text-primary transition-colors hover:bg-primary/10"
@@ -1672,7 +1672,7 @@ function GraduationConfigurator() {
                                 <span>اقتراح بالتشكيل:</span>
                                 <b className="font-semibold">{suggestion}</b>
                                 <span className="text-muted-foreground">— تطبيق</span>
-                              </button>
+                              </Button>
                             ) : null;
                           })()}
                         </div>
@@ -2045,7 +2045,7 @@ function GraduationConfigurator() {
             {aiConcepts.length ? (
               <div className="grid gap-3 sm:grid-cols-3">
                 {aiConcepts.map((concept, index) => (
-                  <button
+                  <Button variant="ghost"
                     key={`${concept.nameAr}-${index}`}
                     type="button"
                     onClick={() => {
@@ -2082,7 +2082,7 @@ function GraduationConfigurator() {
                     <p className="mt-2 text-xs leading-5 text-muted-foreground">
                       {concept.descriptionAr}
                     </p>
-                  </button>
+                  </Button>
                 ))}
               </div>
             ) : null}
@@ -2636,11 +2636,11 @@ function GraduationExtrasStep({
             <Skeleton className="col-span-full h-28" />
           ) : (photoServices.data?.services ?? []).length ? (
             (photoServices.data?.services ?? []).map((service) => (
-              <button
+              <Button size="flush" variant="ghost"
                 key={service.id}
                 type="button"
                 onClick={() => setPhoto({ serviceId: service.id, serviceName: service.name })}
-                className={`rounded-xl border p-3 text-right transition ${photo?.serviceId === service.id ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`}
+                className={`block whitespace-normal rounded-xl border p-3 text-right transition ${photo?.serviceId === service.id ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`}
               >
                 {service.image ? <img src={service.image} alt={service.name} className="mb-2 h-24 w-full rounded-lg object-cover" loading="lazy" decoding="async" /> : null}
                 <div className="font-semibold">{service.name}</div>
@@ -2649,7 +2649,7 @@ function GraduationExtrasStep({
                   {service.duration ? `${service.duration} · ` : ""}
                   {service.price ? formatCurrency(service.price) : "السعر عند التأكيد"}
                 </div>
-              </button>
+              </Button>
             ))
           ) : (
             <p className="col-span-full text-sm text-muted-foreground">لا توجد خدمات تصوير متاحة حالياً.</p>

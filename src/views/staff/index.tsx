@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 import { Armchair, Bell, BusFront, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff, User, WalletCards } from "lucide-react";
@@ -50,9 +51,9 @@ class StaffPortalBoundary extends Component<{ children: ReactNode }, { error: Er
           <h1 className="text-lg font-bold">تعذر فتح بوابة الكوشات</h1>
           <p className="text-sm text-muted-foreground">لم تتأثر بيانات الحجوزات. أعد المحاولة، وإذا تكرر الخطأ تواصل مع الإدارة.</p>
         </div>
-        <button type="button" onClick={() => this.setState({ error: null })} className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">
+        <Button variant="ghost" type="button" onClick={() => this.setState({ error: null })} className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">
           إعادة المحاولة
-        </button>
+        </Button>
       </div>
     );
   }
@@ -98,9 +99,9 @@ function Login({ onDone }: { onDone: () => void }) {
         {err && <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{err}</div>}
         <input value={u} onChange={(e) => setU(e.target.value)} placeholder="اسم المستخدم" className="w-full rounded-lg border border-border bg-background p-2.5 text-sm" autoComplete="username" />
         <input value={p} onChange={(e) => setP(e.target.value)} type="password" placeholder="كلمة المرور" className="w-full rounded-lg border border-border bg-background p-2.5 text-sm" autoComplete="current-password" />
-        <button disabled={busy || !u || !p} className="w-full rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
+        <Button variant="ghost" disabled={busy || !u || !p} className="w-full rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
           {busy ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "دخول"}
-        </button>
+        </Button>
       </form>
     </div>
   );
@@ -170,7 +171,7 @@ function Dashboard() {
   if (error) return (
     <div className="space-y-3 p-8 text-center" dir="rtl">
       <p className="text-sm text-destructive">{error}</p>
-      <button type="button" onClick={() => setReloadKey((key) => key + 1)} className="rounded-lg border border-border px-4 py-2 text-sm font-bold text-primary">إعادة المحاولة</button>
+      <Button variant="ghost" type="button" onClick={() => setReloadKey((key) => key + 1)} className="rounded-lg border border-border px-4 py-2 text-sm font-bold text-primary">إعادة المحاولة</Button>
     </div>
   );
   if (!data) return <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>;
@@ -178,7 +179,7 @@ function Dashboard() {
   return (
     <div className="space-y-4 p-4">
       <div className="grid gap-2 sm:grid-cols-2">
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => nav("/staff/koshas/expenses")}
           className="flex w-full items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/5 p-3 text-right"
@@ -191,8 +192,8 @@ function Dashboard() {
             </span>
           </span>
           <span className="text-xs font-bold text-primary">فتح</span>
-        </button>
-        <button
+        </Button>
+        <Button variant="ghost"
           type="button"
           onClick={() => nav("/staff/koshas/expenses?mode=vehicle")}
           className="flex w-full items-center justify-between gap-3 rounded-xl border border-status-warning/35 bg-status-warning/5 p-3 text-right"
@@ -205,14 +206,14 @@ function Dashboard() {
             </span>
           </span>
           <span className="text-xs font-bold text-status-warning">فتح</span>
-        </button>
+        </Button>
       </div>
       <div className="grid grid-cols-2 gap-2">
         {order.map((bk) => (
-          <button key={bk} onClick={() => nav(`/staff/koshas/list/${bk}`)} className="rounded-xl border border-border bg-card p-3 text-right">
+          <Button variant="ghost" key={bk} onClick={() => nav(`/staff/koshas/list/${bk}`)} className="block whitespace-normal rounded-xl border border-border bg-card p-3 text-right">
             <div className="text-2xl font-extrabold text-primary">{data.counts[bk] ?? 0}</div>
             <div className="text-sm text-muted-foreground">{BUCKET_LABEL[bk]}</div>
-          </button>
+          </Button>
         ))}
       </div>
       <MyPreparation />
@@ -261,9 +262,9 @@ function MyPreparation() {
               </div>
               {t.priority === "urgent" ? <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700">🔴 عاجل</span> : t.priority === "important" ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700">🟠 مهم</span> : null}
             </div>
-            <button disabled={busy === t.taskId} onClick={() => done(t.taskId)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-status-success py-2.5 text-sm font-bold text-white disabled:opacity-50">
+            <Button variant="ghost" disabled={busy === t.taskId} onClick={() => done(t.taskId)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-status-success py-2.5 text-sm font-bold text-white disabled:opacity-50">
               <CheckCircle2 className="h-4 w-4" /> {busy === t.taskId ? "جارٍ…" : "تم التجهيز"}
-            </button>
+            </Button>
           </div>
         ))}
       </div>
@@ -308,8 +309,8 @@ function BookingsList({ bucket, showOperations = false }: { bucket: Bucket | "al
       </div>
       {showOperations && (
         <div className="grid grid-cols-2 gap-2">
-          <button type="button" onClick={() => nav("/staff/koshas/ops-board")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">اللوحة الحية</button>
-          <button type="button" onClick={() => nav("/staff/koshas/ops-reports")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">التقارير التشغيلية</button>
+          <Button variant="ghost" type="button" onClick={() => nav("/staff/koshas/ops-board")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">اللوحة الحية</Button>
+          <Button variant="ghost" type="button" onClick={() => nav("/staff/koshas/ops-reports")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">التقارير التشغيلية</Button>
         </div>
       )}
       {/* Department filter. Client-side over the already-loaded rows, so no route,
@@ -321,7 +322,7 @@ function BookingsList({ bucket, showOperations = false }: { bucket: Bucket | "al
           { key: "sound", label: "صوتيات" },
           { key: "mixed", label: "كوشات + صوتيات" },
         ] as const).map((tab) => (
-          <button
+          <Button variant="ghost"
             key={tab.key}
             type="button"
             onClick={() => setDept(tab.key)}
@@ -329,7 +330,7 @@ function BookingsList({ bucket, showOperations = false }: { bucket: Bucket | "al
             className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-bold ${dept === tab.key ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground"}`}
           >
             {tab.label}
-          </button>
+          </Button>
         ))}
       </div>
       {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
@@ -369,7 +370,7 @@ function Notifications() {
     <div className="space-y-3 p-4">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-bold">الإشعارات</h1>
-        <button onClick={readAll} className="text-sm text-primary">تعليم الكل كمقروء</button>
+        <Button variant="ghost" onClick={readAll} className="text-sm text-primary">تعليم الكل كمقروء</Button>
       </div>
       {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
       {!rows ? <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>
@@ -413,7 +414,7 @@ function Reports() {
   if (error) return (
     <div className="space-y-3 p-8 text-center" dir="rtl">
       <p className="text-sm text-destructive">{error}</p>
-      <button type="button" onClick={() => setReloadKey((key) => key + 1)} className="rounded-lg border border-border px-4 py-2 text-sm font-bold text-primary">إعادة المحاولة</button>
+      <Button variant="ghost" type="button" onClick={() => setReloadKey((key) => key + 1)} className="rounded-lg border border-border px-4 py-2 text-sm font-bold text-primary">إعادة المحاولة</Button>
     </div>
   );
   if (!r) return <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>;
@@ -470,8 +471,8 @@ function Approvals() {
               <div className="text-sm text-muted-foreground">{p.staffName} · {p.booking?.customerName ?? "—"}</div>
               {p.note && <div className="mt-0.5 text-sm">{p.note}</div>}
               <div className="mt-2 flex gap-2">
-                <button disabled={busy === p.id} onClick={() => act(p.id, "approve")} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-status-success py-2 text-sm font-bold text-white disabled:opacity-60"><CheckCircle2 className="h-4 w-4" /> موافقة</button>
-                <button disabled={busy === p.id} onClick={() => act(p.id, "reject")} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-destructive/40 py-2 text-sm font-bold text-destructive disabled:opacity-60"><XCircle className="h-4 w-4" /> رفض</button>
+                <Button variant="ghost" disabled={busy === p.id} onClick={() => act(p.id, "approve")} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-status-success py-2 text-sm font-bold text-white disabled:opacity-60"><CheckCircle2 className="h-4 w-4" /> موافقة</Button>
+                <Button variant="ghost" disabled={busy === p.id} onClick={() => act(p.id, "reject")} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-destructive/40 py-2 text-sm font-bold text-destructive disabled:opacity-60"><XCircle className="h-4 w-4" /> رفض</Button>
               </div>
             </div>
           ))}</div>}
@@ -567,7 +568,7 @@ function StaffPortalContent() {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-background p-6 text-center" dir="rtl">
         <p className="text-muted-foreground">حسابك لا يملك صلاحية الوصول لبوابة الكوشات.</p>
-        <button onClick={() => logoutAdmin().then(refreshMe)} className="rounded-lg border border-border px-4 py-2 text-sm">تسجيل الخروج</button>
+        <Button variant="ghost" onClick={() => logoutAdmin().then(refreshMe)} className="rounded-lg border border-border px-4 py-2 text-sm">تسجيل الخروج</Button>
       </div>
     );
   }
@@ -597,8 +598,8 @@ function StaffPortalContent() {
           {pendingOps > 0 && (
             <span className="flex items-center gap-1 rounded-full bg-status-warning/15 px-2 py-1 text-[11px] font-bold text-status-warning"><CloudOff className="h-3.5 w-3.5" /> {pendingOps} بانتظار الرفع</span>
           )}
-          <button onClick={() => nav("/staff/koshas/account")} aria-label="الحساب والأجهزة" className="text-muted-foreground"><User className="h-5 w-5" /></button>
-          <button onClick={() => logoutAdmin().then(refreshMe)} aria-label="خروج" className="text-muted-foreground"><LogOut className="h-5 w-5" /></button>
+          <Button variant="ghost" onClick={() => nav("/staff/koshas/account")} aria-label="الحساب والأجهزة" className="text-muted-foreground"><User className="h-5 w-5" /></Button>
+          <Button variant="ghost" onClick={() => logoutAdmin().then(refreshMe)} aria-label="خروج" className="text-muted-foreground"><LogOut className="h-5 w-5" /></Button>
         </div>
       </header>
 
@@ -624,11 +625,11 @@ function StaffPortalContent() {
       {!onDetail && (
         <nav className="fixed bottom-0 inset-x-0 z-20 flex items-center justify-around border-t border-border bg-background/95 backdrop-blur">
           {tabs.map((t) => (
-            <button key={t.href} onClick={() => nav(t.href)} className={`relative flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] ${t.match ? "text-primary" : "text-muted-foreground"}`}>
+            <Button variant="ghost" key={t.href} onClick={() => nav(t.href)} className={`relative flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] ${t.match ? "text-primary" : "text-muted-foreground"}`}>
               <t.icon className="h-5 w-5" />
               {t.label}
               {!!t.badge && t.badge > 0 && <span className="absolute top-1 right-[28%] flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[11px] font-bold text-white">{t.badge}</span>}
-            </button>
+            </Button>
           ))}
         </nav>
       )}

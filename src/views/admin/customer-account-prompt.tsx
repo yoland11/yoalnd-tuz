@@ -1,4 +1,6 @@
 "use client";
+import { Button } from "@/components/ui/button";
+
 
 /**
  * On-save "open a customer account?" prompt.
@@ -109,30 +111,30 @@ export default function CustomerAccountPrompt({
         />
 
         <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
-          <button
+          <Button variant="ghost"
             type="button"
             onClick={onCancel}
             disabled={busy}
             className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted/40 disabled:opacity-50"
           >
             إلغاء
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             type="button"
             onClick={onDecline}
             disabled={busy}
             className="rounded-lg border border-border/40 px-4 py-2 text-sm font-medium text-foreground hover:bg-muted/40 disabled:opacity-50"
           >
             لا، احفظ بدون حساب
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             type="button"
             onClick={openAccount}
             disabled={busy}
             className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-black hover:bg-primary/90 disabled:opacity-50"
           >
             {busy ? "جارٍ فتح الحساب…" : "نعم، افتح حساب"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

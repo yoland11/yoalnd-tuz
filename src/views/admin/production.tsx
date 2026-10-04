@@ -342,9 +342,9 @@ export default function ProductionPage() {
                   <input type="number" min={1} value={it.quantity}
                     onChange={(e) => setQty(i, Math.max(1, Math.floor(Number(e.target.value) || 1)))}
                     className="w-20 bg-background border border-border/40 rounded-lg px-2 py-1 text-sm text-center" />
-                  <button type="button" onClick={() => removeItem(i)} className="text-status-danger p-1 hover:bg-status-danger/10 rounded-md">
+                  <Button variant="ghost" type="button" onClick={() => removeItem(i)} className="text-status-danger p-1 hover:bg-status-danger/10 rounded-md">
                     <Trash2 className="w-4 h-4" />
-                  </button>
+                  </Button>
                 </div>
               ))}
             </div>
@@ -354,14 +354,14 @@ export default function ProductionPage() {
           <div className="rounded-lg border border-border/25 bg-background/40 p-2.5 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-foreground flex items-center gap-1"><Users className="w-3.5 h-3.5" /> العمالة</span>
-              <button type="button" onClick={() => { setLabor((p) => [...p, { worker: "", hours: 0, hourlyRate: 0 }]); invalidateEstimate(); }} className="text-[11px] text-primary">+ عامل</button>
+              <Button variant="ghost" type="button" onClick={() => { setLabor((p) => [...p, { worker: "", hours: 0, hourlyRate: 0 }]); invalidateEstimate(); }} className="text-[11px] text-primary">+ عامل</Button>
             </div>
             {labor.map((l, i) => (
               <div key={i} className="grid grid-cols-12 gap-1 items-center">
                 <input value={l.worker} onChange={(e) => { setLabor((p) => p.map((x, idx) => idx === i ? { ...x, worker: e.target.value } : x)); invalidateEstimate(); }} placeholder="العامل" className="col-span-5 bg-background border border-border/40 rounded px-2 py-1 text-xs" />
                 <input type="number" min={0} value={l.hours} onChange={(e) => { setLabor((p) => p.map((x, idx) => idx === i ? { ...x, hours: Number(e.target.value) } : x)); invalidateEstimate(); }} placeholder="ساعات" className="col-span-3 bg-background border border-border/40 rounded px-1 py-1 text-xs text-center" />
                 <input type="number" min={0} value={l.hourlyRate} onChange={(e) => { setLabor((p) => p.map((x, idx) => idx === i ? { ...x, hourlyRate: Number(e.target.value) } : x)); invalidateEstimate(); }} placeholder="أجر/س" className="col-span-3 bg-background border border-border/40 rounded px-1 py-1 text-xs text-center" />
-                <button type="button" onClick={() => { setLabor((p) => p.filter((_, idx) => idx !== i)); invalidateEstimate(); }} className="col-span-1 text-status-danger"><X className="w-3.5 h-3.5 mx-auto" /></button>
+                <Button variant="ghost" type="button" onClick={() => { setLabor((p) => p.filter((_, idx) => idx !== i)); invalidateEstimate(); }} className="col-span-1 text-status-danger"><X className="w-3.5 h-3.5 mx-auto" /></Button>
               </div>
             ))}
           </div>
@@ -370,7 +370,7 @@ export default function ProductionPage() {
           <div className="rounded-lg border border-border/25 bg-background/40 p-2.5 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-foreground flex items-center gap-1"><Wrench className="w-3.5 h-3.5" /> المعدات والنقل</span>
-              <button type="button" onClick={addEquip} className="text-[11px] text-primary">+ معدة</button>
+              <Button variant="ghost" type="button" onClick={addEquip} className="text-[11px] text-primary">+ معدة</Button>
             </div>
             {equipment.map((e, i) => (
               <div key={i} className="space-y-1 rounded border border-border/20 p-1.5">
@@ -393,7 +393,7 @@ export default function ProductionPage() {
                   ) : (
                     <input value={e.name} onChange={(ev) => setEquip(i, { name: ev.target.value })} placeholder="الاسم" className="flex-1 bg-background border border-border/40 rounded px-2 py-1 text-xs" />
                   )}
-                  <button type="button" onClick={() => removeEquip(i)} className="text-status-danger"><X className="w-3.5 h-3.5" /></button>
+                  <Button variant="ghost" type="button" onClick={() => removeEquip(i)} className="text-status-danger"><X className="w-3.5 h-3.5" /></Button>
                 </div>
                 {e.type === "vehicle" && (
                   <div className="grid grid-cols-2 gap-1">
@@ -588,7 +588,7 @@ export default function ProductionPage() {
           <div className="bg-card border border-border/40 rounded-2xl max-w-md w-full max-h-[80dvh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between p-3 border-b border-border/30">
               <h4 className="text-sm font-semibold text-foreground">اختر منتجاً للإنتاج</h4>
-              <button type="button" onClick={() => setPickerOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+              <Button variant="ghost" type="button" onClick={() => setPickerOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></Button>
             </div>
             <div className="p-3 border-b border-border/30">
               <div className="relative">
@@ -603,11 +603,11 @@ export default function ProductionPage() {
               ) : pickable.length === 0 ? (
                 <div className="p-4 text-center text-xs text-muted-foreground">لا توجد منتجات مطابقة.</div>
               ) : pickable.map((p) => (
-                <button key={p.id} type="button" onClick={() => addItem(p)}
+                <Button variant="ghost" key={p.id} type="button" onClick={() => addItem(p)}
                   className="w-full text-right p-3 hover:bg-primary/5 flex items-center justify-between gap-2">
                   <span className="text-sm text-foreground truncate">{p.nameAr || p.name}</span>
                   <span className="text-[11px] text-muted-foreground shrink-0">{formatCurrency(p.price)}</span>
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -626,7 +626,7 @@ function ProduceModal({ order, onClose, onSubmit }: { order: ProductionOrder; on
       <div className="bg-card border border-border/40 rounded-2xl max-w-md w-full max-h-[80dvh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between p-3 border-b border-border/30">
           <h4 className="text-sm font-semibold text-foreground">إنتاج دفعة · {order.orderNo}</h4>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+          <Button variant="ghost" type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></Button>
         </div>
         <div className="p-3 space-y-2 overflow-y-auto">
           <p className="text-[11px] text-muted-foreground">حدّد الكمية المراد إنتاجها الآن (بحد أقصى المتبقّي). ستُخصم موادها ويزيد مخزون المنتج.</p>

@@ -101,11 +101,11 @@ export default function RecycleBinPage() {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {(summary?.summary ?? []).map((s) => (
-            <button
+            <Button variant="ghost"
               key={s.type}
               type="button"
               onClick={() => setActive(active === s.type ? null : s.type)}
-              className={`rounded-xl border p-4 text-right transition-colors ${
+              className={`block whitespace-normal rounded-xl border p-4 text-right transition-colors ${
                 active === s.type
                   ? "border-primary/60 bg-primary/10"
                   : "border-border/30 bg-card hover:border-primary/30"
@@ -113,7 +113,7 @@ export default function RecycleBinPage() {
             >
               <p className="text-xs text-muted-foreground">{s.label}</p>
               <p className="text-xl font-bold text-foreground tabular-nums mt-1">{s.count}</p>
-            </button>
+            </Button>
           ))}
         </div>
       )}

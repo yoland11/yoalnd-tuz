@@ -760,16 +760,17 @@ function BookingReportsDialog({ initialDepartment, onClose }: { initialDepartmen
             <Label className="mb-2 block">نوع التقرير</Label>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {BOOKING_REPORT_TYPES.map((item) => (
-                <button
+                <Button
                   key={item.key}
                   type="button"
                   onClick={() => setType(item.key)}
                   aria-pressed={type === item.key}
-                  className={`rounded-lg border p-2.5 text-right transition-colors ${type === item.key ? "border-primary bg-primary/10" : "border-border/50 hover:border-primary/40"}`}
+                  variant={type === item.key ? "selected" : "outline"}
+                  className="h-auto w-full flex-col items-stretch whitespace-normal rounded-lg p-2.5 text-right"
                 >
                   <span className={`block text-sm ${type === item.key ? "font-semibold text-primary" : "font-medium"}`}>{item.label}</span>
                   <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{item.hint}</span>
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -983,10 +984,11 @@ function BookingDashboard() {
           const active = serviceFilter === card.key;
           return (
             <article key={card.key} className={`ajn-service-card ajn-service-${card.accent} ${active ? "is-active" : ""}`}>
-              <button type="button" onClick={() => setServiceFilter(active ? "all" : card.key)} aria-pressed={active}>
+              {/* Purpose-built service summary card; its rail layout is styled by booking-center.css. */}
+              <Button variant="ghost" type="button" onClick={() => setServiceFilter(active ? "all" : card.key)} aria-pressed={active}>
                 <span className="ajn-service-icon"><Icon /></span>
                 <span><strong>{card.label}</strong><small>{card.total} حجز · اليوم {card.today}</small></span>
-              </button>
+              </Button>
               <div className="ajn-service-stats"><span>معلق <b>{card.pending}</b></span><span>جاري <b>{card.inProgress}</b></span><span>مكتمل <b>{card.completed}</b></span></div>
               <div className="ajn-service-revenue"><small>إيراد الشهر</small><Money value={card.revenue} /></div>
               <div className="flex items-center gap-1">
@@ -1153,7 +1155,7 @@ function BookingCustomerSelector({ value, onChange, error }: { value: Customer |
               <div className="px-3 py-3 text-xs text-muted-foreground">لا يوجد عميل مطابق — أضِف عميلاً جديداً</div>
             ) : (
               results.data.map((customer) => (
-                <button
+                <Button variant="ghost"
                   key={customer.id}
                   type="button"
                   onMouseDown={(event) => { event.preventDefault(); onChange(customer); setOpen(false); setQuery(""); }}
@@ -1161,7 +1163,7 @@ function BookingCustomerSelector({ value, onChange, error }: { value: Customer |
                 >
                   <span className="min-w-0 truncate text-sm font-medium text-foreground">{customer.fullName || customer.name}</span>
                   <span className="shrink-0 text-xs text-muted-foreground" dir="ltr">{formatIraqiPhone(customer.phone)}</span>
-                </button>
+                </Button>
               ))
             )}
           </div>
@@ -1468,7 +1470,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
           {servicesError ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><span>تعذر تحميل قائمة الخدمات: {servicesError}</span><Button type="button" variant="outline" size="sm" onClick={onRetryServices}>إعادة المحاولة</Button></div> : null}
           {!servicesLoading && !servicesError && services.length === 0 ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-300/50 bg-amber-50 p-3 text-sm text-amber-900"><span>لا توجد خدمة مفعّلة حالياً؛ يجب تفعيل خدمة قبل حفظ الحجز.</span><Button type="button" variant="outline" size="sm" asChild><Link href="/admin/services">إدارة الخدمات</Link></Button></div> : null}
           <div><span>الخدمات المطلوبة</span><strong>{selected.length} خدمات محددة</strong></div>
-          <div className="grid grid-cols-2 gap-2">{SERVICE_META.map((meta) => { const Icon = meta.icon; const checked = selected.includes(meta.key); return <button type="button" key={meta.key} className={checked ? "is-selected" : ""} onClick={() => toggle(meta.key)} aria-pressed={checked}><Icon /><span>{meta.short}</span>{checked && <CheckCircle2 />}</button>; })}</div>
+          <div className="grid grid-cols-2 gap-2">{SERVICE_META.map((meta) => { const Icon = meta.icon; const checked = selected.includes(meta.key); return <Button variant="ghost" type="button" key={meta.key} className={checked ? "is-selected" : ""} onClick={() => toggle(meta.key)} aria-pressed={checked}><Icon /><span>{meta.short}</span>{checked && <CheckCircle2 />}</Button>; })}</div>
           {fieldErrors.serviceId ? <p className="text-xs text-destructive">{fieldErrors.serviceId}</p> : null}
           {selected.length ? <section className="mt-4 space-y-2 rounded-xl border border-border/60 bg-background/70 p-3" aria-label="الخدمات المختارة">
             <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold text-foreground">الخدمات المختارة</h3><span className="text-xs text-muted-foreground">يمكنك تعديل الإعدادات أو إزالة الخدمة من هذا الحجز</span></div>
@@ -1529,8 +1531,8 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
           {selected.includes("transportation") ? <section id="booking-transportation-settings" className="mt-4 space-y-3 rounded-xl border border-amber-200/70 bg-amber-50/45 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
             <div className="flex items-start gap-2"><span className="mt-0.5 text-amber-700"><Car className="h-5 w-5" /></span><div><h3 className="font-semibold text-foreground">خدمة النقل</h3><p className="mt-0.5 text-xs text-muted-foreground">تبقى أجرة النقل جزءاً من الحجز وتُنسب تحليلياً للسيارة بعد تنفيذ دفعة الزبون.</p></div></div>
             <div className="grid grid-cols-2 gap-2">
-              <button type="button" onClick={() => setTransportationMode("ajn")} className={`rounded-lg border px-3 py-3 text-center text-sm transition-colors ${transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل بواسطة AJN</button>
-              <button type="button" onClick={() => { setTransportationMode("customer"); setTransportationFee(""); }} className={`rounded-lg border px-3 py-3 text-center text-sm transition-colors ${transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل من مسؤولية الزبون</button>
+              <Button variant="ghost" type="button" onClick={() => setTransportationMode("ajn")} className={`rounded-lg border px-3 py-3 text-center text-sm transition-colors ${transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل بواسطة AJN</Button>
+              <Button variant="ghost" type="button" onClick={() => { setTransportationMode("customer"); setTransportationFee(""); }} className={`rounded-lg border px-3 py-3 text-center text-sm transition-colors ${transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل من مسؤولية الزبون</Button>
             </div>
             {transportationMode === "ajn" ? <div className="space-y-1.5"><Label htmlFor="booking-transport-fee">أجرة النقل</Label><Input id="booking-transport-fee" inputMode="decimal" value={transportationFee} onChange={(event) => setTransportationFee(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" /><p className="text-xs text-muted-foreground">تُضاف أجرة النقل تلقائياً إلى المبلغ الكلي للحجز. يمكن تحديد السيارة والسائق لاحقاً من مساحة تنفيذ الحجز.</p></div> : null}
           </section> : null}
@@ -1572,7 +1574,7 @@ function KoshaCatalogSection({ mode, onMode, catalog, loading, error, onRetry, s
   const card = (item: { id: number; name: string; price: number; mainImage: string | null }, sub: string, pickMode: KoshaPick["mode"]) => {
     const active = pick?.mode === pickMode && pick.id === item.id;
     return (
-      <button
+      <Button size="flush" variant="ghost"
         key={`${pickMode}-${item.id}`}
         type="button"
         onClick={() => onPick({ mode: pickMode, id: item.id, name: item.name, price: item.price })}
@@ -1588,7 +1590,7 @@ function KoshaCatalogSection({ mode, onMode, catalog, loading, error, onRetry, s
           <span className="block text-[11px] font-bold text-primary">{item.price > 0 ? formatCurrency(item.price) : "حسب الاتفاق"}</span>
           {sub ? <span className="block truncate text-[10px] text-muted-foreground">{sub}</span> : null}
         </span>
-      </button>
+      </Button>
     );
   };
   const grid = "grid max-h-[39rem] grid-cols-3 gap-2 overflow-y-auto pe-1";
@@ -1603,7 +1605,7 @@ function KoshaCatalogSection({ mode, onMode, catalog, loading, error, onRetry, s
       </div>
       <div className="grid grid-cols-2 gap-2">
         {cards.map(({ key, label, hint, Icon }) => (
-          <button
+          <Button variant="ghost"
             key={key}
             type="button"
             onClick={() => onMode(key)}
@@ -1615,7 +1617,7 @@ function KoshaCatalogSection({ mode, onMode, catalog, loading, error, onRetry, s
               <span className={`block truncate text-sm ${mode === key ? "font-semibold text-primary" : "font-medium text-foreground"}`}>{label}</span>
               <span className="block text-[11px] text-muted-foreground">{hint}</span>
             </span>
-          </button>
+          </Button>
         ))}
       </div>
       {mode ? (
@@ -1741,7 +1743,7 @@ function FlowerCatalogSection({ catalog, loading, error, onRetry, items, onChang
               const count = products.filter((product) => product.designerSection === item.key).length;
               const active = item.key === activeSection;
               return (
-                <button
+                <Button variant="ghost"
                   key={item.key}
                   type="button"
                   onClick={() => setSection(item.key)}
@@ -1749,7 +1751,7 @@ function FlowerCatalogSection({ catalog, loading, error, onRetry, items, onChang
                   className={`shrink-0 rounded-full border px-3 py-1 text-xs transition-colors ${active ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background hover:border-primary/40"}`}
                 >
                   {item.label} <span className="opacity-70">({count})</span>
-                </button>
+                </Button>
               );
             })}
           </div>
@@ -1800,11 +1802,11 @@ function FlowerCatalogSection({ catalog, loading, error, onRetry, items, onChang
             <div key={item.key} className="flex items-center justify-between gap-2 text-xs">
               <span className="min-w-0 truncate">{item.name}{item.variantLabel ? ` · ${item.variantLabel}` : ""}</span>
               <span className="flex shrink-0 items-center gap-1">
-                <button type="button" onClick={() => setQuantity(item.key, item.quantity - 1)} className="grid h-6 w-6 place-items-center rounded border border-border/60" aria-label={`إنقاص ${item.name}`}>−</button>
+                <Button size="iconSm" variant="ghost" type="button" onClick={() => setQuantity(item.key, item.quantity - 1)} className="grid h-6 w-6 place-items-center rounded border border-border/60" aria-label={`إنقاص ${item.name}`}>−</Button>
                 <span className="w-6 text-center tabular-nums">{item.quantity}</span>
-                <button type="button" onClick={() => setQuantity(item.key, item.quantity + 1)} className="grid h-6 w-6 place-items-center rounded border border-border/60" aria-label={`زيادة ${item.name}`}>+</button>
+                <Button size="iconSm" variant="ghost" type="button" onClick={() => setQuantity(item.key, item.quantity + 1)} className="grid h-6 w-6 place-items-center rounded border border-border/60" aria-label={`زيادة ${item.name}`}>+</Button>
                 <span className="w-20 text-left tabular-nums text-muted-foreground">{formatCurrency(item.unitPrice * item.quantity)}</span>
-                <button type="button" onClick={() => setQuantity(item.key, 0)} className="text-destructive" aria-label={`إزالة ${item.name}`}><X className="h-3.5 w-3.5" /></button>
+                <Button variant="ghost" type="button" onClick={() => setQuantity(item.key, 0)} className="text-destructive" aria-label={`إزالة ${item.name}`}><X className="h-3.5 w-3.5" /></Button>
               </span>
             </div>
           ))}
@@ -1920,7 +1922,7 @@ function SoundItemsSelector({ products, categories, loading, items, onChange }: 
       <Button type="button" size="sm" variant={source === "asset" ? "default" : "outline"} className="justify-start" onClick={() => setSource("asset")}><Boxes className="h-4 w-4" />إضافة من الأصول</Button>
     </div>
     <div className="relative"><Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} className="pr-9" placeholder={source === "store" ? "ابحث في منتجات الصوت…" : "ابحث في أصول الصوت…"} /></div>
-    {loading ? <div className="rounded-lg border border-dashed border-border/40 px-3 py-4 text-center text-xs text-muted-foreground">جارٍ تحميل عناصر الصوت…</div> : candidates.length ? <div className="max-h-44 overflow-y-auto rounded-lg border border-border/40 bg-background/70">{candidates.map((product) => <button key={product.id} type="button" className="flex w-full items-center justify-between gap-3 border-b border-border/30 px-3 py-2.5 text-right text-sm last:border-b-0 hover:bg-primary/5" onClick={() => add(product)}><span className="min-w-0 truncate font-medium">{product.nameAr || product.name}</span><span className="shrink-0 text-xs text-primary">إضافة</span></button>)}</div> : <p className="rounded-lg border border-dashed border-border/40 px-3 py-3 text-center text-xs text-muted-foreground">لا توجد عناصر صوتيات مطابقة في {source === "store" ? "المتجر" : "الأصول"}.</p>}
+    {loading ? <div className="rounded-lg border border-dashed border-border/40 px-3 py-4 text-center text-xs text-muted-foreground">جارٍ تحميل عناصر الصوت…</div> : candidates.length ? <div className="max-h-44 overflow-y-auto rounded-lg border border-border/40 bg-background/70">{candidates.map((product) => <Button variant="ghost" key={product.id} type="button" className="flex w-full items-center justify-between gap-3 border-b border-border/30 px-3 py-2.5 text-right text-sm last:border-b-0 hover:bg-primary/5" onClick={() => add(product)}><span className="min-w-0 truncate font-medium">{product.nameAr || product.name}</span><span className="shrink-0 text-xs text-primary">إضافة</span></Button>)}</div> : <p className="rounded-lg border border-dashed border-border/40 px-3 py-3 text-center text-xs text-muted-foreground">لا توجد عناصر صوتيات مطابقة في {source === "store" ? "المتجر" : "الأصول"}.</p>}
     {items.length ? <div className="space-y-2 rounded-lg border border-border/40 bg-background/70 p-2"><div className="flex items-center justify-between px-1"><b className="text-xs">العناصر المختارة</b><span className="text-xs text-muted-foreground">{items.length} عناصر</span></div>{items.map((item) => <div key={item.productId} className="grid grid-cols-[minmax(0,1fr)_5rem_auto] items-center gap-2 rounded-md bg-muted/35 px-2 py-2"><div className="min-w-0"><p className="truncate text-sm font-medium">{item.name}</p><p className="text-[11px] text-muted-foreground">{item.source === "asset" ? "من الأصول" : "من المتجر"}{item.barcode ? ` · ${item.barcode}` : ""}</p></div><Input type="number" min="1" value={item.quantity} aria-label={`كمية ${item.name}`} onChange={(event) => updateQuantity(item.productId, Number(event.target.value))} /><Button type="button" size="icon" variant="ghost" className="text-destructive" aria-label={`إزالة ${item.name}`} onClick={() => onChange(items.filter((candidate) => candidate.productId !== item.productId))}><X className="h-4 w-4" /></Button></div>)}</div> : null}
   </section>;
 }

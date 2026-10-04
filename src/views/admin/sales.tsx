@@ -311,14 +311,14 @@ function CustomerLookup({
           ) : customers.isError ? (
             <div className="flex items-center justify-between gap-3 px-3 py-3 text-xs text-destructive" role="alert">
               <span className="min-w-0">تعذر البحث عن العملاء. {apiErrorMessage(customers.error)}</span>
-              <button
+              <Button variant="ghost"
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => void customers.refetch()}
                 className="shrink-0 font-semibold underline underline-offset-2"
               >
                 إعادة المحاولة
-              </button>
+              </Button>
             </div>
           ) : !customers.data?.length ? (
             <div className="px-3 py-3 text-xs text-muted-foreground">
@@ -326,7 +326,7 @@ function CustomerLookup({
             </div>
           ) : (
             customers.data.map((customer) => (
-              <button
+              <Button variant="ghost"
                 key={customer.id}
                 type="button"
                 onMouseDown={(event) => {
@@ -345,7 +345,7 @@ function CustomerLookup({
                 >
                   {formatIraqiPhone(customer.phone)}
                 </span>
-              </button>
+              </Button>
             ))
           )}
         </div>
@@ -970,9 +970,9 @@ export default function SalesPage() {
                   autoFocus
                 />
                 {searchQ && (
-                  <button onClick={() => setSearchQ("")} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  <Button variant="ghost" onClick={() => setSearchQ("")} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                     <X className="w-4 h-4" />
-                  </button>
+                  </Button>
                 )}
               </div>
               <Button type="button" variant="outline" onClick={() => setScanOpen(true)} className="h-12 shrink-0 gap-1.5 whitespace-nowrap rounded-xl border-[#C7A36A]/50 text-[#806333]">
@@ -986,7 +986,7 @@ export default function SalesPage() {
             {filteredProducts.length > 0 ? (
               <div className="mt-4 grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
                 {filteredProducts.map(p => (
-                  <button
+                  <Button variant="ghost"
                     key={p.id}
                     onClick={() => addToCart(p)}
                     className="flex min-h-24 w-full items-center justify-between rounded-2xl border border-[#E9E5E2] bg-[#FCFBFA] p-3 text-right text-sm transition hover:border-[#C7A36A]/60 hover:bg-[#F4EBDD]/30"
@@ -1002,7 +1002,7 @@ export default function SalesPage() {
                       <p className="font-bold text-[#182033]">{formatCurrency(p.price)}</p>
                       {p.itemType === "service" ? <p className="mt-1 text-xs font-medium text-emerald-700">لكل {p.serviceUnit || "خدمة"} · لا تخصم من المخزون</p> : <p className={`mt-1 text-xs font-medium ${Number(p.stock) <= 0 ? "text-[#D75A5A]" : Number(p.stock) <= 3 ? "text-[#D99A43]" : "text-[#3F9A76]"}`}>{Number(p.stock) <= 0 ? "نفد المخزون" : Number(p.stock) <= 3 ? `مخزون منخفض: ${p.stock}` : `متوفر: ${p.stock}`}</p>}
                     </div>
-                  </button>
+                  </Button>
                 ))}
               </div>
             ) : <div className="mt-4 rounded-2xl border border-dashed border-[#E9E5E2] p-8 text-center text-sm text-[#778092]">لا توجد منتجات مطابقة للقسم والبحث المحددين.</div>}
@@ -1104,9 +1104,9 @@ export default function SalesPage() {
                   dir="ltr"
                   placeholder="CODE"
                 />
-                <button type="button" onClick={applyCoupon} className="rounded border border-primary/40 px-3 py-1 text-xs text-primary hover:bg-primary/10">
+                <Button variant="ghost" type="button" onClick={applyCoupon} className="rounded border border-primary/40 px-3 py-1 text-xs text-primary hover:bg-primary/10">
                   تطبيق
-                </button>
+                </Button>
               </div>
             </div>
             {couponDiscount > 0 && (
@@ -1165,7 +1165,7 @@ export default function SalesPage() {
             <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
               {PAYMENT_METHODS.map(m => (
-                <button
+                <Button variant="ghost"
                   key={m.value}
                   onClick={() => setForm(f => ({ ...f, paymentMethod: m.value, paidAmount: isCashPaymentMethod(m.value) ? grandTotal.toString() : f.paidAmount }))}
                   className={`rounded-lg py-2 text-sm font-medium border transition-colors ${
@@ -1175,7 +1175,7 @@ export default function SalesPage() {
                   }`}
                 >
                   {m.label}
-                </button>
+                </Button>
               ))}
             </div>
             <div>
@@ -2483,8 +2483,8 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
         ) : (
           <div className="overflow-y-auto max-h-[calc(92vh-76px)] p-5 space-y-4">
             <div className="flex gap-1 border-b border-border/30" role="tablist" aria-label="تفاصيل فاتورة المبيعات">
-              <button type="button" role="tab" aria-selected={detailTab === "invoice"} onClick={() => setDetailTab("invoice")} className={`border-b-2 px-4 py-2 text-sm font-semibold transition-colors ${detailTab === "invoice" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>تفاصيل الفاتورة</button>
-              <button type="button" role="tab" aria-selected={detailTab === "statement"} onClick={() => setDetailTab("statement")} className={`border-b-2 px-4 py-2 text-sm font-semibold transition-colors ${detailTab === "statement" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>كشف حساب العميل</button>
+              <Button variant="ghost" type="button" role="tab" aria-selected={detailTab === "invoice"} onClick={() => setDetailTab("invoice")} className={`border-b-2 px-4 py-2 text-sm font-semibold transition-colors ${detailTab === "invoice" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>تفاصيل الفاتورة</Button>
+              <Button variant="ghost" type="button" role="tab" aria-selected={detailTab === "statement"} onClick={() => setDetailTab("statement")} className={`border-b-2 px-4 py-2 text-sm font-semibold transition-colors ${detailTab === "statement" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>كشف حساب العميل</Button>
             </div>
             {detailTab === "statement" ? <CustomerAccountStatementTab invoice={invoice} /> : <>
             {invoice.financiallyReversed && (
@@ -2582,7 +2582,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                 <h3 className="font-semibold text-sm">الدفع</h3>
                 <div className="grid grid-cols-2 gap-2">
                   {PAYMENT_METHODS.map((method) => (
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       key={method.value}
                       onClick={() => setDraft((current) => ({ ...current, paymentMethod: method.value, paidAmount: isCashPaymentMethod(method.value) && !editDelivery.codEnabled ? String(total) : current.paidAmount }))}
@@ -2593,7 +2593,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                       }`}
                     >
                       {method.label}
-                    </button>
+                    </Button>
                   ))}
                 </div>
                 <div>
@@ -2747,13 +2747,13 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                         </td>
                         <td className="px-3 py-2 text-center font-medium text-primary">{formatCurrency(item.total)}</td>
                         <td className="px-3 py-2">
-                          <button
+                          <Button variant="ghost"
                             type="button"
                             onClick={() => setItems((current) => current.filter((_, itemIndex) => itemIndex !== idx))}
                             className="text-muted-foreground hover:text-destructive transition-colors"
                           >
                             <Trash2 className="w-4 h-4" />
-                          </button>
+                          </Button>
                         </td>
                       </tr>
                     ))}

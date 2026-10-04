@@ -719,7 +719,7 @@ export function GraduationProductsCenter() {
                 {form.images.map((image, index) => (
                   <div key={`${image.slice(0, 24)}-${index}`} className="relative h-16 w-16 overflow-hidden rounded-lg border border-border">
                     <img src={image} alt="" className="h-full w-full object-cover" />
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       className="absolute right-0 top-0 bg-destructive p-0.5 text-white"
                       onClick={() =>
@@ -734,16 +734,16 @@ export function GraduationProductsCenter() {
                       }
                     >
                       <X className="h-3 w-3" />
-                    </button>
+                    </Button>
                   </div>
                 ))}
-                <button
+                <Button variant="ghost"
                   type="button"
                   className="flex h-16 w-16 flex-col items-center justify-center rounded-lg border border-dashed border-primary/50 text-primary"
                   onClick={() => fileRef.current?.click()}
                 >
                   <Upload className="h-5 w-5" />
-                </button>
+                </Button>
                 <input
                   ref={fileRef}
                   type="file"

@@ -168,11 +168,11 @@ export function LinkedAssetsPanel({ entityType, entityId }: { entityType: string
         {results.length > 0 && (
           <div className="absolute z-20 mt-1 w-full rounded-lg border border-border/40 bg-card shadow-lg">
             {results.map((p: any) => (
-              <button key={p.id} type="button" disabled={busy} onClick={() => add(p.id)}
+              <Button variant="ghost" key={p.id} type="button" disabled={busy} onClick={() => add(p.id)}
                 className="flex w-full items-center justify-between gap-2 px-3 py-2 text-right text-sm hover:bg-primary/10">
                 <span className="truncate text-foreground">{p.nameAr || p.name}</span>
                 <Plus className="h-4 w-4 text-primary shrink-0" />
-              </button>
+              </Button>
             ))}
           </div>
         )}
@@ -199,13 +199,13 @@ export function LinkedAssetsPanel({ entityType, entityId }: { entityType: string
                 </div>
               </div>
               {a.checkedOut ? (
-                <button type="button" disabled={busy} onClick={() => beginReturn(a)} className="shrink-0 rounded-lg border border-status-success/40 px-2 py-1 text-[11px] font-bold text-status-success">استلام</button>
+                <Button variant="ghost" type="button" disabled={busy} onClick={() => beginReturn(a)} className="shrink-0 rounded-lg border border-status-success/40 px-2 py-1 text-[11px] font-bold text-status-success">استلام</Button>
               ) : (
-                <button type="button" disabled={busy} onClick={() => checkout(a)} className="shrink-0 rounded-lg border border-status-warning/40 px-2 py-1 text-[11px] font-bold text-status-warning">إخراج</button>
+                <Button variant="ghost" type="button" disabled={busy} onClick={() => checkout(a)} className="shrink-0 rounded-lg border border-status-warning/40 px-2 py-1 text-[11px] font-bold text-status-warning">إخراج</Button>
               )}
-              <button type="button" disabled={busy} onClick={() => removeByProduct(a.productId, a.name)} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-status-danger/10 hover:text-status-danger" title="إزالة">
+              <Button variant="ghost" type="button" disabled={busy} onClick={() => removeByProduct(a.productId, a.name)} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-status-danger/10 hover:text-status-danger" title="إزالة">
                 <X className="h-4 w-4" />
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
@@ -218,7 +218,7 @@ export function LinkedAssetsPanel({ entityType, entityId }: { entityType: string
             <p className="text-sm text-muted-foreground">هل توجد مشكلة في هذا الأصل؟</p>
             <div className="grid grid-cols-3 gap-2">
               {([["none", "سليم"], ["broken", "يوجد كسر"], ["lost", "يوجد فقدان"]] as const).map(([v, l]) => (
-                <button key={v} type="button" onClick={() => setProblem(v)} className={`rounded-lg border py-1.5 text-xs font-medium ${problem === v ? "border-primary bg-primary/15 text-primary" : "border-border/40 text-muted-foreground"}`}>{l}</button>
+                <Button variant="ghost" key={v} type="button" onClick={() => setProblem(v)} className={`rounded-lg border py-1.5 text-xs font-medium ${problem === v ? "border-primary bg-primary/15 text-primary" : "border-border/40 text-muted-foreground"}`}>{l}</Button>
               ))}
             </div>
             {problem === "broken" && (

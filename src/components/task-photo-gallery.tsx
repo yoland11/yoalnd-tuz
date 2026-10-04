@@ -23,9 +23,9 @@ export type TaskFile = TaskPhoto;
 function PhotoLightbox({ photo, onClose }: { photo: TaskPhoto; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center bg-black/90 p-3" role="dialog" aria-modal="true" aria-label="معاينة الصورة">
-      <button type="button" onClick={onClose} className="absolute left-4 top-[max(1rem,env(safe-area-inset-top))] grid h-11 w-11 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25" aria-label="إغلاق المعاينة">
+      <Button variant="ghost" type="button" onClick={onClose} className="absolute left-4 top-[max(1rem,env(safe-area-inset-top))] grid h-11 w-11 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25" aria-label="إغلاق المعاينة">
         <X className="h-5 w-5" />
-      </button>
+      </Button>
       <img src={photo.url} alt={photo.caption || photo.fileName || "صورة المهمة"} className="max-h-[88dvh] max-w-full object-contain" />
       {photo.caption ? <p className="absolute bottom-[max(1rem,env(safe-area-inset-bottom))] max-w-[90vw] rounded-lg bg-black/65 px-4 py-2 text-center text-sm text-white">{photo.caption}</p> : null}
     </div>
@@ -37,11 +37,11 @@ export function TaskPhotoGallery({ photos, emptyText = "لا توجد صور م�
   if (!photos.length) return <p className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-sm text-muted-foreground">{emptyText}</p>;
   return <>
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-      {photos.map((photo, index) => <button key={photo.id ?? `${photo.url}-${index}`} type="button" onClick={() => setActive(photo)} className="group relative min-h-28 overflow-hidden rounded-xl border border-border bg-muted text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {photos.map((photo, index) => <Button size="flush" variant="ghost" key={photo.id ?? `${photo.url}-${index}`} type="button" onClick={() => setActive(photo)} className="group relative min-h-28 overflow-hidden rounded-xl border border-border bg-muted text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <img src={photo.thumbnailUrl || photo.url} alt={photo.caption || photo.fileName || `صورة ${index + 1}`} className="h-32 w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]" />
         <span className="absolute left-2 top-2 grid h-9 w-9 place-items-center rounded-full bg-black/55 text-white"><Maximize2 className="h-4 w-4" /></span>
         {photo.caption ? <span className="absolute inset-x-0 bottom-0 line-clamp-2 bg-gradient-to-t from-black/85 to-black/10 px-2 pb-2 pt-6 text-xs text-white">{photo.caption}</span> : null}
-      </button>)}
+      </Button>)}
     </div>
     {active ? <PhotoLightbox photo={active} onClose={() => setActive(null)} /> : null}
   </>;
@@ -115,7 +115,7 @@ export function TaskPhotoPicker({
     {uploading ? <div className="flex min-h-11 items-center gap-2 rounded-lg bg-background px-3 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin text-primary" />{progress ? uploadProgressLabel(progress) : "جاري تجهيز الصورة..."}</div> : null}
     {photos.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
       {photos.map((photo, index) => <div key={photo.id ?? `${photo.url}-${index}`} className="overflow-hidden rounded-xl border border-border bg-background">
-        <button type="button" onClick={() => setActive(photo)} className="relative block w-full"><img src={photo.thumbnailUrl || photo.url} alt={photo.caption || photo.fileName || `صورة ${index + 1}`} className="h-32 w-full object-cover" /><span className="absolute left-2 top-2 grid h-9 w-9 place-items-center rounded-full bg-black/55 text-white"><Maximize2 className="h-4 w-4" /></span></button>
+        <Button size="flush" variant="ghost" type="button" onClick={() => setActive(photo)} className="relative block w-full"><img src={photo.thumbnailUrl || photo.url} alt={photo.caption || photo.fileName || `صورة ${index + 1}`} className="h-32 w-full object-cover" /><span className="absolute left-2 top-2 grid h-9 w-9 place-items-center rounded-full bg-black/55 text-white"><Maximize2 className="h-4 w-4" /></span></Button>
         <div className="space-y-2 p-2">
           <Input aria-label={`ملاحظة الصورة ${index + 1}`} value={photo.caption ?? ""} onChange={(event) => onChange(photos.map((item, itemIndex) => itemIndex === index ? { ...item, caption: event.target.value } : item))} placeholder="ملاحظة الصورة (اختياري)" className="min-h-10 text-xs" disabled={disabled} />
           <div className="grid grid-cols-2 gap-1">

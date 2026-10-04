@@ -227,7 +227,7 @@ function InvitationEditor({ id }: { id: number }) {
 
       <div className="flex gap-1 border-b border-border/40">
         {([["design", "التصميم", Palette], ["guests", "الضيوف و QR", UserPlus], ["scanner", "ماسح الدخول", ScanLine], ["dashboard", "اللوحة المباشرة", LayoutDashboard]] as const).map(([k, l, Icon]) => (
-          <button key={k} type="button" onClick={() => setTab(k)} className={`flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium ${tab === k ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}><Icon className="h-4 w-4" /> {l}</button>
+          <Button variant="ghost" key={k} type="button" onClick={() => setTab(k)} className={`flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium ${tab === k ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}><Icon className="h-4 w-4" /> {l}</Button>
         ))}
       </div>
 
@@ -238,7 +238,7 @@ function InvitationEditor({ id }: { id: number }) {
             <div>
               <div className="mb-1.5 flex items-center justify-between">
                 <span className="text-xs font-semibold text-foreground">🎨 القوالب الجاهزة</span>
-                <button type="button" onClick={saveAsTemplate} className="text-[11px] text-primary hover:underline">💾 حفظ التصميم كقالب</button>
+                <Button variant="ghost" type="button" onClick={saveAsTemplate} className="text-[11px] text-primary hover:underline">💾 حفظ التصميم كقالب</Button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {orderedTpls.map((t) => {
@@ -246,12 +246,12 @@ function InvitationEditor({ id }: { id: number }) {
                   const fav = favs.includes(t.name);
                   return (
                     <div key={t.name} className={`group flex items-center gap-1 rounded-lg border px-1.5 py-1 text-xs font-medium transition-colors ${active ? "border-primary ring-1 ring-primary" : "border-border/40 hover:border-primary/40"}`}>
-                      <button type="button" onClick={() => toggleFav(t.name)} title="مفضّلة" className={fav ? "text-amber-500" : "text-muted-foreground/50 hover:text-amber-500"}>{fav ? "★" : "☆"}</button>
-                      <button type="button" onClick={() => applyTemplate(t)} title={t.category} className="flex items-center gap-1.5">
+                      <Button variant="ghost" type="button" onClick={() => toggleFav(t.name)} title="مفضّلة" className={fav ? "text-amber-500" : "text-muted-foreground/50 hover:text-amber-500"}>{fav ? "★" : "☆"}</Button>
+                      <Button variant="ghost" type="button" onClick={() => applyTemplate(t)} title={t.category} className="flex items-center gap-1.5">
                         <span className="h-4 w-4 rounded-full border" style={{ background: t.bg, borderColor: t.fg }} />
                         {t.name}
-                      </button>
-                      {t.custom ? <button type="button" onClick={() => persistCustom(customTpls.filter((c) => c.name !== t.name))} title="حذف القالب" className="text-muted-foreground/50 hover:text-destructive">×</button> : null}
+                      </Button>
+                      {t.custom ? <Button variant="ghost" type="button" onClick={() => persistCustom(customTpls.filter((c) => c.name !== t.name))} title="حذف القالب" className="text-muted-foreground/50 hover:text-destructive">×</Button> : null}
                     </div>
                   );
                 })}
@@ -280,7 +280,7 @@ function InvitationEditor({ id }: { id: number }) {
                 {(form.galleryImages ?? []).map((g, i) => (
                   <div key={i} className="relative">
                     <img src={g} alt="" className="h-12 w-12 rounded object-cover" />
-                    <button type="button" onClick={() => applyFields({ galleryImages: (form.galleryImages ?? []).filter((_, xi) => xi !== i) })} className="absolute -right-1 -top-1 grid h-4 w-4 place-items-center rounded-full bg-destructive text-[10px] text-white">×</button>
+                    <Button size="iconSm" variant="ghost" type="button" onClick={() => applyFields({ galleryImages: (form.galleryImages ?? []).filter((_, xi) => xi !== i) })} className="absolute -right-1 -top-1 grid h-4 w-4 place-items-center rounded-full bg-destructive text-[10px] text-white">×</Button>
                   </div>
                 ))}
                 <ImageUploadEditor kind="gallery" label="إضافة صورة" settings={publicSettings?.image_settings} watermarkText={publicSettings?.site_name} onComplete={(r: ImageEditResult[]) => r[0] && applyFields({ galleryImages: [...(form.galleryImages ?? []), r[0].dataUrl] })} />
@@ -383,10 +383,10 @@ function Fld({ label, children }: { label: string; children: ReactNode }) {
 /** Compact iOS-style switch. */
 function Tgl({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <button type="button" role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
+    <Button variant="ghost" type="button" role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
       className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors ${checked ? "bg-primary" : "bg-border/60"}`}>
       <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${checked ? "left-0.5" : "left-[22px]"}`} />
-    </button>
+    </Button>
   );
 }
 /** Labelled switch row. */

@@ -654,16 +654,16 @@ export default function Profile() {
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         {!address.isDefault && (
-                          <button type="button" onClick={() => makeDefaultAddress(address)} className="p-2 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10" title={t("تعيين افتراضي")}>
+                          <Button variant="ghost" type="button" onClick={() => makeDefaultAddress(address)} className="p-2 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10" title={t("تعيين افتراضي")}>
                             <Star className="w-4 h-4" />
-                          </button>
+                          </Button>
                         )}
-                        <button type="button" onClick={() => startAddressEdit(address)} className="p-2 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10" title={t("تعديل")}>
+                        <Button variant="ghost" type="button" onClick={() => startAddressEdit(address)} className="p-2 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10" title={t("تعديل")}>
                           <Pencil className="w-4 h-4" />
-                        </button>
-                        <button type="button" onClick={() => deleteAddress(address.id)} className="p-2 rounded-lg text-muted-foreground hover:text-status-danger hover:bg-status-danger/10" title={t("حذف")}>
+                        </Button>
+                        <Button variant="ghost" type="button" onClick={() => deleteAddress(address.id)} className="p-2 rounded-lg text-muted-foreground hover:text-status-danger hover:bg-status-danger/10" title={t("حذف")}>
                           <Trash2 className="w-4 h-4" />
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   </div>
@@ -723,16 +723,16 @@ export default function Profile() {
             <Section title={t("طرق الدفع")} icon={Wallet}>
               <div className="grid grid-cols-2 gap-3">
                 {(["cash", "card"] as const).map((method) => (
-                  <button
+                  <Button variant="ghost"
                     key={method}
                     type="button"
                     onClick={() => savePaymentPreference(method)}
                     disabled={savingPayment}
-                    className={`rounded-xl border p-4 text-right transition-colors ${paymentMethod === method ? "border-primary bg-primary/10 text-primary" : "border-border/25 bg-background/60 text-foreground hover:border-primary/40"}`}
+                    className={`block whitespace-normal rounded-xl border p-4 text-right transition-colors ${paymentMethod === method ? "border-primary bg-primary/10 text-primary" : "border-border/25 bg-background/60 text-foreground hover:border-primary/40"}`}
                   >
                     <p className="text-xs text-muted-foreground mb-1">{method === "cash" ? t("كاش") : t("بطاقة")}</p>
                     <p className="text-sm font-semibold">{paymentMethod === method ? t("طريقة افتراضية") : method === "cash" ? t("متاح دائماً") : t("اختياري")}</p>
-                  </button>
+                  </Button>
                 ))}
               </div>
               <p className="text-xs text-muted-foreground mt-3 rounded-xl bg-background/60 border border-border/25 p-3">
@@ -873,9 +873,9 @@ function OrderList({
                 )}
               </div>
               {order.kind === "order" && (
-                <button type="button" onClick={() => onReorder?.(order)} className="hidden sm:inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
+                <Button variant="ghost" type="button" onClick={() => onReorder?.(order)} className="hidden sm:inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
                   <RefreshCcw className="w-4 h-4" />
-                </button>
+                </Button>
               )}
               <a href={buildWhatsAppLink(contactPhone || "07701234567", `استفسار بخصوص الطلب ${order.bookingNumber || order.trackingCode}`)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center rounded-lg border border-status-success/30 bg-status-success/10 px-3 py-2 text-sm text-status-success hover:bg-status-success/20 transition-colors">
                 <MessageCircle className="w-4 h-4" />
@@ -949,9 +949,9 @@ function ReviewBox({ review, onSubmit }: { review?: OrderReview; onSubmit: (rati
           <p className="text-xs font-semibold text-foreground">{t("تقييمك بعد التسليم")}</p>
           <div className="flex items-center gap-1 mt-2">
             {[1, 2, 3, 4, 5].map((value) => (
-              <button key={value} type="button" onClick={() => setRating(value)} className={value <= rating ? "text-primary" : "text-muted-foreground"}>
+              <Button variant="ghost" key={value} type="button" onClick={() => setRating(value)} className={value <= rating ? "text-primary" : "text-muted-foreground"}>
                 <Star className="w-4 h-4 fill-current" />
-              </button>
+              </Button>
             ))}
           </div>
         </div>

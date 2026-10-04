@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { CheckCircle2, XCircle, ShieldCheck, Loader2, ExternalLink, ImageIcon } from "lucide-react";
@@ -53,22 +54,22 @@ export default function KoshaCollectionsPage() {
               <div className="mt-1 text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</div>
               <div className="mt-3 flex flex-wrap gap-2 text-xs"><a className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-primary" href={`/admin/kosha-bookings?booking=${p.booking?.id ?? ""}`}><ExternalLink className="h-3.5 w-3.5" /> فتح الحجز</a><a className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-primary" href={`/admin/customers?search=${encodeURIComponent(p.booking?.customerPhone ?? p.booking?.customerName ?? "")}`}><ExternalLink className="h-3.5 w-3.5" /> حساب العميل</a></div>
               <div className="mt-3 flex gap-2">
-                <button
+                <Button variant="ghost"
                   disabled={busyId === p.id}
                   onClick={() => approve.mutate(p.id)}
                   className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-status-success py-2 text-sm font-bold text-white transition-colors hover:bg-status-success disabled:opacity-60"
                 >
                   {busyId === p.id && approve.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} موافقة وترحيل للنظام
-                </button>
-                <button
+                </Button>
+                <Button variant="ghost"
                   disabled={busyId === p.id}
                   onClick={() => { setRejectingId(p.id); setRejectionReason(""); }}
                   className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-destructive/40 py-2 text-sm font-bold text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-60"
                 >
                   <XCircle className="h-4 w-4" /> رفض
-                </button>
+                </Button>
               </div>
-              {rejectingId === p.id ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><label className="mb-1 block text-xs font-bold text-destructive">سبب الرفض مطلوب</label><textarea value={rejectionReason} onChange={(event) => setRejectionReason(event.target.value)} rows={2} placeholder="مثال: الوصل غير واضح أو المبلغ غير صحيح" className="w-full rounded-md border border-border bg-background p-2 text-sm" /><div className="mt-2 flex gap-2"><button disabled={reject.isPending || rejectionReason.trim().length < 3} onClick={() => reject.mutate({ id: p.id, reason: rejectionReason.trim() })} className="rounded-md bg-destructive px-3 py-1.5 text-sm font-bold text-white disabled:opacity-60">تأكيد الرفض</button><button disabled={reject.isPending} onClick={() => setRejectingId(null)} className="rounded-md border border-border px-3 py-1.5 text-sm">إلغاء</button></div></div> : null}
+              {rejectingId === p.id ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><label className="mb-1 block text-xs font-bold text-destructive">سبب الرفض مطلوب</label><textarea value={rejectionReason} onChange={(event) => setRejectionReason(event.target.value)} rows={2} placeholder="مثال: الوصل غير واضح أو المبلغ غير صحيح" className="w-full rounded-md border border-border bg-background p-2 text-sm" /><div className="mt-2 flex gap-2"><Button variant="ghost" disabled={reject.isPending || rejectionReason.trim().length < 3} onClick={() => reject.mutate({ id: p.id, reason: rejectionReason.trim() })} className="rounded-md bg-destructive px-3 py-1.5 text-sm font-bold text-white disabled:opacity-60">تأكيد الرفض</Button><Button variant="ghost" disabled={reject.isPending} onClick={() => setRejectingId(null)} className="rounded-md border border-border px-3 py-1.5 text-sm">إلغاء</Button></div></div> : null}
             </div>
           ))}
         </div>

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { desktopNavItems } from "./nav-items";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { useGetCart } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
 import { handleDefaultLogoError, logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -158,9 +159,8 @@ export function Navbar() {
             <Search className="h-[18px] w-[18px] shrink-0 stroke-[1.5]" aria-hidden="true" />
             <span>ابحث عن منتج…</span>
           </Link>
-          <Button
+          <IconButton
             variant="ghost"
-            size="icon"
             onClick={toggle}
             aria-label="تبديل الوضع الليلي/النهاري"
             title={
@@ -175,10 +175,10 @@ export function Navbar() {
             ) : (
               <Moon className="h-5 w-5" />
             )}
-          </Button>
+          </IconButton>
           <LanguageSwitcher />
-          <Link href="/profile" className="hidden md:block">
-            <Button variant="ghost" size="icon" className="ajn-nav-icon">
+          <IconButton asChild aria-label="الملف الشخصي" variant="ghost" className="hidden md:inline-flex ajn-nav-icon">
+            <Link href="/profile">
               {customer?.avatarUrl ? (
                 <img
                   src={customer.avatarUrl}
@@ -188,50 +188,33 @@ export function Navbar() {
               ) : (
                 <User className="h-5 w-5" />
               )}
-            </Button>
-          </Link>
-          <Link href="/favorites" aria-label="المفضّلة" className="hidden md:block">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="relative ajn-nav-icon"
-            >
+            </Link>
+          </IconButton>
+          <IconButton asChild aria-label="المفضّلة" variant="ghost" className="relative hidden md:inline-flex ajn-nav-icon">
+            <Link href="/favorites">
               <Heart className="h-5 w-5" />
               {wishlistCount > 0 && (
                 <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
                   {wishlistCount}
                 </span>
               )}
-            </Button>
-          </Link>
-          <Link href="/cart" className="hidden md:block">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="relative ajn-nav-icon"
-            >
+            </Link>
+          </IconButton>
+          <IconButton asChild aria-label="سلة المشتريات" variant="ghost" className="relative hidden md:inline-flex ajn-nav-icon">
+            <Link href="/cart">
               <ShoppingBag className="h-5 w-5" />
               {cartItemCount > 0 && (
                 <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
                   {cartItemCount}
                 </span>
               )}
-            </Button>
-          </Link>
-          <Link
-            href="/admin/login"
-            aria-label="دخول الإدارة"
-            title="دخول الإدارة"
-            className="hidden md:block"
-          >
-            <Button
-              variant="ghost"
-              size="icon"
-              className={`ajn-nav-icon ${location.startsWith("/admin") ? "is-active" : ""}`}
-            >
+            </Link>
+          </IconButton>
+          <IconButton asChild aria-label="دخول الإدارة" title="دخول الإدارة" variant="ghost" className={`hidden md:inline-flex ajn-nav-icon ${location.startsWith("/admin") ? "is-active" : ""}`}>
+            <Link href="/admin/login">
               <Lock className="h-5 w-5" />
-            </Button>
-          </Link>
+            </Link>
+          </IconButton>
         </div>
       </div>
     </header>

@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
@@ -212,7 +213,7 @@ function RingBoxOpener({
       <div className="ajx-cam">
         <div className="ajx-wrap">
           <div className="ajx-halo" aria-hidden="true" />
-          <button
+          <Button variant="ghost"
             type="button"
             className="ajx-box"
             aria-label="اضغط لفتح الدعوة"
@@ -230,7 +231,7 @@ function RingBoxOpener({
               </span>
             </span>
             <span className="ajx-lid" aria-hidden="true"><span className="ajx-lid-gloss" /></span>
-          </button>
+          </Button>
           <div className="ajx-prompt">
             <div className="ajx-tap">اضغط لفتح الدعوة</div>
             <div className="ajx-hint">A J N · دعوة</div>

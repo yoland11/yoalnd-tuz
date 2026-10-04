@@ -223,8 +223,8 @@ export default function CustomersPage() {
                   <td className="p-3 text-xs text-muted-foreground">{(c.rewardPoints ?? 0).toLocaleString("ar-IQ-u-nu-latn")} نقطة</td>
                   <td className="p-3" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-center gap-1">
-                      <button onClick={() => setEditing({ id: c.id, name: c.name, phone: c.phone, fullName: "", email: "", address: "", city: "", customerType: c.customerType ?? "retail", businessName: c.businessName ?? "", ownerName: c.ownerName ?? "", province: c.province ?? "", creditLimit: c.creditLimit == null ? "" : String(c.creditLimit), specialDiscountPercent: c.specialDiscountPercent == null ? "" : String(c.specialDiscountPercent), notes: c.wholesaleNotes ?? "" })} className="p-1.5 rounded text-muted-foreground hover:text-primary hover:bg-background/50" title="تعديل"><Pencil className="w-4 h-4" /></button>
-                      <button onClick={() => { if (confirm(`حذف العميل ${c.name || c.phone}؟`)) deleteCustomer.mutate(c.id); }} className="p-1.5 rounded text-destructive hover:bg-background/50" title="حذف"><Trash2 className="w-4 h-4" /></button>
+                      <Button variant="ghost" onClick={() => setEditing({ id: c.id, name: c.name, phone: c.phone, fullName: "", email: "", address: "", city: "", customerType: c.customerType ?? "retail", businessName: c.businessName ?? "", ownerName: c.ownerName ?? "", province: c.province ?? "", creditLimit: c.creditLimit == null ? "" : String(c.creditLimit), specialDiscountPercent: c.specialDiscountPercent == null ? "" : String(c.specialDiscountPercent), notes: c.wholesaleNotes ?? "" })} className="p-1.5 rounded text-muted-foreground hover:text-primary hover:bg-background/50" title="تعديل"><Pencil className="w-4 h-4" /></Button>
+                      <Button variant="ghost" onClick={() => { if (confirm(`حذف العميل ${c.name || c.phone}؟`)) deleteCustomer.mutate(c.id); }} className="p-1.5 rounded text-destructive hover:bg-background/50" title="حذف"><Trash2 className="w-4 h-4" /></Button>
                     </div>
                   </td>
                 </tr>
@@ -245,7 +245,7 @@ export default function CustomersPage() {
           <div className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 p-6 border-b border-border/30">
               <h3 className="font-bold text-foreground">ملف الزبون 360</h3>
-              <button onClick={() => setSelectedId(null)}><X className="w-5 h-5 text-muted-foreground" /></button>
+              <Button variant="ghost" onClick={() => setSelectedId(null)}><X className="w-5 h-5 text-muted-foreground" /></Button>
             </div>
             {!detail ? <div className="p-6"><Skeleton className="h-40" /></div> : (
               <div className="p-6 space-y-6">
@@ -278,13 +278,13 @@ export default function CustomersPage() {
                     ownerName={detail.fullName || detail.name || null}
                     className="inline-flex items-center gap-2 rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-sm text-foreground hover:border-primary/40"
                   />
-                  <button
+                  <Button variant="ghost"
                     type="button"
                     onClick={() => exportCustomerCsv(detail)}
                     className="inline-flex items-center gap-2 rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-sm text-foreground hover:border-primary/40"
                   >
                     <FileDown className="h-4 w-4" /> تصدير CSV
-                  </button>
+                  </Button>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -336,14 +336,14 @@ export default function CustomersPage() {
                       placeholder="سبب التعديل"
                       className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       disabled={updateRewards.isPending || !Number(pointsDelta)}
                       onClick={() => updateRewards.mutate({ pointsDelta: Number(pointsDelta), note: pointsNote || "تعديل من الإدارة" })}
                       className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm text-primary hover:bg-primary/20 disabled:opacity-60"
                     >
                       حفظ
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
@@ -367,14 +367,14 @@ export default function CustomersPage() {
                       <option value="important">مهمة</option>
                       <option value="urgent">عاجلة</option>
                     </select>
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       disabled={addNote.isPending || !noteBody.trim()}
                       onClick={() => addNote.mutate()}
                       className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm text-primary hover:bg-primary/20 disabled:opacity-60"
                     >
                       حفظ
-                    </button>
+                    </Button>
                   </div>
                   {!detail.notes?.length ? <p className="mt-3 text-xs text-muted-foreground">لا توجد ملاحظات داخلية</p> : (
                     <div className="mt-3 space-y-2">
@@ -384,9 +384,9 @@ export default function CustomersPage() {
                             <p className="text-sm text-foreground whitespace-pre-wrap">{note.body}</p>
                             <p className="mt-1 text-[11px] text-muted-foreground">{note.priority === "urgent" ? "عاجلة" : note.priority === "important" ? "مهمة" : "اعتيادية"} · {new Date(note.createdAt).toLocaleString("ar-IQ-u-nu-latn", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
                           </div>
-                          <button type="button" onClick={() => deleteNote.mutate(note.id)} className="text-muted-foreground hover:text-destructive">
+                          <Button variant="ghost" type="button" onClick={() => deleteNote.mutate(note.id)} className="text-muted-foreground hover:text-destructive">
                             <Trash2 className="h-4 w-4" />
-                          </button>
+                          </Button>
                         </div>
                       ))}
                     </div>
@@ -567,7 +567,7 @@ function CustomerFormModal({ initial, saving, onClose, onSave }: {
       <div className="bg-card border border-border/40 rounded-2xl max-w-xl w-full max-h-[90dvh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-border/30 p-4">
           <h2 className="text-lg font-bold text-foreground">{initial.id ? "تعديل بيانات العميل" : "إضافة عميل جديد"}</h2>
-          <button onClick={onClose}><X className="w-5 h-5 text-muted-foreground" /></button>
+          <Button variant="ghost" onClick={onClose}><X className="w-5 h-5 text-muted-foreground" /></Button>
         </div>
         <div className="space-y-3 p-4">
           <div>

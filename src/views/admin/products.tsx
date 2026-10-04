@@ -333,12 +333,12 @@ export default function ProductsPage() {
           </Button>
           <Button variant="outline" asChild><Link href="/admin/product-bundles"><Boxes className="w-4 h-4 ml-2" />العروض والبكجات</Link></Button>
           <div className="flex bg-card rounded-lg border border-border/40 p-0.5">
-            <button onClick={() => setView("list")}
-              className={`px-3 py-1.5 rounded text-xs ${view === "list" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>المنتجات</button>
-            <button onClick={() => setView("stock")}
+            <Button variant="ghost" onClick={() => setView("list")}
+              className={`px-3 py-1.5 rounded text-xs ${view === "list" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>المنتجات</Button>
+            <Button variant="ghost" onClick={() => setView("stock")}
               className={`px-3 py-1.5 rounded text-xs inline-flex items-center gap-1.5 ${view === "stock" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
               <Boxes className="w-3.5 h-3.5" /> المخزون
-            </button>
+            </Button>
           </div>
           <Button onClick={() => setEditing({ ...blank })} size="sm" className="gap-2">
             <Plus className="w-4 h-4" /> إضافة منتج
@@ -365,7 +365,7 @@ export default function ProductsPage() {
       </div>
 
       <div className="grid gap-3 md:grid-cols-3">
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => setStockFilter(stockFilter === "out" ? "all" : "out")}
           className={`rounded-xl border p-4 text-right transition-colors ${
@@ -380,8 +380,8 @@ export default function ProductsPage() {
           </span>
           <strong className="mt-2 block text-2xl text-foreground">{stockStats.out}</strong>
           <span className="mt-1 block text-[11px] text-muted-foreground">يعتمد على المخزون الفعلي، بما فيه المخزون المشترك</span>
-        </button>
-        <button
+        </Button>
+        <Button variant="ghost"
           type="button"
           onClick={() => setStockFilter(stockFilter === "low" ? "all" : "low")}
           className={`rounded-xl border p-4 text-right transition-colors ${
@@ -396,8 +396,8 @@ export default function ProductsPage() {
           </span>
           <strong className="mt-2 block text-2xl text-foreground">{stockStats.low}</strong>
           <span className="mt-1 block text-[11px] text-muted-foreground">أقل من حد التنبيه أو {DEFAULT_LOW_STOCK_THRESHOLD} كافتراضي</span>
-        </button>
-        <button
+        </Button>
+        <Button variant="ghost"
           type="button"
           onClick={() => setStockFilter(stockFilter === "available" ? "all" : "available")}
           className={`rounded-xl border p-4 text-right transition-colors ${
@@ -412,7 +412,7 @@ export default function ProductsPage() {
           </span>
           <strong className="mt-2 block text-2xl text-foreground">{stockStats.available}</strong>
           <span className="mt-1 block text-[11px] text-muted-foreground">اضغط على العدادات لتفعيل الفلتر السريع</span>
-        </button>
+        </Button>
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -442,7 +442,7 @@ export default function ProductsPage() {
           <option value="rental">الإيجار</option>
           <option value="nocat">بدون تصنيف</option>
         </select>
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => setStockFilter(stockFilter === "out" ? "all" : "out")}
           className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors ${
@@ -453,8 +453,8 @@ export default function ProductsPage() {
         >
           <PackageX className="h-4 w-4" />
           عرض المنتجات ذات المخزون 0 فقط
-        </button>
-        <button
+        </Button>
+        <Button variant="ghost"
           type="button"
           onClick={() => setStockFilter(stockFilter === "low" ? "all" : "low")}
           className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors ${
@@ -465,7 +465,7 @@ export default function ProductsPage() {
         >
           <AlertTriangle className="h-4 w-4" />
           المخزون المنخفض
-        </button>
+        </Button>
       </div>
 
       {view === "stock" ? (
@@ -518,9 +518,9 @@ export default function ProductsPage() {
                         <td className="p-3"><StockStatusBadge product={p} /></td>
                         <td className="p-3">
                           {dirty && (
-                            <button onClick={() => void saveStock(p)} className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90">
+                            <Button variant="ghost" onClick={() => void saveStock(p)} className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90">
                               <Save className="w-3.5 h-3.5" /> حفظ
-                            </button>
+                            </Button>
                           )}
                         </td>
                       </tr>
@@ -601,9 +601,9 @@ export default function ProductsPage() {
                             className={`w-20 bg-background border rounded-lg px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${dirty ? "border-primary" : "border-border/40"} ${status === "out" ? "text-status-danger" : ""}`}
                           />
                           {dirty && (
-                            <button onClick={() => void saveStock(p)} className="inline-flex items-center gap-1 rounded-lg bg-primary px-2 py-1.5 text-xs text-primary-foreground hover:bg-primary/90">
+                            <Button variant="ghost" onClick={() => void saveStock(p)} className="inline-flex items-center gap-1 rounded-lg bg-primary px-2 py-1.5 text-xs text-primary-foreground hover:bg-primary/90">
                               <Save className="h-3.5 w-3.5" /> حفظ
-                            </button>
+                            </Button>
                           )}
                         </div>
                       </td>
@@ -625,7 +625,7 @@ export default function ProductsPage() {
                       </td>
                       <td className="p-3">
                         <div className="flex items-center gap-2">
-                          <button onClick={() => setEditing({
+                          <Button variant="ghost" onClick={() => setEditing({
                             id: p.id, name: p.name, nameAr: p.nameAr,
                             itemType: (p as any).itemType === "service" ? "service" : "product",
                             serviceUnit: (p as any).serviceUnit ?? "",
@@ -645,13 +645,13 @@ export default function ProductsPage() {
                             isFeatured: !!p.isFeatured, availableInBouquetDesigner: !!(p as any).availableInBouquetDesigner, showInBouquetBuilder: !!((p as any).showInBouquetBuilder ?? (p as any).availableInBouquetDesigner), bouquetElementType: (p as any).bouquetElementType ?? "FLOWER", previewCutoutUrl: (p as any).previewCutoutUrl ?? (p as any).previewAssetUrl ?? null, readyMadePreviewUrl: (p as any).readyMadePreviewUrl ?? null, previewAssetUrl: (p as any).previewAssetUrl ?? null, previewColor: (p as any).previewColor ?? "#d55b73", previewScale: (p as any).previewScale == null ? "1" : String((p as any).previewScale), previewRotation: (p as any).previewRotation == null ? "0" : String((p as any).previewRotation), previewLayer: (p as any).previewLayer == null ? "0" : String((p as any).previewLayer), bouquetRecipe: Array.isArray((p as any).bouquetRecipe) ? (p as any).bouquetRecipe : [], isReadyMadeBouquet: !!((p as any).isReadyMadeBouquet ?? (p as any).isBouquetTemplate), isBouquetTemplate: !!(p as any).isBouquetTemplate, isActive: p.isActive !== false,
                           })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
                             <Edit2 className="w-4 h-4" />
-                          </button>
+                          </Button>
                           <Link href={`/admin/print-labels?productId=${p.id}&kind=product`} className="text-muted-foreground hover:bg-muted p-2 rounded-lg" title="طباعة ملصق">
                             <QrCode className="w-4 h-4" />
                           </Link>
-                          <button onClick={() => confirm("حذف المنتج؟") && remove.mutateAsync({ id: p.id }).then(invalidate)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg">
+                          <Button variant="ghost" onClick={() => confirm("حذف المنتج؟") && remove.mutateAsync({ id: p.id }).then(invalidate)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg">
                             <Trash2 className="w-4 h-4" />
-                          </button>
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -898,46 +898,46 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
       >
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-foreground">{form.id ? "تعديل العنصر" : "عنصر جديد"}</h3>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+          <Button variant="ghost" type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></Button>
         </div>
 
         {form.id && (
           <div className="flex rounded-xl border border-border/30 bg-background/40 p-1">
-            <button
+            <Button variant="ghost"
               type="button"
               onClick={() => setActiveTab("details")}
               className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "details" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               تفاصيل المنتج
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               type="button"
               onClick={() => setActiveTab("rentals")}
               className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "rentals" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               حجوزات الإيجار
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               type="button"
               onClick={() => setActiveTab("recipe")}
               className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "recipe" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               🧩 وصفة المنتج
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               type="button"
               onClick={() => setActiveTab("variants")}
               className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "variants" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               🎨 المتغيّرات
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               type="button"
               onClick={() => setActiveTab("wholesale")}
               className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "wholesale" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               أسعار الجملة
-            </button>
+            </Button>
           </div>
         )}
 
@@ -996,32 +996,32 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                           </span>
                           {active ? (
                             <>
-                              <button
+                              <Button variant="ghost"
                                 type="button"
                                 disabled={rentalStatusBusy === booking.id}
                                 onClick={() => void updateRentalStatus(booking.id, "returned")}
                                 className="rounded-lg border border-primary/30 px-2.5 py-1.5 text-[11px] text-primary hover:bg-primary/10 disabled:opacity-50"
                               >
                                 إرجاع
-                              </button>
-                              <button
+                              </Button>
+                              <Button variant="ghost"
                                 type="button"
                                 disabled={rentalStatusBusy === booking.id}
                                 onClick={() => void updateRentalStatus(booking.id, "cancelled")}
                                 className="rounded-lg border border-status-danger/30 px-2.5 py-1.5 text-[11px] text-status-danger hover:bg-status-danger/10 disabled:opacity-50"
                               >
                                 إلغاء
-                              </button>
+                              </Button>
                             </>
                           ) : (
-                            <button
+                            <Button variant="ghost"
                               type="button"
                               disabled={rentalStatusBusy === booking.id}
                               onClick={() => void updateRentalStatus(booking.id, "active")}
                               className="rounded-lg border border-border/40 px-2.5 py-1.5 text-[11px] text-foreground hover:text-primary disabled:opacity-50"
                             >
                               إعادة تفعيل
-                            </button>
+                            </Button>
                           )}
                         </div>
                       </div>
@@ -1181,7 +1181,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                     const selected = product.id === form.sharedStockProductId;
                     const category = product.categoryName || product.category || "بدون تصنيف";
                     return (
-                      <button
+                      <Button variant="ghost"
                         key={product.id}
                         type="button"
                         onClick={() => onChange({
@@ -1201,7 +1201,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                           </span>
                           <span className="shrink-0 text-[11px] text-muted-foreground">المخزون {product.stock ?? 0}</span>
                         </span>
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -1223,7 +1223,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
               {selectedLinkedProducts.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {selectedLinkedProducts.map((product: any) => (
-                    <button
+                    <Button variant="ghost"
                       key={product.id}
                       type="button"
                       onClick={() => toggleLinkedStockProduct(product.id)}
@@ -1231,7 +1231,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                     >
                       <X className="w-3 h-3" />
                       {product.nameAr || product.name}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               )}
@@ -1252,7 +1252,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                   const category = product.categoryName || product.category || "بدون تصنيف";
                   const usesOtherSource = product.sharedStockProductId && product.sharedStockProductId !== form.id;
                   return (
-                    <button
+                    <Button variant="ghost"
                       key={product.id}
                       type="button"
                       onClick={() => toggleLinkedStockProduct(product.id)}
@@ -1270,7 +1270,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                           {selected ? "مختار" : "ربط"}
                         </span>
                       </span>
-                    </button>
+                    </Button>
                   );
                 })}
               </div>
@@ -1303,8 +1303,8 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
             <label className="block text-xs text-muted-foreground mb-1">الأقسام الفرعية</label>
             <div className="rounded-lg border border-border/40 bg-background p-2">
               <input value={subcategorySearch} onChange={(e) => setSubcategorySearch(e.target.value)} placeholder="ابحث وأضف أقساماً فرعية…" className="w-full border-0 bg-transparent px-1 py-1 text-sm outline-none" />
-              {selectedSubcategories.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{selectedSubcategories.map((item) => <button key={item.id} type="button" onClick={() => { const ids = selectedSubcategoryIds.filter((id) => id !== item.id); const primary = subCats.find((s) => s.id === ids[0]); onChange({ ...form, subcategoryIds: ids, subcategoryId: primary?.id ?? null, subcategory: primary?.slug ?? "" }); }} className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-xs text-primary hover:bg-primary/20">{item.nameAr} <X className="h-3 w-3" /></button>)}</div>}
-              {subcategorySearch.trim() && <div className="mt-2 max-h-36 overflow-auto border-t border-border/20 pt-2">{filteredSubs.filter((item) => !selectedSubcategoryIds.includes(item.id)).map((item) => <button key={item.id} type="button" onClick={() => { const ids = [...selectedSubcategoryIds, item.id]; const parent = parentCats.find((p) => p.id === item.parentId); onChange({ ...form, categoryId: form.categoryId ?? parent?.id ?? null, category: form.category || parent?.slug || "", subcategoryIds: ids, subcategoryId: ids[0] ?? null, subcategory: subCats.find((s) => s.id === ids[0])?.slug ?? "" }); setSubcategorySearch(""); }} className="flex w-full items-center justify-between rounded px-2 py-1.5 text-right text-sm hover:bg-muted"><span>{item.nameAr}</span><span className="text-xs text-muted-foreground">{parentCats.find((p) => p.id === item.parentId)?.nameAr}</span></button>) || <p className="px-2 py-1 text-xs text-muted-foreground">لا توجد أقسام إضافية.</p>}</div>}
+              {selectedSubcategories.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{selectedSubcategories.map((item) => <Button variant="ghost" key={item.id} type="button" onClick={() => { const ids = selectedSubcategoryIds.filter((id) => id !== item.id); const primary = subCats.find((s) => s.id === ids[0]); onChange({ ...form, subcategoryIds: ids, subcategoryId: primary?.id ?? null, subcategory: primary?.slug ?? "" }); }} className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-xs text-primary hover:bg-primary/20">{item.nameAr} <X className="h-3 w-3" /></Button>)}</div>}
+              {subcategorySearch.trim() && <div className="mt-2 max-h-36 overflow-auto border-t border-border/20 pt-2">{filteredSubs.filter((item) => !selectedSubcategoryIds.includes(item.id)).map((item) => <Button variant="ghost" key={item.id} type="button" onClick={() => { const ids = [...selectedSubcategoryIds, item.id]; const parent = parentCats.find((p) => p.id === item.parentId); onChange({ ...form, categoryId: form.categoryId ?? parent?.id ?? null, category: form.category || parent?.slug || "", subcategoryIds: ids, subcategoryId: ids[0] ?? null, subcategory: subCats.find((s) => s.id === ids[0])?.slug ?? "" }); setSubcategorySearch(""); }} className="flex w-full items-center justify-between rounded px-2 py-1.5 text-right text-sm hover:bg-muted"><span>{item.nameAr}</span><span className="text-xs text-muted-foreground">{parentCats.find((p) => p.id === item.parentId)?.nameAr}</span></Button>) || <p className="px-2 py-1 text-xs text-muted-foreground">لا توجد أقسام إضافية.</p>}</div>}
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">المنتج يبقى بسجل ومخزون وباركود واحد، ويظهر في كل قسم مختار.</p>
           </div>
@@ -1362,30 +1362,30 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                   onDrop={() => dropImage(i)}
                   className={`relative w-28 shrink-0 rounded-xl overflow-hidden border bg-background transition-colors hover:border-primary/45 ${i === 0 ? "border-primary/60" : "border-border/30"}`}
                 >
-                  <button type="button" onClick={() => setPreviewImage(img)} className="block h-24 w-full">
+                  <Button size="flush" variant="ghost" type="button" onClick={() => setPreviewImage(img)} className="block h-24 w-full">
                     <img src={img} className="w-full h-full" style={{ objectFit: (form.imageMetadata?.[i]?.objectFit as any) ?? "cover" }} alt="" />
-                  </button>
+                  </Button>
                   {i === 0 && (
                     <span className="absolute top-1 right-1 inline-flex items-center gap-1 rounded bg-primary text-primary-foreground px-1.5 py-0.5 text-[11px]">
                       <Star className="w-3 h-3" /> رئيسية
                     </span>
                   )}
                   <div className="grid grid-cols-5 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
-                    <button type="button" title="معاينة" onClick={() => setPreviewImage(img)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                    <Button variant="ghost" type="button" title="معاينة" onClick={() => setPreviewImage(img)} className="p-1.5 text-muted-foreground hover:text-foreground">
                       <Eye className="w-3.5 h-3.5 mx-auto" />
-                    </button>
-                    <button type="button" title="صورة رئيسية" onClick={() => makeMain(i)} className="p-1.5 text-muted-foreground hover:text-primary">
+                    </Button>
+                    <Button variant="ghost" type="button" title="صورة رئيسية" onClick={() => makeMain(i)} className="p-1.5 text-muted-foreground hover:text-primary">
                       <Star className="w-3.5 h-3.5 mx-auto" />
-                    </button>
-                    <button type="button" title="تقديم الصورة" onClick={() => moveImage(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                    </Button>
+                    <Button variant="ghost" type="button" title="تقديم الصورة" onClick={() => moveImage(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
                       <ArrowRight className="w-3.5 h-3.5 mx-auto" />
-                    </button>
-                    <button type="button" title="استبدال" onClick={() => setReplaceIndex(i)} className="p-1.5 text-muted-foreground hover:text-primary">
+                    </Button>
+                    <Button variant="ghost" type="button" title="استبدال" onClick={() => setReplaceIndex(i)} className="p-1.5 text-muted-foreground hover:text-primary">
                       <Upload className="w-3.5 h-3.5 mx-auto" />
-                    </button>
-                    <button type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-status-danger hover:bg-status-danger/10">
+                    </Button>
+                    <Button variant="ghost" type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-status-danger hover:bg-status-danger/10">
                       <X className="w-3.5 h-3.5 mx-auto" />
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -1463,20 +1463,20 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                     key={`media-${img}-${i}`}
                     className={`relative w-24 shrink-0 overflow-hidden rounded-xl border bg-background transition-colors hover:border-primary/45 ${i === 0 ? "border-primary/60" : "border-border/30"}`}
                   >
-                    <button type="button" onClick={() => setPreviewImage(img)} className="block h-20 w-full">
+                    <Button size="flush" variant="ghost" type="button" onClick={() => setPreviewImage(img)} className="block h-20 w-full">
                       <img src={img} className="h-full w-full" style={{ objectFit: (form.imageMetadata?.[i]?.objectFit as any) ?? "cover" }} alt="" />
-                    </button>
+                    </Button>
                     {i === 0 && <span className="absolute top-1 right-1 rounded bg-primary px-1 py-0.5 text-[11px] text-primary-foreground">رئيسية</span>}
                     <div className="grid grid-cols-3 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
-                      <button type="button" title="معاينة" onClick={() => setPreviewImage(img)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                      <Button variant="ghost" type="button" title="معاينة" onClick={() => setPreviewImage(img)} className="p-1.5 text-muted-foreground hover:text-foreground">
                         <Eye className="mx-auto h-3.5 w-3.5" />
-                      </button>
-                      <button type="button" title="صورة رئيسية" onClick={() => makeMain(i)} className="p-1.5 text-muted-foreground hover:text-primary">
+                      </Button>
+                      <Button variant="ghost" type="button" title="صورة رئيسية" onClick={() => makeMain(i)} className="p-1.5 text-muted-foreground hover:text-primary">
                         <Star className="mx-auto h-3.5 w-3.5" />
-                      </button>
-                      <button type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-status-danger hover:bg-status-danger/10">
+                      </Button>
+                      <Button variant="ghost" type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-status-danger hover:bg-status-danger/10">
                         <X className="mx-auto h-3.5 w-3.5" />
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ))}
@@ -1496,22 +1496,22 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                     onDrop={() => dropVideo(i)}
                     className="relative w-36 shrink-0 overflow-hidden rounded-xl border border-border/30 bg-background transition-colors hover:border-primary/45"
                   >
-                    <button type="button" onClick={() => setPreviewVideo(video)} className="relative block h-24 w-full overflow-hidden bg-black">
+                    <Button variant="ghost" type="button" onClick={() => setPreviewVideo(video)} className="relative block h-24 w-full overflow-hidden bg-black">
                       <video src={video} preload="metadata" muted className="h-full w-full object-cover" />
                       <span className="absolute inset-0 flex items-center justify-center bg-black/25 text-white">
                         <Play className="h-7 w-7" />
                       </span>
-                    </button>
+                    </Button>
                     <div className="grid grid-cols-3 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
-                      <button type="button" title="معاينة" onClick={() => setPreviewVideo(video)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                      <Button variant="ghost" type="button" title="معاينة" onClick={() => setPreviewVideo(video)} className="p-1.5 text-muted-foreground hover:text-foreground">
                         <Eye className="w-3.5 h-3.5 mx-auto" />
-                      </button>
-                      <button type="button" title="تقديم الفيديو" onClick={() => moveVideo(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                      </Button>
+                      <Button variant="ghost" type="button" title="تقديم الفيديو" onClick={() => moveVideo(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
                         <ArrowRight className="w-3.5 h-3.5 mx-auto" />
-                      </button>
-                      <button type="button" title="حذف" onClick={() => removeVideo(i)} className="p-1.5 text-status-danger hover:bg-status-danger/10">
+                      </Button>
+                      <Button variant="ghost" type="button" title="حذف" onClick={() => removeVideo(i)} className="p-1.5 text-status-danger hover:bg-status-danger/10">
                         <X className="w-3.5 h-3.5 mx-auto" />
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ))}
@@ -1773,14 +1773,14 @@ function RecipeTab({ productId, sellingPrice, products }: { productId: number; s
                     )}
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    <button type="button" title="استبدال" onClick={() => { setReplaceIndex(i); setPickerOpen(true); }}
+                    <Button variant="ghost" type="button" title="استبدال" onClick={() => { setReplaceIndex(i); setPickerOpen(true); }}
                       className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground">
                       <RefreshCw className="w-3.5 h-3.5" />
-                    </button>
-                    <button type="button" title="حذف" onClick={() => removeRow(i)}
+                    </Button>
+                    <Button variant="ghost" type="button" title="حذف" onClick={() => removeRow(i)}
                       className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-status-danger hover:bg-status-danger/10">
                       <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -1819,9 +1819,9 @@ function RecipeTab({ productId, sellingPrice, products }: { productId: number; s
       <div className="rounded-xl border border-border/30 bg-background/40 p-3 space-y-2">
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-semibold text-foreground">👷 تكلفة العمالة</h4>
-          <button type="button" onClick={addLaborLine} className="inline-flex items-center gap-1 rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground">
+          <Button variant="ghost" type="button" onClick={addLaborLine} className="inline-flex items-center gap-1 rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground">
             <Plus className="w-3.5 h-3.5" /> إضافة عامل
-          </button>
+          </Button>
         </div>
         {labor.length === 0 ? (
           <p className="text-[11px] text-muted-foreground">لا توجد تكلفة عمالة. أضف عاملاً لاحتساب صافي الربح بدقة.</p>
@@ -1836,7 +1836,7 @@ function RecipeTab({ productId, sellingPrice, products }: { productId: number; s
                 <input type="number" min={0} step="any" value={l.hourlyRate} onChange={(e) => updateLabor(i, { hourlyRate: Number(e.target.value) })} placeholder="أجر/س"
                   className="col-span-2 bg-background border border-border/40 rounded-lg px-1.5 py-1 text-xs text-center" />
                 <span className="col-span-2 text-[11px] text-foreground text-center">{formatCurrency((Number(l.hours) || 0) * (Number(l.hourlyRate) || 0))}</span>
-                <button type="button" onClick={() => removeLabor(i)} className="col-span-1 text-status-danger"><Trash2 className="w-3.5 h-3.5 mx-auto" /></button>
+                <Button variant="ghost" type="button" onClick={() => removeLabor(i)} className="col-span-1 text-status-danger"><Trash2 className="w-3.5 h-3.5 mx-auto" /></Button>
               </div>
             ))}
           </div>
@@ -1901,7 +1901,7 @@ function RecipeTab({ productId, sellingPrice, products }: { productId: number; s
           <div className="bg-card border border-border/40 rounded-2xl max-w-md w-full max-h-[80dvh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between p-3 border-b border-border/30">
               <h4 className="text-sm font-semibold text-foreground">{replaceIndex != null ? "استبدال المكوّن" : "اختر مكوّناً"}</h4>
-              <button type="button" onClick={() => { setPickerOpen(false); setReplaceIndex(null); }} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+              <Button variant="ghost" type="button" onClick={() => { setPickerOpen(false); setReplaceIndex(null); }} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></Button>
             </div>
             <div className="p-3 border-b border-border/30">
               <div className="relative">
@@ -1915,11 +1915,11 @@ function RecipeTab({ productId, sellingPrice, products }: { productId: number; s
               {pickable.length === 0 ? (
                 <div className="p-4 text-center text-xs text-muted-foreground">لا توجد منتجات مطابقة.</div>
               ) : pickable.map((p: any) => (
-                <button key={p.id} type="button" onClick={() => pickProduct(p)}
+                <Button variant="ghost" key={p.id} type="button" onClick={() => pickProduct(p)}
                   className="w-full text-right p-3 hover:bg-primary/5 flex items-center justify-between gap-2">
                   <span className="text-sm text-foreground truncate">{p.nameAr || p.name}</span>
                   <span className="text-[11px] text-muted-foreground shrink-0">مخزون {Number(p.stock) || 0} · {formatCurrency(Number(p.costPrice) || 0)}</span>
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -2008,7 +2008,7 @@ function WholesalePricesTab({ productId }: { productId: number }) {
           <label className="text-[11px] text-muted-foreground">سعر الوحدة<input type="number" min="0" step="0.01" value={customerPrice} onChange={(event) => setCustomerPrice(event.target.value)} className="mt-1 w-full rounded-lg border border-border/40 bg-card px-3 py-2 text-sm text-foreground" /></label>
           <Button type="button" disabled={busy || !customerId || customerPrice.trim() === ""} onClick={saveCustomerPrice}><Plus className="ml-1 h-4 w-4" />حفظ</Button>
         </div>
-        {customerPrices.map((price) => <div key={price.customerId} className="flex items-center justify-between rounded-lg border border-border/25 bg-card/60 p-2 text-xs"><span>{price.customerName || price.ownerName || `عميل #${price.customerId}`}</span><span className="flex items-center gap-2 font-semibold">{formatCurrency(price.unitPrice)}<button type="button" aria-label="حذف السعر الخاص" onClick={() => removeCustomerPrice(price.customerId)} className="text-status-danger"><Trash2 className="h-3.5 w-3.5" /></button></span></div>)}
+        {customerPrices.map((price) => <div key={price.customerId} className="flex items-center justify-between rounded-lg border border-border/25 bg-card/60 p-2 text-xs"><span>{price.customerName || price.ownerName || `عميل #${price.customerId}`}</span><span className="flex items-center gap-2 font-semibold">{formatCurrency(price.unitPrice)}<Button variant="ghost" type="button" aria-label="حذف السعر الخاص" onClick={() => removeCustomerPrice(price.customerId)} className="text-status-danger"><Trash2 className="h-3.5 w-3.5" /></Button></span></div>)}
       </div>
     </>}
   </div>;
@@ -2149,10 +2149,10 @@ function VariantsTab({ productId }: { productId: number }) {
                 </div>
                 <VariantQr token={v.qrToken} />
                 <div className="flex flex-col gap-1 shrink-0">
-                  <button type="button" onClick={() => setEditing({ id: v.id, color: v.color ?? "", colorHex: v.colorHex ?? "", size: v.size ?? "", sku: v.sku ?? "", barcode: v.barcode ?? "", price: v.price != null ? String(v.price) : "", cost: v.cost != null ? String(v.cost) : "", stock: String(v.stock), minStock: String(v.minStock), maxStock: String(v.maxStock ?? 0), warehouseId: v.warehouseId ? String(v.warehouseId) : "", image: v.image ?? "", isActive: v.isActive !== false, notes: v.notes ?? "" })}
-                    className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"><Edit2 className="w-3.5 h-3.5" /></button>
-                  <button type="button" onClick={() => remove(v)} className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-status-danger hover:bg-status-danger/10"><Trash2 className="w-3.5 h-3.5" /></button>
-                  <button type="button" title="نسخ اللون" onClick={() => setEditing({ ...blankVariant, color: `${v.color ?? "لون"} نسخة`, colorHex: v.colorHex ?? "", size: v.size ?? "", price: v.price != null ? String(v.price) : "", cost: v.cost != null ? String(v.cost) : "", minStock: String(v.minStock), maxStock: String(v.maxStock ?? 0), warehouseId: v.warehouseId ? String(v.warehouseId) : "", image: v.image ?? "", notes: v.notes ?? "" })} className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"><Copy className="w-3.5 h-3.5" /></button>
+                  <Button variant="ghost" type="button" onClick={() => setEditing({ id: v.id, color: v.color ?? "", colorHex: v.colorHex ?? "", size: v.size ?? "", sku: v.sku ?? "", barcode: v.barcode ?? "", price: v.price != null ? String(v.price) : "", cost: v.cost != null ? String(v.cost) : "", stock: String(v.stock), minStock: String(v.minStock), maxStock: String(v.maxStock ?? 0), warehouseId: v.warehouseId ? String(v.warehouseId) : "", image: v.image ?? "", isActive: v.isActive !== false, notes: v.notes ?? "" })}
+                    className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"><Edit2 className="w-3.5 h-3.5" /></Button>
+                  <Button variant="ghost" type="button" onClick={() => remove(v)} className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-status-danger hover:bg-status-danger/10"><Trash2 className="w-3.5 h-3.5" /></Button>
+                  <Button variant="ghost" type="button" title="نسخ اللون" onClick={() => setEditing({ ...blankVariant, color: `${v.color ?? "لون"} نسخة`, colorHex: v.colorHex ?? "", size: v.size ?? "", price: v.price != null ? String(v.price) : "", cost: v.cost != null ? String(v.cost) : "", minStock: String(v.minStock), maxStock: String(v.maxStock ?? 0), warehouseId: v.warehouseId ? String(v.warehouseId) : "", image: v.image ?? "", notes: v.notes ?? "" })} className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"><Copy className="w-3.5 h-3.5" /></Button>
                 </div>
               </div>
             </div>
@@ -2194,7 +2194,7 @@ function VariantEditor({ form, warehouses, busy, onChange, onClose, onSave }: {
       <div className="bg-card border border-border/40 rounded-2xl max-w-md w-full max-h-[85dvh] overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-semibold text-foreground">{form.id ? "تعديل متغيّر" : "متغيّر جديد"}</h4>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+          <Button variant="ghost" type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></Button>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <Inp label="اللون" value={form.color} onChange={(v) => onChange({ ...form, color: v })} />

@@ -622,7 +622,7 @@ export default function ReportsPage() {
       <div className="bg-muted/20 rounded-xl p-1 overflow-x-auto">
         <div className="flex gap-1 min-w-max">
           {REPORTS.map((report) => (
-            <button
+            <Button variant="ghost"
               key={report.id}
               onClick={() => setTab(report.id)}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -631,7 +631,7 @@ export default function ReportsPage() {
             >
               <report.icon className="w-4 h-4" />
               {report.label}
-            </button>
+            </Button>
           ))}
         </div>
       </div>

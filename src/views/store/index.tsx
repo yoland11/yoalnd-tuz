@@ -422,7 +422,7 @@ function applyProductFilters(
 
 function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button
+    <Button variant="ghost"
       type="button"
       onClick={onClick}
       aria-pressed={active}
@@ -432,7 +432,7 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
       )}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 

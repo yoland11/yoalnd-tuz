@@ -2,6 +2,7 @@ import { useLocation } from "wouter";
 import { useGetCart, useUpdateCartItem, useRemoveCartItem, useClearCart, getGetCartQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ShoppingCart, Trash2, Minus, Plus, ArrowLeft } from "lucide-react";
 import { SelectedColorLabel } from "@/components/product-colors";
@@ -53,13 +54,13 @@ export default function Cart() {
           {t("سلة المشتريات")}
         </h1>
         {items.length > 0 && (
-          <button
+          <Button variant="ghost"
             onClick={handleClear}
             className="text-sm text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"
           >
             <Trash2 className="w-4 h-4" />
             {t("مسح الكل")}
-          </button>
+          </Button>
         )}
       </div>
 
@@ -92,33 +93,42 @@ export default function Cart() {
                     <p className="text-primary font-bold mt-1">{formatCurrency(item.price)}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    <button
+                    <IconButton
+                      type="button"
                       onClick={() => handleUpdate(item.id, item.quantity - 1)}
                       aria-label={t("تقليل الكمية")}
-                      className="w-8 h-8 rounded-full border border-border/40 flex items-center justify-center hover:border-primary/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      size="compact"
+                      variant="outline"
+                      className="h-11 w-11 rounded-full border-border/40 hover:border-primary/50"
                       disabled={item.quantity <= 1}
                     >
                       <Minus className="w-3 h-3" />
-                    </button>
+                    </IconButton>
                     <span className="w-8 text-center text-foreground font-medium" aria-live="polite">{item.quantity}</span>
-                    <button
+                    <IconButton
+                      type="button"
                       onClick={() => handleUpdate(item.id, item.quantity + 1)}
                       aria-label={t("زيادة الكمية")}
-                      className="w-8 h-8 rounded-full border border-border/40 flex items-center justify-center hover:border-primary/50 transition-colors"
+                      size="compact"
+                      variant="outline"
+                      className="h-11 w-11 rounded-full border-border/40 hover:border-primary/50"
                     >
                       <Plus className="w-3 h-3" />
-                    </button>
+                    </IconButton>
                   </div>
                   <div className="text-right flex-shrink-0">
                     <p className="font-bold text-foreground">{formatCurrency(Number(item.price) * item.quantity)}</p>
                   </div>
-                  <button
+                  <IconButton
+                    type="button"
                     onClick={() => handleRemove(item.id)}
                     aria-label={t("حذف المنتج من السلة")}
-                    className="text-muted-foreground hover:text-destructive transition-colors flex-shrink-0 mr-2"
+                    size="compact"
+                    variant="quiet"
+                    className="mr-2 flex-shrink-0 text-muted-foreground hover:text-destructive"
                   >
                     <Trash2 className="w-4 h-4" />
-                  </button>
+                  </IconButton>
                 </div>
               ))}
             </div>
@@ -145,12 +155,14 @@ export default function Cart() {
                   {t("إتمام الطلب")}
                   <ArrowLeft className="w-4 h-4" />
                 </Button>
-                <button
+                <Button
+                  type="button"
                   onClick={() => navigate("/store")}
-                  className="w-full mt-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  variant="quiet"
+                  className="mt-3 w-full text-sm"
                 >
                   {t("متابعة التسوق")}
-                </button>
+                </Button>
               </div>
             </div>
           </div>

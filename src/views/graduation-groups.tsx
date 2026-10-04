@@ -26,6 +26,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -100,10 +101,11 @@ export function GraduationOrderTypeChoice({
         )}
 
         <div className="grid gap-4 md:grid-cols-2">
-          <button
+          <Button
             type="button"
             onClick={onIndividual}
-            className="group min-h-72 rounded-xl border border-border bg-card p-6 text-right transition-colors hover:border-primary/60 hover:bg-primary/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            variant="outline"
+            className="group h-auto min-h-72 w-full flex-col items-start whitespace-normal rounded-xl p-6 text-right"
           >
             <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-muted text-primary">
               <UserRound className="h-6 w-6" />
@@ -117,12 +119,13 @@ export function GraduationOrderTypeChoice({
               فتح مُعدّ التصميم
               <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" />
             </span>
-          </button>
+          </Button>
 
-          <button
+          <Button
             type="button"
             onClick={onGroup}
-            className="group min-h-72 rounded-xl border border-primary/35 bg-primary/[0.04] p-6 text-right transition-colors hover:border-primary hover:bg-primary/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            variant="default"
+            className="group h-auto min-h-72 w-full flex-col items-start whitespace-normal rounded-xl border-primary/35 bg-primary/[0.04] p-6 text-right text-foreground hover:border-primary hover:bg-primary/[0.07]"
           >
             <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-primary-foreground">
               <Users className="h-6 w-6" />
@@ -136,7 +139,7 @@ export function GraduationOrderTypeChoice({
               إنشاء مجموعة تخرج
               <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" />
             </span>
-          </button>
+          </Button>
         </div>
 
         <section className="mt-5 rounded-xl border border-border bg-card p-4 sm:p-5">
@@ -179,6 +182,7 @@ const initialGroup = {
   expectedStudentCount: 1,
   deliveryDate: "",
   notes: "",
+  showDetailedMeasurements: true,
   styleKey: "",
   packageKey: "",
   fabricKey: "",
@@ -394,6 +398,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
           deliveryDate: form.deliveryDate,
           notes: form.notes,
           defaultConfiguration: {
+            showDetailedMeasurements: form.showDetailedMeasurements,
             styleKey: form.styleKey,
             packageKey: form.packageKey || undefined,
             colors: form.colors,
@@ -645,6 +650,31 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                       1,
                       Number(event.target.value) || 1,
                     ),
+                  }))
+                }
+              />
+            </div>
+            <div className="mt-5 flex items-center justify-between gap-4 rounded-lg border border-border p-4">
+              <div>
+                <Label htmlFor="graduation-show-detailed-measurements">
+                  إظهار تفاصيل القياسات للطالب
+                </Label>
+                <p
+                  id="graduation-show-detailed-measurements-help"
+                  className="mt-1 text-sm leading-6 text-muted-foreground"
+                >
+                  عند الإيقاف، يختار الطالب رجالي أو نسائي فقط دون المقاس أو
+                  القياسات التفصيلية.
+                </p>
+              </div>
+              <Switch
+                id="graduation-show-detailed-measurements"
+                aria-describedby="graduation-show-detailed-measurements-help"
+                checked={form.showDetailedMeasurements}
+                onCheckedChange={(showDetailedMeasurements) =>
+                  setForm((current) => ({
+                    ...current,
+                    showDetailedMeasurements,
                   }))
                 }
               />
@@ -1041,9 +1071,11 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                       const selected =
                         form.extras.photography?.serviceId === service.id;
                       return (
-                        <button
+                        <Button size="flush"
                           key={service.id}
                           type="button"
+                          variant={selected ? "selected" : "outline"}
+                          aria-pressed={selected}
                           onClick={() =>
                             setForm((current) => ({
                               ...current,
@@ -1059,7 +1091,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                               },
                             }))
                           }
-                          className={`rounded-xl border p-3 text-right transition ${selected ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`}
+                          className="h-auto w-full flex-col items-stretch whitespace-normal rounded-xl p-3 text-right"
                         >
                           {service.image ? (
                             <img
@@ -1080,7 +1112,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                               ? formatCurrency(Number(service.price))
                               : "السعر عند التأكيد"}
                           </small>
-                        </button>
+                        </Button>
                       );
                     })
                   ) : (

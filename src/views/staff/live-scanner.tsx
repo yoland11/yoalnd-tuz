@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Zap, ZapOff, Loader2, Keyboard, SwitchCamera, CheckCircle2 } from "lucide-react";
 
@@ -337,25 +338,25 @@ export function LiveScanner({
         </div>
 
         {torchAvailable ? (
-          <button
+          <Button variant="ghost"
             type="button"
             onClick={toggleTorch}
             aria-label={torch ? "إطفاء الفلاش" : "تشغيل الفلاش"}
             className="absolute bottom-3 left-3 rounded-full bg-white/25 p-2.5 text-white backdrop-blur"
           >
             {torch ? <ZapOff className="h-5 w-5" /> : <Zap className="h-5 w-5" />}
-          </button>
+          </Button>
         ) : null}
 
         {devices.length > 1 ? (
-          <button
+          <Button variant="ghost"
             type="button"
             onClick={() => setDeviceIndex((current) => (current + 1) % devices.length)}
             aria-label="تبديل الكاميرا"
             className="absolute bottom-3 right-3 rounded-full bg-white/25 p-2.5 text-white backdrop-blur"
           >
             <SwitchCamera className="h-5 w-5" />
-          </button>
+          </Button>
         ) : null}
 
         {engineLabel && ready && !success ? (
@@ -370,13 +371,13 @@ export function LiveScanner({
               <CheckCircle2 className="h-12 w-12" />
               <span className="text-sm font-bold">{success}</span>
               {halted ? (
-                <button
+                <Button variant="ghost"
                   type="button"
                   onClick={() => setRestartKey((key) => key + 1)}
                   className="mt-1 rounded-lg bg-white/25 px-3 py-1.5 text-xs font-bold backdrop-blur"
                 >
                   مسح كود آخر
-                </button>
+                </Button>
               ) : null}
             </div>
           </div>
@@ -416,13 +417,13 @@ export function LiveScanner({
             className="w-full rounded-lg border border-border bg-background py-2 pl-3 pr-9 text-sm"
           />
         </div>
-        <button
+        <Button variant="ghost"
           type="submit"
           disabled={!manual.trim()}
           className="rounded-lg bg-primary px-3 py-2 text-sm font-bold text-primary-foreground disabled:opacity-50"
         >
           إدخال
-        </button>
+        </Button>
       </form>
     </div>
   );

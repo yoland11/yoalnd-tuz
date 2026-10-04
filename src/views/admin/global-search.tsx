@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState, useDeferredValue } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
@@ -94,7 +95,7 @@ export function AdminGlobalSearch() {
 
   return (
     <>
-      <button
+      <Button variant="ghost"
         type="button"
         onClick={() => setOpen(true)}
         aria-label="بحث عام"
@@ -103,7 +104,7 @@ export function AdminGlobalSearch() {
         <Search className="h-4 w-4" />
         <span className="hidden lg:inline">بحث…</span>
         <kbd className="hidden lg:inline rounded border border-border/50 bg-background px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">Ctrl K</kbd>
-      </button>
+      </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-xl gap-0 overflow-hidden p-0" dir="rtl">
@@ -125,9 +126,9 @@ export function AdminGlobalSearch() {
             {isFetching ? (
               <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
             ) : q ? (
-              <button type="button" onClick={() => setQ("")} aria-label="مسح" className="shrink-0 text-muted-foreground hover:text-foreground">
+              <Button variant="ghost" type="button" onClick={() => setQ("")} aria-label="مسح" className="shrink-0 text-muted-foreground hover:text-foreground">
                 <X className="h-4 w-4" />
-              </button>
+              </Button>
             ) : null}
           </div>
 
@@ -139,7 +140,7 @@ export function AdminGlobalSearch() {
                 const meta = TYPE_META[result.type] ?? { label: result.type, Icon: Search };
                 const Icon = meta.Icon;
                 return (
-                  <button
+                  <Button variant="ghost"
                     key={`${result.type}-${result.id}`}
                     type="button"
                     onMouseEnter={() => setActive(index)}
@@ -158,7 +159,7 @@ export function AdminGlobalSearch() {
                       ) : null}
                     </span>
                     <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">{meta.label}</span>
-                  </button>
+                  </Button>
                 );
               })
             )}

@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 import {
@@ -105,7 +106,7 @@ function ScanOverlay({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 z-50 flex flex-col bg-black/90" dir="rtl">
       <div className="flex items-center justify-between p-4 text-white">
         <span className="font-bold">مسح كود الطالب</span>
-        <button type="button" onClick={onClose} aria-label="إغلاق" className="rounded-lg border border-white/20 p-2"><X className="h-4 w-4" /></button>
+        <Button variant="ghost" type="button" onClick={onClose} aria-label="إغلاق" className="rounded-lg border border-white/20 p-2"><X className="h-4 w-4" /></Button>
       </div>
       <div className="mx-auto w-full max-w-sm px-4">
         <div className="overflow-hidden rounded-2xl border border-primary/40"><LiveScanner onDetect={resolve} active stopOnDetect /></div>
@@ -139,9 +140,9 @@ function Login({ onDone }: { onDone: () => void }) {
         {err && <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{err}</div>}
         <input value={u} onChange={(e) => setU(e.target.value)} placeholder="اسم المستخدم" className="w-full rounded-lg border border-border bg-background p-2.5 text-sm" autoComplete="username" />
         <input value={p} onChange={(e) => setP(e.target.value)} type="password" placeholder="كلمة المرور" className="w-full rounded-lg border border-border bg-background p-2.5 text-sm" autoComplete="current-password" />
-        <button disabled={busy || !u || !p} className="w-full rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
+        <Button variant="ghost" disabled={busy || !u || !p} className="w-full rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
           {busy ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "دخول"}
-        </button>
+        </Button>
       </form>
     </div>
   );
@@ -176,20 +177,20 @@ function Dashboard() {
   return (
     <div className="space-y-5">
       {scanning && <ScanOverlay onClose={() => setScanning(false)} />}
-      <button type="button" onClick={() => setScanning(true)} className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 py-3 font-bold text-primary">
+      <Button variant="ghost" type="button" onClick={() => setScanning(true)} className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 py-3 font-bold text-primary">
         <QrCode className="h-5 w-5" /> مسح كود الطالب
-      </button>
+      </Button>
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
         {BUCKETS.map((b) => (
-          <button
+          <Button variant="ghost"
             key={b.key}
             type="button"
             onClick={() => setBucket((cur) => (cur === b.key ? "" : b.key))}
-            className={`rounded-xl border p-3 text-right transition-colors ${bucket === b.key ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/40"}`}
+            className={`block whitespace-normal rounded-xl border p-3 text-right transition-colors ${bucket === b.key ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/40"}`}
           >
             <div className="text-2xl font-bold">{data?.buckets?.[b.key] ?? 0}</div>
             <div className="text-xs text-muted-foreground">{b.label}</div>
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -202,8 +203,8 @@ function Dashboard() {
           placeholder="اسم الطالب، الهاتف، رمز الطالب، رمز المجموعة، الجامعة، رقم الطلب، QR…"
           className="flex-1 bg-transparent text-sm outline-none"
         />
-        <button type="button" onClick={runSearch} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground">بحث</button>
-        {(bucket || list) && <button type="button" onClick={() => { setBucket(""); setSearch(""); setList(null); }} className="rounded-lg border border-border px-3 py-1.5 text-xs">مسح</button>}
+        <Button variant="ghost" type="button" onClick={runSearch} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground">بحث</Button>
+        {(bucket || list) && <Button variant="ghost" type="button" onClick={() => { setBucket(""); setSearch(""); setList(null); }} className="rounded-lg border border-border px-3 py-1.5 text-xs">مسح</Button>}
       </div>
 
       <div className="space-y-2">
@@ -404,20 +405,20 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
     <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-8 text-center">
       <ShieldCheck className="mx-auto mb-2 h-8 w-8 text-destructive" />
       <p className="font-bold text-destructive">{err}</p>
-      <button type="button" onClick={() => navigate("/staff/tailors")} className="mt-4 rounded-lg border border-border px-4 py-2 text-sm">رجوع للوحة</button>
+      <Button variant="ghost" type="button" onClick={() => navigate("/staff/tailors")} className="mt-4 rounded-lg border border-border px-4 py-2 text-sm">رجوع للوحة</Button>
     </div>
   );
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <button type="button" onClick={() => navigate("/staff/tailors")} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ArrowRight className="h-4 w-4" /> رجوع</button>
+        <Button variant="ghost" type="button" onClick={() => navigate("/staff/tailors")} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ArrowRight className="h-4 w-4" /> رجوع</Button>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          <button type="button" onClick={printA4} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"><Printer className="h-3.5 w-3.5" /> A4</button>
-          <button type="button" onClick={printLabel} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs">ملصق</button>
-          <button type="button" onClick={printProductionSheet} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs">ورقة إنتاج</button>
+          <Button variant="ghost" type="button" onClick={printA4} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"><Printer className="h-3.5 w-3.5" /> A4</Button>
+          <Button variant="ghost" type="button" onClick={printLabel} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs">ملصق</Button>
+          <Button variant="ghost" type="button" onClick={printProductionSheet} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs">ورقة إنتاج</Button>
           {order.groupId ? (
-            <button type="button" onClick={() => navigate(`/staff/tailors/group/${order.groupId}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"><Table2 className="h-3.5 w-3.5" /> المجموعة</button>
+            <Button variant="ghost" type="button" onClick={() => navigate(`/staff/tailors/group/${order.groupId}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"><Table2 className="h-3.5 w-3.5" /> المجموعة</Button>
           ) : null}
         </div>
       </div>
@@ -449,17 +450,17 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
         <div className="mb-3 flex items-center gap-2">
           <Ruler className="h-4 w-4 text-primary" /><h3 className="font-bold">القياسات</h3>
           <div className="ml-auto flex overflow-hidden rounded-lg border border-border text-xs">
-            <button type="button" onClick={() => setMethod("ready")} className={`px-3 py-1.5 ${method === "ready" ? "bg-primary text-primary-foreground" : ""}`}>مقاس جاهز</button>
-            <button type="button" onClick={() => setMethod("custom")} className={`px-3 py-1.5 ${method === "custom" ? "bg-primary text-primary-foreground" : ""}`}>قياسات مخصصة</button>
+            <Button variant="ghost" type="button" onClick={() => setMethod("ready")} className={`px-3 py-1.5 ${method === "ready" ? "bg-primary text-primary-foreground" : ""}`}>مقاس جاهز</Button>
+            <Button variant="ghost" type="button" onClick={() => setMethod("custom")} className={`px-3 py-1.5 ${method === "custom" ? "bg-primary text-primary-foreground" : ""}`}>قياسات مخصصة</Button>
           </div>
         </div>
 
         {method === "ready" ? (
           <div className="flex flex-wrap gap-2">
             {READY_SIZES.map((s) => (
-              <button key={s} type="button"
+              <Button variant="ghost" key={s} type="button"
                 onClick={() => setForm((f) => ({ ...f, readySize: s, standardSize: s }))}
-                className={`rounded-lg border px-4 py-2 text-sm font-bold ${form.readySize === s ? "border-primary bg-primary/10 text-primary" : "border-border"}`}>{s}</button>
+                className={`rounded-lg border px-4 py-2 text-sm font-bold ${form.readySize === s ? "border-primary bg-primary/10 text-primary" : "border-border"}`}>{s}</Button>
             ))}
           </div>
         ) : (
@@ -504,12 +505,12 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
         {msg && <div className="mt-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}
 
         <div className="mt-4 flex flex-wrap gap-2">
-          <button type="button" disabled={busy} onClick={() => save()} className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground disabled:opacity-60">
+          <Button variant="ghost" type="button" disabled={busy} onClick={() => save()} className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground disabled:opacity-60">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} حفظ القياسات (جزئي مسموح)
-          </button>
-          <button type="button" disabled={busy} onClick={submitForApproval} className="inline-flex items-center gap-1.5 rounded-lg border border-accent bg-accent/10 px-4 py-2 text-sm font-bold text-accent disabled:opacity-60">
+          </Button>
+          <Button variant="ghost" type="button" disabled={busy} onClick={submitForApproval} className="inline-flex items-center gap-1.5 rounded-lg border border-accent bg-accent/10 px-4 py-2 text-sm font-bold text-accent disabled:opacity-60">
             <Send className="h-4 w-4" /> إرسال القياسات للاعتماد
-          </button>
+          </Button>
         </div>
       </section>
 
@@ -528,8 +529,8 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
           <div className="mb-2 flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-accent" /><h3 className="font-bold">اعتماد الإدارة</h3></div>
           <textarea value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} rows={2} placeholder="ملاحظة (اختياري)" className="w-full rounded-lg border border-border bg-background p-2 text-sm" />
           <div className="mt-2 flex gap-2">
-            <button type="button" onClick={() => review("approve")} className="inline-flex items-center gap-1 rounded-lg bg-status-success px-4 py-2 text-sm font-bold text-white"><CheckCircle2 className="h-4 w-4" /> اعتماد</button>
-            <button type="button" onClick={() => review("return")} className="inline-flex items-center gap-1 rounded-lg border border-status-warning px-4 py-2 text-sm font-bold text-status-warning">إعادة للتصحيح</button>
+            <Button variant="ghost" type="button" onClick={() => review("approve")} className="inline-flex items-center gap-1 rounded-lg bg-status-success px-4 py-2 text-sm font-bold text-white"><CheckCircle2 className="h-4 w-4" /> اعتماد</Button>
+            <Button variant="ghost" type="button" onClick={() => review("return")} className="inline-flex items-center gap-1 rounded-lg border border-status-warning px-4 py-2 text-sm font-bold text-status-warning">إعادة للتصحيح</Button>
           </div>
         </section>
       ) : null}
@@ -541,16 +542,16 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
         </div>
         <div className="flex flex-wrap gap-1.5">
           {PROD_STAGES.map((s) => (
-            <button key={s.key} type="button" onClick={() => doProduction("set_stage", s.key)}
-              className={`rounded-lg border px-2.5 py-1.5 text-xs ${order.productionStage === s.key ? "border-primary bg-primary/10 text-primary" : "border-border"}`}>{s.label}</button>
+            <Button variant="ghost" key={s.key} type="button" onClick={() => doProduction("set_stage", s.key)}
+              className={`rounded-lg border px-2.5 py-1.5 text-xs ${order.productionStage === s.key ? "border-primary bg-primary/10 text-primary" : "border-border"}`}>{s.label}</Button>
           ))}
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" onClick={() => doProduction("start")} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Play className="h-3.5 w-3.5" /> بدء العمل</button>
-          <button type="button" onClick={() => doProduction("pause")} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Pause className="h-3.5 w-3.5" /> إيقاف مؤقت</button>
-          <button type="button" onClick={() => doProduction("issue", undefined)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs">الإبلاغ عن مشكلة</button>
-          <button type="button" onClick={() => doProduction("material")} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs">طلب مواد</button>
-          <button type="button" onClick={() => doProduction("mark_ready")} className="inline-flex items-center gap-1 rounded-lg border border-status-success/40 bg-status-success/10 px-3 py-1.5 text-xs text-status-success"><CheckCircle2 className="h-3.5 w-3.5" /> جاهز</button>
+          <Button variant="ghost" type="button" onClick={() => doProduction("start")} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Play className="h-3.5 w-3.5" /> بدء العمل</Button>
+          <Button variant="ghost" type="button" onClick={() => doProduction("pause")} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Pause className="h-3.5 w-3.5" /> إيقاف مؤقت</Button>
+          <Button variant="ghost" type="button" onClick={() => doProduction("issue", undefined)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs">الإبلاغ عن مشكلة</Button>
+          <Button variant="ghost" type="button" onClick={() => doProduction("material")} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs">طلب مواد</Button>
+          <Button variant="ghost" type="button" onClick={() => doProduction("mark_ready")} className="inline-flex items-center gap-1 rounded-lg border border-status-success/40 bg-status-success/10 px-3 py-1.5 text-xs text-status-success"><CheckCircle2 className="h-3.5 w-3.5" /> جاهز</Button>
         </div>
       </section>
 
@@ -595,7 +596,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
             </label>
           ))}
         </div>
-        <button type="button" onClick={addAlteration} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm font-bold text-primary-foreground"><Plus className="h-4 w-4" /> إضافة تعديل</button>
+        <Button variant="ghost" type="button" onClick={addAlteration} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm font-bold text-primary-foreground"><Plus className="h-4 w-4" /> إضافة تعديل</Button>
         {(order.alterations ?? []).length > 0 && (
           <ul className="mt-3 space-y-2">
             {order.alterations.map((a: any) => (
@@ -606,7 +607,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
                   {a.completedDate ? (
                     <span className="inline-flex items-center gap-1 text-status-success"><CheckCircle2 className="h-3.5 w-3.5" /> مكتمل {a.completedDate}</span>
                   ) : (
-                    <button type="button" onClick={() => completeAlteration(a)} className="inline-flex items-center gap-1 rounded-md border border-status-success/40 px-2 py-0.5 text-status-success hover:bg-status-success/10"><CheckCircle2 className="h-3.5 w-3.5" /> إكمال</button>
+                    <Button variant="ghost" type="button" onClick={() => completeAlteration(a)} className="inline-flex items-center gap-1 rounded-md border border-status-success/40 px-2 py-0.5 text-status-success hover:bg-status-success/10"><CheckCircle2 className="h-3.5 w-3.5" /> إكمال</Button>
                   )}
                 </span>
                 {(a.beforePhoto || a.afterPhoto) ? (
@@ -634,7 +635,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
           <div><label className="text-xs text-status-warning">⚠ تحذير إنتاج</label>
             <textarea value={notes.warning ?? ""} onChange={(e) => setNotes((n: any) => ({ ...n, warning: e.target.value }))} rows={2} className="mt-1 w-full rounded-lg border border-status-warning/40 bg-background p-2 text-sm" /></div>
         </div>
-        <button type="button" onClick={saveNotes} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm font-bold text-primary-foreground"><Save className="h-4 w-4" /> حفظ الملاحظات</button>
+        <Button variant="ghost" type="button" onClick={saveNotes} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm font-bold text-primary-foreground"><Save className="h-4 w-4" /> حفظ الملاحظات</Button>
       </section>
 
       {/* Measurement history — never overwritten. */}
@@ -824,13 +825,13 @@ function GroupPage({ id }: { id: string }) {
     <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-8 text-center">
       <ShieldCheck className="mx-auto mb-2 h-8 w-8 text-destructive" />
       <p className="font-bold text-destructive">{err}</p>
-      <button type="button" onClick={() => navigate("/staff/tailors")} className="mt-4 rounded-lg border border-border px-4 py-2 text-sm">رجوع للوحة</button>
+      <Button variant="ghost" type="button" onClick={() => navigate("/staff/tailors")} className="mt-4 rounded-lg border border-border px-4 py-2 text-sm">رجوع للوحة</Button>
     </div>
   );
 
   return (
     <div className="space-y-4">
-      <button type="button" onClick={() => navigate("/staff/tailors")} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ArrowRight className="h-4 w-4" /> رجوع</button>
+      <Button variant="ghost" type="button" onClick={() => navigate("/staff/tailors")} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ArrowRight className="h-4 w-4" /> رجوع</Button>
       <div className="rounded-2xl border border-border bg-card p-4">
         <h2 className="flex items-center gap-2 font-bold"><Users className="h-4 w-4 text-primary" /> {group?.title || "مجموعة"}</h2>
         <p className="text-xs text-muted-foreground">{[group?.groupNo, group?.university, group?.department].filter(Boolean).join(" — ")} · {rows.length} طالب</p>
@@ -838,17 +839,17 @@ function GroupPage({ id }: { id: string }) {
 
       {/* Bulk action bar */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2 text-xs">
-        <button type="button" disabled={busy} onClick={saveSelected} className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 font-bold text-primary-foreground disabled:opacity-60"><Save className="h-3.5 w-3.5" /> حفظ المحدد</button>
-        <button type="button" disabled={busy} onClick={saveAll} className="rounded-lg border border-border px-3 py-1.5">حفظ كل المعدّل</button>
+        <Button variant="ghost" type="button" disabled={busy} onClick={saveSelected} className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 font-bold text-primary-foreground disabled:opacity-60"><Save className="h-3.5 w-3.5" /> حفظ المحدد</Button>
+        <Button variant="ghost" type="button" disabled={busy} onClick={saveAll} className="rounded-lg border border-border px-3 py-1.5">حفظ كل المعدّل</Button>
         <span className="mx-1 h-4 w-px bg-border" />
         <select value={applySize} onChange={(e) => setApplySize(e.target.value)} className="rounded-lg border border-border bg-background px-2 py-1.5"><option value="">تطبيق مقاس…</option>{READY_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}</select>
-        <button type="button" onClick={applySizeToSelected} className="rounded-lg border border-border px-3 py-1.5">تطبيق على المحدد</button>
-        <button type="button" onClick={copyToSelected} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Copy className="h-3.5 w-3.5" /> نسخ للمحدد</button>
+        <Button variant="ghost" type="button" onClick={applySizeToSelected} className="rounded-lg border border-border px-3 py-1.5">تطبيق على المحدد</Button>
+        <Button variant="ghost" type="button" onClick={copyToSelected} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Copy className="h-3.5 w-3.5" /> نسخ للمحدد</Button>
         <span className="mx-1 h-4 w-px bg-border" />
-        <button type="button" onClick={() => setOnlyIncomplete((v) => !v)} className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 ${onlyIncomplete ? "border-primary text-primary" : "border-border"}`}><Filter className="h-3.5 w-3.5" /> غير المكتملة</button>
+        <Button variant="ghost" type="button" onClick={() => setOnlyIncomplete((v) => !v)} className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 ${onlyIncomplete ? "border-primary text-primary" : "border-border"}`}><Filter className="h-3.5 w-3.5" /> غير المكتملة</Button>
         <label className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Upload className="h-3.5 w-3.5" /> استيراد Excel<input type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden onChange={(e) => e.target.files?.[0] && void importWorkbook(e.target.files[0])} /></label>
-        <button type="button" onClick={() => void exportWorkbook()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Download className="h-3.5 w-3.5" /> تصدير Excel</button>
-        <button type="button" onClick={printGroup} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Printer className="h-3.5 w-3.5" /> طباعة</button>
+        <Button variant="ghost" type="button" onClick={() => void exportWorkbook()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Download className="h-3.5 w-3.5" /> تصدير Excel</Button>
+        <Button variant="ghost" type="button" onClick={printGroup} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Printer className="h-3.5 w-3.5" /> طباعة</Button>
       </div>
       {msg && <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}
 
@@ -886,7 +887,7 @@ function GroupPage({ id }: { id: string }) {
                 <td className="p-1.5 whitespace-nowrap text-center text-muted-foreground">{r.tailorName || "—"}</td>
                 <td className="p-1.5 whitespace-nowrap text-center text-muted-foreground" dir="ltr">{r.updatedAt ? new Date(r.updatedAt).toLocaleDateString("ar-u-nu-latn") : "—"}</td>
                 <td className="p-1.5 text-center">
-                  <button type="button" title="حفظ هذا الطالب" onClick={() => saveItems([payloadFor(r)])} className="rounded-md border border-border p-1 hover:border-primary"><Save className="h-3.5 w-3.5" /></button>
+                  <Button variant="ghost" type="button" title="حفظ هذا الطالب" onClick={() => saveItems([payloadFor(r)])} className="rounded-md border border-border p-1 hover:border-primary"><Save className="h-3.5 w-3.5" /></Button>
                 </td>
               </tr>
             ))}
@@ -905,9 +906,9 @@ function Shell({ me, children }: { me: AdminMe; children: React.ReactNode }) {
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-card px-4 py-3">
         <Scissors className="h-5 w-5 text-primary" />
         <div className="min-w-0"><h1 className="truncate font-bold leading-tight">بوابة الخياطين</h1><p className="truncate text-xs text-muted-foreground">{me.fullName || me.username}</p></div>
-        <button type="button" onClick={async () => { await logoutAdmin(); navigate("/staff/tailors"); location.reload(); }} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs">
+        <Button variant="ghost" type="button" onClick={async () => { await logoutAdmin(); navigate("/staff/tailors"); location.reload(); }} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs">
           <LogOut className="h-3.5 w-3.5" /> خروج
-        </button>
+        </Button>
       </header>
       <main className="mx-auto max-w-4xl p-4">{children}</main>
     </div>
@@ -929,7 +930,7 @@ export default function TailorsPortal() {
         <XCircle className="h-10 w-10 text-destructive" />
         <h1 className="text-lg font-bold">لا تملك صلاحية بوابة الخياطين</h1>
         <p className="text-sm text-muted-foreground">تواصل مع الإدارة لمنحك صلاحية <code>tailoring.portal.access</code>.</p>
-        <button type="button" onClick={async () => { await logoutAdmin(); refresh(); }} className="rounded-lg border border-border px-4 py-2 text-sm">تسجيل الخروج</button>
+        <Button variant="ghost" type="button" onClick={async () => { await logoutAdmin(); refresh(); }} className="rounded-lg border border-border px-4 py-2 text-sm">تسجيل الخروج</Button>
       </div>
     );
   }

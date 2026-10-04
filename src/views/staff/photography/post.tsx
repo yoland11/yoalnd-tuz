@@ -82,15 +82,15 @@ export function EditingPage({ me }: { me: AdminMe }) {
   return (
     <div className="space-y-3 p-4">
       <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1">
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => setStatus("")}
           className={`flex-shrink-0 rounded-full px-3 py-1.5 text-xs font-bold ${status === "" ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground"}`}
         >
           الكل
-        </button>
+        </Button>
         {EDIT_STATUSES.map((item) => (
-          <button
+          <Button variant="ghost"
             key={item.key}
             type="button"
             onClick={() => setStatus(item.key)}
@@ -98,7 +98,7 @@ export function EditingPage({ me }: { me: AdminMe }) {
           >
             {item.label}
             {data.statusCounts[item.key] ? <span className="ms-1 tabular-nums opacity-70">{data.statusCounts[item.key]}</span> : null}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -109,16 +109,16 @@ export function EditingPage({ me }: { me: AdminMe }) {
             return (
               <article key={project.id} className="rounded-xl border border-border/30 bg-card p-3">
                 <div className="flex items-start justify-between gap-2">
-                  <button
+                  <Button variant="ghost"
                     type="button"
                     onClick={() => project.clientToken && navigate(`/staff/photography/shoots/${project.clientToken}`)}
-                    className="min-w-0 text-right"
+                    className="block whitespace-normal min-w-0 text-right"
                   >
                     <div className="truncate font-bold text-foreground">{project.customerName}</div>
                     <div className="truncate text-xs text-muted-foreground">
                       {project.eventDate ?? "—"}{project.editorName ? ` · ${project.editorName}` : " · بلا مونتير"}
                     </div>
-                  </button>
+                  </Button>
                   <span className={`flex-shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${EDIT_TONE[project.status] ?? "bg-muted"}`}>
                     {project.statusLabel}
                   </span>
@@ -261,7 +261,7 @@ export function MemoryCardsPage({ me }: { me: AdminMe }) {
               {card.filesCopied ? <p className="mt-1 text-[11px] tabular-nums text-muted-foreground">نُسخ {card.filesCopied} ملف</p> : null}
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {CARD_STATUSES.filter((item) => item.key !== card.status).map((item) => (
-                  <button
+                  <Button variant="ghost"
                     key={item.key}
                     type="button"
                     disabled={busy === card.id}
@@ -269,7 +269,7 @@ export function MemoryCardsPage({ me }: { me: AdminMe }) {
                     className="rounded-lg border border-border/40 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
                   >
                     {item.label}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </article>

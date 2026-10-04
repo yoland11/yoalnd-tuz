@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
+import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { ArrowRight, Camera, CheckCircle2, ChevronLeft, MapPin, Phone, Upload, Loader2, AlertTriangle, Banknote, ImageIcon, Video, RotateCcw, X } from "lucide-react";
 import {
   WORKFLOW_STAGES, STAGE_LABEL, isKoshaPendingPricing, workflowStageRank, nextWorkflowStage, money, mapsUrl, staffApi,
@@ -70,9 +72,9 @@ function DamageReportSection({ id, source }: { id: number; source: "kosha" | "se
       {done && <Banner kind="ok">تم إرسال البلاغ إلى الإدارة. سيقوم المدير بمراجعته.</Banner>}
       {error && <Banner kind="error">{error}</Banner>}
       {!open ? (
-        <button type="button" onClick={() => { setOpen(true); setDone(false); }} className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-400 bg-background py-2 text-sm font-semibold text-amber-700">
+        <Button variant="ghost" type="button" onClick={() => { setOpen(true); setDone(false); }} className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-400 bg-background py-2 text-sm font-semibold text-amber-700">
           <AlertTriangle className="h-4 w-4" /> الإبلاغ عن تلف/فقدان
-        </button>
+        </Button>
       ) : (
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-2">
@@ -86,7 +88,7 @@ function DamageReportSection({ id, source }: { id: number; source: "kosha" | "se
             {photos.map((src, index) => (
               <div key={index} className="relative h-16 w-16 overflow-hidden rounded-lg border border-border">
                 <img src={src} alt="" className="h-full w-full object-cover" />
-                <button type="button" onClick={() => setPhotos(photos.filter((_, i) => i !== index))} className="absolute right-1 top-1 rounded bg-black/60 p-0.5 text-white"><X className="h-3 w-3" /></button>
+                <IconButton type="button" aria-label="إزالة الصورة" size="compact" variant="destructive" onClick={() => setPhotos(photos.filter((_, i) => i !== index))} className="absolute right-1 top-1 h-9 w-9 rounded-full bg-black/70 text-white hover:bg-black"><X className="h-3 w-3" /></IconButton>
               </div>
             ))}
             <label className="flex cursor-pointer items-center gap-1 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
@@ -95,8 +97,8 @@ function DamageReportSection({ id, source }: { id: number; source: "kosha" | "se
             </label>
           </div>
           <div className="flex gap-2">
-            <button type="button" onClick={() => setOpen(false)} className="flex-1 rounded-lg border border-border py-2 text-sm">إلغاء</button>
-            <button type="button" disabled={busy || !itemLabel.trim() || !reason.trim()} onClick={submit} className="flex-1 rounded-lg bg-amber-600 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy ? "جارٍ الإرسال…" : "إرسال البلاغ"}</button>
+            <Button variant="ghost" type="button" onClick={() => setOpen(false)} className="flex-1 rounded-lg border border-border py-2 text-sm">إلغاء</Button>
+            <Button variant="ghost" type="button" disabled={busy || !itemLabel.trim() || !reason.trim()} onClick={submit} className="flex-1 rounded-lg bg-amber-600 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy ? "جارٍ الإرسال…" : "إرسال البلاغ"}</Button>
           </div>
         </div>
       )}
@@ -280,9 +282,9 @@ function MediaPicker({
                 {(upload.state === "error" || upload.state === "cancelled") && <div className="mt-2 text-destructive" role="alert">{upload.error}</div>}
               </div>
               <div className="flex shrink-0 flex-col gap-1">
-                {upload.state === "uploading" && <button type="button" onClick={() => cancelUpload(upload.id)} className="rounded-md border border-destructive/30 px-2 py-1 text-[11px] text-destructive">إلغاء</button>}
-                {(upload.state === "error" || upload.state === "cancelled") && <button type="button" onClick={() => void retryUpload(upload.id)} disabled={hasActiveUpload} className="inline-flex items-center gap-1 rounded-md border border-primary/30 px-2 py-1 text-[11px] text-primary disabled:opacity-50"><RotateCcw className="h-3 w-3" />إعادة</button>}
-                <button type="button" onClick={() => removeUpload(upload.id)} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground"><X className="h-3 w-3" />إزالة</button>
+                {upload.state === "uploading" && <Button variant="ghost" type="button" onClick={() => cancelUpload(upload.id)} className="rounded-md border border-destructive/30 px-2 py-1 text-[11px] text-destructive">إلغاء</Button>}
+                {(upload.state === "error" || upload.state === "cancelled") && <Button variant="ghost" type="button" onClick={() => void retryUpload(upload.id)} disabled={hasActiveUpload} className="inline-flex items-center gap-1 rounded-md border border-primary/30 px-2 py-1 text-[11px] text-primary disabled:opacity-50"><RotateCcw className="h-3 w-3" />إعادة</Button>}
+                <Button variant="ghost" type="button" onClick={() => removeUpload(upload.id)} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground"><X className="h-3 w-3" />إزالة</Button>
               </div>
             </div>
           </div>
@@ -325,7 +327,7 @@ function SignaturePad({ onChange }: { onChange: (dataUrl: string) => void }) {
     <div>
       <div className="mb-1.5 flex items-center justify-between">
         <label className="text-sm font-medium">توقيع العميل (إلزامي قبل الإكمال)</label>
-        <button onClick={clear} className="text-xs text-muted-foreground underline">مسح</button>
+        <Button variant="ghost" onClick={clear} className="text-xs text-muted-foreground underline">مسح</Button>
       </div>
       <canvas ref={ref} width={320} height={120} className="w-full touch-none rounded-lg border border-border bg-white"
         onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerLeave={up} />
@@ -353,7 +355,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
   useEffect(() => { reload(); }, [reload]);
 
   if (loading) return <div className="flex min-h-[60dvh] items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
-  if (err || !data) return <div className="p-6 text-center text-muted-foreground">{err ?? "غير موجود"}<div className="mt-3"><button onClick={onBack} className="text-primary underline">رجوع</button></div></div>;
+  if (err || !data) return <div className="p-6 text-center text-muted-foreground">{err ?? "غير موجود"}<div className="mt-3"><Button variant="ghost" onClick={onBack} className="text-primary underline">رجوع</Button></div></div>;
 
   const b = data.booking;
   const setup = data.setup;
@@ -412,7 +414,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
   return (
     <div className="mx-auto max-w-xl pb-24">
       <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
-        <button onClick={onBack} aria-label="رجوع"><ChevronLeft className="h-5 w-5" /></button>
+        <IconButton onClick={onBack} aria-label="رجوع" size="compact"><ChevronLeft className="h-5 w-5" /></IconButton>
         <div className="min-w-0 flex-1">
           <div className="truncate font-bold">{b.departmentBadge || b.koshaName || "كوشة"}</div>
           <div className="truncate text-xs text-muted-foreground">{b.customerName} · #{b.id}</div>
@@ -495,9 +497,9 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
 
             {setup.kosha && (
               <div className="overflow-hidden rounded-xl border border-border">
-                <button type="button" onClick={() => setup.kosha?.image && setLightbox(setup.kosha.image)} className="block w-full">
+                <Button size="flush" variant="ghost" type="button" onClick={() => setup.kosha?.image && setLightbox(setup.kosha.image)} className="block w-full">
                   {setup.kosha.image ? <img src={setup.kosha.image} alt={setup.kosha.name} loading="lazy" decoding="async" className="h-48 w-full object-cover" /> : <SetupPlaceholder className="h-48" />}
-                </button>
+                </Button>
                 <div className="p-3">
                   <div className="font-bold">{setup.kosha.name}</div>
                   {setup.kosha.specs.length > 0 ? <div className="mt-1.5 flex flex-wrap gap-1">{setup.kosha.specs.map((s, i) => <span key={i} className="rounded-full bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground">{s}</span>)}</div> : null}
@@ -640,9 +642,9 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
       )}
       {next && !panel && (
         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 p-3 pb-safe backdrop-blur">
-          <div className="mx-auto max-w-xl"><button onClick={onAdvance} disabled={busy} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground disabled:opacity-60">
+        <div className="mx-auto max-w-xl"><Button onClick={onAdvance} disabled={busy} className="min-h-12 w-full gap-2 px-4 py-3 text-sm font-bold">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : next === "delivered" && completionNeedsCollection ? <Banknote className="h-4 w-4" /> : <ArrowRight className="h-4 w-4" />} {next === "delivered" && completionNeedsCollection ? "تحصيل المتبقي مطلوب قبل الإتمام" : `الانتقال إلى: ${STAGE_LABEL[next]}`}
-          </button></div>
+          </Button></div>
         </div>
       )}
     </div>
@@ -655,7 +657,7 @@ function SetupPlaceholder({ className = "" }: { className?: string }) {
 
 function SetupThumb({ src, alt, onZoom, size }: { src: string | null; alt: string; onZoom: (s: string) => void; size: string }) {
   return src
-    ? <button type="button" onClick={() => onZoom(src)} className={`flex-shrink-0 overflow-hidden rounded-lg border border-border ${size}`}><img src={src} alt={alt} loading="lazy" decoding="async" className="h-full w-full object-cover" /></button>
+    ? <Button size="flush" variant="ghost" type="button" onClick={() => onZoom(src)} className={`flex-shrink-0 overflow-hidden rounded-lg border border-border ${size}`}><img src={src} alt={alt} loading="lazy" decoding="async" className="h-full w-full object-cover" /></Button>
     : <div className={`flex flex-shrink-0 items-center justify-center rounded-lg bg-muted/40 text-muted-foreground ${size}`}><ImageIcon className="h-5 w-5" /></div>;
 }
 
@@ -667,9 +669,9 @@ function SetupGroup({ title, items, onZoom, showPrices }: { title: string; items
       <div className="grid grid-cols-2 gap-2">
         {items.map((it, i) => (
           <div key={i} className="overflow-hidden rounded-lg border border-border bg-background">
-            <button type="button" onClick={() => it.image && onZoom(it.image)} className="block w-full">
+            <Button size="flush" variant="ghost" type="button" onClick={() => it.image && onZoom(it.image)} className="block w-full">
               {it.image ? <img src={it.image} alt={it.name} loading="lazy" decoding="async" className="h-24 w-full object-cover" /> : <SetupPlaceholder className="h-24" />}
-            </button>
+            </Button>
             <div className="p-2">
               <div className="truncate text-xs font-medium">{it.name}</div>
               {showPrices && it.price != null && it.price > 0 ? <div className="text-[11px] font-bold text-primary">{money(it.price)} د.ع</div> : null}
@@ -687,7 +689,7 @@ function PanelShell({ title, children, onCancel }: { title: string; children: Re
     <div className="rounded-xl border-2 border-primary/40 bg-card p-3">
       <div className="mb-2 flex items-center justify-between">
         <div className="font-bold">{title}</div>
-        <button onClick={onCancel} className="text-sm text-muted-foreground">إلغاء</button>
+        <Button variant="ghost" onClick={onCancel} className="text-sm text-muted-foreground">إلغاء</Button>
       </div>
       {children}
     </div>
@@ -703,10 +705,10 @@ function StageMediaPanel({ title, label, busy, onCancel, onSave }: { title: stri
       <MediaPicker media={media} setMedia={setMedia} label={label} onUploadingChange={setUploading} imagesOnly={title === "قبل الإرجاع"} />
       <p className="mt-2 text-center text-xs text-muted-foreground">يمكنك رفع صور لتوثيق العمل، أو المتابعة بدون رفع صور.</p>
       <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة (اختياري)" rows={2} className="mt-3 w-full rounded-lg border border-border bg-background p-2 text-sm" />
-      <button disabled={busy || uploading} onClick={() => onSave(media, note)}
+      <Button variant="ghost" disabled={busy || uploading} onClick={() => onSave(media, note)}
         className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
         {busy || uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} {uploading ? "جاري رفع التوثيق…" : media.length ? "حفظ التوثيق والمتابعة" : "المتابعة بدون صور"}
-      </button>
+      </Button>
     </PanelShell>
   );
 }
@@ -726,8 +728,8 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
     <div className="flex items-center justify-between gap-3">
       <span className="text-sm font-medium">{label}</span>
       <div className="flex gap-2">
-        <button onClick={() => set(true)} className={`rounded-lg px-4 py-1.5 text-sm font-bold ${value === true ? "bg-destructive text-white" : "border border-border"}`}>نعم</button>
-        <button onClick={() => set(false)} className={`rounded-lg px-4 py-1.5 text-sm font-bold ${value === false ? "bg-status-success text-white" : "border border-border"}`}>لا</button>
+        <Button variant="ghost" onClick={() => set(true)} className={`rounded-lg px-4 py-1.5 text-sm font-bold ${value === true ? "bg-destructive text-white" : "border border-border"}`}>نعم</Button>
+        <Button variant="ghost" onClick={() => set(false)} className={`rounded-lg px-4 py-1.5 text-sm font-bold ${value === false ? "bg-status-success text-white" : "border border-border"}`}>لا</Button>
       </div>
     </div>
   );
@@ -747,11 +749,11 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
         )}
         <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة التسليم (إجباري)" rows={2} className="w-full rounded-lg border border-border bg-background p-2 text-sm" />
         <SignaturePad onChange={setSignature} />
-        <button disabled={!valid || busy}
+        <Button variant="ghost" disabled={!valid || busy}
           onClick={() => onSave({ hasLoss: !!hasLoss, hasBreakage: !!hasBreakage, note, media, signature: signature || undefined, compensationAmount: Number(compensation) || 0 })}
           className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} تأكيد التسليم
-        </button>
+        </Button>
         {!answered && <div className="text-center text-xs text-muted-foreground">أجب على السؤالين للمتابعة</div>}
         {answered && !signature && <div className="text-center text-xs text-muted-foreground">توقيع العميل مطلوب لإكمال الحجز.</div>}
       </div>
@@ -782,10 +784,10 @@ function CollectPanel({ total, paid, remaining, busy, onSubmit }: {
       <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as typeof paymentMethod)} className="w-full rounded-lg border border-border bg-background p-2 text-sm"><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="card">بطاقة</option><option value="pos">نقطة بيع</option><option value="other">أخرى</option></select>
       <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة (اختياري)" rows={2} className="mt-2 w-full rounded-lg border border-border bg-background p-2 text-sm" />
       <div className="mt-2"><MediaPicker media={receipt} setMedia={setReceipt} label="صورة وصل الاستلام (اختياري)" imagesOnly onUploadingChange={setUploadingReceipt} /></div>
-      <button disabled={busy || uploadingReceipt || val <= 0 || val > remaining} onClick={() => onSubmit({ amount: val, paymentMethod, note: note || undefined, receiptImage: receipt[0]?.url ?? null })}
+      <Button variant="ghost" disabled={busy || uploadingReceipt || val <= 0 || val > remaining} onClick={() => onSubmit({ amount: val, paymentMethod, note: note || undefined, receiptImage: receipt[0]?.url ?? null })}
         className="mt-3 w-full rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
         {busy || uploadingReceipt ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "تأكيد التحصيل وإرساله للاعتماد"}
-      </button>
+      </Button>
       <div className="mt-1.5 text-center text-xs text-muted-foreground">يُسجّل التحصيل باسم العميل والحجز في سند قبض موحّد. لا يدخل الصندوق أو الرصيد الرسمي إلا بعد اعتماد الإدارة الرئيسية، ولا يمكن الإتمام النهائي قبل تسوية المتبقي.</div>
     </div>
   );
@@ -839,24 +841,24 @@ function ProductsAssetsSection({ id, source }: { id: number; source: "kosha" | "
       <div className="text-sm font-bold">🛒 المنتجات والأصول</div>
       <div className="flex gap-2">
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث بالاسم أو الباركود..." className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm" />
-        <button type="button" onClick={() => setScan((s) => !s)} className="rounded-lg border border-border px-3 text-base" title="مسح لإضافة">📷</button>
+        <Button variant="ghost" type="button" onClick={() => setScan((s) => !s)} className="rounded-lg border border-border px-3 text-base" title="مسح لإضافة">📷</Button>
       </div>
       {results.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-border">
           {results.map((p) => (
-            <button key={p.productId} type="button" disabled={busy || linkedIds.has(p.productId)} onClick={() => add(p.productId)}
+            <Button size="flush" variant="ghost" key={p.productId} type="button" disabled={busy || linkedIds.has(p.productId)} onClick={() => add(p.productId)}
               className="flex w-full items-center gap-2 px-3 py-2 text-right text-sm hover:bg-primary/10 disabled:opacity-40">
               {p.imageUrl ? <img src={p.imageUrl} alt="" className="h-8 w-8 rounded object-cover" /> : <span className="grid h-8 w-8 place-items-center rounded bg-muted">📦</span>}
               <span className="flex-1 truncate">{p.name}</span>
               {linkedIds.has(p.productId) ? <span className="text-xs text-muted-foreground">مضاف ✓</span> : <span className="text-lg text-primary">＋</span>}
-            </button>
+            </Button>
           ))}
         </div>
       )}
       {scan && (
         <div className="rounded-lg border border-primary/30 bg-primary/5 p-2">
           <LiveScanner onDetect={(c) => add(undefined, c)} active={scan} />
-          <button type="button" onClick={() => setScan(false)} className="mt-1 w-full rounded-lg border border-border py-1.5 text-xs">إغلاق الماسح</button>
+          <Button variant="ghost" type="button" onClick={() => setScan(false)} className="mt-1 w-full rounded-lg border border-border py-1.5 text-xs">إغلاق الماسح</Button>
         </div>
       )}
       {msg && <Banner kind={msg.ok ? "ok" : "error"}>{msg.text}</Banner>}
@@ -882,11 +884,11 @@ function ProductsAssetsSection({ id, source }: { id: number; source: "kosha" | "
                 <div className="text-[11px] text-muted-foreground">{a.warehouse ? `${a.warehouse} · ` : ""}{a.checkedOut ? "خارج المخزن" : "في المخزن"}</div>
               </div>
               <div className="flex items-center gap-1">
-                <button type="button" onClick={() => setQty(a.productId, (a.quantity ?? 1) - 1)} disabled={busy || (a.quantity ?? 1) <= 1} className="h-6 w-6 rounded border border-border text-sm disabled:opacity-40">−</button>
+                <IconButton type="button" aria-label="إنقاص الكمية" size="compact" variant="outline" onClick={() => setQty(a.productId, (a.quantity ?? 1) - 1)} disabled={busy || (a.quantity ?? 1) <= 1} className="h-9 w-9 rounded-lg">−</IconButton>
                 <span className="w-6 text-center text-sm font-bold">{a.quantity ?? 1}</span>
-                <button type="button" onClick={() => setQty(a.productId, (a.quantity ?? 1) + 1)} disabled={busy} className="h-6 w-6 rounded border border-border text-sm">＋</button>
+                <IconButton type="button" aria-label="زيادة الكمية" size="compact" variant="outline" onClick={() => setQty(a.productId, (a.quantity ?? 1) + 1)} disabled={busy} className="h-9 w-9 rounded-lg">＋</IconButton>
               </div>
-              <button type="button" onClick={() => remove(a.productId)} disabled={busy} className="rounded p-1 text-muted-foreground hover:text-destructive" title="إزالة">✕</button>
+              <IconButton type="button" onClick={() => remove(a.productId)} disabled={busy} className="text-muted-foreground hover:text-destructive" aria-label="إزالة من الطلب" title="إزالة"><X className="h-4 w-4" /></IconButton>
             </li>
           ))}
         </ul>
@@ -963,8 +965,8 @@ export function AssetsSection({ id, source = "kosha" }: { id: number; source?: "
         <div className="text-xs text-muted-foreground">{mode === "checkout" ? "تم إخراج" : "تم استلام"} {doneCount} / {total}{allDone ? " ✓" : ""}</div>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <button type="button" onClick={() => { setMode("checkout"); setPending(null); }} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "checkout" ? "border-status-warning bg-status-warning/10 text-status-warning" : "border-border text-muted-foreground"}`}>🚚 إخراج الأصول</button>
-        <button type="button" onClick={() => { setMode("return"); setPending(null); }} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "return" ? "border-status-success bg-status-success/10 text-status-success dark:text-status-success" : "border-border text-muted-foreground"}`}>📥 استلام الأصول</button>
+        <Button variant="ghost" type="button" onClick={() => { setMode("checkout"); setPending(null); }} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "checkout" ? "border-status-warning bg-status-warning/10 text-status-warning" : "border-border text-muted-foreground"}`}>🚚 إخراج الأصول</Button>
+        <Button variant="ghost" type="button" onClick={() => { setMode("return"); setPending(null); }} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "return" ? "border-status-success bg-status-success/10 text-status-success dark:text-status-success" : "border-border text-muted-foreground"}`}>📥 استلام الأصول</Button>
       </div>
 
       {pending ? (
@@ -983,7 +985,7 @@ export function AssetsSection({ id, source = "kosha" }: { id: number; source?: "
             <>
               <div className="grid grid-cols-3 gap-2">
                 {([["none", "سليم"], ["broken", "يوجد كسر"], ["lost", "يوجد فقدان"]] as const).map(([v, l]) => (
-                  <button key={v} type="button" onClick={() => setProblem(v)} className={`rounded-lg border py-1.5 text-xs font-medium ${problem === v ? "border-primary bg-primary/15 text-primary" : "border-border text-muted-foreground"}`}>{l}</button>
+                  <Button variant="ghost" key={v} type="button" onClick={() => setProblem(v)} className={`rounded-lg border py-1.5 text-xs font-medium ${problem === v ? "border-primary bg-primary/15 text-primary" : "border-border text-muted-foreground"}`}>{l}</Button>
                 ))}
               </div>
               {problem === "broken" && (
@@ -1001,17 +1003,17 @@ export function AssetsSection({ id, source = "kosha" }: { id: number; source?: "
             </>
           )}
           <div className="flex gap-2">
-            <button type="button" onClick={() => setPending(null)} disabled={busy} className="flex-1 rounded-lg border border-border py-2 text-sm font-bold">إلغاء</button>
-            <button type="button" onClick={confirm} disabled={busy} className="flex-1 rounded-lg bg-primary py-2 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy ? "..." : mode === "checkout" ? "تأكيد الإخراج" : "تأكيد الاستلام"}</button>
+            <Button variant="ghost" type="button" onClick={() => setPending(null)} disabled={busy} className="flex-1 rounded-lg border border-border py-2 text-sm font-bold">إلغاء</Button>
+            <Button variant="ghost" type="button" onClick={confirm} disabled={busy} className="flex-1 rounded-lg bg-primary py-2 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy ? "..." : mode === "checkout" ? "تأكيد الإخراج" : "تأكيد الاستلام"}</Button>
           </div>
         </div>
       ) : scanning ? (
         <div className="space-y-2">
           <LiveScanner onDetect={onDetect} active={scanning && !pending} />
-          <button type="button" onClick={() => setScanning(false)} className="w-full rounded-lg border border-border py-2 text-sm">إغلاق الماسح</button>
+          <Button variant="ghost" type="button" onClick={() => setScanning(false)} className="w-full rounded-lg border border-border py-2 text-sm">إغلاق الماسح</Button>
         </div>
       ) : (
-        <button type="button" onClick={() => setScanning(true)} className="w-full rounded-xl bg-primary py-3 text-sm font-bold text-primary-foreground">📷 مسح QR / باركود</button>
+        <Button variant="ghost" type="button" onClick={() => setScanning(true)} className="w-full rounded-xl bg-primary py-3 text-sm font-bold text-primary-foreground">📷 مسح QR / باركود</Button>
       )}
 
       {msg && <Banner kind={msg.ok ? "ok" : "error"}>{msg.text}</Banner>}

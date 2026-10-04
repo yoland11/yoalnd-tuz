@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, BarChart3, Bell, CheckCircle2, ClipboardList, Clock3, Loader2, MapPin, QrCode, Truck, Users, Wrench,
@@ -27,9 +28,9 @@ function LoadFailure({ message, onRetry }: { message: string; onRetry: () => voi
   return (
     <div className="space-y-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-center" role="alert">
       <p className="text-sm text-destructive">{message}</p>
-      <button type="button" onClick={onRetry} className="min-h-10 rounded-lg border border-border bg-card px-4 text-xs font-bold text-primary">
+      <Button variant="ghost" type="button" onClick={onRetry} className="min-h-10 rounded-lg border border-border bg-card px-4 text-xs font-bold text-primary">
         إعادة المحاولة
-      </button>
+      </Button>
     </div>
   );
 }
@@ -102,7 +103,7 @@ export function KoshaOperationsPanel({ bookingId, source = "kosha", activeTab }:
           { key: "scan", label: "المسح", icon: QrCode },
           { key: "damage", label: "الأضرار", icon: AlertTriangle },
         ] as const).map((item) => (
-          <button
+          <Button variant="ghost"
             key={item.key}
             type="button"
             onClick={() => setTab(item.key)}
@@ -110,7 +111,7 @@ export function KoshaOperationsPanel({ bookingId, source = "kosha", activeTab }:
             className={`flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-xs font-bold ${tab === item.key ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground"}`}
           >
             <item.icon className="h-3.5 w-3.5" />{item.label}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -133,7 +134,7 @@ export function KoshaOperationsPanel({ bookingId, source = "kosha", activeTab }:
                   <div className="mb-1.5 text-xs font-bold">{item.label}</div>
                   <div className="flex flex-wrap gap-1">
                     {CHECKLIST_CONDITIONS.map((condition) => (
-                      <button
+                      <Button variant="ghost"
                         key={condition.key}
                         type="button"
                         disabled={busy}
@@ -148,7 +149,7 @@ export function KoshaOperationsPanel({ bookingId, source = "kosha", activeTab }:
                         }`}
                       >
                         {condition.label}
-                      </button>
+                      </Button>
                     ))}
                   </div>
                 </li>
@@ -202,7 +203,7 @@ function ScanTab({
     <div className="space-y-2">
       <div className="flex flex-wrap gap-1">
         {SCAN_POINTS.map((item) => (
-          <button
+          <Button variant="ghost"
             key={item.key}
             type="button"
             disabled={submitting}
@@ -212,7 +213,7 @@ function ScanTab({
           >
             {item.label}
             {counts[item.key] ? <span className="ms-1 opacity-70">{counts[item.key]}</span> : null}
-          </button>
+          </Button>
         ))}
       </div>
       {msg && <Banner kind={msg.ok ? "ok" : "error"}>{msg.text}</Banner>}
@@ -221,14 +222,14 @@ function ScanTab({
         <>
           {/* Batch scanning: the camera stays open so a whole load can be swept. */}
           <LiveScanner onDetect={submit} />
-          <button type="button" onClick={() => setScanning(false)} className="w-full rounded-lg border border-border py-1.5 text-xs">
+          <Button variant="ghost" type="button" onClick={() => setScanning(false)} className="w-full rounded-lg border border-border py-1.5 text-xs">
             إغلاق الماسح
-          </button>
+          </Button>
         </>
       ) : (
-        <button type="button" onClick={() => setScanning(true)} className="w-full rounded-lg bg-primary py-2 text-sm font-bold text-primary-foreground">
+        <Button variant="ghost" type="button" onClick={() => setScanning(true)} className="w-full rounded-lg bg-primary py-2 text-sm font-bold text-primary-foreground">
           <QrCode className="ms-1 inline h-4 w-4" /> بدء المسح
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -293,14 +294,14 @@ function DamageTab({
         </ul>
       )}
 
-      <button
+      <Button variant="ghost"
         type="button"
         disabled={busy}
         onClick={() => send({ noDamage: true })}
         className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-status-success/40 py-2 text-xs font-bold text-status-success disabled:opacity-50"
       >
         <CheckCircle2 className="h-4 w-4" /> لا توجد أضرار
-      </button>
+      </Button>
 
       <details className="rounded-lg border border-border/40">
         <summary className="cursor-pointer px-3 py-2 text-xs font-bold">تسجيل ضرر</summary>
@@ -309,7 +310,7 @@ function DamageTab({
           <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="وصف الضرر" className="min-h-16 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
           <div className="flex flex-wrap gap-1">
             {DAMAGE_PRIORITIES.map((item) => (
-              <button
+              <Button variant="ghost"
                 key={item.key}
                 type="button"
                 onClick={() => setForm({ ...form, priority: item.key })}
@@ -317,7 +318,7 @@ function DamageTab({
                 className={`rounded-lg px-2 py-1 text-[11px] font-bold ${form.priority === item.key ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground"}`}
               >
                 {item.label}
-              </button>
+              </Button>
             ))}
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -328,14 +329,14 @@ function DamageTab({
             <input type="file" accept="image/*" className="hidden" onChange={(e) => pickPhoto(e.target.files?.[0])} />
             {photo ? "تم اختيار الصورة ✓" : "إرفاق صورة"}
           </label>
-          <button
+          <Button variant="ghost"
             type="button"
             disabled={busy || !form.description.trim() || !form.productId}
             onClick={() => send({ ...form, productId: Number(form.productId), costEstimate: Number(form.costEstimate) || 0, responsibleStaffId: Number(form.responsibleStaffId) || null, photoUrl: photo || null })}
             className="w-full rounded-lg bg-destructive py-2 text-sm font-bold text-white disabled:opacity-50"
           >
             {busy ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "إرسال البلاغ"}
-          </button>
+          </Button>
         </div>
       </details>
     </div>

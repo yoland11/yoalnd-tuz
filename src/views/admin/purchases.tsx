@@ -999,7 +999,7 @@ export default function PurchasesPage() {
                                   placeholder="اسم الصنف..."
                                   className="w-full rounded bg-transparent px-1 py-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
-                                <button
+                                <Button variant="ghost"
                                   type="button"
                                   onClick={() =>
                                     setShowProductSearch(
@@ -1010,7 +1010,7 @@ export default function PurchasesPage() {
                                   aria-label="البحث عن منتج"
                                 >
                                   <Search className="h-3.5 w-3.5" />
-                                </button>
+                                </Button>
                               </div>
                             </PopoverAnchor>
                             <PopoverContent
@@ -1028,7 +1028,7 @@ export default function PurchasesPage() {
                               className="max-h-[min(22rem,var(--radix-popover-content-available-height))] w-[min(22rem,calc(100vw-1.5rem))] overflow-y-auto p-1"
                             >
                               {filtered.map((p) => (
-                                <button
+                                <Button variant="ghost"
                                   type="button"
                                   key={p.id}
                                   onClick={() => selectProduct(idx, p)}
@@ -1056,7 +1056,7 @@ export default function PurchasesPage() {
                                       مخزون: {p.stock}
                                     </span>
                                   </span>
-                                </button>
+                                </Button>
                               ))}
                             </PopoverContent>
                           </Popover>
@@ -1147,12 +1147,12 @@ export default function PurchasesPage() {
                           {formatCurrency(item.total)}
                         </td>
                         <td className="px-3 py-2">
-                          <button
+                          <Button variant="ghost"
                             onClick={() => removeRow(idx)}
                             className="text-muted-foreground hover:text-destructive transition-colors"
                           >
                             <Trash2 className="w-4 h-4" />
-                          </button>
+                          </Button>
                         </td>
                       </tr>
                       <tr className="bg-muted/10">
@@ -1316,7 +1316,7 @@ export default function PurchasesPage() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               {PAYMENT_METHODS.map((m) => (
-                <button
+                <Button variant="ghost"
                   key={m.value}
                   type="button"
                   onClick={() =>
@@ -1332,7 +1332,7 @@ export default function PurchasesPage() {
                   }`}
                 >
                   {m.label}
-                </button>
+                </Button>
               ))}
             </div>
             <div>
@@ -1397,13 +1397,13 @@ export default function PurchasesPage() {
                     <Paperclip className="w-4 h-4 shrink-0 text-primary" />
                     {attachment.name}
                   </span>
-                  <button
+                  <Button variant="ghost"
                     type="button"
                     onClick={() => setAttachment(null)}
                     className="text-muted-foreground hover:text-foreground"
                   >
                     <X className="w-4 h-4" />
-                  </button>
+                  </Button>
                 </div>
               ) : (
                 <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border/50 bg-background py-2.5 text-sm text-muted-foreground hover:border-primary hover:text-primary">

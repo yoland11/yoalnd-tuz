@@ -295,7 +295,7 @@ export function FinanceExpensesPage() {
                   <td className="px-3 py-2.5 text-center font-semibold text-foreground">{formatCurrency(e.amount)}</td>
                   <td className="px-3 py-2.5 text-center">{e.receiptImage ? <a href={e.receiptImage} target="_blank" rel="noreferrer" className="text-primary text-xs underline">عرض</a> : "—"}</td>
                   <td className="px-3 py-2.5 text-center text-muted-foreground text-xs">{e.createdByName}</td>
-                  <td className="px-3 py-2.5 text-center"><button onClick={() => confirm("حذف المصروف؟") && remove.mutate(e.id)} className="text-status-danger hover:bg-status-danger/10 p-1.5 rounded"><Trash2 className="w-4 h-4" /></button></td>
+                  <td className="px-3 py-2.5 text-center"><Button variant="ghost" onClick={() => confirm("حذف المصروف؟") && remove.mutate(e.id)} className="text-status-danger hover:bg-status-danger/10 p-1.5 rounded"><Trash2 className="w-4 h-4" /></Button></td>
                 </tr>
               ))}
             </tbody>

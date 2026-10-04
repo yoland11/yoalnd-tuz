@@ -198,20 +198,20 @@ export default function Track() {
 
         {/* Mode tabs */}
         <div className="grid grid-cols-2 gap-2 mb-4 bg-card border border-border/30 rounded-xl p-1">
-          <button
+          <Button variant="ghost"
             type="button"
             onClick={() => setMode("code")}
             className={`flex items-center justify-center gap-2 py-2 rounded-lg text-sm transition-colors ${mode === "code" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
           >
             <Hash className="w-4 h-4" /> {t("رمز التتبع")}
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             type="button"
             onClick={() => setMode("phone")}
             className={`flex items-center justify-center gap-2 py-2 rounded-lg text-sm transition-colors ${mode === "phone" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
           >
             <Phone className="w-4 h-4" /> {t("رقم الهاتف")}
-          </button>
+          </Button>
         </div>
 
         {/* Search */}
@@ -357,7 +357,7 @@ function UnifiedPhoneResults({ data, contactPhone }: { data: UnifiedTrackingResp
           const Icon = group.icon;
           const active = activeGroup === group.key;
           return (
-            <button
+            <Button variant="ghost"
               key={group.key}
               type="button"
               role="tab"
@@ -372,7 +372,7 @@ function UnifiedPhoneResults({ data, contactPhone }: { data: UnifiedTrackingResp
                 </span>
               </div>
               <span className="block truncate text-sm font-semibold">{t(group.label)}</span>
-            </button>
+            </Button>
           );
         })}
       </div>
@@ -1313,9 +1313,9 @@ function TrackingReviewBox({ tracking }: { tracking: any }) {
       <h3 className="text-sm font-semibold text-foreground mb-3">{t("تقييم الطلب بعد التسليم")}</h3>
       <div className="flex items-center gap-1 mb-3">
         {[1, 2, 3, 4, 5].map((value) => (
-          <button key={value} type="button" onClick={() => setRating(value)} className={value <= rating ? "text-primary" : "text-muted-foreground"}>
+          <Button variant="ghost" key={value} type="button" onClick={() => setRating(value)} className={value <= rating ? "text-primary" : "text-muted-foreground"}>
             <Star className="w-5 h-5 fill-current" />
-          </button>
+          </Button>
         ))}
       </div>
       <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder={t("اكتب ملاحظتك")} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
@@ -1403,21 +1403,21 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
 
       {mode === "idle" ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <button
+          <Button variant="ghost"
             type="button"
             disabled={respond.isPending}
             onClick={() => respond.mutate({ action: "confirm" })}
             className="inline-flex items-center justify-center gap-2 bg-status-success/10 text-status-success border border-status-success/30 hover:bg-status-success/20 disabled:opacity-50 transition-colors rounded-lg py-2.5 text-sm font-medium"
           >
             <CheckCircle className="w-4 h-4" /> {t("تأكيد الموعد")}
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             type="button"
             onClick={() => setMode("reschedule")}
             className="inline-flex items-center justify-center gap-2 bg-status-warning/10 text-status-warning border border-status-warning/30 hover:bg-status-warning/20 transition-colors rounded-lg py-2.5 text-sm font-medium"
           >
             <CalendarClock className="w-4 h-4" /> {t("طلب تغيير الموعد")}
-          </button>
+          </Button>
         </div>
       ) : (
         <form
@@ -1453,13 +1453,13 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
             <Button type="submit" disabled={respond.isPending} size="sm">
               {respond.isPending ? t("جاري الإرسال...") : t("إرسال الطلب")}
             </Button>
-            <button
+            <Button variant="ghost"
               type="button"
               onClick={() => { setMode("idle"); setError(null); }}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
               {t("إلغاء")}
-            </button>
+            </Button>
           </div>
         </form>
       )}

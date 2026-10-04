@@ -435,14 +435,14 @@ export default function OrdersPage() {
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
-        <button
+        <Button variant="ghost"
           onClick={() => setTab("products")}
           className={`px-4 py-2 rounded-lg text-sm transition-colors ${tab === "products" ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:text-foreground"}`}
-        >طلبات المتجر ({productOrders?.length ?? 0})</button>
-        <button
+        >طلبات المتجر ({productOrders?.length ?? 0})</Button>
+        <Button variant="ghost"
           onClick={() => setTab("services")}
           className={`px-4 py-2 rounded-lg text-sm transition-colors ${tab === "services" ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:text-foreground"}`}
-        >حجوزات الخدمات ({serviceOrders?.length ?? 0})</button>
+        >حجوزات الخدمات ({serviceOrders?.length ?? 0})</Button>
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -599,24 +599,24 @@ export default function OrdersPage() {
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                       <Printer className="w-3.5 h-3.5" /> فاتورة
                     </a>
-                    <button
+                    <Button variant="ghost"
                       onClick={() => setEditingProductOrder(order)}
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                       <Edit2 className="w-3.5 h-3.5" /> تعديل الطلب
-                    </button>
+                    </Button>
                     {canArchive && (
-                      <button
+                      <Button variant="ghost"
                         onClick={() => confirm("أرشفة الطلب؟") && archiveProduct.mutate(order.id)}
                         disabled={archiveProduct.isPending}
                         className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-warning/10 text-status-warning border border-status-warning/30 hover:bg-status-warning/20 disabled:opacity-60">
                         <Archive className="w-3.5 h-3.5" /> أرشفة
-                      </button>
+                      </Button>
                     )}
-                    <button
+                    <Button variant="ghost"
                       onClick={() => confirm("إلغاء الطلب ونقله إلى الأرشيف؟ سيعاد المخزون ولن تحذف البيانات.") && deleteProduct.mutate(order.id)}
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20">
                       <Trash2 className="w-3.5 h-3.5" /> إلغاء وأرشفة
-                    </button>
+                    </Button>
                   </div>
                   <AccountSummaryCard
                     sourceType="order"
@@ -673,20 +673,20 @@ export default function OrdersPage() {
                         <p className="text-xs text-status-warning/80 mt-1">ملاحظة الزبون: {o.confirmationNote}</p>
                       )}
                       <div className="flex items-center gap-2 mt-3 flex-wrap">
-                        <button
+                        <Button variant="ghost"
                           onClick={() => rescheduleAction.mutate({ id: o.id, action: "accept" })}
                           disabled={rescheduleAction.isPending}
                           className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-success/20 text-status-success border border-status-success/40 hover:bg-status-success/30 disabled:opacity-50"
                         >
                           <Check className="w-3.5 h-3.5" /> قبول الموعد الجديد
-                        </button>
-                        <button
+                        </Button>
+                        <Button variant="ghost"
                           onClick={() => rescheduleAction.mutate({ id: o.id, action: "reject" })}
                           disabled={rescheduleAction.isPending}
                           className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/15 text-status-danger border border-status-danger/40 hover:bg-status-danger/25 disabled:opacity-50"
                         >
                           <X className="w-3.5 h-3.5" /> رفض الطلب
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   )}
@@ -764,11 +764,11 @@ export default function OrdersPage() {
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                       <Printer className="w-3.5 h-3.5" /> فاتورة الحجز
                     </a>
-                    <button
+                    <Button variant="ghost"
                       onClick={() => setEditingServiceOrder(o)}
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                       <Edit2 className="w-3.5 h-3.5" /> تعديل التفاصيل
-                    </button>
+                    </Button>
                     {o.eventLocation && (
                       <a
                         href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(o.eventLocation)}`}
@@ -779,18 +779,18 @@ export default function OrdersPage() {
                       </a>
                     )}
                     {canArchive && (
-                      <button
+                      <Button variant="ghost"
                         onClick={() => confirm("أرشفة الحجز؟") && archiveService.mutate(o.id)}
                         disabled={archiveService.isPending}
                         className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-warning/10 text-status-warning border border-status-warning/30 hover:bg-status-warning/20 disabled:opacity-60">
                         <Archive className="w-3.5 h-3.5" /> أرشفة
-                      </button>
+                      </Button>
                     )}
-                    <button
+                    <Button variant="ghost"
                       onClick={() => confirm("حذف الحجز؟") && deleteService.mutate(o.id)}
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20">
                       <Trash2 className="w-3.5 h-3.5" /> حذف
-                    </button>
+                    </Button>
                   </div>
                   <BookingHistory bookingId={o.id} serviceType={o.serviceType} />
                 </div>
@@ -945,7 +945,7 @@ function EditProductOrderModal({ order, onClose, onSaved }: { order: any; onClos
             <h3 className="font-bold text-foreground truncate">تعديل الطلب {order.trackingCode}</h3>
             <p className="text-xs text-muted-foreground mt-1">راجع الفروقات قبل اعتماد الحفظ</p>
           </div>
-          <button type="button" onClick={onClose} className="shrink-0 text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+          <Button variant="ghost" type="button" onClick={onClose} className="shrink-0 text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></Button>
         </div>
         <div className="overflow-y-auto p-4 sm:p-5 space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -979,10 +979,10 @@ function EditProductOrderModal({ order, onClose, onSaved }: { order: any; onClos
                 {search && (
                   <div className="absolute top-full right-0 left-0 mt-1 z-20 max-h-56 overflow-y-auto rounded-lg border border-border/40 bg-card shadow-xl">
                     {filteredProducts.map((product) => (
-                      <button key={product.id} type="button" onClick={() => addProduct(product)} className="w-full flex items-center justify-between gap-3 px-3 py-2 text-right hover:bg-primary/10 border-b border-border/20 last:border-0">
+                      <Button variant="ghost" key={product.id} type="button" onClick={() => addProduct(product)} className="w-full flex items-center justify-between gap-3 px-3 py-2 text-right hover:bg-primary/10 border-b border-border/20 last:border-0">
                         <span className="min-w-0 text-sm truncate">{product.nameAr || product.name}</span>
                         <span className="shrink-0 text-xs text-muted-foreground">{formatCurrency(product.price)} · {product.stock} بالمخزون</span>
-                      </button>
+                      </Button>
                     ))}
                   </div>
                 )}
@@ -994,7 +994,7 @@ function EditProductOrderModal({ order, onClose, onSaved }: { order: any; onClos
                   <div className="min-w-0"><span className="block text-[11px] text-muted-foreground mb-1">المنتج</span><p className="text-sm text-foreground truncate py-2">{item.productNameAr || item.productName}</p></div>
                   <Input label="الكمية" type="number" value={String(item.quantity)} onChange={(value) => { setPreview(null); setForm({ ...form, items: form.items.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: Math.max(1, Number(value || 1)) } : row) }); }} />
                   <Input label="السعر" type="number" value={String(item.price)} onChange={(value) => { setPreview(null); setForm({ ...form, items: form.items.map((row, rowIndex) => rowIndex === index ? { ...row, price: Math.max(0, Number(value || 0)) } : row) }); }} />
-                  <button type="button" aria-label="حذف المنتج" disabled={form.items.length === 1} onClick={() => { setPreview(null); setForm({ ...form, items: form.items.filter((_, rowIndex) => rowIndex !== index) }); }} className="h-9 rounded-lg border border-status-danger/30 text-status-danger disabled:opacity-30 flex items-center justify-center"><Trash2 className="w-4 h-4" /></button>
+                  <Button variant="ghost" type="button" aria-label="حذف المنتج" disabled={form.items.length === 1} onClick={() => { setPreview(null); setForm({ ...form, items: form.items.filter((_, rowIndex) => rowIndex !== index) }); }} className="h-9 rounded-lg border border-status-danger/30 text-status-danger disabled:opacity-30 flex items-center justify-center"><Trash2 className="w-4 h-4" /></Button>
                 </div>
               ))}
             </div>
@@ -1094,7 +1094,7 @@ function PaymentPanel({
           <input value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </label>
       </div>
-      <button
+      <Button variant="ghost"
         type="button"
         disabled={saving}
         onClick={() => onSave({
@@ -1106,7 +1106,7 @@ function PaymentPanel({
         className="self-end rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary hover:bg-primary/20 disabled:opacity-60"
       >
         حفظ الدفع
-      </button>
+      </Button>
     </div>
   );
 }
@@ -1131,13 +1131,13 @@ function BookingHistory({ bookingId, serviceType }: { bookingId: number; service
 
   return (
     <div className="mt-3 border-t border-border/30 pt-3">
-      <button
+      <Button variant="ghost"
         onClick={() => setOpen(o => !o)}
         className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         <History className="w-3.5 h-3.5" />
         {open ? "إخفاء سجل الحالات" : "عرض سجل الحالات"}
-      </button>
+      </Button>
       {open && (
         <div className="mt-3">
           {isLoading ? (
@@ -1304,27 +1304,27 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
       <div className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-6 border-b border-border/30">
           <h3 className="font-bold text-foreground">طلب جديد</h3>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+          <Button variant="ghost" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></Button>
         </div>
         <form onSubmit={e => {
           e.preventDefault();
           mode === "product" ? submitProduct() : submitService();
         }} className="p-6 space-y-4">
           <div className="grid grid-cols-2 gap-2 bg-background/60 border border-border/30 rounded-xl p-1">
-            <button
+            <Button variant="ghost"
               type="button"
               onClick={() => setMode("product")}
               className={`py-2 rounded-lg text-sm transition-colors ${mode === "product" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               طلب متجر
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               type="button"
               onClick={() => setMode("service")}
               className={`py-2 rounded-lg text-sm transition-colors ${mode === "service" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               حجز خدمة
-            </button>
+            </Button>
           </div>
 
           {mode === "product" ? (
@@ -1363,8 +1363,8 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-sm text-foreground">المنتجات</label>
-                  <button type="button" onClick={() => setForm(f => ({ ...f, items: [...f.items, { productName: "", productNameAr: "", quantity: 1, price: 0 }] }))}
-                    className="text-xs text-primary hover:underline">+ إضافة</button>
+                  <Button variant="ghost" type="button" onClick={() => setForm(f => ({ ...f, items: [...f.items, { productName: "", productNameAr: "", quantity: 1, price: 0 }] }))}
+                    className="text-xs text-primary hover:underline">+ إضافة</Button>
                 </div>
                 <div className="space-y-2">
                   {form.items.map((it, i) => (
@@ -1375,8 +1375,8 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                         className="col-span-2 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
                       <input type="number" placeholder="السعر" value={it.price} onChange={e => updateItem(i, "price", parseFloat(e.target.value) || 0)}
                         className="col-span-3 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
-                      <button type="button" onClick={() => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }))}
-                        className="col-span-1 text-status-danger hover:bg-status-danger/10 rounded-lg"><X className="w-4 h-4 mx-auto" /></button>
+                      <Button variant="ghost" type="button" onClick={() => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }))}
+                        className="col-span-1 text-status-danger hover:bg-status-danger/10 rounded-lg"><X className="w-4 h-4 mx-auto" /></Button>
                     </div>
                   ))}
                 </div>
@@ -1577,7 +1577,7 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
             <h3 className="font-bold text-foreground">تعديل الحجز</h3>
             <p className="text-xs text-muted-foreground mt-1">{order.serviceName}</p>
           </div>
-          <button type="button" onClick={requestClose} aria-label="إغلاق نموذج التعديل" className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+          <Button variant="ghost" type="button" onClick={requestClose} aria-label="إغلاق نموذج التعديل" className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></Button>
         </div>
         <form onSubmit={(e) => { e.preventDefault(); submit(); }} className="p-6 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">

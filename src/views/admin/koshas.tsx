@@ -683,7 +683,7 @@ function LinkedStoreProductsPanel({ sectionType, sectionId }: { sectionType: str
               <label className="flex items-center gap-1 text-[11px] text-muted-foreground">كمية
                 <input type="number" min={1} defaultValue={it.quantity} onBlur={(e) => { const q = Math.max(1, Number(e.target.value) || 1); if (q !== it.quantity) save.mutate(items.map((x, xi) => (xi === i ? { ...x, quantity: q } : x))); }} className="w-14 rounded border border-border/40 bg-background px-1 py-0.5 text-center text-xs" />
               </label>
-              <button type="button" onClick={() => save.mutate(items.filter((_, xi) => xi !== i))} className="grid h-7 w-7 flex-shrink-0 place-items-center rounded border border-destructive/30 text-destructive"><Trash2 className="h-3.5 w-3.5" /></button>
+              <Button size="iconSm" variant="ghost" type="button" onClick={() => save.mutate(items.filter((_, xi) => xi !== i))} className="grid h-7 w-7 flex-shrink-0 place-items-center rounded border border-destructive/30 text-destructive"><Trash2 className="h-3.5 w-3.5" /></Button>
             </div>
           ))}
         </div>
@@ -693,7 +693,7 @@ function LinkedStoreProductsPanel({ sectionType, sectionId }: { sectionType: str
         <div className="mt-3 space-y-2 border-t border-border/20 pt-3">
           {picked ? (
             <div className="rounded-lg border border-primary/20 bg-background/60 p-2 space-y-2">
-              <div className="flex items-center justify-between"><span className="text-sm text-foreground">{picked.name}</span><button type="button" onClick={() => { setPicked(null); setVariantOptions(null); }} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button></div>
+              <div className="flex items-center justify-between"><span className="text-sm text-foreground">{picked.name}</span><Button variant="ghost" type="button" onClick={() => { setPicked(null); setVariantOptions(null); }} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></Button></div>
               {variantsNeedPick && (
                 <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-2 py-1.5 text-xs">
                   <option value="">— اختر المتغيّر (لون / مقاس) —</option>
@@ -706,17 +706,17 @@ function LinkedStoreProductsPanel({ sectionType, sectionId }: { sectionType: str
             <>
               <div className="flex items-center gap-2">
                 <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث بالاسم أو الباركود أو SKU..." className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
-                <button type="button" onClick={() => setScanning((s) => !s)} className={`grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border ${scanning ? "border-primary bg-primary/10 text-primary" : "border-border/40 text-muted-foreground"}`} title="مسح باركود"><ScanLine className="h-4 w-4" /></button>
+                <Button size="iconSm" variant="ghost" type="button" onClick={() => setScanning((s) => !s)} className={`grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border ${scanning ? "border-primary bg-primary/10 text-primary" : "border-border/40 text-muted-foreground"}`} title="مسح باركود"><ScanLine className="h-4 w-4" /></Button>
               </div>
               {scanning ? <div className="overflow-hidden rounded-lg border border-border/30"><LiveScanner active={scanning} onDetect={onScan} /></div> : null}
               {results.length ? (
                 <div className="divide-y divide-border/20 rounded-lg border border-border/30">
                   {results.map((p) => (
-                    <button key={p.id} type="button" onClick={() => choose(p)} className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-background/60">
+                    <Button size="flush" variant="ghost" key={p.id} type="button" onClick={() => choose(p)} className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-background/60">
                       {productImg(p) ? <img src={productImg(p)!} alt="" className="h-8 w-8 rounded object-cover" /> : <span className="grid h-8 w-8 place-items-center rounded bg-muted"><Package className="h-4 w-4 text-muted-foreground" /></span>}
                       <span className="min-w-0 flex-1 truncate text-right">{p.nameAr || p.name}</span>
                       <Plus className="h-4 w-4 text-primary" />
-                    </button>
+                    </Button>
                   ))}
                 </div>
               ) : null}
@@ -884,9 +884,9 @@ function KoshaForm({ mode }: { mode: "new" | "edit" }) {
                   <div key={`${image.id}-${index}`} className="overflow-hidden rounded-lg border border-border/30 bg-background">
                     <img src={image.imageUrl} alt="" className="h-28 w-full object-cover" />
                     <div className="flex items-center justify-between gap-1 p-2">
-                      <button type="button" onClick={() => moveImage(index, -1)} className="rounded border border-border/40 p-1 text-muted-foreground hover:text-primary"><ArrowUp className="h-3.5 w-3.5" /></button>
-                      <button type="button" onClick={() => moveImage(index, 1)} className="rounded border border-border/40 p-1 text-muted-foreground hover:text-primary"><ArrowDown className="h-3.5 w-3.5" /></button>
-                      <button type="button" onClick={() => setForm((f) => ({ ...f, galleryImages: f.galleryImages.filter((_, i) => i !== index) }))} className="rounded border border-status-danger/30 p-1 text-status-danger"><Trash2 className="h-3.5 w-3.5" /></button>
+                      <Button variant="ghost" type="button" onClick={() => moveImage(index, -1)} className="rounded border border-border/40 p-1 text-muted-foreground hover:text-primary"><ArrowUp className="h-3.5 w-3.5" /></Button>
+                      <Button variant="ghost" type="button" onClick={() => moveImage(index, 1)} className="rounded border border-border/40 p-1 text-muted-foreground hover:text-primary"><ArrowDown className="h-3.5 w-3.5" /></Button>
+                      <Button variant="ghost" type="button" onClick={() => setForm((f) => ({ ...f, galleryImages: f.galleryImages.filter((_, i) => i !== index) }))} className="rounded border border-status-danger/30 p-1 text-status-danger"><Trash2 className="h-3.5 w-3.5" /></Button>
                     </div>
                   </div>
                 ))}
@@ -1236,14 +1236,14 @@ export function AdminKoshaBookingsPage() {
                   <th className="px-4 py-3 text-right">التفاصيل</th>
                   <th className="px-4 py-3 text-right">المدفوع</th>
                   <th className="px-4 py-3 text-right">
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       onClick={() => setSortRemaining((s) => (s === "desc" ? "asc" : s === "asc" ? null : "desc"))}
                       className="inline-flex items-center gap-1 font-medium hover:text-foreground"
                       title="ترتيب حسب المتبقي"
                     >
                       💰 المتبقي {sortRemaining === "desc" ? "▼" : sortRemaining === "asc" ? "▲" : ""}
-                    </button>
+                    </Button>
                   </th>
                   <th className="px-4 py-3 text-right">حالة الدفع</th>
                   <th className="px-4 py-3 text-right">آخر دفعة</th>
@@ -1358,7 +1358,7 @@ function KoshaOptionTile({ name, mainImage, price, onZoom }: { name: string; mai
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border/30 bg-background/50 p-2">
       {mainImage ? (
-        <button type="button" onClick={() => onZoom(mainImage)} className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-md border border-border/30"><img src={mainImage} alt={name} loading="lazy" decoding="async" className="h-full w-full object-cover" /></button>
+        <Button size="flush" variant="ghost" type="button" onClick={() => onZoom(mainImage)} className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-md border border-border/30"><img src={mainImage} alt={name} loading="lazy" decoding="async" className="h-full w-full object-cover" /></Button>
       ) : (
         <span className="grid h-12 w-12 flex-shrink-0 place-items-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-5 w-5" /></span>
       )}
@@ -1486,7 +1486,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
             <h2 className="text-xl font-bold text-foreground">تفاصيل الحجز</h2>
             <p className="mt-0.5 truncate text-xs text-muted-foreground">{booking.koshaName ?? "كوشة"}{booking.packageName ? ` • ${booking.packageName}` : ""}</p>
           </div>
-          <div className="flex items-center gap-2"><Button size="sm" onClick={() => setAssigningWorkOrder(true)}>إسناد مهمة للموظفين</Button><button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="إغلاق"><X className="h-5 w-5" /></button></div>
+          <div className="flex items-center gap-2"><Button size="sm" onClick={() => setAssigningWorkOrder(true)}>إسناد مهمة للموظفين</Button><Button variant="ghost" type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="إغلاق"><X className="h-5 w-5" /></Button></div>
         </div>
 
         <KoshaDetailSection title="بيانات الحجز">
@@ -1587,9 +1587,9 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           <KoshaDetailSection title="معرض الصور">
             <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
               {galleryImages.map((src, index) => (
-                <button key={index} type="button" onClick={() => setLightbox(src)} className="aspect-square overflow-hidden rounded-lg border border-border/30 bg-background">
+                <Button size="flush" variant="ghost" key={index} type="button" onClick={() => setLightbox(src)} className="aspect-square overflow-hidden rounded-lg border border-border/30 bg-background">
                   <img src={src} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform duration-300 hover:scale-105" />
-                </button>
+                </Button>
               ))}
             </div>
           </KoshaDetailSection>
@@ -1625,7 +1625,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
       {lightbox && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4" onClick={(event) => { event.stopPropagation(); setLightbox(null); }}>
           <img src={lightbox} alt="" className="max-h-[88dvh] max-w-full rounded-lg object-contain" />
-          <button type="button" className="absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white" aria-label="إغلاق"><X className="h-5 w-5" /></button>
+          <Button variant="ghost" type="button" className="absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white" aria-label="إغلاق"><X className="h-5 w-5" /></Button>
         </div>
       )}
       {assigningWorkOrder && <AssignWorkOrderDialog booking={booking} onClose={() => setAssigningWorkOrder(false)} />}
@@ -1676,7 +1676,7 @@ function BookingEquipmentSection({ bookingId }: { bookingId: number }) {
           {assets.map((a) => (
             <span key={a.productId} className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ${a.status === "locked" ? "bg-status-danger/10 text-status-danger" : "bg-primary/10 text-primary"}`}>
               {a.name}{a.status === "locked" ? " 🔒" : ""}
-              <button type="button" onClick={() => remove.mutate(a.productId)} className="font-bold hover:opacity-70" aria-label="إزالة">×</button>
+              <Button variant="ghost" type="button" onClick={() => remove.mutate(a.productId)} className="font-bold hover:opacity-70" aria-label="إزالة">×</Button>
             </span>
           ))}
         </div>
@@ -1686,10 +1686,10 @@ function BookingEquipmentSection({ bookingId }: { bookingId: number }) {
       {search.length >= 2 && data?.searchResults?.length ? (
         <div className="divide-y divide-border/20 rounded-lg border border-border/30">
           {data.searchResults.map((r) => (
-            <button key={r.productId} type="button" disabled={add.isPending} onClick={() => add.mutate(r.productId)} className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-background/60">
+            <Button variant="ghost" key={r.productId} type="button" disabled={add.isPending} onClick={() => add.mutate(r.productId)} className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-background/60">
               <span>{r.name}{r.status === "locked" ? " 🔒 مقفول" : ""}</span>
               <span className="text-xs text-muted-foreground">مخزون {r.stock}</span>
-            </button>
+            </Button>
           ))}
         </div>
       ) : null}
@@ -1699,7 +1699,7 @@ function BookingEquipmentSection({ bookingId }: { bookingId: number }) {
           <p className="mb-1 flex items-center gap-1 text-xs font-semibold text-foreground"><Sparkles className="h-3.5 w-3.5 text-primary" /> اقتراحات احتياطية:</p>
           <div className="flex flex-wrap gap-2">
             {data.suggestions.map((s) => (
-              <button key={s.productId} type="button" disabled={add.isPending} onClick={() => add.mutate(s.productId)} className="rounded-full border border-border/40 px-2.5 py-1 text-xs text-muted-foreground hover:border-primary hover:text-primary">+ {s.name}</button>
+              <Button variant="ghost" key={s.productId} type="button" disabled={add.isPending} onClick={() => add.mutate(s.productId)} className="rounded-full border border-border/40 px-2.5 py-1 text-xs text-muted-foreground hover:border-primary hover:text-primary">+ {s.name}</Button>
             ))}
           </div>
         </div>
@@ -1867,9 +1867,9 @@ function BookingReservationSection({ bookingId }: { bookingId: number }) {
                     <td className="px-2 py-2">
                       {editable ? (
                         <div className="flex items-center gap-1">
-                          <button type="button" onClick={() => (l.quantity > 1 ? updateLine(l, { quantity: l.quantity - 1 }) : removeLine(l))} className="grid h-6 w-6 place-items-center rounded border border-border/40"><Minus className="h-3 w-3" /></button>
+                          <Button size="iconSm" variant="ghost" type="button" onClick={() => (l.quantity > 1 ? updateLine(l, { quantity: l.quantity - 1 }) : removeLine(l))} className="grid h-6 w-6 place-items-center rounded border border-border/40"><Minus className="h-3 w-3" /></Button>
                           <span className="w-7 text-center font-bold">{l.quantity}</span>
-                          <button type="button" onClick={() => updateLine(l, { quantity: l.quantity + 1 })} className="grid h-6 w-6 place-items-center rounded border border-border/40"><Plus className="h-3 w-3" /></button>
+                          <Button size="iconSm" variant="ghost" type="button" onClick={() => updateLine(l, { quantity: l.quantity + 1 })} className="grid h-6 w-6 place-items-center rounded border border-border/40"><Plus className="h-3 w-3" /></Button>
                         </div>
                       ) : <span className="font-bold">{l.quantity}</span>}
                     </td>
@@ -1885,8 +1885,8 @@ function BookingReservationSection({ bookingId }: { bookingId: number }) {
                     </td>
                     <td className="px-2 py-2">
                       <div className="flex items-center gap-1">
-                        <button type="button" title="مجاني / مشمول" onClick={() => updateLine(l, { free: !l.free })} disabled={!editable} className={`grid h-6 w-6 place-items-center rounded border ${l.free ? "border-status-success/40 bg-status-success/10 text-status-success" : "border-border/40 text-muted-foreground"} disabled:opacity-40`}><Gift className="h-3.5 w-3.5" /></button>
-                        <button type="button" onClick={() => removeLine(l)} disabled={!editable} className="grid h-6 w-6 place-items-center rounded border border-destructive/30 text-destructive disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /></button>
+                        <Button size="iconSm" variant="ghost" type="button" title="مجاني / مشمول" onClick={() => updateLine(l, { free: !l.free })} disabled={!editable} className={`grid h-6 w-6 place-items-center rounded border ${l.free ? "border-status-success/40 bg-status-success/10 text-status-success" : "border-border/40 text-muted-foreground"} disabled:opacity-40`}><Gift className="h-3.5 w-3.5" /></Button>
+                        <Button size="iconSm" variant="ghost" type="button" onClick={() => removeLine(l)} disabled={!editable} className="grid h-6 w-6 place-items-center rounded border border-destructive/30 text-destructive disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /></Button>
                       </div>
                     </td>
                   </tr>
@@ -1908,7 +1908,7 @@ function BookingReservationSection({ bookingId }: { bookingId: number }) {
         <div className="rounded-lg border border-primary/20 bg-primary/5 p-2 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-sm text-foreground">{pickedProduct.name}</span>
-            <button type="button" onClick={() => { setPickedProduct(null); setVariantOptions(null); }} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+            <Button variant="ghost" type="button" onClick={() => { setPickedProduct(null); setVariantOptions(null); }} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></Button>
           </div>
           {variantsNeedPick && (
             <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-2 py-1.5 text-xs">
@@ -1925,18 +1925,18 @@ function BookingReservationSection({ bookingId }: { bookingId: number }) {
         <>
           <div className="flex items-center gap-2">
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث بالاسم أو الباركود أو SKU..." className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
-            <button type="button" onClick={() => setScanning((s) => !s)} className={`grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border ${scanning ? "border-primary bg-primary/10 text-primary" : "border-border/40 text-muted-foreground"}`} title="مسح باركود"><ScanLine className="h-4 w-4" /></button>
+            <Button size="iconSm" variant="ghost" type="button" onClick={() => setScanning((s) => !s)} className={`grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border ${scanning ? "border-primary bg-primary/10 text-primary" : "border-border/40 text-muted-foreground"}`} title="مسح باركود"><ScanLine className="h-4 w-4" /></Button>
           </div>
           {scanning ? <div className="overflow-hidden rounded-lg border border-border/30"><LiveScanner active={scanning} onDetect={onScan} /></div> : null}
           {searchResults.length ? (
             <div className="divide-y divide-border/20 rounded-lg border border-border/30">
               {searchResults.map((p) => (
-                <button key={p.id} type="button" onClick={() => choose(p)} className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-background/60">
+                <Button size="flush" variant="ghost" key={p.id} type="button" onClick={() => choose(p)} className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-background/60">
                   {productImage(p) ? <img src={productImage(p)!} alt="" className="h-8 w-8 rounded object-cover" /> : <span className="grid h-8 w-8 place-items-center rounded bg-muted"><Package className="h-4 w-4 text-muted-foreground" /></span>}
                   <span className="min-w-0 flex-1 truncate text-right">{p.nameAr || p.name}</span>
                   <span className="text-[11px] text-muted-foreground">متاح {Number(p.stock ?? 0)}</span>
                   <Plus className="h-4 w-4 text-primary" />
-                </button>
+                </Button>
               ))}
             </div>
           ) : null}
@@ -1945,7 +1945,7 @@ function BookingReservationSection({ bookingId }: { bookingId: number }) {
 
       <div className="flex items-center justify-between">
         <p className="text-[10px] text-muted-foreground">يُحجز المخزون دون خصمه. عند تأكيد الحجز (مؤكد/قيد التنفيذ/مكتمل) يُخصم فعلياً، وعند الإلغاء يُحرَّر تلقائياً.</p>
-        <button type="button" onClick={() => setShowReports((s) => !s)} className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"><BarChart3 className="h-3.5 w-3.5" /> تقارير المنتجات</button>
+        <Button variant="ghost" type="button" onClick={() => setShowReports((s) => !s)} className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"><BarChart3 className="h-3.5 w-3.5" /> تقارير المنتجات</Button>
       </div>
       {showReports && <StoreProductsReport />}
     </div>
@@ -2059,7 +2059,7 @@ function BookingProductionSection({ bookingId }: { bookingId: number }) {
               <input type="number" min={1} value={it.quantity}
                 onChange={(e) => setQty(it.productId, Math.max(1, Math.floor(Number(e.target.value) || 1)))}
                 className="w-16 rounded-lg border border-border/40 bg-background px-2 py-1 text-center text-sm" />
-              <button type="button" onClick={() => removeProduct(it.productId)} className="p-1 text-status-danger hover:opacity-70"><Trash2 className="h-4 w-4" /></button>
+              <Button variant="ghost" type="button" onClick={() => removeProduct(it.productId)} className="p-1 text-status-danger hover:opacity-70"><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))}
         </div>
@@ -2069,10 +2069,10 @@ function BookingProductionSection({ bookingId }: { bookingId: number }) {
       {searchResults.length ? (
         <div className="divide-y divide-border/20 rounded-lg border border-border/30">
           {searchResults.map((r) => (
-            <button key={r.id} type="button" onClick={() => addProduct(r)} className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-background/60">
+            <Button variant="ghost" key={r.id} type="button" onClick={() => addProduct(r)} className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-background/60">
               <span>{r.nameAr || r.name}</span>
               <span className="text-xs text-muted-foreground">مخزون {r.stock}</span>
-            </button>
+            </Button>
           ))}
         </div>
       ) : null}
@@ -2219,12 +2219,12 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
       <form onSubmit={(event) => { event.preventDefault(); if (!previewReady) { setPreviewReady(true); return; } save.mutate(); }} className="flex max-h-[94dvh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border/40 bg-card shadow-2xl">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/30 p-4 sm:p-5">
           <div><h3 className="font-bold text-foreground">تعديل حجز الكوشة KB-{booking.id}</h3><p className="mt-1 text-xs text-muted-foreground">التغييرات المالية تظهر قبل اعتماد الحفظ.</p></div>
-          <button type="button" onClick={requestClose} aria-label="إغلاق نموذج التعديل" className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+          <Button variant="ghost" type="button" onClick={requestClose} aria-label="إغلاق نموذج التعديل" className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></Button>
         </div>
         <div className="space-y-5 overflow-y-auto p-4 sm:p-5">
           <div className="flex gap-1 rounded-lg bg-muted p-1 text-sm">
-            <button type="button" onClick={() => setEditorTab("details")} className={`flex-1 rounded-md px-3 py-2 ${editorTab === "details" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>تفاصيل الحجز</button>
-            <button type="button" onClick={() => setEditorTab("products")} className={`flex-1 rounded-md px-3 py-2 ${editorTab === "products" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>🛍 الخدمات والمنتجات الإضافية</button>
+            <Button variant="ghost" type="button" onClick={() => setEditorTab("details")} className={`flex-1 rounded-md px-3 py-2 ${editorTab === "details" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>تفاصيل الحجز</Button>
+            <Button variant="ghost" type="button" onClick={() => setEditorTab("products")} className={`flex-1 rounded-md px-3 py-2 ${editorTab === "products" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>🛍 الخدمات والمنتجات الإضافية</Button>
           </div>
           <div className={editorTab === "details" ? "space-y-5" : "hidden"}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -2269,8 +2269,8 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
             </div>
             {Number(booking.paidAmount ?? 0) > 0 ? <p className="mt-3 rounded-lg border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning">تم تسجيل دفعة لهذا الحجز؛ لا يمكن تغيير خدمة النقل هنا. استخدم التصحيح أو العكس المالي أولاً.</p> : null}
             <div className="mt-4 grid gap-2 sm:grid-cols-2">
-              <button type="button" disabled={Number(booking.paidAmount ?? 0) > 0} onClick={() => setForm({ ...form, transportationMode: "ajn" })} className={`rounded-lg border px-3 py-3 text-right text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${form.transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل بواسطة AJN</button>
-              <button type="button" disabled={Number(booking.paidAmount ?? 0) > 0} onClick={() => setForm({ ...form, transportationMode: "customer", transportationFee: "0", transportationVehicleId: null, transportationDriverId: null, transportationNotes: "" })} className={`rounded-lg border px-3 py-3 text-right text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${form.transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل من مسؤولية الزبون</button>
+              <Button variant="ghost" type="button" disabled={Number(booking.paidAmount ?? 0) > 0} onClick={() => setForm({ ...form, transportationMode: "ajn" })} className={`rounded-lg border px-3 py-3 text-right text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${form.transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل بواسطة AJN</Button>
+              <Button variant="ghost" type="button" disabled={Number(booking.paidAmount ?? 0) > 0} onClick={() => setForm({ ...form, transportationMode: "customer", transportationFee: "0", transportationVehicleId: null, transportationDriverId: null, transportationNotes: "" })} className={`rounded-lg border px-3 py-3 text-right text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${form.transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`}>النقل من مسؤولية الزبون</Button>
             </div>
             {form.transportationMode === "ajn" ? <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <Field label="أجرة النقل" type="number" value={form.transportationFee} onChange={(value) => setForm({ ...form, transportationFee: value })} />
@@ -2331,7 +2331,7 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
 }
 
 function KoshaBookingOptionPicker({ title, options, selected, onToggle, single = false }: { title: string; options: KoshaOption[]; selected: string[]; onToggle: (name: string) => void; single?: boolean }) {
-  return <div className="space-y-2"><div className="flex items-center justify-between gap-3"><h4 className="text-sm font-semibold text-foreground">{title}</h4><span className="text-xs text-muted-foreground">{single ? "اختيار واحد" : `${selected.length} مختار`}</span></div><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{options.map((option) => { const active = selected.includes(option.name); return <button key={option.id} type="button" onClick={() => onToggle(option.name)} className={`flex items-center gap-3 rounded-lg border p-2.5 text-right transition-colors ${active ? "border-primary/60 bg-primary/10" : "border-border/30 bg-background/35 hover:border-primary/30"}`}>{option.mainImage ? <img src={option.mainImage} alt="" className="h-11 w-11 shrink-0 rounded-md object-cover" /> : <span className="h-11 w-11 shrink-0 rounded-md bg-muted" />}<span className="min-w-0 flex-1"><span className="block truncate text-sm text-foreground">{option.name}</span><span className="text-xs text-primary">{formatCurrency(option.price ?? 0)}</span></span>{active && <Check className="h-4 w-4 shrink-0 text-primary" />}</button>; })}</div></div>;
+  return <div className="space-y-2"><div className="flex items-center justify-between gap-3"><h4 className="text-sm font-semibold text-foreground">{title}</h4><span className="text-xs text-muted-foreground">{single ? "اختيار واحد" : `${selected.length} مختار`}</span></div><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{options.map((option) => { const active = selected.includes(option.name); return <Button size="flush" variant="ghost" key={option.id} type="button" onClick={() => onToggle(option.name)} className={`flex items-center gap-3 rounded-lg border p-2.5 text-right transition-colors ${active ? "border-primary/60 bg-primary/10" : "border-border/30 bg-background/35 hover:border-primary/30"}`}>{option.mainImage ? <img src={option.mainImage} alt="" className="h-11 w-11 shrink-0 rounded-md object-cover" /> : <span className="h-11 w-11 shrink-0 rounded-md bg-muted" />}<span className="min-w-0 flex-1"><span className="block truncate text-sm text-foreground">{option.name}</span><span className="text-xs text-primary">{formatCurrency(option.price ?? 0)}</span></span>{active && <Check className="h-4 w-4 shrink-0 text-primary" />}</Button>; })}</div></div>;
 }
 
 // ── Kosha booking Additional Services (Store products) ───────────────────────
@@ -2431,17 +2431,17 @@ function KoshaBookingProducts({ bookingId, onChanged }: { bookingId: number; onC
                   </td>
                   <td className="p-2">
                     <div className="flex items-center gap-1">
-                      <button type="button" className="grid h-7 w-7 place-items-center rounded border border-border/40" onClick={() => patch.mutate({ itemId: item.id, body: { quantity: Math.max(1, item.quantity - 1) } })}><Minus className="h-3 w-3" /></button>
+                      <Button size="iconSm" variant="ghost" type="button" className="grid h-7 w-7 place-items-center rounded border border-border/40" onClick={() => patch.mutate({ itemId: item.id, body: { quantity: Math.max(1, item.quantity - 1) } })}><Minus className="h-3 w-3" /></Button>
                       <span className="w-6 text-center">{item.quantity}</span>
-                      <button type="button" className="grid h-7 w-7 place-items-center rounded border border-border/40" onClick={() => patch.mutate({ itemId: item.id, body: { quantity: item.quantity + 1 } })}><Plus className="h-3 w-3" /></button>
+                      <Button size="iconSm" variant="ghost" type="button" className="grid h-7 w-7 place-items-center rounded border border-border/40" onClick={() => patch.mutate({ itemId: item.id, body: { quantity: item.quantity + 1 } })}><Plus className="h-3 w-3" /></Button>
                     </div>
                   </td>
                   <td className="p-2">{formatCurrency(item.unitPrice)}</td>
                   <td className="p-2"><input type="number" min={0} defaultValue={item.discount} className="w-20 rounded border border-border/40 bg-background px-2 py-1 text-sm" onBlur={(e) => { const v = Math.max(0, Number(e.target.value) || 0); if (v !== item.discount) patch.mutate({ itemId: item.id, body: { discount: v } }); }} /></td>
-                  <td className="p-2"><button type="button" onClick={() => patch.mutate({ itemId: item.id, body: { isRental: !item.isRental } })} className={`rounded-full px-2 py-0.5 text-[11px] ${item.isRental ? "bg-accent/15 text-accent" : "bg-muted text-muted-foreground"}`}>{item.isRental ? `إيجار${item.rentalDays > 1 ? ` ×${item.rentalDays}ي` : ""}` : "بيع"}</button></td>
+                  <td className="p-2"><Button variant="ghost" type="button" onClick={() => patch.mutate({ itemId: item.id, body: { isRental: !item.isRental } })} className={`rounded-full px-2 py-0.5 text-[11px] ${item.isRental ? "bg-accent/15 text-accent" : "bg-muted text-muted-foreground"}`}>{item.isRental ? `إيجار${item.rentalDays > 1 ? ` ×${item.rentalDays}ي` : ""}` : "بيع"}</Button></td>
                   <td className="p-2 font-bold">{formatCurrency(item.lineTotal)}</td>
                   <td className="p-2"><input defaultValue={item.notes ?? ""} placeholder="ملاحظة" className="w-28 rounded border border-border/40 bg-background px-2 py-1 text-sm" onBlur={(e) => { if (e.target.value !== (item.notes ?? "")) patch.mutate({ itemId: item.id, body: { notes: e.target.value } }); }} /></td>
-                  <td className="p-2"><button type="button" className="text-destructive" onClick={() => remove.mutate(item.id)}><Trash2 className="h-4 w-4" /></button></td>
+                  <td className="p-2"><Button variant="ghost" type="button" className="text-destructive" onClick={() => remove.mutate(item.id)}><Trash2 className="h-4 w-4" /></Button></td>
                 </tr>
               ))}
             </tbody>
@@ -2477,7 +2477,7 @@ function KoshaStoreBrowser({ bookingId, onClose, onAdd }: { bookingId: number; o
         <h3 className="whitespace-nowrap font-bold text-foreground">إضافة من المتجر</h3>
         <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث بالاسم أو الباركود…" className="flex-1 rounded-lg border border-border/40 bg-card px-3 py-2 text-sm" />
         <label className="flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground"><input type="checkbox" checked={inStock} onChange={(e) => setInStock(e.target.checked)} />المتوفر فقط</label>
-        <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+        <Button variant="ghost" type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></Button>
       </div>
       <div className="grid flex-1 auto-rows-max grid-cols-2 gap-3 overflow-y-auto p-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         {q.isLoading ? (

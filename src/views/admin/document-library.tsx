@@ -186,14 +186,14 @@ export default function DocumentLibraryPage() {
         </div>
       )}
       {Boolean(stats?.expired) && (
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => setExpiry(expiry === "expired" ? "" : "expired")}
           className="w-full text-right rounded-lg border border-status-danger/30 bg-status-danger/10 p-3 text-xs text-status-danger flex items-center gap-2"
         >
           <AlertTriangle className="w-4 h-4 shrink-0" />
           {stats!.expired} مستمسك منتهي الصلاحية — اضغط للعرض
-        </button>
+        </Button>
       )}
 
       {/* Search + filters */}

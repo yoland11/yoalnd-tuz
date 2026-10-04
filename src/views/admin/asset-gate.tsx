@@ -384,7 +384,7 @@ export default function AssetGatePage() {
 
       {/* Mode toggle */}
       <div className="grid grid-cols-2 gap-2 max-w-md">
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => switchMode("checkout")}
           className={`flex items-center justify-center gap-2 rounded-xl border-2 px-4 py-3 font-bold transition-colors ${
@@ -392,8 +392,8 @@ export default function AssetGatePage() {
           }`}
         >
           <ArrowUpFromLine className="h-5 w-5" /> خروج الكوشات
-        </button>
-        <button
+        </Button>
+        <Button variant="ghost"
           type="button"
           onClick={() => switchMode("return")}
           className={`flex items-center justify-center gap-2 rounded-xl border-2 px-4 py-3 font-bold transition-colors ${
@@ -401,7 +401,7 @@ export default function AssetGatePage() {
           }`}
         >
           <ArrowDownToLine className="h-5 w-5" /> استلام الكوشات
-        </button>
+        </Button>
       </div>
 
       {!booking ? (
@@ -424,11 +424,11 @@ export default function AssetGatePage() {
               <EmptyState message="لا توجد حجوزات" />
             ) : (
               filteredBookings.map((b) => (
-                <button
+                <Button variant="ghost"
                   key={b.id}
                   type="button"
                   onClick={() => selectBooking(b)}
-                  className="w-full text-right rounded-lg border border-border/30 bg-background/50 px-4 py-3 hover:border-primary/40 transition-colors"
+                  className="block whitespace-normal w-full text-right rounded-lg border border-border/30 bg-background/50 px-4 py-3 hover:border-primary/40 transition-colors"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-foreground">حجز #{b.bookingNo ?? b.id}</span>
@@ -438,7 +438,7 @@ export default function AssetGatePage() {
                     {b.customerName ?? "—"}
                     {b.hallLocation ? ` · ${b.hallLocation}` : ""}
                   </div>
-                </button>
+                </Button>
               ))
             )}
           </div>
@@ -613,7 +613,7 @@ export default function AssetGatePage() {
               <p className="font-bold text-lg text-foreground">
                 {mode === "checkout" ? "هل تريد إخراج هذا الأصل للحجز؟" : "هل تم استلام الأصل؟"}
               </p>
-              <button type="button" onClick={() => !busy && setPending(null)} className="text-muted-foreground"><X className="h-5 w-5" /></button>
+              <Button variant="ghost" type="button" onClick={() => !busy && setPending(null)} className="text-muted-foreground"><X className="h-5 w-5" /></Button>
             </div>
             <div className="rounded-xl border border-border/30 bg-background/50 p-3 space-y-1">
               <p className="font-semibold text-foreground">{pending.name}</p>
@@ -635,7 +635,7 @@ export default function AssetGatePage() {
                     ["broken", "يوجد كسر", "amber"],
                     ["lost", "يوجد فقدان", "red"],
                   ] as const).map(([v, l, c]) => (
-                    <button
+                    <Button variant="ghost"
                       key={v}
                       type="button"
                       onClick={() => setProblem(v)}
@@ -650,7 +650,7 @@ export default function AssetGatePage() {
                       }`}
                     >
                       {l}
-                    </button>
+                    </Button>
                   ))}
                 </div>
 

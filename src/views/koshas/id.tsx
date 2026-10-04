@@ -157,7 +157,7 @@ export default function KoshaDetailsPage() {
 
       <div className="grid gap-6 lg:grid-cols-[1fr_0.9fr] lg:items-start">
         <section className="space-y-3">
-          <button type="button" onClick={() => setLightbox(activeImage)} className="block aspect-[4/3] w-full overflow-hidden rounded-2xl border border-border bg-card">
+          <Button size="flush" variant="ghost" type="button" onClick={() => setLightbox(activeImage)} className="block aspect-[4/3] w-full overflow-hidden rounded-2xl border border-border bg-card">
             <img
               src={activeImage.imageUrl}
               alt={kosha.name}
@@ -166,18 +166,18 @@ export default function KoshaDetailsPage() {
               className="h-full w-full"
               style={{ objectFit: activeImage.imageMetadata?.objectFit ?? "cover" }}
             />
-          </button>
+          </Button>
           {media.length > 1 && (
             <div className="flex gap-2 overflow-x-auto pb-1">
               {media.map((image, index) => (
-                <button
+                <Button size="flush" variant="ghost"
                   key={image.id}
                   type="button"
                   onClick={() => setSelected(index)}
                   className={`h-20 w-24 flex-shrink-0 overflow-hidden rounded-xl border bg-card transition-colors ${index === selected ? "border-primary" : "border-border/40 hover:border-primary/60"}`}
                 >
                   <img src={image.imageUrl} alt="" width={120} height={96} className="h-full w-full object-cover" />
-                </button>
+                </Button>
               ))}
             </div>
           )}
@@ -238,8 +238,8 @@ export default function KoshaDetailsPage() {
                   <legend className="px-1 text-sm font-semibold text-foreground">خدمة النقل</legend>
                   <p className="mb-3 flex items-center gap-2 text-xs leading-5 text-muted-foreground"><Truck className="h-4 w-4 shrink-0" />يمكنك طلب نقل AJN، وسنؤكد السيارة والأجرة قبل اعتماد الحجز.</p>
                   <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="خدمة النقل">
-                    <button type="button" role="radio" aria-checked={form.transportationMode === "ajn"} onClick={() => setForm((current) => ({ ...current, transportationMode: "ajn" }))} className={`min-h-16 rounded-lg border px-3 py-2 text-right text-sm transition-colors ${form.transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/50 bg-background text-foreground hover:border-primary/50"}`}>النقل بواسطة AJN</button>
-                    <button type="button" role="radio" aria-checked={form.transportationMode === "customer"} onClick={() => setForm((current) => ({ ...current, transportationMode: "customer", transportationNotes: "" }))} className={`min-h-16 rounded-lg border px-3 py-2 text-right text-sm transition-colors ${form.transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/50 bg-background text-foreground hover:border-primary/50"}`}>النقل من مسؤولية الزبون</button>
+                    <Button variant="ghost" type="button" role="radio" aria-checked={form.transportationMode === "ajn"} onClick={() => setForm((current) => ({ ...current, transportationMode: "ajn" }))} className={`min-h-16 rounded-lg border px-3 py-2 text-right text-sm transition-colors ${form.transportationMode === "ajn" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/50 bg-background text-foreground hover:border-primary/50"}`}>النقل بواسطة AJN</Button>
+                    <Button variant="ghost" type="button" role="radio" aria-checked={form.transportationMode === "customer"} onClick={() => setForm((current) => ({ ...current, transportationMode: "customer", transportationNotes: "" }))} className={`min-h-16 rounded-lg border px-3 py-2 text-right text-sm transition-colors ${form.transportationMode === "customer" ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/50 bg-background text-foreground hover:border-primary/50"}`}>النقل من مسؤولية الزبون</Button>
                   </div>
                   {form.transportationMode === "ajn" ? <div className="mt-3"><label className="mb-1 block text-xs text-muted-foreground">ملاحظات النقل (اختياري)</label><Textarea value={form.transportationNotes} onChange={(event) => setForm((current) => ({ ...current, transportationNotes: event.target.value }))} className="bg-background" rows={3} /></div> : null}
                 </fieldset>
@@ -259,9 +259,9 @@ export default function KoshaDetailsPage() {
 
       {lightbox && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4" onClick={() => setLightbox(null)}>
-          <button type="button" className="absolute right-4 top-4 text-white" onClick={() => setLightbox(null)} aria-label="إغلاق">
+          <Button variant="ghost" type="button" className="absolute right-4 top-4 text-white" onClick={() => setLightbox(null)} aria-label="إغلاق">
             <X className="h-6 w-6" />
-          </button>
+          </Button>
           <img src={lightbox.imageUrl} alt={kosha.name} className="max-h-full max-w-full object-contain" />
         </div>
       )}

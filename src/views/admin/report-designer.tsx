@@ -284,17 +284,17 @@ export function ReportDesignerPage() {
       </div>
 
       <div className="flex flex-wrap gap-1.5">
-        {CATEGORIES.map((c) => <button key={c} onClick={() => setCategory(c)} className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${category === c ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:bg-background/60 border border-border/30"}`}>{c === "all" ? "الكل" : CATEGORY_LABEL[c]}</button>)}
+        {CATEGORIES.map((c) => <Button variant="ghost" key={c} onClick={() => setCategory(c)} className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${category === c ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:bg-background/60 border border-border/30"}`}>{c === "all" ? "الكل" : CATEGORY_LABEL[c]}</Button>)}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
         <div className="space-y-2">
           {list.isLoading ? <Skeleton className="h-64 rounded-xl" /> : !list.data?.data.length ? <EmptyState message="لا توجد قوالب. ارفع ملف REPX للبدء." /> : (
             list.data.data.map((t) => (
-              <button key={t.id} onClick={() => setSelectedId(t.id)} className={`w-full rounded-xl border p-3 text-right transition-colors ${selectedId === t.id ? "border-primary bg-primary/5" : "border-border/30 bg-card hover:border-primary/40"}`}>
+              <Button variant="ghost" key={t.id} onClick={() => setSelectedId(t.id)} className={`block whitespace-normal w-full rounded-xl border p-3 text-right transition-colors ${selectedId === t.id ? "border-primary bg-primary/5" : "border-border/30 bg-card hover:border-primary/40"}`}>
                 <div className="flex items-center justify-between gap-2"><span className="truncate font-semibold text-foreground">{t.name}</span>{t.isDefault ? <Star className="h-4 w-4 shrink-0 fill-status-warning text-status-warning" /> : null}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground"><span className="rounded-full bg-background/60 px-2 py-0.5">{CATEGORY_LABEL[t.category] ?? t.category}</span><span>{t.paperKind}</span><span>v{t.version}</span>{t.warnings ? <span className="flex items-center gap-0.5 text-status-warning"><AlertTriangle className="h-3 w-3" /> {t.warnings}</span> : null}</div>
-              </button>
+              </Button>
             ))
           )}
         </div>
@@ -379,7 +379,7 @@ export function ReportDesignerPage() {
                           <PropNum label="التدوير" value={selectedEl.angle} onChange={(v) => patchEl({ angle: v })} />
                         </div>
                         <div className="flex gap-1">
-                          {(["bold", "italic", "underline"] as const).map((k) => <button key={k} onClick={() => patchEl({ font: { ...(selectedEl.font ?? { family: "Tahoma", size: 9.75, bold: false, italic: false, underline: false }), [k]: !selectedEl.font?.[k] } })} className={`flex-1 rounded border px-2 py-1 ${selectedEl.font?.[k] ? "border-primary bg-primary/10 text-primary" : "border-border/40"}`}>{k === "bold" ? "B" : k === "italic" ? "I" : "U"}</button>)}
+                          {(["bold", "italic", "underline"] as const).map((k) => <Button variant="ghost" key={k} onClick={() => patchEl({ font: { ...(selectedEl.font ?? { family: "Tahoma", size: 9.75, bold: false, italic: false, underline: false }), [k]: !selectedEl.font?.[k] } })} className={`flex-1 rounded border px-2 py-1 ${selectedEl.font?.[k] ? "border-primary bg-primary/10 text-primary" : "border-border/40"}`}>{k === "bold" ? "B" : k === "italic" ? "I" : "U"}</Button>)}
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           <label className="block">اللون<input type="color" value={selectedEl.foreColor || "#111111"} onChange={(e) => patchEl({ foreColor: e.target.value })} className="mt-0.5 h-7 w-full rounded border border-border/40" /></label>
@@ -409,7 +409,7 @@ export function ReportDesignerPage() {
                       </div>
                       <div className="mt-2 max-h-36 space-y-0.5 overflow-auto">
                         {(records.data?.data ?? []).map((r) => (
-                          <button key={r.id} disabled={loadRecord.isPending} onClick={() => loadRecord.mutate(r.id)} className="block w-full truncate rounded px-2 py-1 text-right text-xs text-foreground hover:bg-background/60">{r.label}</button>
+                          <Button variant="ghost" key={r.id} disabled={loadRecord.isPending} onClick={() => loadRecord.mutate(r.id)} className="block w-full truncate rounded px-2 py-1 text-right text-xs text-foreground hover:bg-background/60">{r.label}</Button>
                         ))}
                         {!records.data?.data?.length ? <p className="px-2 text-[11px] text-muted-foreground">لا نتائج</p> : null}
                       </div>
@@ -454,7 +454,7 @@ export function ReportDesignerPage() {
                 <div className="rounded-xl border border-border/30 bg-card p-3">
                   <p className="mb-2 text-sm font-semibold text-foreground">الإصدارات</p>
                   <div className="flex flex-wrap gap-2">
-                    {detail.data.history.map((h) => <button key={h.version} disabled={act.isPending} onClick={() => act.mutate({ id: selectedId!, path: "revert", body: { version: h.version } }, { onSuccess: () => toast({ title: `تم الرجوع للإصدار ${h.version}` }) })} className="flex items-center gap-1 rounded-full border border-border/40 px-2.5 py-1 text-xs text-muted-foreground hover:border-primary hover:text-primary"><RotateCcw className="h-3 w-3" /> v{h.version}</button>)}
+                    {detail.data.history.map((h) => <Button variant="ghost" key={h.version} disabled={act.isPending} onClick={() => act.mutate({ id: selectedId!, path: "revert", body: { version: h.version } }, { onSuccess: () => toast({ title: `تم الرجوع للإصدار ${h.version}` }) })} className="flex items-center gap-1 rounded-full border border-border/40 px-2.5 py-1 text-xs text-muted-foreground hover:border-primary hover:text-primary"><RotateCcw className="h-3 w-3" /> v{h.version}</Button>)}
                     <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">v{detail.data.version} (الحالي)</span>
                   </div>
                 </div>

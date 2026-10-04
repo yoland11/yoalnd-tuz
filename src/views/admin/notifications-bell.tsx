@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, CheckCheck, ExternalLink, Loader2 } from "lucide-react";
@@ -58,7 +59,7 @@ export function AdminNotificationsBell() {
 
   return (
     <div className="relative">
-      <button
+      <Button variant="ghost"
         type="button"
         onClick={() => setOpen((value) => !value)}
         className="relative inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border/30 bg-card text-muted-foreground hover:text-primary"
@@ -70,7 +71,7 @@ export function AdminNotificationsBell() {
             {unreadCount > 99 ? "99+" : unreadCount.toLocaleString("ar-IQ-u-nu-latn")}
           </span>
         )}
-      </button>
+      </Button>
       {open && (
         <div className="absolute left-0 top-12 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border/40 bg-card p-3 shadow-2xl" dir="rtl">
           <div className="mb-3 flex items-center justify-between gap-2">
@@ -78,9 +79,9 @@ export function AdminNotificationsBell() {
               <p className="text-sm font-semibold text-foreground">الإشعارات</p>
               <p className="text-xs text-muted-foreground">{unreadCount.toLocaleString("ar-IQ-u-nu-latn")} غير مقروء</p>
             </div>
-            <button type="button" onClick={() => markAll.mutate()} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-primary">
+            <Button variant="ghost" type="button" onClick={() => markAll.mutate()} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-primary">
               <CheckCheck className="w-4 h-4" />
-            </button>
+            </Button>
           </div>
           {isLoading ? (
             <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-primary" /></div>
@@ -101,14 +102,14 @@ export function AdminNotificationsBell() {
             </div>
           )}
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <button
+            <Button variant="ghost"
               type="button"
               onClick={() => enablePush.mutate()}
               disabled={enablePush.isPending}
               className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary hover:bg-primary/20 disabled:opacity-60"
             >
               تفعيل Push
-            </button>
+            </Button>
             <Link href="/admin/notifications" className="inline-flex items-center justify-center gap-1 rounded-lg border border-border/30 px-3 py-2 text-xs text-muted-foreground hover:text-primary">
               عرض الكل <ExternalLink className="w-3.5 h-3.5" />
             </Link>

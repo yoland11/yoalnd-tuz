@@ -273,9 +273,9 @@ function CollectPaymentDialog({
             <h2 className="font-bold text-foreground">تسجيل دفعة</h2>
             <p className="mt-1 text-xs text-muted-foreground">المتبقي الحالي: {formatCurrency(remaining)}</p>
           </div>
-          <button type="button" onClick={onClose} disabled={collect.isPending} className="text-muted-foreground hover:text-foreground disabled:opacity-50">
+          <Button variant="ghost" type="button" onClick={onClose} disabled={collect.isPending} className="text-muted-foreground hover:text-foreground disabled:opacity-50">
             <X className="h-5 w-5" />
-          </button>
+          </Button>
         </div>
         <div className="space-y-4 p-4">
           {sourceType === "sales_invoice" && linkPrecheck.isLoading ? (
@@ -303,9 +303,9 @@ function CollectPaymentDialog({
             <span className="mb-1 block text-xs text-muted-foreground">طريقة الدفع</span>
             <div className="grid grid-cols-3 gap-2">
               {PAYMENT_METHODS.map((method) => (
-                <button key={method.value} type="button" onClick={() => setPaymentMethod(method.value)} className={`rounded-lg border px-3 py-2 text-sm ${paymentMethod === method.value ? "border-primary bg-primary/10 text-primary" : "border-border/30 text-muted-foreground"}`}>
+                <Button variant="ghost" key={method.value} type="button" onClick={() => setPaymentMethod(method.value)} className={`rounded-lg border px-3 py-2 text-sm ${paymentMethod === method.value ? "border-primary bg-primary/10 text-primary" : "border-border/30 text-muted-foreground"}`}>
                   {method.label}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -373,7 +373,7 @@ function InvoiceCustomerLinker({
   });
 
   const candidateButton = (candidate: CustomerLinkCandidate) => (
-    <button
+    <Button variant="ghost"
       key={candidate.id}
       type="button"
       disabled={link.isPending}
@@ -385,7 +385,7 @@ function InvoiceCustomerLinker({
         <span className="block text-xs text-muted-foreground" dir="ltr">{candidate.phone}{candidate.customerCode ? ` · ${candidate.customerCode}` : ""}</span>
       </span>
       <span className="shrink-0 text-xs font-medium text-status-warning">{formatCurrency(candidate.balance)}</span>
-    </button>
+    </Button>
   );
 
   return (

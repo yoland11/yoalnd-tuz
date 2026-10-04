@@ -119,14 +119,14 @@ export default function CalendarPage() {
         </div>
         <div className="inline-flex rounded-lg border border-border/30 bg-card p-1">
           {(["day", "week", "month"] as const).map((item) => (
-            <button
+            <Button variant="ghost"
               key={item}
               type="button"
               onClick={() => setView(item)}
               className={`rounded-md px-3 py-1.5 text-xs transition-colors ${view === item ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground"}`}
             >
               {item === "day" ? "يومي" : item === "week" ? "أسبوعي" : "شهري"}
-            </button>
+            </Button>
           ))}
         </div>
       </div>
@@ -162,15 +162,15 @@ export default function CalendarPage() {
               </div>
               <div className="grid gap-2 md:grid-cols-2">
                 {conflicts.slice(0, 4).map(({ key, events }) => (
-                  <button
+                  <Button variant="ghost"
                     key={key}
                     type="button"
                     onClick={() => setSelected(events[0])}
-                    className="rounded-lg border border-status-warning/25 bg-background/45 px-3 py-2 text-right text-xs text-foreground transition-colors hover:border-status-warning/60"
+                    className="block whitespace-normal rounded-lg border border-status-warning/25 bg-background/45 px-3 py-2 text-right text-xs text-foreground transition-colors hover:border-status-warning/60"
                   >
                     <p className="font-semibold">{events.length} حجوزات بنفس المورد/الموعد</p>
                     <p className="mt-1 truncate text-muted-foreground">{events.map((event) => event.customerName).join("، ")}</p>
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
@@ -183,11 +183,11 @@ export default function CalendarPage() {
               </div>
               <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                 {events.map((event) => (
-                  <button
+                  <Button variant="ghost"
                     key={`${event.kind}-${event.id}`}
                     type="button"
                     onClick={() => setSelected(event)}
-                    className={`text-right rounded-xl border p-3 transition-colors hover:border-primary/40 ${STATUS_TONES[event.status] ?? "border-border/30 bg-background/50 text-foreground"}`}
+                    className={`block whitespace-normal text-right rounded-xl border p-3 transition-colors hover:border-primary/40 ${STATUS_TONES[event.status] ?? "border-border/30 bg-background/50 text-foreground"}`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <p className="font-semibold text-sm">{event.title}</p>
@@ -203,7 +203,7 @@ export default function CalendarPage() {
                       <span>{STATUS_LABELS[event.status] ?? event.status}</span>
                       <span className="font-mono" dir="ltr">{bookingDisplayNumber(event.kind, event.id, event.trackingCode) || event.trackingCode || `#${event.id}`}</span>
                     </div>
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>

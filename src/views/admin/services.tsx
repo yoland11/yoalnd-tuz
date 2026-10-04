@@ -106,12 +106,12 @@ export default function ServicesPage() {
                 </div>
                 {s.descriptionAr && <p className="text-xs text-muted-foreground line-clamp-2 mb-3">{s.descriptionAr}</p>}
                 <div className="flex items-center gap-2 mt-auto">
-                  <button onClick={() => setEditing(s)} className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
+                  <Button variant="ghost" onClick={() => setEditing(s)} className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                     <Edit2 className="w-3.5 h-3.5" /> تعديل
-                  </button>
-                  <button onClick={() => confirm("حذف الخدمة؟") && del.mutate(s.id)} className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20">
+                  </Button>
+                  <Button variant="ghost" onClick={() => confirm("حذف الخدمة؟") && del.mutate(s.id)} className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20">
                     <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>
@@ -128,7 +128,7 @@ export default function ServicesPage() {
           >
             <div className="flex items-center justify-between">
               <h3 className="font-bold text-foreground">{editing.id ? "تعديل خدمة" : "خدمة جديدة"}</h3>
-              <button type="button" onClick={() => setEditing(null)} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+              <Button variant="ghost" type="button" onClick={() => setEditing(null)} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></Button>
             </div>
             <Field label="الاسم بالعربي" value={editing.nameAr ?? ""} onChange={v => setEditing(e => ({ ...e!, nameAr: v }))} />
             <Field label="الاسم بالإنجليزي" value={editing.name ?? ""} onChange={v => setEditing(e => ({ ...e!, name: v }))} />

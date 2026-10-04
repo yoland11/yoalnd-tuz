@@ -324,7 +324,7 @@ function SelectionMark({ selected }: { selected: boolean }) {
 
 function SelectablePill({ label, selected, onClick, tone = "default" }: { label: string; selected: boolean; onClick: () => void; tone?: "default" | "pink" }) {
   return (
-    <button
+    <Button variant="ghost"
       type="button"
       onClick={onClick}
       className={`relative inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-all duration-200 active:scale-[0.98] ${
@@ -337,14 +337,14 @@ function SelectablePill({ label, selected, onClick, tone = "default" }: { label:
     >
       {selected && <CheckCircle2 className="h-4 w-4 animate-kosha-check-pop" />}
       {label}
-    </button>
+    </Button>
   );
 }
 
 function KoshaOptionCard({ item, selected, onClick }: { item: KoshaOptionProduct; selected: boolean; onClick: () => void }) {
   const image = item.mainImage || "";
   return (
-    <button
+    <Button size="flush" variant="ghost"
       type="button"
       onClick={onClick}
       className={`group relative block overflow-hidden rounded-2xl border-2 bg-card text-right transition-all duration-300 active:scale-[0.99] ${
@@ -363,7 +363,7 @@ function KoshaOptionCard({ item, selected, onClick }: { item: KoshaOptionProduct
         <h3 className="text-sm font-semibold text-foreground">{item.name}</h3>
         <p className="mt-1 text-sm font-bold text-primary">{formatKoshaPrice(item.price)}</p>
       </div>
-    </button>
+    </Button>
   );
 }
 
@@ -515,22 +515,22 @@ export default function KoshasPage() {
           <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">اختر باقة جاهزة لتوفير الوقت، أو خصّص كل تفاصيل الكوشة بنفسك من خلال خطوات الحجز الحالية.</p>
         </div>
         <div className="grid gap-5 md:grid-cols-2">
-          <button type="button" onClick={() => setFlowView("packages")} className="group flex min-h-64 flex-col justify-between rounded-2xl border border-primary bg-card p-6 text-right transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+          <Button variant="ghost" type="button" onClick={() => setFlowView("packages")} className="group flex min-h-64 flex-col justify-between rounded-2xl border border-primary bg-card p-6 text-right transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
             <span className="grid h-12 w-12 place-items-center rounded-xl bg-primary text-primary-foreground"><Layers3 className="h-6 w-6" /></span>
             <span className="mt-8 block">
               <span className="block text-2xl font-bold text-foreground">الحجز بالباقات الجاهزة</span>
               <span className="mt-2 block text-sm leading-6 text-muted-foreground">كوشة وإضافات وإكسسوارات مختارة مسبقاً بسعر واضح وخطوات أقل.</span>
             </span>
             <span className="mt-5 inline-flex items-center gap-2 font-semibold text-primary">عرض الباقات <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" /></span>
-          </button>
-          <button type="button" onClick={startCustomBooking} className="group flex min-h-64 flex-col justify-between rounded-2xl border border-border/40 bg-card p-6 text-right transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+          </Button>
+          <Button variant="ghost" type="button" onClick={startCustomBooking} className="group flex min-h-64 flex-col justify-between rounded-2xl border border-border/40 bg-card p-6 text-right transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
             <span className="grid h-12 w-12 place-items-center rounded-xl bg-background text-primary"><SlidersHorizontal className="h-6 w-6" /></span>
             <span className="mt-8 block">
               <span className="block text-2xl font-bold text-foreground">التخصيص الكامل</span>
               <span className="mt-2 block text-sm leading-6 text-muted-foreground">اختر الكوشة والخدمات والبورد والإكسسوارات بالتفصيل عبر المعالج الحالي.</span>
             </span>
             <span className="mt-5 inline-flex items-center gap-2 font-semibold text-primary">بدء التخصيص <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" /></span>
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -596,14 +596,14 @@ export default function KoshasPage() {
                       {[{ id: null as number | null, name: "الكل" }, ...koshaCategories].map((category) => {
                         const active = selectedCategory === category.id;
                         return (
-                          <button
+                          <Button variant="ghost"
                             key={category.id ?? "all"}
                             type="button"
                             onClick={() => setSelectedCategory(category.id)}
                             className={`shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition-all duration-200 active:scale-[0.97] ${active ? "border-[#A97B8B] bg-[#A97B8B] text-white shadow-[0_4px_12px_rgba(169,123,139,0.28)]" : "border-border/40 bg-background text-muted-foreground hover:border-[#A97B8B]/50 hover:text-foreground"}`}
                           >
                             {category.name}
-                          </button>
+                          </Button>
                         );
                       })}
                     </div>
@@ -613,7 +613,7 @@ export default function KoshasPage() {
                       const selected = selectedKosha?.id === kosha.id;
                       const image = kosha.mainImage || kosha.galleryImages?.[0]?.imageUrl || "/images/kosha.png";
                       return (
-                        <button
+                        <Button size="flush" variant="ghost"
                           key={kosha.id}
                           type="button"
                           aria-pressed={selected}
@@ -633,7 +633,7 @@ export default function KoshasPage() {
                               <span className="text-sm font-bold text-primary">{formatKoshaPrice(kosha.price)}</span>
                             </div>
                           </div>
-                        </button>
+                        </Button>
                       );
                     })}
                     {filteredKoshas.length === 0 && (
@@ -762,7 +762,7 @@ export default function KoshasPage() {
                           {form.transportationMode === "customer" ? <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">النقل من مسؤولية الزبون</span> : null}
                         </div>
                         <div className="mt-4 grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="خدمة النقل">
-                          <button
+                          <Button variant="ghost"
                             type="button"
                             role="radio"
                             aria-checked={form.transportationMode === "ajn"}
@@ -771,8 +771,8 @@ export default function KoshasPage() {
                           >
                             <span className="block text-sm font-semibold">النقل بواسطة AJN</span>
                             <span className="mt-1 block text-xs leading-5 text-muted-foreground">اطلب النقل وسيتواصل الفريق لتأكيد السيارة والأجرة.</span>
-                          </button>
-                          <button
+                          </Button>
+                          <Button variant="ghost"
                             type="button"
                             role="radio"
                             aria-checked={form.transportationMode === "customer"}
@@ -781,7 +781,7 @@ export default function KoshasPage() {
                           >
                             <span className="block text-sm font-semibold">النقل من مسؤولية الزبون</span>
                             <span className="mt-1 block text-xs leading-5 text-muted-foreground">لن تُضاف خدمة نقل إلى هذا الطلب.</span>
-                          </button>
+                          </Button>
                         </div>
                         {form.transportationMode === "ajn" ? (
                           <div className="mt-3">
@@ -950,14 +950,14 @@ function ButtonGroup({ label, options, value, onChange }: { label: string; optio
       <span className="text-xs text-muted-foreground">{label}</span>
       <div className="grid grid-cols-2 gap-2">
         {options.map((item) => (
-          <button
+          <Button variant="ghost"
             key={item}
             type="button"
             onClick={() => onChange(item)}
             className={`h-10 rounded-lg border px-3 text-sm transition-colors ${value === item ? "border-[#A97B8B] bg-[#A97B8B]/15 text-[#A97B8B]" : "border-border/40 bg-background text-foreground hover:border-primary/50"}`}
           >
             {item}
-          </button>
+          </Button>
         ))}
       </div>
     </div>

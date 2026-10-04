@@ -283,12 +283,12 @@ export default function SettingsPage() {
             <div key={i} className="flex gap-2">
               <input value={p} onChange={e => setForm(f => ({ ...f!, phones: f!.phones.map((x, idx) => idx === i ? e.target.value : x) }))}
                 className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
-              <button type="button" onClick={() => setForm(f => ({ ...f!, phones: f!.phones.filter((_, idx) => idx !== i) }))}
-                className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg"><X className="w-4 h-4" /></button>
+              <Button variant="ghost" type="button" onClick={() => setForm(f => ({ ...f!, phones: f!.phones.filter((_, idx) => idx !== i) }))}
+                className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg"><X className="w-4 h-4" /></Button>
             </div>
           ))}
-          <button type="button" onClick={() => setForm(f => ({ ...f!, phones: [...f!.phones, ""] }))}
-            className="text-xs text-primary inline-flex items-center gap-1 hover:underline"><Plus className="w-3.5 h-3.5" /> إضافة رقم</button>
+          <Button variant="ghost" type="button" onClick={() => setForm(f => ({ ...f!, phones: [...f!.phones, ""] }))}
+            className="text-xs text-primary inline-flex items-center gap-1 hover:underline"><Plus className="w-3.5 h-3.5" /> إضافة رقم</Button>
         </div>
       </Section>
 
@@ -523,9 +523,9 @@ export default function SettingsPage() {
                       className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
                     {isActive && <span className="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-2 py-px text-[11px] text-primary">نشط</span>}
-                    <button type="button" onClick={() => removeSeason(season.id)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg" aria-label="حذف الموسم">
+                    <Button variant="ghost" type="button" onClick={() => removeSeason(season.id)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg" aria-label="حذف الموسم">
                       <X className="w-4 h-4" />
-                    </button>
+                    </Button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <div>
@@ -715,9 +715,9 @@ function PhotographyPricesSection() {
                 <span className="text-xs text-muted-foreground">د.ع</span>
                 <label className="flex items-center gap-1 text-xs text-muted-foreground"><input type="checkbox" checked={item.active} onChange={(e) => update(idx, { active: e.target.checked })} className="h-4 w-4" /> مفعّل</label>
                 <div className="ms-auto flex items-center gap-1">
-                  <button type="button" onClick={() => move(idx, -1)} disabled={idx === 0} className="grid h-8 w-8 place-items-center rounded-md border border-border/40 text-sm disabled:opacity-40" aria-label="أعلى">↑</button>
-                  <button type="button" onClick={() => move(idx, 1)} disabled={idx === list.length - 1} className="grid h-8 w-8 place-items-center rounded-md border border-border/40 text-sm disabled:opacity-40" aria-label="أسفل">↓</button>
-                  <button type="button" onClick={() => remove(idx)} className="grid h-8 w-8 place-items-center rounded-md border border-destructive/40 text-destructive" aria-label="حذف"><X className="h-4 w-4" /></button>
+                  <Button size="iconSm" variant="ghost" type="button" onClick={() => move(idx, -1)} disabled={idx === 0} className="grid h-8 w-8 place-items-center rounded-md border border-border/40 text-sm disabled:opacity-40" aria-label="أعلى">↑</Button>
+                  <Button size="iconSm" variant="ghost" type="button" onClick={() => move(idx, 1)} disabled={idx === list.length - 1} className="grid h-8 w-8 place-items-center rounded-md border border-border/40 text-sm disabled:opacity-40" aria-label="أسفل">↓</Button>
+                  <Button size="iconSm" variant="ghost" type="button" onClick={() => remove(idx)} className="grid h-8 w-8 place-items-center rounded-md border border-destructive/40 text-destructive" aria-label="حذف"><X className="h-4 w-4" /></Button>
                 </div>
               </div>
             ))}
@@ -815,14 +815,14 @@ function ThemePresetCard({
 }) {
   const c = preset.colors;
   return (
-    <button
+    <Button variant="ghost"
       type="button"
       onClick={onSelect}
       disabled={disabled}
       aria-pressed={active}
       title={preset.name}
       className={cn(
-        "group relative rounded-xl border bg-card p-2.5 text-right transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60",
+        "block whitespace-normal group relative rounded-xl border bg-card p-2.5 text-right transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60",
         active ? "border-primary ring-1 ring-primary/40" : "border-border/30 hover:border-primary/50",
       )}
     >
@@ -874,7 +874,7 @@ function ThemePresetCard({
           ))}
         </span>
       </div>
-    </button>
+    </Button>
   );
 }
 

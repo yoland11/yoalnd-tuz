@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -279,7 +280,7 @@ function ColorField({ label, value, onChange }: { label: string; value: string; 
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
-    <button
+    <Button variant="ghost"
       type="button"
       onClick={() => onChange(!checked)}
       className="flex items-center justify-between w-full py-1.5 group"
@@ -288,7 +289,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
       <div className={`w-9 h-5 rounded-full transition-colors relative ${checked ? "bg-primary" : "bg-muted"}`}>
         <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${checked ? "right-0.5" : "left-0.5"}`} />
       </div>
-    </button>
+    </Button>
   );
 }
 
@@ -449,28 +450,28 @@ export default function InvoiceDesignerPage() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <input ref={importRef} type="file" accept=".json" className="hidden" onChange={importJson} />
-          <button
+          <Button variant="ghost"
             onClick={() => importRef.current?.click()}
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-muted/60 hover:bg-muted text-foreground border border-border/40 transition-colors"
           >
             <Upload className="w-4 h-4" />
             استيراد
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={exportJson}
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-muted/60 hover:bg-muted text-foreground border border-border/40 transition-colors"
           >
             <Download className="w-4 h-4" />
             تصدير JSON
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={() => saveMut.mutate()}
             disabled={saveMut.isPending}
             className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm bg-primary hover:bg-primary/90 text-primary-foreground font-semibold transition-colors disabled:opacity-60"
           >
             {saved ? <CheckCircle2 className="w-4 h-4" /> : <Save className="w-4 h-4" />}
             {saved ? "تم الحفظ" : saveMut.isPending ? "جاري الحفظ..." : "حفظ القالب"}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -506,9 +507,9 @@ export default function InvoiceDesignerPage() {
             <div className="bg-card border border-border/30 rounded-xl p-3">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">القوالب المحفوظة</span>
-                <button onClick={newTemplate} className="text-xs text-primary hover:text-primary/80 flex items-center gap-1">
+                <Button variant="ghost" onClick={newTemplate} className="text-xs text-primary hover:text-primary/80 flex items-center gap-1">
                   <Plus className="w-3 h-3" /> جديد
-                </button>
+                </Button>
               </div>
               <div className="space-y-1 max-h-40 overflow-y-auto">
                 {templates.map(t => (
@@ -523,12 +524,12 @@ export default function InvoiceDesignerPage() {
                         <span className="text-[11px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full shrink-0">افتراضي</span>
                       )}
                     </div>
-                    <button
+                    <Button variant="ghost"
                       onClick={e => { e.stopPropagation(); if (confirm("حذف هذا القالب؟")) deleteMut.mutate(t.id); }}
                       className="text-muted-foreground hover:text-destructive ml-1 shrink-0"
                     >
                       <Trash2 className="w-3 h-3" />
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </div>
@@ -539,14 +540,14 @@ export default function InvoiceDesignerPage() {
           <div className="bg-card border border-border/30 rounded-xl overflow-hidden">
             <div className="flex border-b border-border/30">
               {TABS.map(tab => (
-                <button
+                <Button variant="ghost"
                   key={tab.key}
                   onClick={() => setActiveTab(tab.key)}
                   className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-[11px] transition-colors ${activeTab === tab.key ? "bg-primary/10 text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}
                 >
                   <tab.icon className="w-3.5 h-3.5" />
                   {tab.label}
-                </button>
+                </Button>
               ))}
             </div>
 
@@ -557,7 +558,7 @@ export default function InvoiceDesignerPage() {
                   <SectionTitle icon={FileText} title="قوالب جاهزة" />
                   <div className="space-y-2">
                     {PRESET_TEMPLATES.map(preset => (
-                      <button
+                      <Button variant="ghost"
                         key={preset.key}
                         onClick={() => applyPreset(preset)}
                         className="w-full flex items-center gap-3 px-3 py-3 rounded-lg border border-border/30 hover:border-primary/50 hover:bg-primary/5 transition-all text-right group"
@@ -573,16 +574,16 @@ export default function InvoiceDesignerPage() {
                           <div className="text-[11px] text-muted-foreground">{preset.config.fontFamily} · {preset.config.tableStyle}</div>
                         </div>
                         <Copy className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary" />
-                      </button>
+                      </Button>
                     ))}
                   </div>
-                  <button
+                  <Button variant="ghost"
                     onClick={newTemplate}
                     className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border-2 border-dashed border-border/40 hover:border-primary/40 hover:bg-primary/5 text-sm text-muted-foreground hover:text-primary transition-all"
                   >
                     <Plus className="w-4 h-4" />
                     قالب فارغ جديد
-                  </button>
+                  </Button>
                 </div>
               )}
 
@@ -639,14 +640,14 @@ export default function InvoiceDesignerPage() {
                     <SectionTitle icon={Type} title="الخط" />
                     <div className="grid grid-cols-2 gap-2">
                       {FONT_OPTIONS.map(f => (
-                        <button
+                        <Button variant="ghost"
                           key={f.value}
                           onClick={() => cfg({ fontFamily: f.value })}
                           style={{ fontFamily: f.value }}
                           className={`py-2 px-3 rounded-lg border text-sm transition-all ${config.fontFamily === f.value ? "border-primary bg-primary/10 text-primary" : "border-border/30 text-foreground/70 hover:border-primary/40"}`}
                         >
                           {f.label}
-                        </button>
+                        </Button>
                       ))}
                     </div>
                   </div>
@@ -654,23 +655,23 @@ export default function InvoiceDesignerPage() {
                     <SectionTitle icon={Settings2} title="نمط الجدول" />
                     <div className="grid grid-cols-3 gap-2">
                       {(["bordered", "striped", "minimal"] as const).map(style => (
-                        <button
+                        <Button variant="ghost"
                           key={style}
                           onClick={() => cfg({ tableStyle: style })}
                           className={`py-2 px-2 rounded-lg border text-xs transition-all ${config.tableStyle === style ? "border-primary bg-primary/10 text-primary" : "border-border/30 text-foreground/70 hover:border-primary/40"}`}
                         >
                           {style === "bordered" ? "حدود" : style === "striped" ? "مخطط" : "بسيط"}
-                        </button>
+                        </Button>
                       ))}
                     </div>
                   </div>
-                  <button
+                  <Button variant="ghost"
                     onClick={() => setConfig(DEFAULT_CONFIG)}
                     className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs text-muted-foreground hover:text-foreground border border-border/30 hover:border-border transition-colors"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                     إعادة الضبط الافتراضي
-                  </button>
+                  </Button>
                 </div>
               )}
 
@@ -681,13 +682,13 @@ export default function InvoiceDesignerPage() {
                     <SectionTitle icon={Layout} title="حجم الورق" />
                     <div className="grid grid-cols-3 gap-2">
                       {PAPER_SIZES.map(p => (
-                        <button
+                        <Button variant="ghost"
                           key={p.value}
                           onClick={() => cfg({ paperSize: p.value as InvoiceConfig["paperSize"] })}
                           className={`py-2 px-2 rounded-lg border text-xs transition-all ${config.paperSize === p.value ? "border-primary bg-primary/10 text-primary" : "border-border/30 text-foreground/70 hover:border-primary/40"}`}
                         >
                           {p.label}
-                        </button>
+                        </Button>
                       ))}
                     </div>
                   </div>

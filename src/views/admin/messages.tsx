@@ -128,11 +128,11 @@ export default function MessagesPage() {
               {threads.map((thread) => {
                 const last = thread.replies?.[0];
                 return (
-                  <button
+                  <Button variant="ghost"
                     key={thread.id}
                     type="button"
                     onClick={() => setSelectedId(thread.id)}
-                    className={`w-full text-right p-4 hover:bg-background/40 transition-colors ${selectedId === thread.id ? "bg-primary/10" : ""}`}
+                    className={`block whitespace-normal w-full text-right p-4 hover:bg-background/40 transition-colors ${selectedId === thread.id ? "bg-primary/10" : ""}`}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <p className="font-semibold text-foreground truncate">{thread.customerName || "زبون"}</p>
@@ -141,7 +141,7 @@ export default function MessagesPage() {
                     <p className="text-xs text-muted-foreground mt-1">{formatIraqiPhone(thread.phone ?? "") || thread.phone || "بدون هاتف"}</p>
                     <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{last?.body || thread.subject}</p>
                     <p className="text-[11px] text-muted-foreground mt-2">{formatDate(thread.lastMessageAt)}</p>
-                  </button>
+                  </Button>
                 );
               })}
             </div>

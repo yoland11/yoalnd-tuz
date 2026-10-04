@@ -154,7 +154,7 @@ function PreparationDetail({ card }: { card: PrepCard }) {
                         item.purchaseRequested ? (
                           <div className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700"><ShoppingCart className="h-2.5 w-2.5" /> طلب شراء قيد المعالجة</div>
                         ) : (
-                          <button type="button" disabled={update.isPending} onClick={() => { update.mutate({ key: item.key, itemName: item.name, purchaseRequested: true }); window.open("/admin/inventory-alerts", "_blank", "noopener"); }} className="mt-1 flex items-center gap-1 rounded-md border border-orange-400 px-2 py-0.5 text-[11px] font-semibold text-orange-700"><ShoppingCart className="h-3 w-3" /> طلب شراء</button>
+                          <Button variant="ghost" type="button" disabled={update.isPending} onClick={() => { update.mutate({ key: item.key, itemName: item.name, purchaseRequested: true }); window.open("/admin/inventory-alerts", "_blank", "noopener"); }} className="mt-1 flex items-center gap-1 rounded-md border border-orange-400 px-2 py-0.5 text-[11px] font-semibold text-orange-700"><ShoppingCart className="h-3 w-3" /> طلب شراء</Button>
                         )
                       ) : null}
                     </td>
@@ -166,7 +166,7 @@ function PreparationDetail({ card }: { card: PrepCard }) {
                     <td className="p-2">
                       <div className="flex items-center gap-1">
                         <EmployeeSelect employees={staffList} value={item.assigneeId ? String(item.assigneeId) : ""} placeholder={item.assigneeName || "بدون مسؤول"} emptyLabel="بدون مسؤول" aria-label={`المسؤول عن ${item.name}`} className="min-w-0 flex-1" disabled={update.isPending || staff.isError || !staffList.length} onValueChange={(value) => { const id = Number(value); update.mutate({ key: item.key, itemName: item.name, department: item.department, assigneeId: id || null, assigneeName: id ? staffName(id) : null }); }} />
-                        {item.manual ? <button type="button" title="حذف العنصر" aria-label="حذف العنصر" disabled={removeItem.isPending} onClick={() => removeItem.mutate(item.key)} className="shrink-0 rounded-md border border-border/40 p-1 text-status-danger hover:bg-status-danger/10"><Trash2 className="h-3.5 w-3.5" /></button> : null}
+                        {item.manual ? <Button variant="ghost" type="button" title="حذف العنصر" aria-label="حذف العنصر" disabled={removeItem.isPending} onClick={() => removeItem.mutate(item.key)} className="shrink-0 rounded-md border border-border/40 p-1 text-status-danger hover:bg-status-danger/10"><Trash2 className="h-3.5 w-3.5" /></Button> : null}
                       </div>
                     </td>
                   </tr>
@@ -221,7 +221,7 @@ function AddPrepItemForm({ busy, onSubmit }: { busy: boolean; onSubmit: (payload
     <div className="space-y-2.5 rounded-lg border border-primary/30 bg-primary/5 p-3">
       <div className="grid grid-cols-3 gap-1.5" role="group" aria-label="مصدر العنصر">
         {sources.map(([value, label, Icon]) => (
-          <button key={value} type="button" onClick={() => chooseSource(value)} className={`flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-semibold transition ${source === value ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}><Icon className="h-3.5 w-3.5" />{label}</button>
+          <Button variant="ghost" key={value} type="button" onClick={() => chooseSource(value)} className={`flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-semibold transition ${source === value ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}><Icon className="h-3.5 w-3.5" />{label}</Button>
         ))}
       </div>
       {source !== "custom" ? (
@@ -230,9 +230,9 @@ function AddPrepItemForm({ busy, onSubmit }: { busy: boolean; onSubmit: (payload
           {products.isLoading ? <p className="px-1 text-[11px] text-muted-foreground">جارٍ التحميل…</p> : candidates.length ? (
             <div className="max-h-36 overflow-y-auto rounded-md border border-border/40 bg-background">
               {candidates.map((p) => (
-                <button key={p.id} type="button" onClick={() => pick(p)} className={`flex w-full items-center justify-between gap-2 border-b border-border/20 px-2.5 py-1.5 text-right text-xs last:border-b-0 hover:bg-primary/5 ${productId === Number(p.id) ? "bg-primary/10" : ""}`}>
+                <Button variant="ghost" key={p.id} type="button" onClick={() => pick(p)} className={`flex w-full items-center justify-between gap-2 border-b border-border/20 px-2.5 py-1.5 text-right text-xs last:border-b-0 hover:bg-primary/5 ${productId === Number(p.id) ? "bg-primary/10" : ""}`}>
                   <span className="min-w-0 truncate font-medium">{p.nameAr || p.name}</span>{p.barcode ? <span className="shrink-0 font-mono text-[10px] text-muted-foreground" dir="ltr">{p.barcode}</span> : null}
-                </button>
+                </Button>
               ))}
             </div>
           ) : <p className="px-1 text-[11px] text-muted-foreground">{search ? "لا نتائج مطابقة." : `اكتب للبحث في ${source === "asset" ? "الأصول" : "المنتجات"}.`}</p>}
@@ -354,7 +354,7 @@ export default function PreparationPage() {
         </div>
         <div className="mt-2 flex flex-wrap gap-2">
           {quickFilters.map(([value, label]) => (
-            <button key={value} type="button" onClick={() => setQuick(quick === value ? "" : value)} className={`rounded-full border px-3 py-1.5 text-xs transition ${quick === value ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}>{label}</button>
+            <Button variant="ghost" key={value} type="button" onClick={() => setQuick(quick === value ? "" : value)} className={`rounded-full border px-3 py-1.5 text-xs transition ${quick === value ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50"}`}>{label}</Button>
           ))}
         </div>
       </div>

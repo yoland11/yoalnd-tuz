@@ -317,15 +317,15 @@ export default function DocumentLayout({
           <Toggle label="علامات القص" checked={cutMarks} onChange={setCutMarks} />
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground">عدد النسخ</span>
-            <button type="button" onClick={() => setCopyCount((c) => Math.max(1, c - 1))}
+            <Button size="iconSm" variant="ghost" type="button" onClick={() => setCopyCount((c) => Math.max(1, c - 1))}
               className="w-7 h-7 rounded-lg border border-border/40 flex items-center justify-center hover:bg-muted" aria-label="حذف نسخة">
               <Minus className="w-3.5 h-3.5" />
-            </button>
+            </Button>
             <span className="text-sm font-semibold tabular-nums w-6 text-center">{sides.length}</span>
-            <button type="button" onClick={() => setCopyCount((c) => Math.min(cap.max || 1, c + 1))}
+            <Button size="iconSm" variant="ghost" type="button" onClick={() => setCopyCount((c) => Math.min(cap.max || 1, c + 1))}
               className="w-7 h-7 rounded-lg border border-border/40 flex items-center justify-center hover:bg-muted" aria-label="إضافة نسخة">
               <Plus className="w-3.5 h-3.5" />
-            </button>
+            </Button>
           </div>
         </div>
 

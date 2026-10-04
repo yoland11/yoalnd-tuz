@@ -2495,14 +2495,14 @@ function AssetPassportModal({
                 <BadgeDollarSign className="h-4 w-4" /> بيع الأصل
               </Button>
             ) : null}
-            <button
+            <Button variant="ghost"
               type="button"
               onClick={onClose}
               className="text-muted-foreground hover:text-foreground"
               aria-label="إغلاق"
             >
               <X className="h-5 w-5" />
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -2520,14 +2520,14 @@ function AssetPassportModal({
                 <Icon className="h-3.5 w-3.5" /> {label}
               </Link>
             ) : (
-              <button
+              <Button variant="ghost"
                 key={key}
                 type="button"
                 onClick={() => setTab(key)}
                 className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${tab === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-background/60"}`}
               >
                 <Icon className="h-3.5 w-3.5" /> {label}
-              </button>
+              </Button>
             ),
           )}
         </div>
@@ -3011,7 +3011,7 @@ function AssetPhotosPanel({ productId }: { productId: number }) {
                 <span className="absolute inset-x-1 bottom-1 truncate rounded bg-black/70 px-1.5 py-0.5 text-center text-[10px] text-white">
                   {categories[photoCategory] ?? "صورة أصل"}
                 </span>
-                <button
+                <Button size="iconSm" variant="ghost"
                   type="button"
                   onClick={() => remove.mutate(p.id)}
                   disabled={remove.isPending}
@@ -3019,7 +3019,7 @@ function AssetPhotosPanel({ productId }: { productId: number }) {
                   aria-label="طلب حذف الصورة"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                </Button>
               </div>
             );
           })}
@@ -4381,7 +4381,7 @@ function AssetsTab({
           />
           <div className="space-y-2">
             {topUsage.map((row, index) => (
-              <button
+              <Button variant="ghost"
                 key={row.productId}
                 type="button"
                 onClick={() => setSelected(row)}
@@ -4396,7 +4396,7 @@ function AssetsTab({
                 <span className="text-xs text-muted-foreground">
                   {row.usageCount.toLocaleString("ar-IQ-u-nu-latn")} استخدام
                 </span>
-              </button>
+              </Button>
             ))}
           </div>
         </Panel>
@@ -4408,7 +4408,7 @@ function AssetsTab({
           />
           <div className="space-y-2">
             {topProfit.map((row, index) => (
-              <button
+              <Button variant="ghost"
                 key={row.productId}
                 type="button"
                 onClick={() => setSelected(row)}
@@ -4423,7 +4423,7 @@ function AssetsTab({
                 <span className="text-xs font-semibold text-primary">
                   {formatCurrency(row.profit)}
                 </span>
-              </button>
+              </Button>
             ))}
           </div>
         </Panel>

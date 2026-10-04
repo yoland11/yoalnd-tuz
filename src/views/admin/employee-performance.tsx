@@ -131,17 +131,17 @@ export default function EmployeePerformancePage({ me }: { me: AdminMe }) {
       {/* Leaderboards */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {(overview.data?.leaderboards ?? []).map((lb) => (
-          <button
+          <Button variant="ghost"
             key={lb.key}
             type="button"
             onClick={() => lb.staffId && setSelected(lb.staffId)}
-            className="rounded-xl border border-border/30 bg-card p-3 text-right transition-colors hover:border-primary/40"
+            className="block whitespace-normal rounded-xl border border-border/30 bg-card p-3 text-right transition-colors hover:border-primary/40"
           >
             <div className="text-2xl">{lb.icon}</div>
             <div className="mt-1 text-[11px] text-muted-foreground">{lb.label}</div>
             <div className="mt-0.5 truncate text-sm font-bold text-foreground">{lb.name}</div>
             <div className={`mt-1 text-xs font-bold ${scoreColor(lb.score)}`}>{lb.metric}: {lb.score}%</div>
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -199,7 +199,7 @@ export default function EmployeePerformancePage({ me }: { me: AdminMe }) {
               <tr key={e.staffId} className={`border-b border-border/15 transition-colors hover:bg-primary/[0.025] ${e.suspended ? "opacity-50" : ""}`}>
                 <td className="px-3 py-3 text-center font-bold text-muted-foreground">{e.suspended ? "—" : e.rank}</td>
                 <td className="px-3 py-3 text-center font-medium text-foreground">
-                  <button onClick={() => setSelected(e.staffId)} className="hover:text-primary hover:underline">{e.name}</button>
+                  <Button variant="ghost" onClick={() => setSelected(e.staffId)} className="hover:text-primary hover:underline">{e.name}</Button>
                   {e.adjustment !== 0 && <span className={`ms-1 text-[11px] ${e.adjustment > 0 ? "text-status-success" : "text-destructive"}`}>({e.adjustment > 0 ? "+" : ""}{e.adjustment})</span>}
                 </td>
                 <td className="px-3 py-3 text-center text-xs text-muted-foreground">{e.department}</td>
@@ -339,9 +339,9 @@ function ProfilePanel({ staffId, isManager, levelLabels }: { staffId: number; is
             <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground"><TrendingUp className="h-4 w-4 text-primary" /> اتجاه الأداء المالي</h4>
             <div className="flex rounded-lg border border-border/40">
               {(["week", "month", "year"] as const).map((g) => (
-                <button key={g} type="button" onClick={() => setGran(g)} className={`px-2.5 py-1 text-xs font-medium ${gran === g ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
+                <Button variant="ghost" key={g} type="button" onClick={() => setGran(g)} className={`px-2.5 py-1 text-xs font-medium ${gran === g ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
                   {g === "week" ? "أسبوعي" : g === "month" ? "شهري" : "سنوي"}
-                </button>
+                </Button>
               ))}
             </div>
           </div>

@@ -335,20 +335,20 @@ export function CustomerStatement({
           </DialogHeader>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-1">
-              <button
+              <Button variant="ghost"
                 type="button"
                 onClick={() => setVoucherType("receipt")}
                 className={`flex items-center justify-center gap-1 rounded-md px-3 py-2 text-sm font-semibold transition ${voucherType === "receipt" ? "bg-status-success text-white" : "text-muted-foreground hover:text-foreground"}`}
               >
                 <ArrowDownCircle className="h-4 w-4" /> سند قبض
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost"
                 type="button"
                 onClick={() => setVoucherType("payment")}
                 className={`flex items-center justify-center gap-1 rounded-md px-3 py-2 text-sm font-semibold transition ${voucherType === "payment" ? "bg-status-danger text-white" : "text-muted-foreground hover:text-foreground"}`}
               >
                 <ArrowUpCircle className="h-4 w-4" /> سند صرف
-              </button>
+              </Button>
             </div>
             <div className="rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
               الرصيد الحالي في الذمة: <b className="text-foreground tabular-nums" dir="ltr">{formatCurrency(currentBalance)}</b>

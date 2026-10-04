@@ -155,13 +155,13 @@ export function SessionDevicesPanel({
         <h2 className="text-base font-bold text-foreground">
           الأجهزة المسجل الدخول منها
         </h2>
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={load}
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
         >
           <RefreshCw className="h-3.5 w-3.5" /> تحديث
-        </button>
+        </Button>
       </div>
 
       {sessions === null ? (

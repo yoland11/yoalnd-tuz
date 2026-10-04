@@ -87,10 +87,10 @@ function Stat({ label, value, tone = "text-foreground" }: { label: string; value
 
 function ShootRow({ card, onOpen }: { card: ShootCard; onOpen: () => void }) {
   return (
-    <button
+    <Button variant="ghost"
       type="button"
       onClick={onOpen}
-      className="w-full rounded-xl border border-border/30 bg-card p-3 text-right transition-transform active:scale-[0.99]"
+      className="block whitespace-normal w-full rounded-xl border border-border/30 bg-card p-3 text-right transition-transform active:scale-[0.99]"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
@@ -104,7 +104,7 @@ function ShootRow({ card, onOpen }: { card: ShootCard; onOpen: () => void }) {
         {card.venue ? <span className="inline-flex min-w-0 items-center gap-1"><MapPin className="h-3 w-3 flex-shrink-0" /><span className="truncate">{card.venue}</span></span> : null}
         {card.checklistComplete ? <span className="inline-flex items-center gap-1 text-status-success"><BadgeCheck className="h-3 w-3" />القائمة مكتملة</span> : null}
       </div>
-    </button>
+    </Button>
   );
 }
 
@@ -190,42 +190,42 @@ export function ShootsListPage() {
           { href: "/staff/photography/cards", label: "البطاقات" },
           { href: "/staff/photography/ops-reports", label: "تقارير العمليات" },
         ].map((link) => (
-          <button
+          <Button variant="ghost"
             key={link.href}
             type="button"
             onClick={() => navigate(link.href)}
             className="min-h-11 rounded-lg border border-border/40 bg-card text-xs font-bold text-foreground"
           >
             {link.label}
-          </button>
+          </Button>
         ))}
       </nav>
       <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث باسم الزبون أو الموقع" />
       <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1">
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => setStage("")}
           className={`flex-shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${stage === "" ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground"}`}
         >
           الكل
-        </button>
+        </Button>
         {SHOOT_STAGES.map((item) => (
-          <button
+          <Button variant="ghost"
             key={item.key}
             type="button"
             onClick={() => setStage(item.key)}
             className={`flex-shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${stage === item.key ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground"}`}
           >
             {item.icon} {item.label}
-          </button>
+          </Button>
         ))}
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => setStage("cancelled")}
           className={`flex-shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${stage === "cancelled" ? "bg-destructive text-destructive-foreground" : "bg-card text-destructive"}`}
         >
           × ملغي
-        </button>
+        </Button>
       </div>
       {rows === null ? <Spinner /> : rows.length ? (
         <div className="space-y-2">
@@ -379,9 +379,9 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
 
   return (
     <div className="space-y-4 p-4">
-      <button type="button" onClick={() => navigate("/staff/photography/shoots")} className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+      <Button variant="ghost" type="button" onClick={() => navigate("/staff/photography/shoots")} className="inline-flex items-center gap-1 text-xs text-muted-foreground">
         <ChevronLeft className="h-3.5 w-3.5" /> رجوع للمهام
-      </button>
+      </Button>
 
       {/* Header */}
       <header className="rounded-xl border border-border/30 bg-card p-4">
@@ -522,7 +522,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
           </>
         ) : <p className={`mt-4 text-center text-xs font-bold ${data.stage === "cancelled" ? "text-destructive" : "text-status-success"}`}>{data.stage === "cancelled" ? "المهمة ملغية" : "اكتملت المهمة"}</p>}
         {manager && data.stage !== "new_booking" && data.stage !== "cancelled" ? (
-          <button
+          <Button variant="ghost"
             type="button"
             disabled={busy}
             onClick={() => {
@@ -532,7 +532,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
             className="mt-2 flex min-h-11 w-full items-center justify-center gap-1.5 text-xs text-muted-foreground"
           >
             <Undo2 className="h-3.5 w-3.5" /> إرجاع لمرحلة سابقة
-          </button>
+          </Button>
         ) : null}
       </section>
 
@@ -681,13 +681,13 @@ function ShootEquipment({
     <section className="rounded-xl border border-border/30 bg-card p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-sm font-bold text-foreground"><Boxes className="h-4 w-4 text-primary" /> المعدات</h2>
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => setScanning(true)}
           className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border/40 px-2.5 text-xs font-bold text-primary"
         >
           <QrCode className="h-3.5 w-3.5" /> مسح
-        </button>
+        </Button>
       </div>
 
       {scanning ? (

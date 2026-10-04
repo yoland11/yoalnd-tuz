@@ -137,18 +137,18 @@ export default function CrewsPage() {
               </div>
               {crew.internalNotes && <p className="text-xs text-muted-foreground mb-3 rounded-lg bg-background/50 border border-border/20 p-2">{crew.internalNotes}</p>}
               <div className="flex items-center gap-2">
-                <button
+                <Button variant="ghost"
                   onClick={() => setEditing({ id: crew.id, name: crew.name, isActive: crew.isActive, status, internalNotes: crew.internalNotes ?? "" })}
                   className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20"
                 >
                   <Edit2 className="w-3.5 h-3.5" /> تعديل
-                </button>
-                <button
+                </Button>
+                <Button variant="ghost"
                   onClick={() => confirm("حذف الكادر؟") && del.mutate(crew.id)}
                   className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                </Button>
               </div>
             </div>
           );})}
@@ -164,7 +164,7 @@ export default function CrewsPage() {
           >
             <div className="flex items-center justify-between">
               <h3 className="font-bold text-foreground">{editing.id ? "تعديل كادر" : "كادر جديد"}</h3>
-              <button type="button" onClick={() => setEditing(null)}><X className="w-5 h-5 text-muted-foreground" /></button>
+              <Button variant="ghost" type="button" onClick={() => setEditing(null)}><X className="w-5 h-5 text-muted-foreground" /></Button>
             </div>
             <Field label="اسم الكادر" value={editing.name} onChange={v => setEditing(current => ({ ...current!, name: v }))} />
             <div>

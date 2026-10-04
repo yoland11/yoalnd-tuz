@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { Camera, Crown, MessageSquare, TriangleAlert } from "lucide-react";
 import type { KoshaManagerBooking } from "@/lib/kosha-manager-contract";
 import { bookingLabels, executionLabels, paymentLabels } from "@/lib/kosha-manager";
@@ -17,5 +18,5 @@ export function KoshaThumbnail({booking}:{booking:KoshaManagerBooking}) {
 export function BookingActivityIndicators({booking,onClick}:{booking:KoshaManagerBooking;onClick:()=>void}) {
   const a=booking.activity;
   if(!a.photos&&!a.notes&&!a.problems)return null;
-  return <button type="button" onClick={onClick} className="flex min-h-10 flex-wrap items-center gap-3 rounded-lg text-xs text-slate-500 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" aria-label={`تنفيذ الكادر: ${a.photos} صور، ${a.notes} ملاحظات، ${a.problems} مشاكل`}><span className="flex items-center gap-1"><Camera size={14}/>{a.photos}</span><span className="flex items-center gap-1"><MessageSquare size={14}/>{a.notes}</span>{a.problems>0&&<span className={cn("flex items-center gap-1",a.openProblems>0&&"text-amber-800")}><TriangleAlert size={14}/>{a.problems}{a.openProblems>0&&" · مشكلة مفتوحة"}</span>}</button>;
+  return <Button variant="ghost" type="button" onClick={onClick} className="flex min-h-10 flex-wrap items-center gap-3 rounded-lg text-xs text-slate-500 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" aria-label={`تنفيذ الكادر: ${a.photos} صور، ${a.notes} ملاحظات، ${a.problems} مشاكل`}><span className="flex items-center gap-1"><Camera size={14}/>{a.photos}</span><span className="flex items-center gap-1"><MessageSquare size={14}/>{a.notes}</span>{a.problems>0&&<span className={cn("flex items-center gap-1",a.openProblems>0&&"text-amber-800")}><TriangleAlert size={14}/>{a.problems}{a.openProblems>0&&" · مشكلة مفتوحة"}</span>}</Button>;
 }

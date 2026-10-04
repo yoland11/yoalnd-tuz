@@ -93,12 +93,12 @@ export default function CategoriesPage() {
                   {!p.isActive && <span className="text-xs px-2 py-0.5 rounded-full bg-status-danger/10 text-status-danger">مخفي</span>}
                 </div>
                 <div className="flex items-center gap-1">
-                  <button onClick={() => setEditing({ name: "", nameAr: "", slug: "", parentId: p.id, imageUrl: "", imageMetadata: {}, isActive: true, sortOrder: 0 })}
+                  <Button variant="ghost" onClick={() => setEditing({ name: "", nameAr: "", slug: "", parentId: p.id, imageUrl: "", imageMetadata: {}, isActive: true, sortOrder: 0 })}
                     className="text-xs px-2 py-1 rounded-lg text-primary hover:bg-primary/10 inline-flex items-center gap-1">
                     <Plus className="w-3.5 h-3.5" /> فرعي
-                  </button>
-                  <button onClick={() => setEditing(p)} className="text-primary hover:bg-primary/10 p-2 rounded-lg"><Edit2 className="w-4 h-4" /></button>
-                  <button onClick={() => confirm("حذف القسم؟") && del.mutate(p.id)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+                  </Button>
+                  <Button variant="ghost" onClick={() => setEditing(p)} className="text-primary hover:bg-primary/10 p-2 rounded-lg"><Edit2 className="w-4 h-4" /></Button>
+                  <Button variant="ghost" onClick={() => confirm("حذف القسم؟") && del.mutate(p.id)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg"><Trash2 className="w-4 h-4" /></Button>
                 </div>
               </div>
               <div className="p-3 space-y-1">
@@ -112,8 +112,8 @@ export default function CategoriesPage() {
                       {!c.isActive && <span className="text-xs text-status-danger">(مخفي)</span>}
                     </div>
                     <div className="flex items-center gap-1">
-                      <button onClick={() => setEditing(c)} className="text-primary hover:bg-primary/10 p-1.5 rounded"><Edit2 className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => confirm("حذف؟") && del.mutate(c.id)} className="text-status-danger hover:bg-status-danger/10 p-1.5 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
+                      <Button variant="ghost" onClick={() => setEditing(c)} className="text-primary hover:bg-primary/10 p-1.5 rounded"><Edit2 className="w-3.5 h-3.5" /></Button>
+                      <Button variant="ghost" onClick={() => confirm("حذف؟") && del.mutate(c.id)} className="text-status-danger hover:bg-status-danger/10 p-1.5 rounded"><Trash2 className="w-3.5 h-3.5" /></Button>
                     </div>
                   </div>
                 ))}
@@ -130,7 +130,7 @@ export default function CategoriesPage() {
             className="bg-card border border-border/40 rounded-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="font-bold text-foreground">{editing.id ? "تعديل" : "جديد"} {editing.parentId ? "(فرعي)" : ""}</h3>
-              <button type="button" onClick={() => setEditing(null)}><X className="w-5 h-5 text-muted-foreground" /></button>
+              <Button variant="ghost" type="button" onClick={() => setEditing(null)}><X className="w-5 h-5 text-muted-foreground" /></Button>
             </div>
             <Field label="الاسم بالعربي" value={editing.nameAr ?? ""} onChange={v => setEditing(s => ({ ...s!, nameAr: v }))} />
             <Field label="الاسم بالإنجليزي" value={editing.name ?? ""} onChange={v => setEditing(s => ({ ...s!, name: v }))} />

@@ -248,6 +248,8 @@ export function GraduationStudentWizard({
   onComplete?: (order: Receipt) => void;
 }) {
   const storageKey = `ajn-student-wizard:${scope}`;
+  const showDetailedMeasurements =
+    scope === "individual" || base.showDetailedMeasurements !== false;
   const seed = (): StudentForm => ({
     ...newStudent(),
     ...(scope === "individual"
@@ -359,13 +361,16 @@ export function GraduationStudentWizard({
   );
   const change = (patch: Partial<StudentForm>) =>
     setForm((current) => ({ ...current, ...patch }));
+  const submissionForm = showDetailedMeasurements
+    ? form
+    : { ...form, size: "", measurements: {} };
   function go(next: number) {
     setError("");
     setStep(next);
     requestAnimationFrame(() => heading.current?.focus());
   }
   function next() {
-    const issue = studentIssue(form, step);
+    const issue = studentIssue(submissionForm, step);
     if (issue) {
       setError(issue);
       return;
@@ -384,7 +389,7 @@ export function GraduationStudentWizard({
   async function save(addAnother: boolean) {
     if (saving.current) return;
     for (const index of [0, 2]) {
-      const issue = studentIssue(form, index);
+      const issue = studentIssue(submissionForm, index);
       if (issue) {
         setStep(index);
         setError(issue);
@@ -397,7 +402,7 @@ export function GraduationStudentWizard({
     try {
       const submission = attempt || {
         key: crypto.randomUUID(),
-        body: JSON.stringify(studentPayload(form, base)),
+        body: JSON.stringify(studentPayload(submissionForm, base)),
       };
       setAttempt(submission);
       try {
@@ -619,16 +624,17 @@ export function GraduationStudentWizard({
                   className="mt-4 grid grid-cols-4 gap-1 rounded-2xl border border-[#f0ccd3] bg-[#fff0f2] p-1"
                 >
                   {SASH_TYPES.map((type) => (
-                    <button
+                    <Button
                       key={type.key}
                       type="button"
                       aria-label={type.label}
                       aria-pressed={form.sashType === type.key}
+                      variant={form.sashType === type.key ? "selected" : "outline"}
                       onClick={() => change({ sashType: type.key })}
-                      className={`min-h-11 rounded-xl px-2 py-2 text-xs font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:text-sm ${form.sashType === type.key ? "bg-[#68002f] text-white shadow-md" : "text-[#805c68] hover:bg-white/80"}`}
+                      className={`min-h-11 rounded-xl px-2 py-2 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:text-sm ${form.sashType === type.key ? "border-[#68002f] bg-[#68002f] text-white shadow-md hover:bg-[#68002f]" : "border-transparent text-[#805c68] hover:bg-white/80"}`}
                     >
                       {type.label}
-                    </button>
+                    </Button>
                   ))}
                 </div>
                 {(() => {
@@ -815,65 +821,69 @@ export function GraduationStudentWizard({
                     </Button>
                   ))}
                 </div>
-                <Label htmlFor="student-size">
-                  مقاس البدن (أو اكتب رقم مقاسك)
-                </Label>
-                <div className="flex flex-wrap gap-2">
-                  {["XS", "S", "M", "L", "XL", "XXL"].map((size) => (
-                    <Button
-                      key={size}
-                      variant={form.size === size ? "default" : "outline"}
-                      aria-pressed={form.size === size}
-                      onClick={() => change({ size })}
-                    >
-                      {size}
-                    </Button>
-                  ))}
-                </div>
-                <Input
-                  id="student-size"
-                  value={form.size}
-                  maxLength={20}
-                  placeholder="مثلاً: M أو 48"
-                  onChange={(event) => change({ size: event.target.value })}
-                />
-                {form.size && (
-                  <p className="text-sm text-muted-foreground">
-                    مقاسك: {form.size}
-                    {form.size === "XS" ? " — صغير جداً" : ""}
-                    {form.size === "XS" && form.gender === "male"
-                      ? " (44 رجالي، تقريبي حسب القالب)"
-                      : ""}
-                  </p>
-                )}
-                <details>
-                  <summary className="cursor-pointer py-3 font-semibold">
-                    أدخل قياساتك بالتفصيل (اختياري)
-                  </summary>
-                  <div className="mt-3 grid gap-4 sm:grid-cols-2">
-                    {MEASUREMENTS.map(([key, label, min, max]) => (
-                      <div key={key}>
-                        <Label htmlFor={`measure-${key}`}>{label}</Label>
-                        <Input
-                          id={`measure-${key}`}
-                          className="mt-2"
-                          type="number"
-                          min={min}
-                          max={max}
-                          value={form.measurements[key] || ""}
-                          onChange={(event) =>
-                            change({
-                              measurements: {
-                                ...form.measurements,
-                                [key]: event.target.value,
-                              },
-                            })
-                          }
-                        />
+                {showDetailedMeasurements ? (
+                  <div className="space-y-4">
+                    <Label htmlFor="student-size">
+                      مقاس البدن (أو اكتب رقم مقاسك)
+                    </Label>
+                    <div className="flex flex-wrap gap-2">
+                      {["XS", "S", "M", "L", "XL", "XXL"].map((size) => (
+                        <Button
+                          key={size}
+                          variant={form.size === size ? "default" : "outline"}
+                          aria-pressed={form.size === size}
+                          onClick={() => change({ size })}
+                        >
+                          {size}
+                        </Button>
+                      ))}
+                    </div>
+                    <Input
+                      id="student-size"
+                      value={form.size}
+                      maxLength={20}
+                      placeholder="مثلاً: M أو 48"
+                      onChange={(event) => change({ size: event.target.value })}
+                    />
+                    {form.size && (
+                      <p className="text-sm text-muted-foreground">
+                        مقاسك: {form.size}
+                        {form.size === "XS" ? " — صغير جداً" : ""}
+                        {form.size === "XS" && form.gender === "male"
+                          ? " (44 رجالي، تقريبي حسب القالب)"
+                          : ""}
+                      </p>
+                    )}
+                    <details>
+                      <summary className="cursor-pointer py-3 font-semibold">
+                        أدخل قياساتك بالتفصيل (اختياري)
+                      </summary>
+                      <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                        {MEASUREMENTS.map(([key, label, min, max]) => (
+                          <div key={key}>
+                            <Label htmlFor={`measure-${key}`}>{label}</Label>
+                            <Input
+                              id={`measure-${key}`}
+                              className="mt-2"
+                              type="number"
+                              min={min}
+                              max={max}
+                              value={form.measurements[key] || ""}
+                              onChange={(event) =>
+                                change({
+                                  measurements: {
+                                    ...form.measurements,
+                                    [key]: event.target.value,
+                                  },
+                                })
+                              }
+                            />
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    </details>
                   </div>
-                </details>
+                ) : null}
               </>
             )}
             {step === 3 && (
@@ -1003,7 +1013,7 @@ export function GraduationStudentWizard({
                       SASH_TYPES.find((type) => type.key === form.sashType)
                         ?.label
                     }{" "}
-                    · {form.size || "القياسات لاحقاً"} ·{" "}
+                    · {submissionForm.size || "القياسات لاحقاً"} ·{" "}
                     {form.flowers.reduce(
                       (sum, flower) => sum + flower.quantity,
                       0,

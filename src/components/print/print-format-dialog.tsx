@@ -190,7 +190,7 @@ function FormatCard({
   const meta = FORMAT_META[format.id];
   const Icon = format.id === "a4" ? FileText : Receipt;
   return (
-    <button
+    <Button variant="ghost"
       type="button"
       onClick={onSelect}
       aria-pressed={active}
@@ -221,7 +221,7 @@ function FormatCard({
           {format.sublabel ?? meta.sublabel}
         </span>
       </span>
-    </button>
+    </Button>
   );
 }
 

@@ -191,10 +191,10 @@ export default function DeliveryOrdersPage() {
           {rows.map((r) => (
             <div key={r.id} className="bg-card rounded-xl border border-border/30 overflow-hidden">
               <div className="p-3 sm:p-4 flex flex-wrap items-center gap-3">
-                <button
+                <Button variant="ghost"
                   type="button"
                   onClick={() => setExpanded(expanded === r.id ? null : r.id)}
-                  className="flex-1 min-w-[200px] text-right"
+                  className="block whitespace-normal flex-1 min-w-[200px] text-right"
                 >
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono text-sm font-bold text-foreground">{r.deliveryNo}</span>
@@ -215,7 +215,7 @@ export default function DeliveryOrdersPage() {
                     {r.deliveryCompany ? ` • ${r.deliveryCompany}` : ""}
                     {r.deliveryTypeLabel ? ` • ${r.deliveryTypeLabel}` : ""}
                   </p>
-                </button>
+                </Button>
 
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-primary font-bold text-sm">{formatCurrency(r.deliveryFee)}</span>
@@ -234,14 +234,14 @@ export default function DeliveryOrdersPage() {
                         ))}
                     </select>
                   )}
-                  <button
+                  <Button variant="ghost"
                     type="button"
                     onClick={() => setExpanded(expanded === r.id ? null : r.id)}
                     className="text-muted-foreground hover:text-primary"
                     aria-label="تفاصيل"
                   >
                     <ChevronDown className={`w-4 h-4 transition-transform ${expanded === r.id ? "rotate-180" : ""}`} />
-                  </button>
+                  </Button>
                 </div>
               </div>
 

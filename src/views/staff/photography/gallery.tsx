@@ -114,9 +114,9 @@ export function ShootGalleryPanel({ shootRef }: { shootRef: string }) {
           <div className="mb-3 space-y-2 rounded-lg bg-muted/40 p-2">
             <div className="flex items-center gap-2">
               <code className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" dir="ltr">{gallery.shareUrl}</code>
-              <button type="button" onClick={copyLink} aria-label="نسخ الرابط" className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border border-border/40 text-primary">
+              <Button size="iconSm" variant="ghost" type="button" onClick={copyLink} aria-label="نسخ الرابط" className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border border-border/40 text-primary">
                 <Copy className="h-4 w-4" />
-              </button>
+              </Button>
               <a href={gallery.shareUrl} target="_blank" rel="noopener noreferrer" aria-label="فتح المعرض" className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border border-border/40 text-primary">
                 <Share2 className="h-4 w-4" />
               </a>
@@ -173,7 +173,7 @@ export function ShootGalleryPanel({ shootRef }: { shootRef: string }) {
                       {entry.favoriteCount} مفضّلة · {entry.downloadCount ?? 0} تحميل
                     </div>
                   </div>
-                  <button
+                  <Button size="iconSm" variant="ghost"
                     type="button"
                     aria-label="حذف"
                     disabled={busy}
@@ -181,7 +181,7 @@ export function ShootGalleryPanel({ shootRef }: { shootRef: string }) {
                     className="grid h-9 w-9 flex-shrink-0 place-items-center text-destructive"
                   >
                     <Trash2 className="h-4 w-4" />
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>

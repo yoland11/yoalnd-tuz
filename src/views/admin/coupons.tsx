@@ -228,12 +228,12 @@ export default function CouponsPage() {
                     </td>
                     <td className="p-3">
                       <div className="flex items-center gap-2">
-                        <button type="button" onClick={() => editCoupon(coupon)} className="p-2 rounded-lg text-primary hover:bg-primary/10">
+                        <Button variant="ghost" type="button" onClick={() => editCoupon(coupon)} className="p-2 rounded-lg text-primary hover:bg-primary/10">
                           <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button type="button" onClick={() => confirm("تعطيل الكوبون؟") && disableMutation.mutate(coupon.id)} className="p-2 rounded-lg text-status-danger hover:bg-status-danger/10">
+                        </Button>
+                        <Button variant="ghost" type="button" onClick={() => confirm("تعطيل الكوبون؟") && disableMutation.mutate(coupon.id)} className="p-2 rounded-lg text-status-danger hover:bg-status-danger/10">
                           <Trash2 className="w-4 h-4" />
-                        </button>
+                        </Button>
                       </div>
                     </td>
                   </tr>

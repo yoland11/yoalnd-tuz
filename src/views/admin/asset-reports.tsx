@@ -190,7 +190,7 @@ export default function AssetReportsPage() {
 
       <div className="no-print flex items-center gap-2 flex-wrap">
         {REPORTS.map(({ id, label, icon: Icon }) => (
-          <button
+          <Button variant="ghost"
             key={id}
             type="button"
             onClick={() => setTab(id)}
@@ -199,7 +199,7 @@ export default function AssetReportsPage() {
             }`}
           >
             <Icon className="w-4 h-4" /> {label}
-          </button>
+          </Button>
         ))}
       </div>
 

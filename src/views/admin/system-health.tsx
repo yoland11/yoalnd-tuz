@@ -41,7 +41,7 @@ export default function SystemHealthPage() {
           ["health", "مراقبة الصحة"],
           ["reconciliation", "مركز التسويات"],
         ] as const).map(([value, label]) => (
-          <button
+          <Button variant="ghost"
             key={value}
             type="button"
             onClick={() => setTab(value)}
@@ -52,7 +52,7 @@ export default function SystemHealthPage() {
             }`}
           >
             {label}
-          </button>
+          </Button>
         ))}
       </div>
 

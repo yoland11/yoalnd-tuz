@@ -548,7 +548,7 @@ export default function PrintLabelsPage() {
       {/* Template kinds */}
       <div className="flex items-center gap-2 flex-wrap">
         {KIND_ORDER.map((k) => (
-          <button
+          <Button variant="ghost"
             key={k}
             type="button"
             onClick={() => switchKind(k)}
@@ -559,7 +559,7 @@ export default function PrintLabelsPage() {
             }`}
           >
             {TEMPLATE_LABELS[k]}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -570,7 +570,7 @@ export default function PrintLabelsPage() {
           ["settings", "الإعدادات", Settings2],
           ["history", "سجل الطباعة", History],
         ] as const).map(([id, label, Icon]) => (
-          <button
+          <Button variant="ghost"
             key={id}
             type="button"
             onClick={() => setTab(id)}
@@ -581,7 +581,7 @@ export default function PrintLabelsPage() {
             }`}
           >
             <Icon className="w-4 h-4" /> {label}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -624,13 +624,13 @@ export default function PrintLabelsPage() {
                   />
                 </div>
                 <div className="flex items-center justify-between text-xs">
-                  <button type="button" onClick={selectAllFiltered} className="text-primary hover:underline">
+                  <Button variant="ghost" type="button" onClick={selectAllFiltered} className="text-primary hover:underline">
                     تحديد الكل
-                  </button>
+                  </Button>
                   <span className="text-muted-foreground">{selectedIds.size} محدد</span>
-                  <button type="button" onClick={clearSelection} className="text-muted-foreground hover:underline">
+                  <Button variant="ghost" type="button" onClick={clearSelection} className="text-muted-foreground hover:underline">
                     مسح
-                  </button>
+                  </Button>
                 </div>
                 <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
                   {isLoading ? (
@@ -641,7 +641,7 @@ export default function PrintLabelsPage() {
                     filtered.map((p) => {
                       const active = selectedIds.has(p.id);
                       return (
-                        <button
+                        <Button variant="ghost"
                           key={p.id}
                           type="button"
                           onClick={() => toggleSelect(p.id)}
@@ -660,7 +660,7 @@ export default function PrintLabelsPage() {
                           ) : (
                             <Square className="w-4 h-4 text-muted-foreground shrink-0" />
                           )}
-                        </button>
+                        </Button>
                       );
                     })
                   )}
@@ -782,7 +782,7 @@ export default function PrintLabelsPage() {
                 </span>
                 <div className="flex rounded-lg border border-border/40 overflow-hidden">
                   {[0, 90, 180, 270].map((d) => (
-                    <button
+                    <Button variant="ghost"
                       key={d}
                       type="button"
                       onClick={() => persistSettings({ ...settings, rotation: d })}
@@ -791,7 +791,7 @@ export default function PrintLabelsPage() {
                       }`}
                     >
                       {d}°
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>
@@ -879,12 +879,12 @@ export default function PrintLabelsPage() {
                 ) : (
                   savedTemplates.map((t) => (
                     <div key={t.id} className="flex items-center justify-between gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-1.5">
-                      <button type="button" onClick={() => applySavedTemplate(t)} className="text-sm text-foreground hover:text-primary truncate text-right flex-1">
+                      <Button variant="ghost" type="button" onClick={() => applySavedTemplate(t)} className="text-sm text-foreground hover:text-primary truncate text-right flex-1">
                         {t.name}
-                      </button>
-                      <button type="button" onClick={() => deleteSavedTemplate(t.id)} className="text-muted-foreground hover:text-red-500">
+                      </Button>
+                      <Button variant="ghost" type="button" onClick={() => deleteSavedTemplate(t.id)} className="text-muted-foreground hover:text-red-500">
                         <Trash2 className="w-4 h-4" />
-                      </button>
+                      </Button>
                     </div>
                   ))
                 )}
@@ -904,7 +904,7 @@ export default function PrintLabelsPage() {
                 ["roll", "رول حراري", "ملصق واحد لكل صفحة (Xprinter وما شابه)"],
                 ["sheet", "ورقة متعددة", "شبكة ملصقات على A4/A5/Letter"],
               ] as const).map(([mode, title, desc]) => (
-                <button
+                <Button variant="ghost"
                   key={mode}
                   type="button"
                   onClick={() => persistSettings({ ...settings, layoutMode: mode as LabelLayoutMode })}
@@ -916,7 +916,7 @@ export default function PrintLabelsPage() {
                 >
                   <span className="block text-sm font-semibold text-foreground">{title}</span>
                   <span className="block text-xs text-muted-foreground mt-0.5">{desc}</span>
-                </button>
+                </Button>
               ))}
             </div>
           </div>

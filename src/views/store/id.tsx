@@ -3,6 +3,7 @@ import { useParams, useLocation, Link } from "wouter";
 import { useGetProduct, useListReviews, useCreateReview, useAddToCart, getGetCartQueryKey, getGetProductQueryKey, getListReviewsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { CalendarDays, Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus, Heart, Loader2, Package } from "lucide-react";
@@ -221,7 +222,7 @@ export default function ProductDetail() {
             {images.length > 1 && (
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {images.map((img, i) => (
-                  <button
+                  <Button size="flush" variant="ghost"
                     key={i}
                     onClick={() => { setPrimaryImageFailed(false); setSelectedImage(i); }}
                     aria-label={`${t("صورة")} ${i + 1}`}
@@ -229,7 +230,7 @@ export default function ProductDetail() {
                     className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${i === selectedImage ? "border-primary" : "border-transparent hover:border-border/60"}`}
                   >
                     <img src={img} alt="" className="w-full h-full" style={{ objectFit: String(imageMetadata[i]?.objectFit ?? "cover") as any }} />
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}
@@ -240,16 +241,17 @@ export default function ProductDetail() {
             <div className="text-center">
               <div className="flex items-start justify-center gap-3">
                 <h1 className="text-3xl font-bold text-foreground mb-2">{productName}</h1>
-                <button
+                <IconButton
                   type="button"
                   onClick={() => toggleFavorite(productId)}
                   aria-pressed={favorited}
                   aria-label={favorited ? t("إزالة من المفضّلة") : t("إضافة إلى المفضّلة")}
                   title={favorited ? t("إزالة من المفضّلة") : t("إضافة إلى المفضّلة")}
-                  className={`shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-full border transition-colors ${favorited ? "border-primary/50 bg-primary/10 text-primary" : "border-border/40 text-muted-foreground hover:text-primary"}`}
+                  variant={favorited ? "selected" : "outline"}
+                  className="h-11 w-11 shrink-0 rounded-full"
                 >
                   <Heart className={`h-5 w-5 ${favorited ? "fill-current" : ""}`} />
-                </button>
+                </IconButton>
               </div>
               {product.category && (
                 <Badge variant="secondary" className="text-xs text-primary border border-primary/30">{product.category}</Badge>
@@ -308,14 +310,13 @@ export default function ProductDetail() {
                   {colors.map((color) => {
                     const selected = colorKey(selectedColor) === colorKey(color);
                     return (
-                    <button
+                    <Button
                       key={colorKey(color)}
+                      type="button"
                       onClick={() => handleSelectColor(color)}
-                      className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm transition-all duration-200 ${
-                        selected
-                          ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/20"
-                          : "border-border/40 text-muted-foreground hover:border-primary/50 hover:bg-primary/5"
-                      }`}
+                      variant={selected ? "selected" : "outline"}
+                      aria-pressed={selected}
+                      className="h-auto min-h-11 w-full justify-between rounded-xl px-3 py-2 text-sm font-medium"
                       title={`${color.name} ${color.hex}`}
                     >
                       <span className="flex min-w-0 items-center gap-2">
@@ -323,7 +324,7 @@ export default function ProductDetail() {
                         <span className="truncate">{color.name}</span>
                       </span>
                       {selected && <Check className="h-4 w-4 shrink-0" />}
-                    </button>
+                    </Button>
                     );
                   })}
                 </div>
@@ -336,23 +337,27 @@ export default function ProductDetail() {
                 <div className="flex items-center justify-center gap-4">
                   <span className="text-sm font-medium text-foreground">{t("الكمية")}:</span>
                   <div className="flex items-center gap-2 border border-border/40 rounded-lg overflow-hidden">
-                    <button
+                    <IconButton
+                      type="button"
                       onClick={() => setQuantity(q => Math.max(1, q - 1))}
                       aria-label={t("تقليل الكمية")}
                       disabled={quantity <= 1}
-                      className="px-3 py-2 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
+                      size="compact"
+                      variant="quiet"
                     >
                       <Minus className="w-4 h-4" />
-                    </button>
+                    </IconButton>
                     <span className="px-4 py-2 text-foreground font-medium" aria-live="polite">{quantity}</span>
-                    <button
+                    <IconButton
+                      type="button"
                       onClick={() => setQuantity(q => Math.min(product.stock, q + 1))}
                       aria-label={t("زيادة الكمية")}
                       disabled={quantity >= product.stock}
-                      className="px-3 py-2 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
+                      size="compact"
+                      variant="quiet"
                     >
                       <Plus className="w-4 h-4" />
-                    </button>
+                    </IconButton>
                   </div>
                 </div>
 
@@ -484,7 +489,7 @@ export default function ProductDetail() {
                 <label className="block text-sm font-medium text-foreground mb-1.5">{t("التقييم")}</label>
                 <div className="flex gap-1" role="group" aria-label={t("التقييم")}>
                   {[1,2,3,4,5].map(s => (
-                    <button
+                    <Button variant="ghost"
                       key={s}
                       type="button"
                       aria-label={`${s} ${t("نجوم")}`}
@@ -493,7 +498,7 @@ export default function ProductDetail() {
                       className="rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <Star className={`w-6 h-6 transition-colors ${s <= reviewRating ? "fill-primary text-primary" : "text-muted-foreground/40"}`} />
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>
@@ -524,37 +529,37 @@ export default function ProductDetail() {
           className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center p-4"
           onClick={() => setPreviewOpen(false)}
         >
-          <button
+          <Button variant="ghost"
             className="absolute top-4 right-4 text-white/70 hover:text-white"
             onClick={() => setPreviewOpen(false)}
           >
             <X className="w-8 h-8" />
-          </button>
+          </Button>
           <div className="relative max-w-4xl w-full" onClick={e => e.stopPropagation()}>
             <img src={images[selectedImage]} alt="" className="w-full max-h-[80dvh] object-contain rounded-xl" />
             {images.length > 1 && (
               <>
-                <button
+                <Button variant="ghost"
                   className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/50 text-white p-2 rounded-full hover:bg-black/80 transition-colors"
                   onClick={() => setSelectedImage(i => (i - 1 + images.length) % images.length)}
                 >
                   <ChevronLeft className="w-6 h-6" />
-                </button>
-                <button
+                </Button>
+                <Button variant="ghost"
                   className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/50 text-white p-2 rounded-full hover:bg-black/80 transition-colors"
                   onClick={() => setSelectedImage(i => (i + 1) % images.length)}
                 >
                   <ChevronRight className="w-6 h-6" />
-                </button>
+                </Button>
               </>
             )}
           </div>
           <div className="absolute bottom-6 flex gap-2">
             {images.map((_, i) => (
-              <button
+              <Button size="flush" variant="ghost"
                 key={i}
                 onClick={() => setSelectedImage(i)}
-                className={`w-2 h-2 rounded-full transition-colors ${i === selectedImage ? "bg-primary" : "bg-white/40"}`}
+                className={`min-h-0 max-md:min-h-0 w-2 h-2 rounded-full transition-colors ${i === selectedImage ? "bg-primary" : "bg-white/40"}`}
               />
             ))}
           </div>

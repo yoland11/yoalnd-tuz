@@ -116,7 +116,7 @@ function NumPad({
         {/* Keys */}
         <div className="grid grid-cols-3 gap-1.5 p-3">
           {keys.map(k => (
-            <button
+            <Button variant="ghost"
               key={k}
               onClick={() => press(k)}
               className={`h-14 rounded-xl text-xl font-bold transition-all active:scale-95 ${
@@ -126,22 +126,22 @@ function NumPad({
               }`}
             >
               {k}
-            </button>
+            </Button>
           ))}
         </div>
         <div className="grid grid-cols-2 gap-1.5 px-3 pb-3">
-          <button
+          <Button variant="ghost"
             onClick={() => press(".")}
             className="h-12 rounded-xl text-lg font-bold bg-muted/60 text-foreground hover:bg-primary/20 hover:text-primary transition-all active:scale-95"
           >
             .
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={onClose}
             className="h-12 rounded-xl text-sm font-bold bg-primary text-black hover:bg-primary/90 transition-all active:scale-95"
           >
             تأكيد ✓
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -184,7 +184,7 @@ function CustomerPanel({
           {showDropdown && filtered.length > 0 && (
             <div className="absolute top-full right-0 left-0 z-30 mt-1 bg-card border border-border/30 rounded-lg shadow-xl overflow-hidden">
               {filtered.map(c => (
-                <button
+                <Button variant="ghost"
                   key={c.id}
                   onMouseDown={() => { onSelectCustomer(c); setShowDropdown(false); }}
                   className="w-full flex items-center justify-between px-3 py-2 hover:bg-primary/10 text-sm text-right"
@@ -196,7 +196,7 @@ function CustomerPanel({
                   {(c.totalDebt ?? 0) > 0 && (
                     <span className="text-xs text-status-danger">{formatCurrency(c.totalDebt ?? 0)} دين</span>
                   )}
-                </button>
+                </Button>
               ))}
             </div>
           )}
@@ -208,14 +208,14 @@ function CustomerPanel({
           dir="ltr"
           className="w-32 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
-        {saleType === "retail" ? <button
+        {saleType === "retail" ? <Button variant="ghost"
           type="button"
           onClick={() => setAddOpen(true)}
           title="إضافة عميل جديد"
           className="flex shrink-0 items-center gap-1 rounded-lg border border-border/40 bg-background px-2.5 text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground"
         >
           <UserPlus className="w-4 h-4" />
-        </button> : null}
+        </Button> : null}
       </div>
       <CustomerQuickAddDialog
         open={addOpen}
@@ -248,7 +248,7 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product)
   const img = product.images?.[0];
 
   return (
-    <button
+    <Button size="flush" variant="ghost"
       onClick={() => !outOfStock && onAdd(product)}
       disabled={outOfStock}
       className={`group relative flex flex-col bg-card border rounded-xl overflow-hidden text-right transition-all active:scale-95 ${
@@ -275,7 +275,7 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product)
           <Plus className="w-4 h-4" />
         </div>
       )}
-    </button>
+    </Button>
   );
 }
 
@@ -1017,9 +1017,9 @@ export default function POSPage() {
           <div className="bg-card rounded-2xl border border-border/40 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b border-border/30">
               <h3 className="font-bold text-lg">الفواتير المعلقة ({held.length})</h3>
-              <button onClick={() => setShowHeld(false)} className="text-muted-foreground hover:text-foreground">
+              <Button variant="ghost" onClick={() => setShowHeld(false)} className="text-muted-foreground hover:text-foreground">
                 <X className="w-5 h-5" />
-              </button>
+              </Button>
             </div>
             <div className="p-3 max-h-80 overflow-y-auto space-y-2">
               {held.length === 0
@@ -1036,9 +1036,9 @@ export default function POSPage() {
                         <Button size="sm" onClick={() => retrieveHeld(h)}>
                           <PlayCircle className="w-3.5 h-3.5 ml-1" />استرجاع
                         </Button>
-                        <button onClick={() => deleteHeld(h.id)} className="text-muted-foreground hover:text-destructive">
+                        <Button variant="ghost" onClick={() => deleteHeld(h.id)} className="text-muted-foreground hover:text-destructive">
                           <Trash2 className="w-4 h-4" />
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   ))
@@ -1054,7 +1054,7 @@ export default function POSPage() {
           <div className="bg-card rounded-2xl border border-border/40 w-full max-w-xs shadow-2xl p-5" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-bold text-lg">طباعة الفاتورة</h3>
-              <button onClick={() => setShowPrint(false)}><X className="w-5 h-5 text-muted-foreground" /></button>
+              <Button variant="ghost" onClick={() => setShowPrint(false)}><X className="w-5 h-5 text-muted-foreground" /></Button>
             </div>
             <p className="text-xs text-muted-foreground mb-4">
               {lastInvoiceNo ? `آخر فاتورة: ${lastInvoiceNo}` : "سيتم الطباعة بعد الحفظ"}
@@ -1065,7 +1065,7 @@ export default function POSPage() {
                 { size: "58mm" as const, label: "Thermal 58mm", icon: "🖨️" },
                 { size: "a4" as const, label: "A4 عادي", icon: "📄" },
               ].map(({ size, label, icon }) => (
-                <button
+                <Button variant="ghost"
                   key={size}
                   onClick={() => {
                     setShowPrint(false);
@@ -1087,7 +1087,7 @@ export default function POSPage() {
                 >
                   <span className="text-xl">{icon}</span>
                   <span className="font-medium text-sm">{label}</span>
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -1097,14 +1097,14 @@ export default function POSPage() {
       {/* ══ TOP BAR ══ */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex shrink-0 rounded-lg border border-border/40 bg-card p-1" aria-label="نوع البيع">
-          {([["retail", "مفرد"], ["wholesale", "جملة"]] as const).map(([type, label]) => <button key={type} type="button" onClick={() => {
+          {([["retail", "مفرد"], ["wholesale", "جملة"]] as const).map(([type, label]) => <Button variant="ghost" key={type} type="button" onClick={() => {
             if (type === "wholesale" && cart.some((item) => item.bundleId)) { toast({ title: "أزل الباقات أولاً", description: "بيع الباقات بالجملة غير متاح حالياً.", variant: "destructive" }); return; }
             setSaleType(type);
             if ((type === "retail" && selectedCustomer?.customerType === "wholesale") || (type === "wholesale" && selectedCustomer?.customerType !== "wholesale")) {
               setSelectedCustomerId(null);
               setForm((current) => ({ ...current, customerName: "", customerPhone: "" }));
             }
-          }} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${saleType === type ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>{label}</button>)}
+          }} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${saleType === type ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>{label}</Button>)}
         </div>
         {/* Barcode / Search */}
         <div className="relative flex-1 min-w-48 max-w-xs">
@@ -1118,9 +1118,9 @@ export default function POSPage() {
             className="w-full bg-card border border-primary/40 rounded-xl px-4 py-2.5 pr-9 text-sm font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shadow-sm"
           />
           {searchQ && (
-            <button onClick={() => { setSearchQ(""); barcodeRef.current?.focus(); }} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+            <Button variant="ghost" onClick={() => { setSearchQ(""); barcodeRef.current?.focus(); }} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
               <X className="w-4 h-4" />
-            </button>
+            </Button>
           )}
         </div>
 
@@ -1145,23 +1145,23 @@ export default function POSPage() {
         {/* Quick Action Buttons */}
         <div className="flex gap-2 flex-wrap">
           {held.length > 0 && (
-            <button onClick={() => setShowHeld(true)} className="relative flex items-center gap-1.5 px-3 py-2 rounded-xl bg-status-warning/10 border border-status-warning/30 text-status-warning text-sm font-medium hover:bg-status-warning/20 transition-colors">
+            <Button variant="ghost" onClick={() => setShowHeld(true)} className="relative flex items-center gap-1.5 px-3 py-2 rounded-xl bg-status-warning/10 border border-status-warning/30 text-status-warning text-sm font-medium hover:bg-status-warning/20 transition-colors">
               <PlayCircle className="w-4 h-4" />معلقة
               <span className="absolute -top-1.5 -left-1.5 bg-status-warning text-black text-[11px] rounded-full w-4 h-4 flex items-center justify-center font-bold">{held.length}</span>
-            </button>
+            </Button>
           )}
-          <button
+          <Button variant="ghost"
             onClick={holdInvoice} disabled={cart.length === 0}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-card border border-border/40 text-sm text-muted-foreground hover:text-foreground hover:border-border transition-colors disabled:opacity-40"
           >
             <PauseCircle className="w-4 h-4" />تعليق
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={() => { setCart([]); setForm(newForm()); setSaleType("retail"); setSelectedCustomerId(null); setCustomerStats(null); }}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-card border border-border/40 text-sm text-muted-foreground hover:text-foreground hover:border-border transition-colors"
           >
             <RefreshCw className="w-4 h-4" />جديدة
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -1171,31 +1171,31 @@ export default function POSPage() {
         <div className="flex-1 min-w-0 space-y-3 overflow-hidden">
           {/* Category Tabs */}
           <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-            <button
+            <Button variant="ghost"
               onClick={() => setCategoryId(null)}
               className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${categoryId === null ? "bg-primary text-black" : "bg-card border border-border/30 text-muted-foreground hover:text-foreground hover:border-primary/30"}`}
             >
               <Grid3X3 className="w-3.5 h-3.5" />الكل ({products.length})
-            </button>
+            </Button>
             {categories.map(cat => {
               const count = products.filter((product) => categoryMatches(product, cat)).length;
               return (
-                <button
+                <Button variant="ghost"
                   key={cat.id}
                   onClick={() => setCategoryId(cat.id)}
                   className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${categoryId === cat.id ? "bg-primary text-black" : "bg-card border border-border/30 text-muted-foreground hover:text-foreground hover:border-primary/30"}`}
                 >
                   <Tag className="w-3 h-3" />{cat.nameAr || cat.name} ({count})
-                </button>
+                </Button>
               );
             })}
             <div className="mr-auto shrink-0">
-              <button
+              <Button variant="ghost"
                 onClick={() => setViewMode(v => v === "grid" ? "list" : "grid")}
                 className="px-2.5 py-1.5 rounded-lg bg-card border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
               >
                 {viewMode === "grid" ? <List className="w-3.5 h-3.5" /> : <Grid3X3 className="w-3.5 h-3.5" />}
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -1218,7 +1218,7 @@ export default function POSPage() {
                   const stock = parseFloat(p.stock) || 0;
                   const tracksInventory = p.itemType !== "service" && p.trackInventory !== false;
                   return (
-                    <button
+                    <Button size="flush" variant="ghost"
                       key={p.id}
                       onClick={() => (!tracksInventory || stock > 0) && addToCart(p)}
                       disabled={tracksInventory && stock <= 0}
@@ -1234,7 +1234,7 @@ export default function POSPage() {
                         <p className="text-sm font-bold text-primary">{formatCurrency(p.price)}</p>
                         {tracksInventory ? <p className={`text-[11px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>{stock > 0 ? `${stock} متبقي` : "نفذ"}</p> : null}
                       </div>
-                    </button>
+                    </Button>
                   );
                 })}
                 {visibleProducts.length === 0 && (
@@ -1256,9 +1256,9 @@ export default function POSPage() {
                 <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-medium">{cart.length}</span>
               </div>
               {cart.length > 0 && (
-                <button onClick={() => setCart([])} className="text-xs text-muted-foreground hover:text-destructive flex items-center gap-1">
+                <Button variant="ghost" onClick={() => setCart([])} className="text-xs text-muted-foreground hover:text-destructive flex items-center gap-1">
                   <Trash2 className="w-3.5 h-3.5" />مسح
-                </button>
+                </Button>
               )}
             </div>
             <div className="overflow-y-auto flex-1" style={{ maxHeight: 280 }}>
@@ -1277,41 +1277,41 @@ export default function POSPage() {
                             {item.itemType === "service" && <p className="text-[11px] text-muted-foreground">{item.serviceUnit || "خدمة"} · لا تخصم من المخزون</p>}
                             <p className="text-xs text-primary font-bold">{formatCurrency(item.total)}</p>
                           </div>
-                          <button onClick={() => removeItem(idx)} className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity mt-0.5 shrink-0">
+                          <Button variant="ghost" onClick={() => removeItem(idx)} className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity mt-0.5 shrink-0">
                             <X className="w-3.5 h-3.5" />
-                          </button>
+                          </Button>
                         </div>
                         <div className="flex items-center gap-2 mt-1.5">
                           {/* Qty */}
                           <div className="flex items-center gap-1 bg-background border border-border/30 rounded-lg overflow-hidden">
-                            <button onClick={() => changeQty(idx, -1)} className="px-2 py-1 hover:bg-primary/10 hover:text-primary transition-colors">
+                            <Button variant="ghost" onClick={() => changeQty(idx, -1)} className="px-2 py-1 hover:bg-primary/10 hover:text-primary transition-colors">
                               <Minus className="w-3 h-3" />
-                            </button>
-                            <button
+                            </Button>
+                            <Button variant="ghost"
                               onClick={() => { setNumpadField({ idx, field: "quantity" }); setNumpadVal(item.quantity.toString()); }}
                               className="px-2 py-1 font-mono text-sm font-bold min-w-[32px] text-center hover:text-primary"
                             >
                               {item.quantity}
-                            </button>
-                            <button onClick={() => changeQty(idx, 1)} className="px-2 py-1 hover:bg-primary/10 hover:text-primary transition-colors">
+                            </Button>
+                            <Button variant="ghost" onClick={() => changeQty(idx, 1)} className="px-2 py-1 hover:bg-primary/10 hover:text-primary transition-colors">
                               <Plus className="w-3 h-3" />
-                            </button>
+                            </Button>
                           </div>
                           {/* Unit Price */}
-                          <button
+                          <Button variant="ghost"
                             onClick={() => { setNumpadField({ idx, field: "unitPrice" }); setNumpadVal(item.unitPrice.toString()); }}
                             className="text-xs text-muted-foreground hover:text-primary border border-transparent hover:border-primary/30 rounded px-1.5 py-0.5 transition-colors"
                           >
                             {formatCurrency(item.unitPrice)}{item.itemType === "service" ? ` / ${item.serviceUnit || "خدمة"}` : ""}
-                          </button>
+                          </Button>
                           {saleType === "wholesale" && <span className="text-[10px] text-muted-foreground">{item.priceOverride ? "سعر معدل" : item.wholesalePriceSource === "customer" ? "سعر خاص" : item.wholesalePriceSource === "tier" ? `شريحة ${item.tierMinimumQuantity}+` : item.wholesalePriceSource === "base" ? "جملة" : "سعر مفرد"}</span>}
                           {/* Discount */}
-                          <button
+                          <Button variant="ghost"
                             onClick={() => { setNumpadField({ idx, field: "discount" }); setNumpadVal(item.discount.toString()); }}
                             className={`text-xs border border-transparent hover:border-primary/30 rounded px-1.5 py-0.5 transition-colors ${item.discount > 0 ? "text-status-danger hover:text-status-danger" : "text-muted-foreground hover:text-primary"}`}
                           >
                             {item.discount > 0 ? `-${formatCurrency(item.discount)}` : "خصم"}
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     ))}
@@ -1400,14 +1400,14 @@ export default function POSPage() {
                 className="flex-1 bg-background border border-border/30 rounded px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
-              <button
+              <Button variant="ghost"
                 type="button"
                 onClick={applyCoupon}
                 disabled={subtotal <= 0}
                 className="rounded border border-primary/40 px-3 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-50"
               >
                 تطبيق
-              </button>
+              </Button>
             </div>
             <div className="flex justify-between text-lg font-bold pt-1 border-t border-border/30">
               <span>الإجمالي</span>
@@ -1420,7 +1420,7 @@ export default function POSPage() {
             {/* Payment Method */}
             <div className="grid grid-cols-4 gap-1">
               {PAYMENT_METHODS.map(m => (
-                <button
+                <Button variant="ghost"
                   key={m.value}
                   onClick={() => setForm(f => ({ ...f, paymentMethod: m.value, paidAmount: isCashPaymentMethod(m.value) ? grandTotal.toString() : f.paidAmount }))}
                   className={`rounded-lg py-2 text-xs font-semibold border transition-all ${
@@ -1430,7 +1430,7 @@ export default function POSPage() {
                   }`}
                 >
                   {m.label}
-                </button>
+                </Button>
               ))}
             </div>
 
@@ -1438,18 +1438,18 @@ export default function POSPage() {
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">المبلغ المدفوع</label>
               <div className="flex gap-2">
-                <button
+                <Button variant="ghost"
                   onClick={() => { if (isCashPaymentMethod(form.paymentMethod)) return; setNumpadField({ idx: -1, field: "paidAmount" }); setNumpadVal(form.paidAmount); }}
                   className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm font-mono font-bold text-foreground text-right hover:border-primary/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 >
                   {isCashPaymentMethod(form.paymentMethod) ? grandTotal : form.paidAmount || "0"}
-                </button>
-                <button
+                </Button>
+                <Button variant="ghost"
                   onClick={() => setForm(f => ({ ...f, paidAmount: grandTotal.toString() }))}
                   className="px-3 py-2 bg-status-success/10 border border-status-success/30 text-status-success rounded-lg text-xs font-medium hover:bg-status-success/20 transition-colors whitespace-nowrap"
                 >
                   كامل
-                </button>
+                </Button>
               </div>
             </div>
 
@@ -1493,14 +1493,14 @@ export default function POSPage() {
                 <select aria-label="إجراء الحفظ والطباعة" defaultValue="" onChange={(event) => { const action = event.target.value; event.currentTarget.value = ""; if (action === "save") void saveInvoice(); if (action === "direct") saveAndRemotePrint("direct"); if (action === "queue") saveAndRemotePrint("queue"); if (action === "options") { setPendingRemotePrintMode("direct"); setShowRemotePrintOptions(true); } }} disabled={saving || cart.length === 0} className="h-12 max-w-14 rounded-md border border-input bg-background px-2 text-sm" title="خيارات الحفظ والطباعة"><option value="">▼</option><option value="save">حفظ فقط</option><option value="direct">حفظ وطباعة مباشرة</option><option value="queue">حفظ وإرسال للطابور</option><option value="options">خيارات الطباعة</option></select>
               </div>
             </div>
-            <button
+            <Button variant="ghost"
               onClick={() => setShowPrint(true)}
               disabled={cart.length === 0 && !lastInvoiceNo}
               className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-border/30 text-sm text-muted-foreground hover:text-foreground hover:border-border hover:bg-muted/30 transition-all disabled:opacity-40"
             >
               <Printer className="w-3.5 h-3.5" />
               طباعة من هذا الجهاز (F12)
-            </button>
+            </Button>
           </div>
 
           <RemotePrintOptionsDialog
@@ -1519,12 +1519,12 @@ export default function POSPage() {
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 آخر فاتورة: <strong>{lastInvoiceNo}</strong>
               </span>
-              <button
+              <Button variant="ghost"
                 onClick={reprintLastInvoice}
                 className="text-[11px] text-status-success hover:text-status-success underline"
               >
                 إعادة طباعة
-              </button>
+              </Button>
             </div>
           )}
         </div>

@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRoute, useSearch } from "wouter";
 import { ArrowRight, Download, Loader2, Printer, ShieldCheck } from "lucide-react";
@@ -110,7 +111,7 @@ export default function Invoice() {
     <div className="print:hidden sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-border/40 bg-card/95 px-4 py-3 backdrop-blur">
       <a href="/admin/dashboard" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowRight className="h-4 w-4" />العودة</a>
       <div className="flex items-center gap-2 text-xs text-muted-foreground"><ShieldCheck className="h-4 w-4 text-emerald-600" />A4 + نزف 3 مم · جودة 300 DPI</div>
-      <div className="flex gap-2"><button onClick={downloadPdf} disabled={downloading} className="inline-flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-60">{downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}{downloading ? "جارٍ إنشاء PDF" : "PDF للطباعة"}</button><button onClick={() => printDocumentWhenImagesReady(sheetRef.current || document)} className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"><Printer className="h-4 w-4" />طباعة الفاتورة</button></div>
+      <div className="flex gap-2"><Button variant="ghost" onClick={downloadPdf} disabled={downloading} className="inline-flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-60">{downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}{downloading ? "جارٍ إنشاء PDF" : "PDF للطباعة"}</Button><Button variant="ghost" onClick={() => printDocumentWhenImagesReady(sheetRef.current || document)} className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"><Printer className="h-4 w-4" />طباعة الفاتورة</Button></div>
     </div>
     {data.financiallyReversed && <div className="print:hidden border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-center text-sm font-semibold text-destructive">تم عكس الأثر المالي لهذه الفاتورة.</div>}
     <div className="wedding-invoice-stage"><div ref={sheetRef}><WeddingInvoice data={data} model={model} settings={settings} websiteQr={websiteQr} displayNumber={displayNumber} /></div></div>

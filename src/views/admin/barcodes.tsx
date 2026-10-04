@@ -115,7 +115,7 @@ export default function BarcodesPage() {
             ) : filtered.map((product) => {
               const active = (selectedId ?? selected?.id) === product.id;
               return (
-                <button
+                <Button variant="ghost"
                   key={product.id}
                   type="button"
                   onClick={() => setSelectedId(product.id)}
@@ -128,7 +128,7 @@ export default function BarcodesPage() {
                     <p className="text-xs text-muted-foreground font-mono" dir="ltr">{product.barcode || "بدون باركود"}</p>
                   </div>
                   <Barcode className="w-4 h-4 text-primary shrink-0" />
-                </button>
+                </Button>
               );
             })}
           </div>

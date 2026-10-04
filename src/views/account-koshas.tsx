@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "wouter";
 import { Armchair, ChevronLeft, MapPin, CheckCircle2, Loader2, Video, Star, MessageCircle, Clock, LogIn } from "lucide-react";
@@ -72,7 +73,7 @@ export default function AccountKoshas() {
         ) : (
           <div className="space-y-3">
             {list.map((b) => (
-              <button key={b.id} onClick={() => setSelected(b.id)} className="w-full rounded-xl border border-border/30 bg-card p-4 text-right transition-colors hover:border-primary/40">
+              <Button variant="ghost" key={b.id} onClick={() => setSelected(b.id)} className="w-full rounded-xl border border-border/30 bg-card p-4 text-right transition-colors hover:border-primary/40">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5 font-bold text-foreground"><Armchair className="h-4 w-4 text-primary" />{b.koshaName || "كوشة"}</div>
@@ -85,7 +86,7 @@ export default function AccountKoshas() {
                 ) : b.remainingAmount > 0 ? (
                   <div className="mt-2 text-xs font-medium text-destructive">متبقٍ: {formatCurrency(b.remainingAmount)}</div>
                 ) : null}
-              </button>
+              </Button>
             ))}
           </div>
         )}
@@ -107,7 +108,7 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
   useEffect(() => { load(); }, [load]);
 
   if (loading) return <div className="flex min-h-[60dvh] items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
-  if (!d) return <div className="container mx-auto px-4 py-16 text-center text-muted-foreground" dir="rtl">الحجز غير موجود<div className="mt-3"><button onClick={onBack} className="text-primary">رجوع</button></div></div>;
+  if (!d) return <div className="container mx-auto px-4 py-16 text-center text-muted-foreground" dir="rtl">الحجز غير موجود<div className="mt-3"><Button variant="ghost" onClick={onBack} className="text-primary">رجوع</Button></div></div>;
 
   const current = d.executionStage;
   const lastUpdate = d.stages.length ? d.stages[d.stages.length - 1] : null;
@@ -122,7 +123,7 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
   return (
     <div className="container mx-auto min-h-dvh px-4 py-6" dir="rtl">
       <div className="mx-auto max-w-2xl space-y-4">
-        <button onClick={onBack} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ChevronLeft className="h-4 w-4" /> كوشاتي</button>
+        <Button variant="ghost" onClick={onBack} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ChevronLeft className="h-4 w-4" /> كوشاتي</Button>
 
         <div className="overflow-hidden rounded-2xl border border-border/30 bg-card">
           {d.koshaImage && <img src={d.koshaImage} alt="" className="h-40 w-full object-cover" />}
@@ -210,13 +211,13 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
                 <h2 className="font-bold text-foreground">تأكيد الاستلام والتقييم</h2>
                 <div className="mt-3 flex justify-center gap-1">
                   {[1, 2, 3, 4, 5].map((n) => (
-                    <button key={n} onClick={() => setRating(n)} aria-label={`تقييم ${n}`}><Star className={`h-7 w-7 ${n <= rating ? "fill-primary text-primary" : "text-muted-foreground"}`} /></button>
+                    <Button variant="ghost" key={n} onClick={() => setRating(n)} aria-label={`تقييم ${n}`}><Star className={`h-7 w-7 ${n <= rating ? "fill-primary text-primary" : "text-muted-foreground"}`} /></Button>
                   ))}
                 </div>
                 <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="رأيك بالخدمة (اختياري)" rows={2} className="mt-3 w-full rounded-lg border border-border bg-background p-2 text-sm" />
-                <button disabled={busy} onClick={confirmReceipt} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
+                <Button variant="ghost" disabled={busy} onClick={confirmReceipt} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} تأكيد استلام الكوشة
-                </button>
+                </Button>
               </>
             )}
           </div>

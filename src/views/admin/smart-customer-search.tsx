@@ -72,7 +72,7 @@ export function SmartCustomerSearch({ onSelect, autoFocus }: { onSelect: (c: Sma
           ) : (
             <>
               {results.map((c) => (
-                <button key={c.id} type="button" onClick={() => onSelect(c)} className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-border/30 bg-card p-3 text-right transition-colors hover:border-primary/50">
+                <Button variant="ghost" key={c.id} type="button" onClick={() => onSelect(c)} className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-border/30 bg-card p-3 text-right transition-colors hover:border-primary/50">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-bold text-foreground">👤 {c.name}</span>
@@ -89,7 +89,7 @@ export function SmartCustomerSearch({ onSelect, autoFocus }: { onSelect: (c: Sma
                     <div className={`text-sm font-bold ${c.remaining > 0 ? "text-destructive" : "text-status-success"}`}>{formatCurrency(c.remaining)}</div>
                     <div className="text-[10px] text-muted-foreground">المتبقي</div>
                   </div>
-                </button>
+                </Button>
               ))}
               <Button size="sm" variant="outline" className="w-full gap-1.5" onClick={() => setCreating(true)}><UserPlus className="h-4 w-4" /> عميل جديد بدل هؤلاء</Button>
             </>
@@ -129,7 +129,7 @@ function CreateCustomerDialog({ defaultName, onClose, onCreated, onDuplicate }: 
       <div className="w-full max-w-sm rounded-2xl border border-border/40 bg-card p-5" onClick={(e) => e.stopPropagation()}>
         <div className="mb-3 flex items-center justify-between">
           <h3 className="font-bold text-foreground">إنشاء عميل جديد</h3>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+          <Button variant="ghost" type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></Button>
         </div>
         <p className="mb-3 text-xs text-muted-foreground">هل أنت متأكد من إنشاء عميل جديد؟ لن يُنشأ عميل مكرّر إذا كان الهاتف موجوداً.</p>
         <div className="space-y-2">
@@ -160,7 +160,7 @@ export default function CustomerHubPage() {
 
       <div className="flex gap-1 border-b border-border/40">
         {([["search", "البحث", Search], ["reports", "تقارير العملاء", BarChart3]] as const).map(([k, l, Icon]) => (
-          <button key={k} type="button" onClick={() => setTab(k)} className={`flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium ${tab === k ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}><Icon className="h-4 w-4" /> {l}</button>
+          <Button variant="ghost" key={k} type="button" onClick={() => setTab(k)} className={`flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium ${tab === k ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}><Icon className="h-4 w-4" /> {l}</Button>
         ))}
       </div>
 

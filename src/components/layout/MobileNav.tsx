@@ -4,6 +4,7 @@ import { MoreHorizontal, type LucideIcon } from "lucide-react";
 import { useGetCart } from "@workspace/api-client-react";
 import { useLocale, useT } from "@/lib/i18n";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
+import { Button } from "@/components/ui/button";
 import { dockNavItems, sheetNavItems, isSheetRoute } from "./nav-items";
 
 /**
@@ -350,17 +351,18 @@ export function MobileNav() {
               const isActive = item.match(location);
               const Icon = item.Icon;
               return (
-                <button
+                <Button
                   key={item.key}
                   type="button"
                   aria-label={label(item)}
                   aria-current={isActive ? "page" : undefined}
                   onClick={() => { setSheetOpen(false); navigate(item.href); }}
-                  className={`flex flex-col items-center justify-center gap-1.5 rounded-xl border p-3 text-center text-xs font-medium transition-colors ${(item.key === "favorites" || item.key === "admin") ? "md:hidden" : ""} ${isActive ? "border-primary bg-primary/10 text-primary" : "border-border bg-card text-foreground hover:border-primary/40"}`}
+                  variant={isActive ? "selected" : "outline"}
+                  className={`h-auto min-h-24 w-full flex-col justify-center whitespace-normal rounded-xl p-3 text-center text-xs font-medium ${(item.key === "favorites" || item.key === "admin") ? "md:hidden" : ""}`}
                 >
                   <Icon className="h-5 w-5" />
                   <span className="leading-tight">{label(item)}</span>
-                </button>
+                </Button>
               );
             })}
           </nav>

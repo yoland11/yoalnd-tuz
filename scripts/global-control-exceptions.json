@@ -1,0 +1,22 @@
+[
+  {
+    "file": "src/components/layout/MobileNav.tsx",
+    "reason": "The curved draggable mobile dock uses pointer capture, animated SVG geometry, and role=tab behavior; its slot controls must retain their bespoke interaction and hit geometry."
+  },
+  {
+    "file": "src/components/graduation-step-rail.tsx",
+    "reason": "This animated progress rail uses aria-current=step with a moving indicator and percentage-sized tabs; the native step controls preserve its custom geometry."
+  },
+  {
+    "file": "src/components/bouquet-preview-canvas.tsx",
+    "reason": "The dark bouquet preview uses tightly sized custom tabs and canvas controls whose dimensions and active colors are defined by its dedicated stylesheet."
+  },
+  {
+    "file": "src/views/flower-designer.tsx",
+    "reason": "The bouquet designer's dark studio uses tightly sized quantity controls, custom tabs, and image tiles defined by dedicated CSS; preserve its interaction geometry."
+  },
+  {
+    "file": "src/views/admin/bouquet-designer.tsx",
+    "reason": "This specialized editor contains canvas and option controls with a dedicated high-density layout that should not inherit generic button spacing."
+  }
+]

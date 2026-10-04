@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Loader2, MessageSquareText, RotateCcw } from "lucide-react";
 import { RtlImageViewer, type RtlViewerImage } from "@/components/kosha-bookings/rtl-image-viewer";
@@ -157,14 +158,14 @@ export function StaffManagerInstructions({
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
             <span>تعذر تحميل تعليمات الإدارة: {loadError}</span>
           </p>
-          <button
+          <Button variant="ghost"
             type="button"
             className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-bold text-primary"
             onClick={() => void load()}
           >
             <RotateCcw className="h-4 w-4" aria-hidden="true" />
             إعادة تحميل التعليمات
-          </button>
+          </Button>
         </div>
       ) : instructions ? (
         <div className="min-w-0 space-y-4">
@@ -194,14 +195,14 @@ export function StaffManagerInstructions({
       {acknowledgement.status === "error" ? (
         <div className="space-y-3 rounded-lg border border-destructive/30 bg-background p-3">
           <p role="alert" className="text-sm text-destructive">{acknowledgement.message}</p>
-          <button
+          <Button variant="ghost"
             type="button"
             className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-bold text-primary"
             onClick={() => acknowledgement.snapshotAt && acknowledgement.snapshotVersion && markViewed(acknowledgement.snapshotAt, acknowledgement.snapshotVersion)}
           >
             <RotateCcw className="h-4 w-4" aria-hidden="true" />
             إعادة تسجيل القراءة
-          </button>
+          </Button>
         </div>
       ) : acknowledgement.status === "success" ? (
         <p role="status" className="rounded-lg bg-status-success/10 px-3 py-2 text-sm text-status-success">

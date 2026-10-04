@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
@@ -1184,9 +1185,9 @@ export function AdminLayout({
       >
         {sidebarHidden ? (
           <div className="flex h-full flex-col items-center gap-4 px-3 py-4">
-            <button type="button" onClick={toggleDesktopSidebar} className="flex h-14 w-14 items-center justify-center rounded-2xl border border-[#eee5dc] bg-white p-2 shadow-sm" aria-label="توسيع القائمة">
+            <Button size="flush" variant="ghost" type="button" onClick={toggleDesktopSidebar} className="flex h-14 w-14 items-center justify-center rounded-2xl border border-[#eee5dc] bg-white p-2 shadow-sm" aria-label="توسيع القائمة">
               <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={42} height={42} decoding="async" className="h-10 w-10 object-contain" />
-            </button>
+            </Button>
             <AdminSidebarNav groups={NAV_GROUPS} me={me} location={location} lowStockCount={lowStockCount} newMessageCount={newMessageCount} onLogout={onLogout} onExpand={toggleDesktopSidebar} collapsed className="flex-1 overflow-y-auto" />
             <Link href="/admin/account" className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#fbf3ef] text-primary transition-colors hover:bg-[#f7e7df]" aria-label="الحساب والأجهزة" title={me.fullName || me.username}>
               <UserRound className="h-5 w-5" />
@@ -1211,14 +1212,14 @@ export function AdminLayout({
       >
         <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden px-3 py-2.5">
           <div className="flex min-w-0 items-center gap-3">
-            <button
+            <Button variant="ghost"
               type="button"
               onClick={() => setMobileSidebarOpen(true)}
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"
               aria-label="فتح القائمة"
             >
               <Menu className="w-5 h-5" />
-            </button>
+            </Button>
             <div className="hidden h-10 w-12 shrink-0 items-center justify-center overflow-hidden min-[390px]:flex">
               <img
                 src={logoSrc(settings)}
@@ -1244,7 +1245,7 @@ export function AdminLayout({
       </div>
       {mobileSidebarOpen && (
         <div className="md:hidden fixed inset-0 z-40" dir="rtl">
-          <button
+          <Button size="flush" variant="ghost"
             type="button"
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
             aria-label="إغلاق القائمة"
@@ -1270,8 +1271,8 @@ export function AdminLayout({
               </div>
               <div className="flex shrink-0 items-center gap-1">
                 <Link href="/admin/account" onClick={() => setMobileSidebarOpen(false)} className="flex h-11 w-11 items-center justify-center rounded-xl text-muted-foreground active:bg-muted" aria-label="الحساب والأجهزة"><UserRound className="h-5 w-5" /></Link>
-                <button type="button" onClick={onLogout} className="flex h-11 w-11 items-center justify-center rounded-xl text-muted-foreground active:bg-destructive/10 active:text-destructive" aria-label="تسجيل الخروج"><LogOut className="h-5 w-5" /></button>
-                <button type="button" onClick={() => setMobileSidebarOpen(false)} className="flex h-11 w-11 items-center justify-center rounded-xl text-muted-foreground active:bg-muted" aria-label="إغلاق القائمة"><X className="h-5 w-5" /></button>
+                <Button variant="ghost" type="button" onClick={onLogout} className="flex h-11 w-11 items-center justify-center rounded-xl text-muted-foreground active:bg-destructive/10 active:text-destructive" aria-label="تسجيل الخروج"><LogOut className="h-5 w-5" /></Button>
+                <Button variant="ghost" type="button" onClick={() => setMobileSidebarOpen(false)} className="flex h-11 w-11 items-center justify-center rounded-xl text-muted-foreground active:bg-muted" aria-label="إغلاق القائمة"><X className="h-5 w-5" /></Button>
               </div>
             </div>
             <AdminSidebarNav
@@ -1315,9 +1316,9 @@ function SidebarBrand({
           <p className="mt-2 text-[11px] font-medium tracking-wide text-[#a47d56]">AJN GROUP</p>
           <p className="truncate text-sm font-semibold text-[#1e293b]">{settings?.site_name ?? "مجموعة علي جان نهاد"}</p>
         </div>
-        <button type="button" onClick={onCollapse} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#eee5dc] bg-white text-slate-600 shadow-sm transition-colors hover:bg-[#fbf3ef] hover:text-primary" aria-label="طي القائمة">
+        <Button size="iconSm" variant="ghost" type="button" onClick={onCollapse} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#eee5dc] bg-white text-slate-600 shadow-sm transition-colors hover:bg-[#fbf3ef] hover:text-primary" aria-label="طي القائمة">
           <ChevronDown className="h-4 w-4 -rotate-90" />
-        </button>
+        </Button>
       </div>
       <Link href="/admin/account" className="relative mt-3 flex items-center gap-2 rounded-xl bg-[#fbf6f1] px-3 py-2 text-xs text-slate-600 transition-colors hover:bg-[#f7ece5]" title="الحساب والأجهزة">
         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-primary"><UserRound className="h-3.5 w-3.5" /></span>
@@ -1337,7 +1338,7 @@ function SidebarProfile({ me, onLogout }: { me: AdminMe; onLogout: () => void })
           <p className="truncate text-sm font-semibold text-[#1e293b]">{me.fullName || me.username}</p>
           <p className="mt-0.5 text-[11px] text-slate-500">{me.role === "admin" ? "مدير النظام" : "موظف"} <span className="mr-1 text-emerald-600">● متصل</span></p>
         </Link>
-        <button type="button" onClick={onLogout} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-red-50 hover:text-destructive" aria-label="تسجيل الخروج" title="تسجيل الخروج"><LogOut className="h-4 w-4" /></button>
+        <Button size="iconSm" variant="ghost" type="button" onClick={onLogout} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-red-50 hover:text-destructive" aria-label="تسجيل الخروج" title="تسجيل الخروج"><LogOut className="h-4 w-4" /></Button>
       </div>
     </div>
   );
@@ -1441,7 +1442,7 @@ function AdminSidebarNav({
         {visibleGroups.map((group) => {
           const GroupIcon = group.icon;
           const active = group.id === activeGroupId;
-          return <button key={group.id} type="button" onClick={onExpand} className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl transition-colors ${active ? "bg-[#f9e2e5] text-primary ring-1 ring-[#f3cdd3]" : "text-slate-500 hover:bg-[#fbf3ef] hover:text-primary"}`} aria-label={`توسيع القائمة للوصول إلى ${group.label}`} title={group.label}><GroupIcon className="h-5 w-5" /></button>;
+          return <Button variant="ghost" key={group.id} type="button" onClick={onExpand} className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl transition-colors ${active ? "bg-[#f9e2e5] text-primary ring-1 ring-[#f3cdd3]" : "text-slate-500 hover:bg-[#fbf3ef] hover:text-primary"}`} aria-label={`توسيع القائمة للوصول إلى ${group.label}`} title={group.label}><GroupIcon className="h-5 w-5" /></Button>;
         })}
       </nav>
     );
@@ -1459,7 +1460,7 @@ function AdminSidebarNav({
         const GroupIcon = group.icon;
         return (
           <div key={group.id} className={`rounded-2xl border transition-colors ${active ? "border-[#f3d5d8] bg-[#fff9f8]" : "border-transparent hover:bg-[#fcf8f5]"}`}>
-            <button
+            <Button variant="ghost"
               type="button"
               onClick={() => toggleGroup(group.id)}
               aria-expanded={isOpen}
@@ -1472,7 +1473,7 @@ function AdminSidebarNav({
               <ChevronDown
                 className={`w-4 h-4 shrink-0 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
               />
-            </button>
+            </Button>
             <div
               className={`grid transition-all duration-200 ease-out ${isOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
             >
@@ -1523,7 +1524,7 @@ function AdminSidebarEntry({
   }`;
   if (!isNavItem(item)) {
     return (
-      <button
+      <Button variant="ghost"
         type="button"
         onClick={() => {
           onNavigate?.();
@@ -1533,7 +1534,7 @@ function AdminSidebarEntry({
       >
         <ItemIcon className="h-4 w-4 shrink-0" />
         <span className="min-w-0 flex-1 truncate text-right font-medium">{item.label}</span>
-      </button>
+      </Button>
     );
   }
 

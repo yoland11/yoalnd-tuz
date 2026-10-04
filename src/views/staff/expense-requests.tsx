@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useState, type FormEvent } from "react";
 import { BusFront, Camera, CheckCircle2, Clock3, Loader2, RefreshCw, Send, Undo2, WalletCards, X, XCircle } from "lucide-react";
 import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
@@ -239,12 +240,12 @@ export default function StaffExpenseRequests() {
       </div>
 
       <div className="grid grid-cols-2 gap-2 rounded-xl border border-border bg-muted/30 p-1.5" role="group" aria-label="نوع المصروف">
-        <button type="button" aria-pressed={form.expenseMode === "general"} onClick={() => set("expenseMode", "general")} className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors ${form.expenseMode === "general" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-background"}`}>
+        <Button variant="ghost" type="button" aria-pressed={form.expenseMode === "general"} onClick={() => set("expenseMode", "general")} className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors ${form.expenseMode === "general" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-background"}`}>
           <WalletCards className="h-4 w-4" /> مصروف عام
-        </button>
-        <button type="button" aria-pressed={form.expenseMode === "vehicle"} onClick={() => set("expenseMode", "vehicle")} className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors ${form.expenseMode === "vehicle" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-background"}`}>
+        </Button>
+        <Button variant="ghost" type="button" aria-pressed={form.expenseMode === "vehicle"} onClick={() => set("expenseMode", "vehicle")} className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors ${form.expenseMode === "vehicle" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-background"}`}>
           <BusFront className="h-4 w-4" /> مصروف مركبة
-        </button>
+        </Button>
       </div>
 
       <form onSubmit={submit} className="space-y-3 rounded-xl border border-border bg-card p-4">
@@ -346,14 +347,14 @@ export default function StaffExpenseRequests() {
           ) : form.receiptImage ? (
             <div className="relative inline-block">
               <img src={form.receiptImage} alt="صورة الإيصال" className="h-24 w-24 rounded-lg border border-border object-cover" />
-              <button
+              <Button size="iconSm" variant="ghost"
                 type="button"
                 onClick={() => set("receiptImage", "")}
                 aria-label="حذف صورة الإيصال"
                 className="absolute -top-2 -left-2 grid h-6 w-6 place-items-center rounded-full bg-status-danger text-white"
               >
                 <X className="h-3.5 w-3.5" />
-              </button>
+              </Button>
             </div>
           ) : (
             <label className="flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border text-sm text-primary">
@@ -371,22 +372,22 @@ export default function StaffExpenseRequests() {
         </div>
         {formError ? <p role="alert" className="text-sm text-status-danger">{formError}</p> : null}
         {sentMessage ? <p className="text-sm text-status-success">{sentMessage}</p> : null}
-        <button
+        <Button variant="ghost"
           type="submit"
           disabled={!valid || submitting || imageBusy}
           className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-bold text-primary-foreground disabled:opacity-50"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           إضافة المصروف
-        </button>
+        </Button>
       </form>
 
       <section>
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-bold">مصاريفي</h2>
-          <button type="button" onClick={() => setReloadKey((key) => key + 1)} className="inline-flex items-center gap-1 text-xs font-bold text-primary">
+          <Button variant="ghost" type="button" onClick={() => setReloadKey((key) => key + 1)} className="inline-flex items-center gap-1 text-xs font-bold text-primary">
             <RefreshCw className="h-3.5 w-3.5" /> تحديث
-          </button>
+          </Button>
         </div>
         {loadError ? (
           <div role="alert" className="rounded-xl border border-status-danger/30 bg-status-danger/10 p-4 text-center text-sm text-status-danger">

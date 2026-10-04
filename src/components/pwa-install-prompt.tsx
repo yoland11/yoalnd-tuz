@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 import { Download, RefreshCw, X } from "lucide-react";
 import { applyPwaUpdate } from "@/lib/pwa";
@@ -61,7 +62,7 @@ export function PwaInstallPrompt() {
             {updateReady ? "حدّث التطبيق للحصول على آخر نسخة." : iosInstallHint ? "من زر المشاركة اختر إضافة إلى الشاشة الرئيسية." : "ثبّت AJN كتطبيق مستقل على جهازك."}
           </p>
         </div>
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={updateReady ? applyPwaUpdate : install}
           disabled={iosInstallHint && !updateReady}
@@ -69,10 +70,10 @@ export function PwaInstallPrompt() {
         >
           {updateReady ? <RefreshCw className="w-4 h-4" /> : <Download className="w-4 h-4" />}
           {updateReady ? "تحديث" : iosInstallHint ? "من المشاركة" : "إضافة"}
-        </button>
-        <button type="button" onClick={closePrompt} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground">
+        </Button>
+        <Button variant="ghost" type="button" onClick={closePrompt} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground">
           <X className="w-4 h-4" />
-        </button>
+        </Button>
       </div>
     </div>
   );

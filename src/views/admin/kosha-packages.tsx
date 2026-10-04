@@ -97,13 +97,13 @@ function OptionPicker({ title, items, selected, onToggle, single = false }: {
         {items.map((item) => {
           const active = selected.includes(item.id);
           return (
-            <button key={item.id} type="button" onClick={() => onToggle(item.id)} className={`flex min-h-11 items-center justify-between gap-3 rounded-lg border px-3 py-2 text-right text-sm transition-colors ${active ? "border-primary bg-primary/10 text-primary" : "border-border/30 bg-card text-foreground hover:border-primary/40"}`}>
+            <Button variant="ghost" key={item.id} type="button" onClick={() => onToggle(item.id)} className={`flex min-h-11 items-center justify-between gap-3 rounded-lg border px-3 py-2 text-right text-sm transition-colors ${active ? "border-primary bg-primary/10 text-primary" : "border-border/30 bg-card text-foreground hover:border-primary/40"}`}>
               <span className="min-w-0 truncate">{item.name}</span>
               <span className="flex flex-shrink-0 items-center gap-2 text-xs">
                 {Number(item.price ?? 0) > 0 ? <span className="text-muted-foreground">{formatCurrency(Number(item.price))}</span> : null}
                 <span className={`grid h-5 w-5 place-items-center ${single ? "rounded-full" : "rounded"} border ${active ? "border-primary bg-primary text-primary-foreground" : "border-border"}`}>{active ? <Check className="h-3 w-3" /> : null}</span>
               </span>
-            </button>
+            </Button>
           );
         })}
         {items.length === 0 ? <p className="p-3 text-center text-sm text-muted-foreground sm:col-span-2">لا توجد عناصر متاحة.</p> : null}
@@ -203,10 +203,10 @@ export default function KoshaPackagesPage() {
               {packages.map((item) => {
                 const rowStats = stats?.packages.find((entry) => entry.packageId === item.id);
                 return (
-                  <button key={item.id} type="button" onClick={() => setForm(fromPackage(item))} className={`w-full rounded-lg border p-3 text-right transition-colors ${form.id === item.id ? "border-primary bg-primary/10" : "border-border/30 bg-background/45 hover:border-primary/40"}`}>
+                  <Button variant="ghost" key={item.id} type="button" onClick={() => setForm(fromPackage(item))} className={`block whitespace-normal w-full rounded-lg border p-3 text-right transition-colors ${form.id === item.id ? "border-primary bg-primary/10" : "border-border/30 bg-background/45 hover:border-primary/40"}`}>
                     <div className="flex items-start justify-between gap-2"><span className="font-semibold text-foreground">{item.name}</span>{item.isFeatured ? <Star className="h-4 w-4 flex-shrink-0 text-primary" /> : null}</div>
                     <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>{rowStats?.bookingCount ?? 0} حجز</span><span className="text-primary">{formatCurrency(rowStats?.revenue ?? 0)} إيراد</span><span className="ms-auto font-medium text-foreground">{formatCurrency(item.price)}</span></div>
-                  </button>
+                  </Button>
                 );
               })}
             </div>
@@ -235,7 +235,7 @@ export default function KoshaPackagesPage() {
                 {filteredKoshas.map((item) => {
                   const active = form.koshaIds.includes(item.id);
                   const isDefault = form.defaultKoshaId === item.id;
-                  return <div key={item.id} className={`flex min-h-12 items-center gap-2 rounded-lg border px-3 py-2 ${active ? "border-primary/60 bg-primary/10" : "border-border/30 bg-card"}`}><button type="button" onClick={() => setKosha(item.id)} className="flex min-w-0 flex-1 items-center gap-2 text-right"><span className={`grid h-5 w-5 flex-shrink-0 place-items-center rounded border ${active ? "border-primary bg-primary text-primary-foreground" : "border-border"}`}>{active ? <Check className="h-3 w-3" /> : null}</span><span className="truncate text-sm text-foreground">{item.name}</span></button>{active ? <button type="button" onClick={() => setForm((current) => ({ ...current, defaultKoshaId: item.id }))} className={`rounded-full px-2 py-1 text-[11px] ${isDefault ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-primary"}`}>{isDefault ? "الافتراضية" : "اجعلها افتراضية"}</button> : null}</div>;
+                  return <div key={item.id} className={`flex min-h-12 items-center gap-2 rounded-lg border px-3 py-2 ${active ? "border-primary/60 bg-primary/10" : "border-border/30 bg-card"}`}><Button variant="ghost" type="button" onClick={() => setKosha(item.id)} className="flex min-w-0 flex-1 items-center gap-2 text-right"><span className={`grid h-5 w-5 flex-shrink-0 place-items-center rounded border ${active ? "border-primary bg-primary text-primary-foreground" : "border-border"}`}>{active ? <Check className="h-3 w-3" /> : null}</span><span className="truncate text-sm text-foreground">{item.name}</span></Button>{active ? <Button variant="ghost" type="button" onClick={() => setForm((current) => ({ ...current, defaultKoshaId: item.id }))} className={`rounded-full px-2 py-1 text-[11px] ${isDefault ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-primary"}`}>{isDefault ? "الافتراضية" : "اجعلها افتراضية"}</Button> : null}</div>;
                 })}
               </div>
             </div>

@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { Check, GripVertical, Plus, Search, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
@@ -93,14 +94,14 @@ export function ProductColorPicker({ value, onChange, allowMultiple = true }: Co
                 <ColorDot color={color} size="sm" />
                 <span>{color.name}</span>
                 <span className="font-mono text-[11px] opacity-75" dir="ltr">{color.hex}</span>
-                <button
+                <Button variant="ghost"
                   type="button"
                   onClick={() => removeColor(key)}
                   className="mr-0.5 rounded-full p-0.5 hover:bg-primary/15"
                   aria-label={`إزالة ${color.name}`}
                 >
                   <X className="h-3 w-3" />
-                </button>
+                </Button>
               </span>
             );
           })}
@@ -122,7 +123,7 @@ export function ProductColorPicker({ value, onChange, allowMultiple = true }: Co
           const key = colorKey(color);
           const selectedColor = selectedKeys.has(key);
           return (
-            <button
+            <Button variant="ghost"
               key={key}
               type="button"
               onClick={() => toggleColor(color)}
@@ -145,20 +146,20 @@ export function ProductColorPicker({ value, onChange, allowMultiple = true }: Co
                   <span className="block truncate font-mono text-[11px] text-muted-foreground" dir="ltr">{color.hex}</span>
                 </span>
               </div>
-            </button>
+            </Button>
           );
         })}
       </div>
 
       <div className="rounded-xl border border-border/30 bg-background/40 p-3">
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => setShowCustom((open) => !open)}
           className="inline-flex items-center gap-2 text-xs text-primary hover:text-primary/80"
         >
           <Plus className="h-3.5 w-3.5" />
           إضافة لون مخصص
-        </button>
+        </Button>
         {showCustom && (
           <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[auto_1fr_auto]">
             <label className="flex h-10 w-14 cursor-pointer items-center justify-center rounded-lg border border-border/40 bg-card">
@@ -176,13 +177,13 @@ export function ProductColorPicker({ value, onChange, allowMultiple = true }: Co
               placeholder="اسم اللون"
               className="h-10 rounded-lg border border-border/40 bg-card px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
             />
-            <button
+            <Button variant="ghost"
               type="button"
               onClick={addCustomColor}
               className="h-10 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
               إضافة
-            </button>
+            </Button>
           </div>
         )}
       </div>
