@@ -43,7 +43,7 @@ const checks = [
   ],
   [
     "size and exact measurements are shown only when the group setting allows them",
-    /showDetailedMeasurements\s*\?\s*\([\s\S]*?مقاس البدن[\s\S]*?أدخل قياساتك بالتفصيل[\s\S]*?\)\s*:\s*null/.test(
+    /showDetailedMeasurements\s*\?\s*\([\s\S]*?أدخل قياساتك بالتفصيل[\s\S]*?مقاس البدن[\s\S]*?\)\s*:\s*null/.test(
       measurementStep,
     ),
   ],

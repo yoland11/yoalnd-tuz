@@ -196,11 +196,38 @@ export function studentIssue(student: StudentForm, step: number) {
 }
 
 export type GroupSashPolicy = {
-  mode: "fixed" | "per_student";
+  mode: "fixed" | "per_student" | "restricted";
   sashType: string;
+  sashOptions?: string[];
   sashColor?: string;
   embroideryColor?: string;
 };
+
+export function validateGroupSashOptions(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 2) return null;
+  if (!value.every((item) => typeof item === "string" && SASH_TYPES.some((type) => type.key === item))) return null;
+  return new Set(value).size === value.length ? [...value] : null;
+}
+
+export function selectedGroupSashType(value: unknown, policy: GroupSashPolicy): string {
+  if (policy.mode === "fixed") return policy.sashType;
+  if (policy.mode === "restricted")
+    return policy.sashOptions?.includes(String(value)) ? String(value) : policy.sashType;
+  return SASH_TYPES.some((type) => type.key === value) ? String(value) : "standard";
+}
+
+export function isGroupSashSelectionAllowed(value: unknown, policy: GroupSashPolicy): boolean {
+  if (policy.mode !== "restricted" || value == null || value === "") return true;
+  return policy.sashOptions?.includes(String(value)) === true;
+}
+
+export function groupSashTypes(policy: GroupSashPolicy): typeof SASH_TYPES {
+  if (policy.mode !== "restricted") return SASH_TYPES;
+  return (policy.sashOptions || []).flatMap((key) => {
+    const type = SASH_TYPES.find((item) => item.key === key);
+    return type ? [type] : [];
+  });
+}
 
 export function withoutStudentReferencePreview(
   previewAssets: Record<string, unknown> | undefined,
@@ -224,21 +251,28 @@ export function resolveGroupSashPolicy(
   const fixedColor = colors.sash;
   const embroideryColor = colors.embroidery;
   const fixedType = configuration.sashType;
-  const mode =
-    configuration.sashSelectionMode === "fixed" ? "fixed" : "per_student";
+  const mode = configuration.sashSelectionMode === "fixed"
+    ? "fixed"
+    : configuration.sashSelectionMode === "restricted"
+      ? "restricted"
+      : "per_student";
+  const sashOptions = mode === "restricted"
+    ? validateGroupSashOptions(configuration.sashOptions) || ["standard"]
+    : undefined;
   return {
     mode,
-    sashType: SASH_TYPES.some((type) => type.key === fixedType)
+    sashType: sashOptions?.[0] || (SASH_TYPES.some((type) => type.key === fixedType)
       ? String(fixedType)
-      : "standard",
+      : "standard"),
+    ...(sashOptions ? { sashOptions } : {}),
     sashColor:
       typeof fixedColor === "string" && /^#[0-9a-f]{6}$/i.test(fixedColor)
         ? fixedColor
-        : mode === "fixed" ? "#182539" : undefined,
+        : mode === "fixed" || mode === "restricted" ? "#182539" : undefined,
     embroideryColor:
       typeof embroideryColor === "string" && /^#[0-9a-f]{6}$/i.test(embroideryColor)
         ? embroideryColor
-        : mode === "fixed" ? "#D4AF37" : undefined,
+        : mode === "fixed" || mode === "restricted" ? "#D4AF37" : undefined,
   };
 }
 
@@ -250,6 +284,8 @@ export function studentSashOverrides(
   const result: Record<string, string> = {};
   if (policy?.mode === "fixed") {
     result.sashType = policy.sashType;
+  } else if (policy?.mode === "restricted") {
+    result.sashType = selectedGroupSashType(text.sashType, policy);
   } else {
     if (SASH_TYPES.some((type) => type.key === text.sashType))
       result.sashType = String(text.sashType);

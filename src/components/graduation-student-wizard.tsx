@@ -15,12 +15,14 @@ import {
   SASH_FONTS,
   SASH_TYPES,
   combineSashName,
+  groupSashTypes,
   STUDENT_REFERENCE_PLACEMENTS,
   STUDENT_STEPS,
   studentIssue,
   studentPayload,
   resolveGroupSashPolicy,
   restoreStudentDraft,
+  selectedGroupSashType,
   type StudentForm,
   type StudentReferencePlacement,
 } from "@/lib/graduation-student-flow";
@@ -270,7 +272,11 @@ export function GraduationStudentWizard({
   const sashPolicy = resolveGroupSashPolicy(base);
   const sashNamePrefix = scope !== "individual" && typeof base.customText?.sashNamePrefix === "string"
     ? base.customText.sashNamePrefix.trim() : "";
-  const fixedGroupSash = scope !== "individual" && sashPolicy.mode === "fixed";
+  const limitedGroupSash = scope !== "individual" && sashPolicy.mode === "restricted";
+  const fixedGroupSash = scope !== "individual" &&
+    (sashPolicy.mode === "fixed" || (limitedGroupSash && sashPolicy.sashOptions?.length === 1));
+  const groupSashChoices = scope === "individual" ? SASH_TYPES : groupSashTypes(sashPolicy);
+  const initialSashType = fixedGroupSash || limitedGroupSash ? sashPolicy.sashType : "standard";
   const lockedGroupSashColor = scope !== "individual" && Boolean(sashPolicy.sashColor);
   const lockedGroupEmbroideryColor = scope !== "individual" && Boolean(sashPolicy.embroideryColor);
   const showDetailedMeasurements =
@@ -294,7 +300,7 @@ export function GraduationStudentWizard({
             : null,
         }
       : {}),
-    sashType: fixedGroupSash ? sashPolicy.sashType : "standard",
+    sashType: initialSashType,
     sashColor: sashPolicy.sashColor || base.colors?.sash || "#182539",
     embroideryColor: sashPolicy.embroideryColor || base.colors?.embroidery || "#D4AF37",
   });
@@ -317,14 +323,16 @@ export function GraduationStudentWizard({
       const saved = sessionStorage.getItem(storageKey);
       if (saved) {
         const data = JSON.parse(saved);
-        if (data.form)
-          setForm(
-            restoreStudentDraft(
-              data.form,
-              data.attempt ? undefined : data.baseSeed,
-              baseSeed.current,
-            ),
+        if (data.form) {
+          const restored = restoreStudentDraft(
+            data.form,
+            data.attempt ? undefined : data.baseSeed,
+            baseSeed.current,
           );
+          setForm(limitedGroupSash
+            ? { ...restored, sashType: selectedGroupSashType(restored.sashType, sashPolicy) }
+            : restored);
+        }
         if (Array.isArray(data.receipts)) setReceipts(data.receipts);
         setDone(data.done === true);
         if (data.attempt?.key && data.attempt?.body) setAttempt(data.attempt);
@@ -336,7 +344,7 @@ export function GraduationStudentWizard({
         );
         if (legacy) {
           const data = JSON.parse(legacy);
-          setForm({
+          const restored = {
             ...seed(),
             ...data,
             size: data.preferredSize || "",
@@ -348,7 +356,10 @@ export function GraduationStudentWizard({
                 ? { [data.referencePlacement]: { note: data.referenceNote || "", image: data.referenceImage || "", fileName: data.referenceFileName || "" } }
                 : {}),
             },
-          });
+          };
+          setForm(limitedGroupSash
+            ? { ...restored, sashType: selectedGroupSashType(restored.sashType, sashPolicy) }
+            : restored);
         }
       }
     } catch {
@@ -413,7 +424,7 @@ export function GraduationStudentWizard({
   function another() {
     setForm({
       ...newStudent(),
-      sashType: fixedGroupSash ? sashPolicy.sashType : "standard",
+      sashType: initialSashType,
       sashColor: sashPolicy.sashColor || base.colors?.sash || "#182539",
       embroideryColor: sashPolicy.embroideryColor || base.colors?.embroidery || "#D4AF37",
     });
@@ -516,7 +527,7 @@ export function GraduationStudentWizard({
       setReceipts(updated);
       const cleared = {
         ...newStudent(),
-        sashType: fixedGroupSash ? sashPolicy.sashType : "standard",
+        sashType: initialSashType,
         sashColor: sashPolicy.sashColor || base.colors?.sash || "#182539",
         embroideryColor: sashPolicy.embroideryColor || base.colors?.embroidery || "#D4AF37",
       };
@@ -554,7 +565,9 @@ export function GraduationStudentWizard({
       setBusy(false);
     }
   }
-  const displayedSashType = fixedGroupSash ? sashPolicy.sashType : form.sashType;
+  const displayedSashType = fixedGroupSash || limitedGroupSash
+    ? selectedGroupSashType(form.sashType, sashPolicy)
+    : form.sashType;
   const displayedSashColor = lockedGroupSashColor ? sashPolicy.sashColor! : form.sashColor;
   const displayedEmbroideryColor = lockedGroupEmbroideryColor ? sashPolicy.embroideryColor! : form.embroideryColor;
   return (
@@ -683,12 +696,14 @@ export function GraduationStudentWizard({
                 <h3 className="font-semibold">
                   {fixedGroupSash
                     ? "الوشاح الموحّد للمجموعة"
-                    : "اختر نوع الوشاح"}
+                    : limitedGroupSash ? "اختر من نوعي الوشاح المعتمدين" : "اختر نوع الوشاح"}
                 </h3>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {fixedGroupSash
                     ? "اعتمد ممثل الدفعة هذا النوع واللون لجميع الطلبة."
-                    : "اختر القَصّة المناسبة، ونجهزها ضمن طلب مجموعتكم."}
+                    : limitedGroupSash
+                      ? "اعتمد ممثل الدفعة هذين النوعين؛ اختر واحداً منهما، ويبقى اللون والتطريز موحّدين."
+                      : "اختر القَصّة المناسبة، ونجهزها ضمن طلب مجموعتكم."}
                 </p>
                 {fixedGroupSash ? (
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e8c7a7] bg-[#fff8ef] p-3">
@@ -709,19 +724,19 @@ export function GraduationStudentWizard({
                   <div
                     role="group"
                     aria-label="أنواع الوشاح"
-                    className="mt-4 grid grid-cols-4 gap-1 rounded-2xl border border-[#f0ccd3] bg-[#fff0f2] p-1"
+                    className={`mt-4 grid gap-1 rounded-2xl border border-[#f0ccd3] bg-[#fff0f2] p-1 ${limitedGroupSash ? "grid-cols-2" : "grid-cols-4"}`}
                   >
-                    {SASH_TYPES.map((type) => (
+                    {groupSashChoices.map((type) => (
                       <Button
                         key={type.key}
                         type="button"
                         aria-label={type.label}
-                        aria-pressed={form.sashType === type.key}
+                        aria-pressed={displayedSashType === type.key}
                         variant={
-                          form.sashType === type.key ? "selected" : "outline"
+                          displayedSashType === type.key ? "selected" : "outline"
                         }
                         onClick={() => change({ sashType: type.key })}
-                        className={`min-h-11 rounded-xl px-2 py-2 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:text-sm ${form.sashType === type.key ? "border-[#68002f] bg-[#68002f] text-white shadow-md hover:bg-[#68002f]" : "border-transparent text-[#805c68] hover:bg-white/80"}`}
+                        className={`min-h-11 rounded-xl px-2 py-2 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:text-sm ${displayedSashType === type.key ? "border-[#68002f] bg-[#68002f] text-white shadow-md hover:bg-[#68002f]" : "border-transparent text-[#805c68] hover:bg-white/80"}`}
                       >
                         {type.label}
                       </Button>

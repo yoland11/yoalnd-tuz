@@ -1,4 +1,5 @@
 import { GraduationStudentWizard } from "@/components/graduation-student-wizard";
+import { GroupSashOptionPicker } from "@/components/group-sash-option-picker";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -44,7 +45,7 @@ import { processImageFile } from "@/lib/image-tools";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { GraduationRobePreview } from "@/components/graduation-robe-preview";
 import { buildWhatsAppLink } from "@/lib/order-stages";
-import { SASH_TYPES, combineSashName } from "@/lib/graduation-student-flow";
+import { SASH_TYPES, combineSashName, resolveGroupSashPolicy } from "@/lib/graduation-student-flow";
 import type { GraduationConfig } from "@/lib/graduation";
 import {
   GRADUATION_STEPS,
@@ -190,8 +191,7 @@ const initialGroup = {
   showDetailedMeasurements: true,
   styleKey: "",
   packageKey: "",
-  sashSelectionMode: "per_student" as "fixed" | "per_student",
-  sashType: "standard",
+  sashOptions: ["standard"] as string[],
   fabricKey: "",
   colors: {
     robe: "#111111",
@@ -410,8 +410,9 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
             styleKey: form.styleKey,
             packageKey: form.packageKey || undefined,
             colors: form.colors,
-            sashSelectionMode: form.sashSelectionMode,
-            sashType: form.sashSelectionMode === "fixed" ? form.sashType : undefined,
+            sashSelectionMode: "restricted",
+            sashOptions: form.sashOptions,
+            sashType: form.sashOptions[0],
             colorVote:
               form.colorVoting.enabled && form.colorVoting.options.length >= 2
                 ? {
@@ -755,73 +756,12 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
             <div className="mt-5 rounded-xl border border-border bg-muted/20 p-4">
               <h3 className="font-semibold">اختيار الوشاح للطلبة</h3>
               <p className="mt-1 text-sm text-muted-foreground">
-                اختر نوعاً موحّداً أو دع كل طالب يختار نوع الوشاح؛ لون الوشاح والتطريز يبقيان كما حددهما ممثل الدفعة أعلاه.
+                حدد نوعاً واحداً ليكون موحّداً للجميع، أو نوعين ليختار كل طالب واحداً منهما. لون الوشاح والتطريز يبقيان موحّدين للمجموعة.
               </p>
-              <div
-                className="mt-3 grid gap-2 sm:grid-cols-2"
-                role="group"
-                aria-label="طريقة اختيار الوشاح"
-              >
-                <Button
-                  type="button"
-                  variant={
-                    form.sashSelectionMode === "fixed" ? "selected" : "outline"
-                  }
-                  aria-pressed={form.sashSelectionMode === "fixed"}
-                  onClick={() =>
-                    setForm((current) => ({
-                      ...current,
-                      sashSelectionMode: "fixed",
-                    }))
-                  }
-                  className="h-auto min-h-12 whitespace-normal"
-                >
-                  وشاح ثابت لجميع الطلبة
-                </Button>
-                <Button
-                  type="button"
-                  variant={
-                    form.sashSelectionMode === "per_student"
-                      ? "selected"
-                      : "outline"
-                  }
-                  aria-pressed={form.sashSelectionMode === "per_student"}
-                  onClick={() =>
-                    setForm((current) => ({
-                      ...current,
-                      sashSelectionMode: "per_student",
-                    }))
-                  }
-                  className="h-auto min-h-12 whitespace-normal"
-                >
-                  كل طالب يختار نوع الوشاح
-                </Button>
-              </div>
-              {form.sashSelectionMode === "fixed" ? (
-                <div className="mt-4 max-w-xl">
-                  <Label>نوع الوشاح الموحّد</Label>
-                  <Select
-                    value={form.sashType}
-                    onValueChange={(sashType) =>
-                      setForm((current) => ({ ...current, sashType }))
-                    }
-                  >
-                    <SelectTrigger className="mt-2">
-                      <SelectValue placeholder="اختر نوع الوشاح" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SASH_TYPES.map((type) => (
-                        <SelectItem key={type.key} value={type.key}>
-                          {type.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    يطبّق نوع الوشاح ولونه المختار أعلاه على جميع طلبة المجموعة.
-                  </p>
-                </div>
-              ) : null}
+              <GroupSashOptionPicker
+                options={form.sashOptions}
+                onChange={(sashOptions) => setForm((current) => ({ ...current, sashOptions }))}
+              />
             </div>
             <div className="mt-5 rounded-lg border border-primary/30 bg-primary/[0.03] p-4">
               <label className="flex cursor-pointer items-start gap-3">
@@ -1694,6 +1634,58 @@ function GroupSashNameManager({ token, group, onRefetch }: { token: string; grou
   );
 }
 
+function GroupSashOptionsManager({ token, group, onRefetch }: { token: string; group: any; onRefetch: () => void }) {
+  const { toast } = useToast();
+  const policy = resolveGroupSashPolicy(group?.defaultConfiguration || {});
+  const currentOptions = policy.mode === "restricted"
+    ? policy.sashOptions || [policy.sashType]
+    : policy.mode === "fixed" ? [policy.sashType] : SASH_TYPES.map((type) => type.key);
+  const [options, setOptions] = useState<string[]>(() =>
+    policy.mode === "restricted" ? policy.sashOptions || [policy.sashType] : [policy.sashType],
+  );
+  const [repPhone, setRepPhone] = useState("");
+  const saveOptions = useMutation({
+    mutationFn: () => graduationFetch(`/groups/${encodeURIComponent(token)}/sash-options`, {
+      method: "POST", body: JSON.stringify({ sashOptions: options, repPhone }),
+    }),
+    onSuccess: () => { onRefetch(); toast({ title: "تم اعتماد أنواع الوشاح للدفعة" }); },
+    onError: (error: Error) => toast({ title: "تعذر اعتماد أنواع الوشاح", description: error.message, variant: "destructive" }),
+  });
+  return (
+    <details className="rounded-xl border border-border bg-card p-4 sm:p-5">
+      <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold">
+        <LockKeyhole className="h-4 w-4 text-primary" />
+        إدارة الممثل — أنواع الوشاح
+      </summary>
+      <p className="mt-3 text-sm text-muted-foreground">
+        المعتمد الآن: {policy.mode === "per_student" ? "جميع الأنواع" : currentOptions.map((key) => SASH_TYPES.find((type) => type.key === key)?.label).filter(Boolean).join("، ")}.
+        اختر نوعاً واحداً للجميع أو نوعين يختار الطالب بينهما. التغيير يسري على الطلبات الجديدة فقط.
+      </p>
+      <GroupSashOptionPicker options={options} onChange={setOptions} />
+      <div className="mt-4 max-w-sm">
+        <Label htmlFor="rep-sash-options-phone">هاتف ممثل الدفعة للتحقق</Label>
+        <Input
+          id="rep-sash-options-phone"
+          className="mt-1"
+          inputMode="tel"
+          placeholder="07XXXXXXXXX"
+          value={repPhone}
+          onChange={(event) => setRepPhone(formatIraqiPhoneInput(event.target.value))}
+        />
+      </div>
+      <Button
+        className="mt-3"
+        type="button"
+        disabled={saveOptions.isPending || repPhone.replace(/\D/g, "").length < 10 ||
+          (policy.mode === "restricted" && JSON.stringify(options) === JSON.stringify(currentOptions))}
+        onClick={() => saveOptions.mutate()}
+      >
+        {saveOptions.isPending ? "جاري الحفظ…" : "حفظ أنواع الوشاح"}
+      </Button>
+    </details>
+  );
+}
+
 function GroupVoteManager({
   token,
   group,
@@ -1914,6 +1906,7 @@ export function GraduationGroupStudentRegistration({
   });
   const group = groupQuery.data?.group;
   const locked = group?.defaultConfiguration ?? {};
+  const sashPolicy = resolveGroupSashPolicy(locked);
   if (groupQuery.isLoading)
     return (
       <div className="mx-auto max-w-4xl px-4 py-10">
@@ -1964,9 +1957,11 @@ export function GraduationGroupStudentRegistration({
             </div>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
               الروب والقماش من اختيار ممثل الدفعة.{" "}
-              {locked.sashSelectionMode === "fixed"
-                ? "نوع الوشاح ولونه ولون التطريز ثابتة للمجموعة، ويمكن تخصيص الاسم والإضافات لكل طالب."
-                : "يختار كل طالب نوع الوشاح وإضافاته؛ لون الوشاح والتطريز موحّدان للمجموعة."}
+              {sashPolicy.mode === "fixed" || (sashPolicy.mode === "restricted" && sashPolicy.sashOptions?.length === 1)
+                ? "نوع واحد من الوشاح ثابت للمجموعة، ويمكن تخصيص الاسم والإضافات لكل طالب."
+                : sashPolicy.mode === "restricted"
+                  ? "يختار كل طالب من نوعي الوشاح المعتمدين؛ اللون والتطريز موحّدان للمجموعة."
+                  : "يختار كل طالب نوع الوشاح وإضافاته؛ لون الوشاح والتطريز موحّدان للمجموعة."}
             </p>
             <div className="mt-4 flex justify-center rounded-lg border border-border bg-card p-3">
               <GraduationRobePreview
@@ -1979,8 +1974,8 @@ export function GraduationGroupStudentRegistration({
                 ["نوع الروب", locked.styleKey],
                 [
                   "نوع الوشاح",
-                  locked.sashSelectionMode === "fixed"
-                    ? SASH_TYPES.find((type) => type.key === locked.sashType)?.label || "موحّد للمجموعة"
+                  sashPolicy.mode === "fixed" || sashPolicy.mode === "restricted"
+                    ? (sashPolicy.sashOptions || [sashPolicy.sashType]).map((key) => SASH_TYPES.find((type) => type.key === key)?.label).filter(Boolean).join("، ")
                     : "يختار كل طالب",
                 ],
                 ["القماش", locked.fabric?.key],
@@ -2018,6 +2013,7 @@ export function GraduationGroupStudentRegistration({
               }}
             />
             <GroupSashNameManager token={token} group={group} onRefetch={() => { void groupQuery.refetch(); }} />
+            <GroupSashOptionsManager token={token} group={group} onRefetch={() => { void groupQuery.refetch(); }} />
             <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
               <GraduationStudentWizard key={token} scope={token} base={{
                 ...locked,

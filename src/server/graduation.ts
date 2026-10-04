@@ -1,8 +1,10 @@
 import {
   SASH_TYPES,
   combineSashName,
+  isGroupSashSelectionAllowed,
   resolveGroupSashPolicy,
   studentSashOverrides,
+  validateGroupSashOptions,
   withoutStudentReferencePreview,
 } from "../lib/graduation-student-flow";
 import { randomUUID } from "node:crypto";
@@ -649,6 +651,9 @@ async function createGraduationGroup(
       ),
     };
   const data = parsed.data;
+  const configuration = safeJson(data.defaultConfiguration);
+  if (configuration.sashSelectionMode === "restricted" && !validateGroupSashOptions(configuration.sashOptions))
+    return { response: studentReferenceError("اختر نوعاً أو نوعين مختلفين من الوشاح", 400, makeRequestId()) };
   const representativePhone = normalizeIraqiPhone(data.representativePhone);
   if (!representativePhone)
     return { response: error("رقم هاتف ممثل المجموعة غير صحيح", 400) };
@@ -657,7 +662,6 @@ async function createGraduationGroup(
     data.representativeName,
   );
 
-  const configuration = safeJson(data.defaultConfiguration);
   const universityTemplate = safeJson(configuration.universityTemplate);
   const decoration = safeJson(configuration.decoration);
   const persistedConfiguration = {
@@ -1223,9 +1227,12 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     const lockedMeta = groupMeta(group);
     const lockedCustomText = safeJson(locked.customText);
     const studentCustomText = safeJson(data.customText);
+    const sashPolicy = resolveGroupSashPolicy(locked);
+    if (!isGroupSashSelectionAllowed(studentCustomText.sashType, sashPolicy))
+      return { response: studentReferenceError("نوع الوشاح تغيّر؛ حدّث صفحة المجموعة واختر أحد الأنواع المعتمدة", 409, makeRequestId()) };
     const personalSash = studentSashOverrides(
       studentCustomText,
-      resolveGroupSashPolicy(locked),
+      sashPolicy,
     );
     const lockedFabric = safeJson(locked.fabric);
     const lockedDecoration = safeJson(locked.decoration);
@@ -2956,6 +2963,53 @@ export async function handleGraduationPublic(
       return { prefix };
     });
     if ("status" in result) return studentReferenceError(result.message || "تعذر تحديث لقب الوشاح", result.status || 400, requestId);
+    return json(result);
+  }
+  if (method === "POST" && resource === "groups" && parts[2] && parts[3] === "sash-options") {
+    const requestId = makeRequestId();
+    const identifier = decodeURIComponent(parts[2]);
+    const payload = await requestBody(req);
+    const sashOptions = validateGroupSashOptions(payload?.sashOptions);
+    if (!sashOptions)
+      return studentReferenceError("اختر نوعاً أو نوعين مختلفين من الوشاح", 400, requestId);
+    const claimedPhone = normalizeIraqiPhone(String(payload?.repPhone ?? ""));
+    if (!claimedPhone)
+      return studentReferenceError("أدخل هاتف ممثل الدفعة للتحقق", 400, requestId);
+    const result = await db.transaction(async (tx) => {
+      const found = await tx.query.graduationGroupsTable.findFirst({
+        where: and(
+          or(eq(graduationGroupsTable.joinToken, identifier), eq(graduationGroupsTable.groupNo, identifier.toUpperCase())),
+          eq(graduationGroupsTable.status, "open"),
+        ),
+        columns: { id: true, representativePhone: true },
+      });
+      if (!found) return { status: 404, message: "رابط الطلب الجماعي غير صالح أو مغلق" };
+      if (claimedPhone !== found.representativePhone)
+        return { status: 403, message: "تعديل خيارات الوشاح يتطلب هاتف ممثل الدفعة" };
+      const locked = await tx.execute(sql`
+        SELECT default_configuration AS cfg FROM graduation_groups WHERE id = ${found.id} FOR UPDATE
+      `);
+      const configuration = safeJson((locked.rows?.[0] as any)?.cfg);
+      const previous = resolveGroupSashPolicy(configuration);
+      configuration.sashSelectionMode = "restricted";
+      configuration.sashOptions = sashOptions;
+      configuration.sashType = sashOptions[0];
+      await tx.update(graduationGroupsTable)
+        .set({ defaultConfiguration: configuration as any, updatedAt: new Date() })
+        .where(eq(graduationGroupsTable.id, found.id));
+      await tx.insert(entityTimelineTable).values({
+        entityType: "graduation_group", entityId: found.id, type: "group_sash_options_updated",
+        title: "تم تحديث أنواع الوشاح المعتمدة للدفعة",
+        actorName: "ممثل الدفعة",
+        metadata: {
+          previous: previous.mode === "per_student" ? SASH_TYPES.map((type) => type.key) : previous.sashOptions || [previous.sashType],
+          current: sashOptions,
+        },
+      });
+      return { sashOptions };
+    });
+    if ("status" in result)
+      return studentReferenceError(result.message || "تعذر تحديث خيارات الوشاح", result.status || 400, requestId);
     return json(result);
   }
   if (

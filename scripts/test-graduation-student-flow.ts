@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GraduationReferenceImagePicker } from "../src/components/graduation-reference-image-picker";
+import { GroupSashOptionPicker, toggleGroupSashOption } from "../src/components/group-sash-option-picker";
 import * as flow from "../src/lib/graduation-student-flow";
 import { graduationOrderInputSchema } from "../src/lib/graduation";
 
@@ -30,6 +31,19 @@ const selectedPicker = renderToStaticMarkup(React.createElement(GraduationRefere
 assert.match(selectedPicker, /تغيير الصورة/);
 assert.match(selectedPicker, /cap\.png/);
 assert.match(selectedPicker, /disabled=""/);
+assert.deepEqual(toggleGroupSashOption(["royal"], "american"), ["royal", "american"]);
+assert.deepEqual(toggleGroupSashOption(["royal", "american"], "side"), ["royal", "american"]);
+assert.deepEqual(toggleGroupSashOption(["royal", "american"], "american"), ["royal"]);
+assert.deepEqual(toggleGroupSashOption(["royal"], "royal"), ["royal"]);
+const sashPicker = renderToStaticMarkup(React.createElement(GroupSashOptionPicker, {
+  options: ["royal", "american"],
+  onChange: () => {},
+}));
+assert.match(sashPicker, /ملكي/);
+assert.match(sashPicker, /أمريكي/);
+assert.match(sashPicker, /نوعان: يختار الطالب واحداً منهما/);
+assert.equal((sashPicker.match(/aria-pressed="true"/g) || []).length, 2);
+assert.equal((sashPicker.match(/disabled=""/g) || []).length, 2, "third sash option must not be selectable");
 
 assert.equal(
   typeof flow.newStudent,
@@ -139,6 +153,58 @@ assert.equal(
   "per_student",
   "groups without a policy must preserve the existing individual-choice behavior",
 );
+assert.deepEqual(flow.validateGroupSashOptions(["royal"]), ["royal"]);
+assert.deepEqual(flow.validateGroupSashOptions(["royal", "american"]), ["royal", "american"]);
+for (const invalid of [[], ["royal", "royal"], ["royal", "american", "side"], ["unknown"], "royal"]) {
+  assert.equal(flow.validateGroupSashOptions(invalid), null, "only one or two distinct known sash types are allowed");
+}
+const restrictedSashPolicy = flow.resolveGroupSashPolicy({
+  sashSelectionMode: "restricted",
+  sashOptions: ["royal", "american"],
+  colors: { sash: "#AA2233", embroidery: "#C0C0C0" },
+});
+assert.deepEqual(restrictedSashPolicy, {
+  mode: "restricted",
+  sashType: "royal",
+  sashOptions: ["royal", "american"],
+  sashColor: "#AA2233",
+  embroideryColor: "#C0C0C0",
+});
+assert.deepEqual(flow.groupSashTypes(restrictedSashPolicy).map((type) => type.key), ["royal", "american"]);
+assert.deepEqual(flow.groupSashTypes(legacySashPolicy).map((type) => type.key), ["standard", "side", "royal", "american"]);
+assert.equal(flow.selectedGroupSashType("american", restrictedSashPolicy), "american");
+assert.equal(flow.selectedGroupSashType("side", restrictedSashPolicy), "royal");
+assert.equal(flow.isGroupSashSelectionAllowed("american", restrictedSashPolicy), true);
+assert.equal(flow.isGroupSashSelectionAllowed("side", restrictedSashPolicy), false);
+assert.equal(flow.isGroupSashSelectionAllowed("", restrictedSashPolicy), true, "older clients may omit the sash and use the first option");
+assert.deepEqual(
+  flow.studentSashOverrides({ sashType: "side", sashColor: "#FFFFFF", embroideryColor: "#D4AF37" }, restrictedSashPolicy),
+  { sashType: "royal", sashColor: "#AA2233", embroideryColor: "#C0C0C0" },
+  "a submitted sash outside the representative's two options must be replaced server-side",
+);
+assert.equal(
+  flow.studentSashOverrides({ sashType: "american" }, restrictedSashPolicy).sashType,
+  "american",
+);
+const singleSashPolicy = flow.resolveGroupSashPolicy({
+  sashSelectionMode: "restricted",
+  sashOptions: ["side"],
+  colors: { sash: "#AA2233", embroidery: "#C0C0C0" },
+});
+assert.equal(flow.selectedGroupSashType("royal", singleSashPolicy), "side");
+assert.equal(flow.studentSashOverrides({ sashType: "royal" }, singleSashPolicy).sashType, "side");
+const restrictedPayload = flow.studentPayload(
+  { ...first, sashType: "side", sashColor: "#FFFFFF", embroideryColor: "#D4AF37" },
+  {
+    groupToken: "group-a",
+    sashSelectionMode: "restricted",
+    sashOptions: ["royal", "american"],
+    colors: { sash: "#AA2233", embroidery: "#C0C0C0" },
+  },
+);
+assert.equal(restrictedPayload.customText.sashType, "royal");
+assert.equal(restrictedPayload.colors.sash, "#AA2233");
+assert.equal(restrictedPayload.colors.embroidery, "#C0C0C0");
 const fixedSashPolicy = flow.resolveGroupSashPolicy({
   sashSelectionMode: "fixed",
   sashType: "royal",
