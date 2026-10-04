@@ -22,8 +22,18 @@ export type ServiceDetailField = {
   multiple?: boolean;
   min?: number;
   max?: number;
-  dependsOn?: { key: string; value: string };
+  /** Show the field only when `key` holds `value` (or one of the listed values). */
+  dependsOn?: { key: string; value: string | string[] };
 };
+
+export function dependencyMet(field: Pick<ServiceDetailField, "dependsOn">, source: Record<string, any>) {
+  if (!field.dependsOn) return true;
+  const expected = field.dependsOn.value;
+  const actual = source[field.dependsOn.key];
+  return Array.isArray(expected) ? expected.includes(actual) : actual === expected;
+}
+
+const PHOTO_SESSION_KINDS = ["photo_session", "both"];
 
 const YES_NO = [
   { value: "مطلوب", label: "مطلوب" },
@@ -73,6 +83,7 @@ export function getServiceDetailFields(serviceType?: string | null): ServiceDeta
           options: [
             { value: "video", label: "تصوير فيديو" },
             { value: "photo_session", label: "جلسة تصوير" },
+            { value: "both", label: "جلسة تصوير + تصوير فيديو" },
           ],
         },
         {
@@ -83,7 +94,7 @@ export function getServiceDetailFields(serviceType?: string | null): ServiceDeta
             { value: "indoor", label: "داخلية" },
             { value: "outdoor", label: "خارجية" },
           ],
-          dependsOn: { key: "photographyServiceKind", value: "photo_session" },
+          dependsOn: { key: "photographyServiceKind", value: PHOTO_SESSION_KINDS },
         },
         {
           key: "photoSessionDelivery",
@@ -93,14 +104,14 @@ export function getServiceDetailFields(serviceType?: string | null): ServiceDeta
             { value: "album", label: "ألبوم" },
             { value: "shots", label: "لقطات" },
           ],
-          dependsOn: { key: "photographyServiceKind", value: "photo_session" },
+          dependsOn: { key: "photographyServiceKind", value: PHOTO_SESSION_KINDS },
         },
         {
           key: "photoShotCount",
           label: "عدد اللقطات",
           type: "number",
           min: 1,
-          dependsOn: { key: "photographyServiceKind", value: "photo_session" },
+          dependsOn: { key: "photographyServiceKind", value: PHOTO_SESSION_KINDS },
         },
         { key: "crewName", label: "كادر التصوير", type: "select", source: "crews" },
         { key: "sessionTime", label: "وقت الجلسة", type: "time" },
@@ -184,7 +195,7 @@ export function defaultServiceDetails(serviceType?: string | null): Record<strin
 export function serviceDetailsToRows(serviceType: string | null | undefined, details: Record<string, any> | null | undefined) {
   const source = details ?? {};
   const rows = getServiceDetailFields(serviceType)
-    .filter((field) => !field.dependsOn || source[field.dependsOn.key] === field.dependsOn.value)
+    .filter((field) => dependencyMet(field, source))
     .map((field) => {
       const value = source[field.key];
       if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) return null;
@@ -205,7 +216,7 @@ export function serviceDetailsToRows(serviceType: string | null | undefined, det
 export function validateServiceDetails(serviceType: string | null | undefined, details: Record<string, any>) {
   const errors: Record<string, string> = {};
   for (const field of getServiceDetailFields(serviceType)) {
-    if (field.dependsOn && details[field.dependsOn.key] !== field.dependsOn.value) continue;
+    if (!dependencyMet(field, details)) continue;
     const value = details[field.key];
     const empty = value == null || value === "" || (Array.isArray(value) && value.length === 0);
     if (!empty && field.type === "number") {
@@ -237,7 +248,7 @@ export function primaryLocationFromDetails(serviceType: string | null | undefine
 
 export function withDerivedServiceDetails(serviceType: string | null | undefined, details: Record<string, any>) {
   const next = { ...details };
-  if (normalizeServiceType(serviceType) === "photography" && next.photographyServiceKind !== "photo_session") {
+  if (normalizeServiceType(serviceType) === "photography" && !PHOTO_SESSION_KINDS.includes(next.photographyServiceKind)) {
     delete next.photoSessionLocation;
     delete next.photoSessionDelivery;
     delete next.photoShotCount;

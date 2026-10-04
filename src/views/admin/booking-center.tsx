@@ -42,6 +42,7 @@ import {
   Speaker,
   Trash2,
   Users,
+  Video,
   Warehouse,
   X,
 } from "lucide-react";
@@ -137,6 +138,37 @@ function flowerItemsSummary(items: FlowerBookingItem[]): string {
   const lines = items.map((item) => `${item.name}${item.variantLabel ? ` (${item.variantLabel})` : ""} × ${item.quantity}`).join("، ");
   const text = `${lines} · المجموع ${formatCurrency(flowerItemsTotal(items))}`;
   return text.length > 500 ? `${text.slice(0, 497)}…` : text;
+}
+
+// Store products picked inside a booking (video packages, giveaways). Like the
+// flowers, they are priced into the booking total; stock is handled later from
+// the booking's execution workspace, not at creation.
+type StoreBookingItem = { key: string; productId: number; variantId: number | null; name: string; variantLabel: string | null; quantity: number; unitPrice: number };
+const VIDEO_STORE_HINTS = ["تصوير", "فيديو", "فديو", "video", "photography"];
+const GIFT_STORE_HINTS = ["هدايا", "هدية", "هديه", "توزيع", "gift"];
+
+function storeItemsTotal(items: StoreBookingItem[]): number {
+  return items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+}
+
+function storeItemsSummary(items: StoreBookingItem[]): string {
+  const lines = items.map((item) => `${item.name}${item.variantLabel ? ` (${item.variantLabel})` : ""} × ${item.quantity}`).join("، ");
+  const text = `${lines} · المجموع ${formatCurrency(storeItemsTotal(items))}`;
+  return text.length > 500 ? `${text.slice(0, 497)}…` : text;
+}
+
+/** Store categories whose name matches a hint, plus all of their sub-categories. */
+function storeCategoryIds(categories: any[], hints: string[]): Set<number> {
+  const label = (category: any) => `${category?.nameAr ?? ""} ${category?.name ?? ""}`.toLowerCase();
+  const ids = new Set(categories.filter((category) => hints.some((hint) => label(category).includes(hint))).map((category) => Number(category.id)));
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const category of categories) {
+      const parent = Number(category?.parentId ?? category?.parent_id);
+      if (parent && ids.has(parent) && !ids.has(Number(category.id))) { ids.add(Number(category.id)); grew = true; }
+    }
+  }
+  return ids;
 }
 
 async function fetchFlowerCatalog(): Promise<FlowerCatalogProduct[]> {
@@ -1198,7 +1230,11 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
   const [imageUploading, setImageUploading] = useState(false);
   const [notes, setNotes] = useState("");
   const [selected, setSelected] = useState<ServiceKey[]>(["kosha"]);
-  const [photographyType, setPhotographyType] = useState<"video" | "photo_session">("photo_session");
+  // A photo session and a video shoot are independent choices; a booking may take one or both.
+  const [photoSessionOn, setPhotoSessionOn] = useState(true);
+  const [videoOn, setVideoOn] = useState(false);
+  const [videoItems, setVideoItems] = useState<StoreBookingItem[]>([]);
+  const [giftItems, setGiftItems] = useState<StoreBookingItem[]>([]);
   const [photographyLocation, setPhotographyLocation] = useState<"indoor" | "outdoor">("indoor");
   const [photographyDelivery, setPhotographyDelivery] = useState<"album" | "shots">("shots");
   const [photographyShotsCount, setPhotographyShotsCount] = useState("");
@@ -1239,16 +1275,18 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
     enabled: soundSelected,
     staleTime: 30_000,
   });
+  const giftsSelected = selected.includes("gifts");
+  // Same store catalogue for priced photography services, video products and giveaways.
   const photographyProductsQuery = useQuery<any[]>({
     queryKey: ["admin", "products-all", "booking-photography-services"],
     queryFn: () => adminFetch("/admin/products?limit=2000"),
-    enabled: selected.includes("photography"),
+    enabled: selected.includes("photography") || giftsSelected,
     staleTime: 30_000,
   });
   const categoriesQuery = useQuery<any[]>({
     queryKey: ["admin", "categories", "booking-sound-picker"],
     queryFn: () => adminFetch("/admin/categories"),
-    enabled: soundSelected,
+    enabled: soundSelected || (selected.includes("photography") && videoOn) || giftsSelected,
     staleTime: 5 * 60_000,
   });
   const focusField = (field: string) => {
@@ -1259,6 +1297,8 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
       totalAmount: "booking-total",
       depositAmount: "booking-deposit",
       serviceId: "booking-service-picker",
+      photography: "booking-photo-kind-session",
+      videoItems: "booking-video-items-search",
     };
     window.requestAnimationFrame(() =>
       document.getElementById(fieldId[field] ?? "booking-date")?.focus(),
@@ -1285,11 +1325,22 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
       if (!services.length) failField("serviceId", "لا توجد خدمة فعالة في النظام. افتح إدارة الخدمات وأضف أو فعّل خدمة قبل حفظ الحجز.");
       const primary = resolveUnifiedBookingService(selected, services);
       if (!primary) failField("serviceId", "لم يتم العثور على خدمة صالحة لهذا الحجز. تحقق من تفعيل خدمة في إدارة الخدمات.");
+      const photographyChosen = selected.includes("photography");
+      if (photographyChosen && !photoSessionOn && !videoOn) failField("photography", "اختر جلسة تصوير أو تصوير فيديو (أو كليهما)");
+      if (photographyChosen && videoOn && !videoItems.length) failField("videoItems", "اختر منتج تصوير الفيديو من المتجر");
       // النقل بواسطة AJN يبقى ضمن إجمالي الحجز: يُضاف إلى المبلغ الكلي المرسل.
       const transportFee = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
       // Chosen flower products are part of the booking total, like AJN transport.
       const flowersTotal = selected.includes("flowers") ? flowerItemsTotal(flowerItems) : 0;
-      const baseTotal = num(totalAmount) + transportFee + flowersTotal;
+      const videoTotal = photographyChosen && videoOn ? storeItemsTotal(videoItems) : 0;
+      const giftsTotal = selected.includes("gifts") ? storeItemsTotal(giftItems) : 0;
+      const baseTotal = num(totalAmount) + transportFee + flowersTotal + videoTotal + giftsTotal;
+      const photographyKinds = [...(photoSessionOn ? ["photo_session"] : []), ...(videoOn ? ["video"] : [])];
+      const photographyNotes = [
+        photoSessionOn ? `جلسة تصوير (${photographyLocation === "outdoor" ? "خارجية" : "داخلية"} · ${photographyDelivery === "album" ? "ألبوم" : "لقطات"}${photographyShotsCount ? ` · ${num(photographyShotsCount)} لقطة` : ""})` : "",
+        videoOn && videoItems.length ? `تصوير فيديو: ${storeItemsSummary(videoItems)}` : "",
+        photographyReelsRequested ? "مع ريلز" : "",
+      ].filter(Boolean).join(" | ");
       const serviceLinesTotal = photographyServiceItems.reduce((sum, item) => sum + Math.max(0, item.quantity * item.unitPrice - item.discount), 0);
       const grandTotal = baseTotal + serviceLinesTotal;
       return adminFetch("/admin/service-orders", {
@@ -1332,10 +1383,17 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
                   ? { type, status: "waiting", amount: 0, notes: koshaPickLabel(koshaPick) }
                   : type === "flowers" && flowerItems.length
                     ? { type, status: "waiting", amount: flowersTotal, notes: flowerItemsSummary(flowerItems) }
-                    : { type, status: "waiting", amount: 0 },
+                    : type === "photography"
+                      ? { type, status: "waiting", amount: videoTotal, notes: photographyNotes }
+                      : type === "gifts" && giftItems.length
+                        ? { type, status: "waiting", amount: giftsTotal, notes: storeItemsSummary(giftItems) }
+                        : { type, status: "waiting", amount: 0 },
             ),
             ...(selected.includes("flowers") && flowerItems.length
               ? { flowerItems: flowerItems.map(({ key: _key, ...item }) => item) }
+              : {}),
+            ...(selected.includes("gifts") && giftItems.length
+              ? { giftItems: giftItems.map(({ key: _key, ...item }) => item) }
               : {}),
             ...(koshaSelected && koshaPick ? { koshaSelection: koshaPick } : {}),
             ...(selected.includes("transportation") && transportationMode
@@ -1345,17 +1403,21 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
                 }
               : {}),
             ...(selected.includes("sound") && soundItems.length ? { soundItems } : {}),
-            ...(selected.includes("photography")
+            ...(photographyChosen
               ? {
-                  photographyServiceKind: photographyType,
+                  // Legacy single-kind key kept for existing readers; "both" when the
+                  // booking takes a photo session and a video shoot.
+                  photographyServiceKind: photoSessionOn && videoOn ? "both" : videoOn ? "video" : "photo_session",
+                  photographyKinds,
                   photographyReelsRequested,
-                  ...(photographyType === "photo_session"
+                  ...(photoSessionOn
                     ? {
                         photoSessionLocation: photographyLocation,
                         photoSessionDelivery: photographyDelivery,
                         photoShotCount: photographyShotsCount ? num(photographyShotsCount) : null,
                       }
                     : {}),
+                  ...(videoOn && videoItems.length ? { videoItems: videoItems.map(({ key: _key, ...item }) => item) } : {}),
                 }
               : {}),
           },
@@ -1375,9 +1437,11 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
   // النقل بواسطة AJN جزء من إجمالي الحجز: تُضاف أجرته تلقائياً إلى المبلغ الكلي.
   const transportFeeValue = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
   const flowersTotalValue = flowersSelected ? flowerItemsTotal(flowerItems) : 0;
+  const videoTotalValue = selected.includes("photography") && videoOn ? storeItemsTotal(videoItems) : 0;
+  const giftsTotalValue = giftsSelected ? storeItemsTotal(giftItems) : 0;
   const baseTotalValue = num(totalAmount);
   const photographyServicesTotalValue = photographyServiceItems.reduce((sum, item) => sum + Math.max(0, item.quantity * item.unitPrice - item.discount), 0);
-  const baseBookingTotalValue = baseTotalValue + transportFeeValue + flowersTotalValue;
+  const baseBookingTotalValue = baseTotalValue + transportFeeValue + flowersTotalValue + videoTotalValue + giftsTotalValue;
   const totalValue = baseBookingTotalValue + photographyServicesTotalValue;
   const depositValue = num(depositAmount);
   const depositTooHigh = depositValue > totalValue;
@@ -1401,7 +1465,8 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
     if (type === "transportation") { setTransportationMode(null); setTransportationFee(""); }
     if (type === "kosha") { setKoshaMode(null); setKoshaPick(null); setKoshaSearch(""); }
     if (type === "flowers") setFlowerItems([]);
-    if (type === "photography") setPhotographyServiceItems([]);
+    if (type === "photography") { setPhotographyServiceItems([]); setVideoItems([]); }
+    if (type === "gifts") setGiftItems([]);
   };
   const toggle = (type: ServiceKey) => {
     if (selected.includes(type)) {
@@ -1421,7 +1486,9 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
             ? "booking-kosha-settings"
             : type === "flowers"
               ? "booking-flowers-settings"
-              : "booking-service-picker";
+              : type === "gifts"
+                ? "booking-gifts-items"
+                : "booking-service-picker";
     window.requestAnimationFrame(() => document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "center" }));
   };
   const photographySelected = selected.includes("photography");
@@ -1437,7 +1504,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
             <div className="space-y-2"><Label htmlFor="booking-time">وقت المناسبة</Label><Input id="booking-time" type="time" value={eventTime} onChange={(event) => setEventTime(event.target.value)} /></div>
             <div className="space-y-2"><Label htmlFor="booking-hall">القاعة / الموقع</Label><Input id="booking-hall" value={hallName} onChange={(event) => setHallName(event.target.value)} placeholder="اسم القاعة والعنوان" /></div>
             <div className="space-y-2"><Label htmlFor="booking-map">رابط Google Maps</Label><Input id="booking-map" dir="ltr" value={mapUrl} onChange={(event) => setMapUrl(event.target.value)} placeholder="https://maps.google.com/..." /></div>
-            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الأساسي قبل الخدمات الإضافية</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}{transportFeeValue > 0 || flowersTotalValue > 0 || photographyServicesTotalValue > 0 ? <p className="text-xs text-muted-foreground">{transportFeeValue > 0 ? `+ أجرة النقل ${formatCurrency(transportFeeValue)} ` : ""}{flowersTotalValue > 0 ? `+ الورد ${formatCurrency(flowersTotalValue)} ` : ""}{photographyServicesTotalValue > 0 ? `+ خدمات التصوير ${formatCurrency(photographyServicesTotalValue)} ` : ""}= الإجمالي <b className="text-foreground">{formatCurrency(totalValue)}</b></p> : null}</div>
+            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الأساسي قبل الخدمات الإضافية</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}{transportFeeValue > 0 || flowersTotalValue > 0 || videoTotalValue > 0 || giftsTotalValue > 0 || photographyServicesTotalValue > 0 ? <p className="text-xs text-muted-foreground">{transportFeeValue > 0 ? `+ أجرة النقل ${formatCurrency(transportFeeValue)} ` : ""}{flowersTotalValue > 0 ? `+ الورد ${formatCurrency(flowersTotalValue)} ` : ""}{videoTotalValue > 0 ? `+ الفيديو ${formatCurrency(videoTotalValue)} ` : ""}{giftsTotalValue > 0 ? `+ التوزيعات ${formatCurrency(giftsTotalValue)} ` : ""}{photographyServicesTotalValue > 0 ? `+ خدمات التصوير ${formatCurrency(photographyServicesTotalValue)} ` : ""}= الإجمالي <b className="text-foreground">{formatCurrency(totalValue)}</b></p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-deposit">العربون</Label><Input id="booking-deposit" inputMode="decimal" aria-invalid={depositTooHigh} className={depositTooHigh ? "border-destructive" : ""} value={depositAmount} onChange={(event) => setDepositAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" />{depositTooHigh ? <p className="text-xs text-destructive">لا يمكن أن يتجاوز العربون المبلغ الكلي.</p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-remaining">المتبقي</Label><Input id="booking-remaining" value={formatCurrency(remainingValue)} readOnly className="bg-muted/35 tabular-nums" dir="ltr" /><p className="text-xs font-medium text-primary">{paymentStatusLabel}</p></div>
           </div>
@@ -1478,7 +1545,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
               const meta = SERVICE_META.find((item) => item.key === type);
               if (!meta) return null;
               const Icon = meta.icon;
-              const hasSettings = type === "photography" || type === "sound" || type === "transportation" || type === "kosha" || type === "flowers";
+              const hasSettings = type === "photography" || type === "sound" || type === "transportation" || type === "kosha" || type === "flowers" || type === "gifts";
               return <div key={type} className="flex min-h-11 items-center justify-between gap-2 rounded-lg border border-border/45 bg-muted/20 px-2.5 py-1.5">
                 <span className="flex min-w-0 items-center gap-2 text-sm font-medium"><Icon className="h-4 w-4 shrink-0 text-primary" /><span className="truncate">{meta.short}</span></span>
                 <span className="flex shrink-0 items-center gap-1">
@@ -1513,11 +1580,38 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
           /> : null}
           {photographySelected ? <section id="booking-photography-settings" className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
             <div><h3 className="font-semibold text-foreground">تفاصيل التصوير</h3><p className="mt-1 text-xs text-muted-foreground">تُحفظ هذه التفاصيل مع الحجز لتظهر لفريق التصوير.</p></div>
-            <div className="space-y-1.5"><Label htmlFor="booking-photography-type">نوع التصوير</Label><select id="booking-photography-type" value={photographyType} onChange={(event) => setPhotographyType(event.target.value as "video" | "photo_session")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="video">تصوير فيديو</option><option value="photo_session">جلسة تصوير</option></select></div>
-            {photographyType === "photo_session" ? <>
+            <div className="grid grid-cols-2 gap-2" role="group" aria-label="نوع التصوير — يمكن اختيار الاثنين">
+              {([
+                { key: "session", label: "جلسة تصوير", hint: "داخلية أو خارجية · ألبوم أو لقطات", Icon: Camera, on: photoSessionOn, set: setPhotoSessionOn },
+                { key: "video", label: "تصوير فيديو", hint: "تختار منتج الفيديو من المتجر", Icon: Video, on: videoOn, set: setVideoOn },
+              ]).map(({ key, label, hint, Icon, on, set }) => <Button key={key} id={`booking-photo-kind-${key}`} type="button" variant="ghost" aria-pressed={on} onClick={() => { set(!on); setFieldErrors((current) => ({ ...current, photography: "", videoItems: "" })); }} className={`h-auto flex-col items-stretch gap-1 whitespace-normal rounded-xl border p-3 text-right ${on ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-foreground hover:border-primary/40"}`}>
+                <span className="flex items-center justify-between gap-2 text-sm font-semibold"><span className="flex items-center gap-1.5"><Icon className="h-4 w-4" />{label}</span>{on ? <CheckCircle2 className="h-4 w-4" /> : null}</span>
+                <span className="text-[11px] font-normal leading-4 text-muted-foreground">{hint}</span>
+              </Button>)}
+            </div>
+            {fieldErrors.photography ? <p className="text-xs text-destructive">{fieldErrors.photography}</p> : null}
+            {photoSessionOn ? <div className="space-y-2 rounded-lg border border-border/45 bg-background/80 p-3">
+              <h4 className="flex items-center gap-1.5 text-sm font-semibold"><Camera className="h-4 w-4 text-primary" />جلسة التصوير</h4>
               <div className="grid grid-cols-2 gap-2"><div className="space-y-1.5"><Label htmlFor="booking-photography-location">المكان</Label><select id="booking-photography-location" value={photographyLocation} onChange={(event) => setPhotographyLocation(event.target.value as "indoor" | "outdoor")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="indoor">داخلي</option><option value="outdoor">خارجي</option></select></div><div className="space-y-1.5"><Label htmlFor="booking-photography-delivery">الطلب</Label><select id="booking-photography-delivery" value={photographyDelivery} onChange={(event) => setPhotographyDelivery(event.target.value as "album" | "shots")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="album">ألبوم</option><option value="shots">لقطات</option></select></div></div>
               <div className="space-y-1.5"><Label htmlFor="booking-photography-shots">عدد اللقطات</Label><Input id="booking-photography-shots" inputMode="numeric" min="1" type="number" value={photographyShotsCount} onChange={(event) => setPhotographyShotsCount(event.target.value.replace(/[^0-9]/g, ""))} placeholder="مثال: 30" /></div>
-            </> : null}
+            </div> : null}
+            {videoOn ? <StoreProductPicker
+              sectionId="booking-video-items"
+              className="space-y-2 rounded-lg border border-border/45 bg-background/80 p-3"
+              title="تصوير الفيديو"
+              description="اختر منتج الفيديو من المتجر؛ يُضاف سعره تلقائياً إلى المبلغ الكلي."
+              icon={Video}
+              categoryLabel="قسم التصوير"
+              hints={VIDEO_STORE_HINTS}
+              products={photographyProductsQuery.data ?? []}
+              categories={categoriesQuery.data ?? []}
+              loading={photographyProductsQuery.isLoading || categoriesQuery.isLoading}
+              error={photographyProductsQuery.isError ? apiErrorMessage(photographyProductsQuery.error, "تعذر تحميل منتجات المتجر") : categoriesQuery.isError ? apiErrorMessage(categoriesQuery.error, "تعذر تحميل أقسام المتجر") : ""}
+              onRetry={() => { void photographyProductsQuery.refetch(); void categoriesQuery.refetch(); }}
+              items={videoItems}
+              onChange={(items) => { setVideoItems(items); setFieldErrors((current) => ({ ...current, videoItems: "" })); }}
+              requiredError={fieldErrors.videoItems}
+            /> : null}
             <label className="flex cursor-pointer items-center justify-between rounded-lg border border-border/45 bg-background/80 px-3 py-2 text-sm"><span>هل تريد ريلز معها؟</span><input type="checkbox" checked={photographyReelsRequested} onChange={(event) => setPhotographyReelsRequested(event.target.checked)} className="h-4 w-4 accent-rose-600" /><span className="sr-only">طلب ريلز</span></label>
             <PhotographyServiceItemsSelector
               products={photographyProductsQuery.data ?? []}
@@ -1527,6 +1621,22 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
               onChange={setPhotographyServiceItems}
             />
           </section> : null}
+          {giftsSelected ? <StoreProductPicker
+            sectionId="booking-gifts-items"
+            className="mt-4 space-y-3 rounded-xl border border-violet-200/70 bg-violet-50/45 p-3 dark:border-violet-900/60 dark:bg-violet-950/20"
+            title="الهدايا والتوزيعات"
+            description="اختر التوزيعات من منتجات المتجر؛ يُضاف مجموعها تلقائياً إلى المبلغ الكلي."
+            icon={Gift}
+            categoryLabel="قسم الهدايا"
+            hints={GIFT_STORE_HINTS}
+            products={photographyProductsQuery.data ?? []}
+            categories={categoriesQuery.data ?? []}
+            loading={photographyProductsQuery.isLoading || categoriesQuery.isLoading}
+            error={photographyProductsQuery.isError ? apiErrorMessage(photographyProductsQuery.error, "تعذر تحميل منتجات المتجر") : categoriesQuery.isError ? apiErrorMessage(categoriesQuery.error, "تعذر تحميل أقسام المتجر") : ""}
+            onRetry={() => { void photographyProductsQuery.refetch(); void categoriesQuery.refetch(); }}
+            items={giftItems}
+            onChange={setGiftItems}
+          /> : null}
           {soundSelected ? <SoundItemsSelector products={soundProductsQuery.data ?? []} categories={categoriesQuery.data ?? []} loading={soundProductsQuery.isLoading || categoriesQuery.isLoading} items={soundItems} onChange={setSoundItems} /> : null}
           {selected.includes("transportation") ? <section id="booking-transportation-settings" className="mt-4 space-y-3 rounded-xl border border-amber-200/70 bg-amber-50/45 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
             <div className="flex items-start gap-2"><span className="mt-0.5 text-amber-700"><Car className="h-5 w-5" /></span><div><h3 className="font-semibold text-foreground">خدمة النقل</h3><p className="mt-0.5 text-xs text-muted-foreground">تبقى أجرة النقل جزءاً من الحجز وتُنسب تحليلياً للسيارة بعد تنفيذ دفعة الزبون.</p></div></div>
@@ -1813,6 +1923,144 @@ function FlowerCatalogSection({ catalog, loading, error, onRetry, items, onChang
         </div>
       ) : null}
     </section>
+  );
+}
+
+function StoreProductPicker({ sectionId, className, title, description, icon: Icon, categoryLabel, hints, products, categories, loading, error, onRetry, items, onChange, requiredError }: {
+  sectionId: string;
+  className: string;
+  title: string;
+  description: string;
+  icon: typeof Gift;
+  categoryLabel: string;
+  hints: string[];
+  products: any[];
+  categories: any[];
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  items: StoreBookingItem[];
+  onChange: (items: StoreBookingItem[]) => void;
+  requiredError?: string;
+}) {
+  const [scope, setScope] = useState<"category" | "all">("category");
+  const [search, setSearch] = useState("");
+  const [variantChoice, setVariantChoice] = useState<Record<number, number>>({});
+  const categoryIds = useMemo(() => storeCategoryIds(categories, hints), [categories, hints]);
+  const storeProducts = useMemo(
+    () => products.filter((product) => product?.isActive !== false && !product?.archivedAt && !product?.isAsset && product?.itemType !== "service"),
+    [products],
+  );
+  const inCategory = useMemo(
+    () => storeProducts.filter((product) => categoryIds.has(Number(product?.categoryId ?? product?.category_id))),
+    [storeProducts, categoryIds],
+  );
+  const activeScope = scope === "category" && inCategory.length ? "category" : "all";
+  const needle = search.trim().toLowerCase();
+  const visible = (activeScope === "category" ? inCategory : storeProducts)
+    .filter((product) => !needle || [product.nameAr, product.name, product.barcode, product.sku].some((value) => String(value ?? "").toLowerCase().includes(needle)))
+    .slice(0, 48);
+  const activeVariants = (product: any): any[] => (Array.isArray(product?.variants) ? product.variants : []).filter((variant: any) => variant?.isActive !== false);
+  const chosenVariant = (product: any) => {
+    const variants = activeVariants(product);
+    return variants.find((variant) => Number(variant.id) === variantChoice[Number(product.id)]) ?? variants[0] ?? null;
+  };
+  const priceOf = (product: any, variant: any) => Number(variant?.price ?? product?.price ?? 0) || 0;
+  const add = (product: any) => {
+    const variant = chosenVariant(product);
+    const key = variant ? `v:${variant.id}` : `p:${product.id}`;
+    if (items.some((item) => item.key === key)) {
+      onChange(items.map((item) => (item.key === key ? { ...item, quantity: item.quantity + 1 } : item)));
+      return;
+    }
+    onChange([...items, {
+      key,
+      productId: Number(product.id),
+      variantId: variant ? Number(variant.id) : null,
+      name: product.nameAr || product.name || `#${product.id}`,
+      variantLabel: variant ? String(variant.color || variant.name || variant.sku || "") || null : null,
+      quantity: 1,
+      unitPrice: priceOf(product, variant),
+    }]);
+  };
+  const setQuantity = (key: string, quantity: number) =>
+    onChange(quantity <= 0 ? items.filter((item) => item.key !== key) : items.map((item) => (item.key === key ? { ...item, quantity } : item)));
+  const subtotal = storeItemsTotal(items);
+
+  return (
+    <div id={sectionId} className={className}>
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 text-primary"><Icon className="h-5 w-5" /></span>
+        <div><h3 className="font-semibold text-foreground">{title}</h3><p className="mt-0.5 text-xs text-muted-foreground">{description}</p></div>
+      </div>
+      <div className="grid grid-cols-2 gap-2" role="group" aria-label={`مصدر منتجات ${title}`}>
+        <Button type="button" size="sm" variant={activeScope === "category" ? "default" : "outline"} disabled={!inCategory.length} onClick={() => setScope("category")}><ShoppingBag className="h-4 w-4" />{categoryLabel}{inCategory.length ? ` (${inCategory.length})` : ""}</Button>
+        <Button type="button" size="sm" variant={activeScope === "all" ? "default" : "outline"} onClick={() => setScope("all")}><Search className="h-4 w-4" />كل المتجر</Button>
+      </div>
+      {!loading && !error && !inCategory.length ? <p className="text-[11px] text-muted-foreground">لا يوجد قسم «{categoryLabel.replace("قسم ", "")}» بمنتجات في المتجر؛ ابحث في كل المتجر.</p> : null}
+      <div className="relative"><Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input id={`${sectionId}-search`} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث باسم المنتج أو الباركود" className="h-9 pr-9 text-sm" aria-invalid={Boolean(requiredError)} /></div>
+      {error ? (
+        <div role="alert" className="flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <span>{error}</span>
+          <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={onRetry}>إعادة المحاولة</Button>
+        </div>
+      ) : loading ? (
+        <div className="grid grid-cols-3 gap-2">{[0, 1, 2].map((index) => <Skeleton key={index} className="aspect-[4/5] rounded-lg" />)}</div>
+      ) : visible.length ? (
+        <div className="grid max-h-[26rem] grid-cols-3 gap-2 overflow-y-auto pe-1">
+          {visible.map((product) => {
+            const variants = activeVariants(product);
+            const variant = chosenVariant(product);
+            const price = priceOf(product, variant);
+            const inCart = items.filter((item) => item.productId === Number(product.id)).reduce((sum, item) => sum + item.quantity, 0);
+            const image = variant?.image || product.images?.[0] || product.imageUrl || product.image || "";
+            return (
+              <div key={product.id} className={`flex min-w-0 flex-col overflow-hidden rounded-lg border bg-background ${inCart ? "border-primary ring-2 ring-primary/30" : "border-border/40"}`}>
+                <span className="relative grid aspect-[4/3] w-full place-items-center overflow-hidden bg-muted">
+                  {image ? <img src={image} alt={product.nameAr || product.name} className="h-full w-full object-cover" loading="lazy" decoding="async" /> : <Icon className="h-6 w-6 text-muted-foreground" />}
+                  {inCart ? <span className="absolute left-1.5 top-1.5 rounded-full bg-primary px-2 py-0.5 text-[11px] font-bold text-primary-foreground shadow">× {inCart}</span> : null}
+                </span>
+                <div className="flex flex-1 flex-col gap-1 p-2">
+                  <span className="block truncate text-xs font-semibold text-foreground" title={product.nameAr || product.name}>{product.nameAr || product.name}</span>
+                  <span className="block text-[11px] font-bold text-primary">{price > 0 ? formatCurrency(price) : "حسب الاتفاق"}</span>
+                  {variants.length > 1 ? (
+                    <select
+                      value={variant?.id ?? ""}
+                      onChange={(event) => setVariantChoice((current) => ({ ...current, [Number(product.id)]: Number(event.target.value) }))}
+                      className="h-7 w-full rounded-md border border-input bg-background px-1 text-[11px]"
+                      aria-label={`نوع ${product.nameAr || product.name}`}
+                    >
+                      {variants.map((option) => <option key={option.id} value={option.id}>{option.color || option.name || `نوع ${option.id}`}</option>)}
+                    </select>
+                  ) : null}
+                  <Button type="button" size="sm" variant={inCart ? "default" : "outline"} className="mt-auto h-7 w-full gap-1 px-1 text-[11px]" onClick={() => add(product)}>
+                    <Plus className="h-3.5 w-3.5" /> إضافة
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : <p className="rounded-lg border border-dashed border-border/60 p-3 text-center text-xs text-muted-foreground">لا توجد منتجات مطابقة.</p>}
+      {items.length ? (
+        <div className="space-y-1.5 rounded-lg border border-primary/30 bg-background/80 p-2">
+          <div className="flex items-center justify-between text-xs font-semibold"><span>المنتجات المختارة</span><span className="text-primary">{formatCurrency(subtotal)}</span></div>
+          {items.map((item) => (
+            <div key={item.key} className="flex items-center justify-between gap-2 text-xs">
+              <span className="min-w-0 truncate">{item.name}{item.variantLabel ? ` · ${item.variantLabel}` : ""}</span>
+              <span className="flex shrink-0 items-center gap-1">
+                <Button size="iconSm" variant="ghost" type="button" onClick={() => setQuantity(item.key, item.quantity - 1)} className="grid h-6 w-6 place-items-center rounded border border-border/60" aria-label={`إنقاص ${item.name}`}>−</Button>
+                <span className="w-6 text-center tabular-nums">{item.quantity}</span>
+                <Button size="iconSm" variant="ghost" type="button" onClick={() => setQuantity(item.key, item.quantity + 1)} className="grid h-6 w-6 place-items-center rounded border border-border/60" aria-label={`زيادة ${item.name}`}>+</Button>
+                <span className="w-20 text-left tabular-nums text-muted-foreground">{formatCurrency(item.unitPrice * item.quantity)}</span>
+                <Button variant="ghost" type="button" onClick={() => setQuantity(item.key, 0)} className="text-destructive" aria-label={`إزالة ${item.name}`}><X className="h-3.5 w-3.5" /></Button>
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {requiredError ? <p className="text-xs text-destructive">{requiredError}</p> : null}
+    </div>
   );
 }
 

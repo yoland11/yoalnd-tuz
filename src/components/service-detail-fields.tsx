@@ -1,6 +1,7 @@
 import {
   type CrewOption,
   type ServiceDetailField,
+  dependencyMet,
   filesToStoredValues,
   getServiceDetailFields,
 } from "@/lib/service-details";
@@ -28,7 +29,7 @@ export function ServiceDetailFields({
   density = "admin",
 }: Props) {
   const fields = getServiceDetailFields(serviceType).filter(
-    (field) => !field.dependsOn || value[field.dependsOn.key] === field.dependsOn.value,
+    (field) => dependencyMet(field, value),
   );
 
   if (fields.length === 0) return null;
