@@ -210,6 +210,26 @@ const personalPayload = flow.studentPayload(
 assert.equal(personalPayload.customText.sashType, "american");
 assert.equal(personalPayload.colors.sash, "#FFFFFF");
 const referenceImage = "data:image/png;base64,AAAA";
+const restoredReference = flow.restoreStudentDraft({
+  ...first,
+  referencePlacement: "cap_top",
+  referenceNote: "صورة قديمة",
+  referenceImage,
+  referenceFileName: "old.png",
+}, undefined, flow.newStudent());
+assert.equal(restoredReference.references.cap_top?.fileName, "old.png");
+const multiReference = flow.studentPayload({
+  ...first,
+  references: {
+    cap_top: { note: "الأعلى", image: referenceImage, fileName: "top.png" },
+    sash_back: { note: "الخلف", image: referenceImage, fileName: "back.png" },
+  },
+}, { groupToken: "group-a", customText: { sashNamePrefix: "المهندس" } });
+assert.equal(multiReference.studentReferences.length, 2);
+assert.equal(multiReference.studentReferences[0].placement, "cap_top");
+assert.equal(multiReference.studentReferences[1].fileName, "back.png");
+assert.equal(flow.combineSashName("المهندس", "علي أحمد"), "المهندس علي أحمد");
+assert.equal(flow.combineSashName("", "علي أحمد"), "علي أحمد");
 const referencePayload = flow.studentPayload(
   {
     ...first,
@@ -273,6 +293,20 @@ assert.equal(
   false,
   "student reference upload must not accept an arbitrary remote URL",
 );
+assert.equal(graduationOrderInputSchema.safeParse({
+  ...orderInput,
+  studentReferences: [
+    { placement: "cap_top", imageData: referenceImage },
+    { placement: "sash_back", imageData: referenceImage },
+  ],
+}).success, true, "different placements accept separate images");
+assert.equal(graduationOrderInputSchema.safeParse({
+  ...orderInput,
+  studentReferences: [
+    { placement: "cap_top", imageData: referenceImage },
+    { placement: "cap_top", imageData: referenceImage },
+  ],
+}).success, false, "one placement cannot be submitted twice");
 console.log(
   "Graduation student isolation, payload, validation and legacy customization passed.",
 );

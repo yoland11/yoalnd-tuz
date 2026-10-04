@@ -432,6 +432,17 @@ export const graduationOrderInputSchema = z
         path: ["note"],
       })
       .optional(),
+    studentReferences: z.array(z.object({
+      placement: z.enum(["cap_edge", "cap_top", "sash_back", "other"]),
+      note: z.string().trim().max(500).default(""),
+      imageData: z.string().max(1_000_000).regex(/^data:image\/(?:jpeg|png|webp);base64,/i).optional(),
+      fileName: z.string().trim().max(180).optional(),
+    }).refine((reference) => reference.placement !== "other" || Boolean(reference.note), {
+      message: "اكتب ملاحظة توضّح الموضع الآخر",
+      path: ["note"],
+    })).max(4).refine((references) => new Set(references.map((item) => item.placement)).size === references.length, {
+      message: "لا تكرر موضع الصورة",
+    }).optional(),
     colors: z.record(z.string(), z.string()).default({}),
     fabric: z.object({ key: z.string().min(1) }).passthrough(),
     decoration: z

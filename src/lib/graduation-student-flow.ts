@@ -14,6 +14,7 @@ export const STUDENT_REFERENCE_PLACEMENTS = [
 
 export type StudentReferencePlacement =
   (typeof STUDENT_REFERENCE_PLACEMENTS)[number]["key"];
+export type StudentReferenceDraft = { note: string; image: string; fileName: string };
 export const SASH_TYPES = [
   {
     key: "standard",
@@ -119,6 +120,7 @@ export function newStudent() {
     referenceNote: "",
     referenceImage: "",
     referenceFileName: "",
+    references: {} as Partial<Record<StudentReferencePlacement, StudentReferenceDraft>>,
     font: "naskh",
     flowers: [] as StudentFlower[],
     photography: null as Record<string, unknown> | null,
@@ -134,7 +136,15 @@ export function restoreStudentDraft(
     ...currentSeed,
     ...draft,
     measurements: { ...draft.measurements },
+    references: { ...currentSeed.references, ...draft.references },
   };
+  if (draft.referencePlacement && !restored.references[draft.referencePlacement] && (draft.referenceImage || draft.referenceNote)) {
+    restored.references[draft.referencePlacement] = {
+      note: draft.referenceNote,
+      image: draft.referenceImage,
+      fileName: draft.referenceFileName,
+    };
+  }
   if (!previousSeed) return restored;
   for (const key of Object.keys(currentSeed) as (keyof StudentForm)[]) {
     if (key === "measurements") {
@@ -177,7 +187,9 @@ export function studentIssue(student: StudentForm, step: number) {
   if (step === 3) {
     if ((student.referenceImage || student.referenceNote.trim()) && !student.referencePlacement)
       return "حدد موضع الصورة أو الملاحظة";
-    if (student.referencePlacement === "other" && !student.referenceNote.trim())
+    if (student.referencePlacement === "other" && !student.references?.other && !student.referenceNote.trim())
+      return "اكتب ملاحظة توضّح الموضع الآخر";
+    if (student.references?.other && !student.references.other.note.trim())
       return "اكتب ملاحظة توضّح الموضع الآخر";
   }
   return undefined;
@@ -194,8 +206,12 @@ export function withoutStudentReferencePreview(
   previewAssets: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(previewAssets || {}).filter(([key]) => key !== "studentReference"),
+    Object.entries(previewAssets || {}).filter(([key]) => key !== "studentReference" && key !== "studentReferences"),
   );
+}
+
+export function combineSashName(prefix: string, studentName: string): string {
+  return [prefix.trim(), studentName.trim()].filter(Boolean).join(" ");
 }
 
 export function resolveGroupSashPolicy(
@@ -268,6 +284,14 @@ export function studentPayload(
     },
     sashPolicy,
   );
+  const studentReferences = STUDENT_REFERENCE_PLACEMENTS.flatMap(({ key }) => {
+    const reference = student.references?.[key];
+    return reference
+      ? [{ placement: key, note: reference.note.trim(), ...(reference.image
+          ? { imageData: reference.image, fileName: reference.fileName }
+          : {}) }]
+      : [];
+  });
   return {
     ...base,
     previewAssets: withoutStudentReferencePreview(base.previewAssets),
@@ -275,7 +299,8 @@ export function studentPayload(
     customerName: student.customerName.trim(),
     phone: student.phone,
     notes: student.notes,
-    ...(student.referencePlacement
+    ...(studentReferences.length ? { studentReferences } : {}),
+    ...(studentReferences.length === 0 && student.referencePlacement && (student.referenceImage || student.referenceNote.trim())
       ? {
           studentReference: {
             placement: student.referencePlacement,

@@ -38,6 +38,7 @@ await page.route("**/api/**", async (route) => {
           styleKey: "standard",
           fabric: { key: "standard" },
           colors: { robe: "#111111", sash: "#182539", embroidery: "#D4AF37" },
+          customText: { sashNamePrefix: "المهندس" },
         },
       },
     };
@@ -145,6 +146,7 @@ try {
   await page.getByRole("button", { name: "XS", exact: true }).click();
   await page.getByRole("button", { name: "التالي", exact: true }).click();
   await page.getByLabel("اكتب اسمك", { exact: true }).fill("علي");
+  await page.getByText("اللقب الثابت من ممثل الدفعة:", { exact: false }).waitFor();
   await page.getByLabel("الخط", { exact: true }).selectOption("thuluth");
   assert.equal(await page.getByLabel("لون الوشاح", { exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "فضي", exact: true }).count(), 0);
@@ -156,6 +158,15 @@ try {
     buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==", "base64"),
   });
   await page.getByRole("img", { name: "معاينة الصورة المرجعية" }).waitFor();
+  await page.getByRole("button", { name: "خلف الوشاح", exact: true }).click();
+  await page.getByLabel("ملاحظة على الصورة أو الموضع", { exact: false }).fill("خلف الوشاح فقط");
+  await page.getByLabel("صورة مرجعية (اختياري)").setInputFiles({
+    name: "back.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==", "base64"),
+  });
+  await page.getByRole("button", { name: /^فوق القبعة/ }).click();
+  assert.equal(await page.getByLabel("ملاحظة على الصورة أو الموضع", { exact: false }).inputValue(), "ثبّت الزهرة في الأعلى");
   await page.evaluate(() => document.fonts.ready);
   await page
     .getByRole("img", { name: /^معاينة الوشاح ملكي:/ })
@@ -203,9 +214,12 @@ try {
   assert.equal(submitted[0].customText.font, "thuluth");
   assert.equal(submitted[0].colors.sash, "#182539");
   assert.equal(submitted[0].colors.embroidery, "#D4AF37");
-  assert.equal(submitted[0].studentReference.placement, "cap_top");
-  assert.equal(submitted[0].studentReference.note, "ثبّت الزهرة في الأعلى");
-  assert.ok(submitted[0].studentReference.imageData.startsWith("data:image/"));
+  assert.equal(submitted[0].studentReferences.length, 2);
+  assert.equal(submitted[0].studentReferences[0].placement, "cap_top");
+  assert.equal(submitted[0].studentReferences[0].note, "ثبّت الزهرة في الأعلى");
+  assert.ok(submitted[0].studentReferences[0].imageData.startsWith("data:image/"));
+  assert.equal(submitted[0].studentReferences[1].placement, "sash_back");
+  assert.equal(submitted[0].studentReferences[1].note, "خلف الوشاح فقط");
   assert.equal(submitted[0].extras.flowers[0].productId, 10);
   assert.equal(submitted[0].measurements.readySize, "XS");
   await page.getByLabel("الاسم الكامل *", { exact: true }).fill("زينب حسن");
@@ -232,7 +246,7 @@ try {
   assert.equal(submitted.length, 2);
   assert.equal(submitted[1].customerName, "زينب حسن");
   assert.equal(submitted[1].measurements.gender, "female");
-  assert.equal(submitted[1].studentReference, undefined, "the next student must not inherit a reference image or note");
+  assert.equal(submitted[1].studentReferences, undefined, "the next student must not inherit reference images or notes");
   await page.reload();
   await page.getByRole("heading", { name: "اكتمل تسجيل الطلبات" }).waitFor();
   assert.equal(

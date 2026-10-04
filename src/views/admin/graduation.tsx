@@ -902,35 +902,30 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
                   ))}
               </div>
             </div>
-            {order.previewAssets?.studentReference && (
+            {(order.previewAssets?.studentReferences?.length || order.previewAssets?.studentReference) && (
               <div className="rounded-xl border border-border bg-[#fcfaf7] p-4">
                 <h3 className="font-semibold">صورة وملاحظة الطالب للتجهيز</h3>
-                <p className="mt-2 text-sm">
-                  الموضع: {STUDENT_REFERENCE_PLACEMENTS.find(
-                    (item) => item.key === order.previewAssets.studentReference.placement,
-                  )?.label || "غير محدد"}
-                </p>
-                {order.previewAssets.studentReference.note && (
-                  <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">
-                    {order.previewAssets.studentReference.note}
-                  </p>
-                )}
-                {typeof order.previewAssets.studentReference.imageUrl === "string" &&
-                  /^https?:\/\//i.test(order.previewAssets.studentReference.imageUrl) && (
+                {(Array.isArray(order.previewAssets.studentReferences)
+                  ? order.previewAssets.studentReferences
+                  : [order.previewAssets.studentReference]).map((reference: any, index: number) => <div key={`${reference.placement}-${index}`} className="mt-3 rounded-lg border p-3">
+                  <p className="text-sm font-medium">الموضع: {STUDENT_REFERENCE_PLACEMENTS.find((item) => item.key === reference.placement)?.label || "غير محدد"}</p>
+                  {reference.note && <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{reference.note}</p>}
+                  {typeof reference.imageUrl === "string" && /^https?:\/\//i.test(reference.imageUrl) && (
                   <a
-                    href={order.previewAssets.studentReference.imageUrl}
+                    href={reference.imageUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="mt-3 inline-block"
                   >
                     <img
-                      src={order.previewAssets.studentReference.imageUrl}
+                      src={reference.imageUrl}
                       alt="الصورة المرجعية المرفقة بطلب الطالب"
                       className="max-h-64 max-w-full rounded-xl border object-contain"
                     />
                     <span className="mt-1 block text-xs text-primary">فتح الصورة بالحجم الكامل</span>
                   </a>
                 )}
+                </div>)}
               </div>
             )}
           </TabsContent>

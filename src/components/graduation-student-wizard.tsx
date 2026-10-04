@@ -14,6 +14,7 @@ import {
   newStudent,
   SASH_FONTS,
   SASH_TYPES,
+  combineSashName,
   STUDENT_REFERENCE_PLACEMENTS,
   STUDENT_STEPS,
   studentIssue,
@@ -21,6 +22,7 @@ import {
   resolveGroupSashPolicy,
   restoreStudentDraft,
   type StudentForm,
+  type StudentReferencePlacement,
 } from "@/lib/graduation-student-flow";
 
 type CatalogProduct = {
@@ -54,7 +56,9 @@ export function GraduationStudentSummary({
 }) {
   const text = order.customText || {};
   const measurements = order.measurements || {};
-  const reference = order.previewAssets?.studentReference;
+  const references = Array.isArray(order.previewAssets?.studentReferences)
+    ? order.previewAssets.studentReferences
+    : order.previewAssets?.studentReference ? [order.previewAssets.studentReference] : [];
   return (
     <div className="grid gap-4 text-sm sm:grid-cols-[1fr_180px]">
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
@@ -81,11 +85,6 @@ export function GraduationStudentSummary({
           ],
           ["لون الوشاح", order.colors?.sash],
           ["لون التطريز", order.colors?.embroidery],
-          [
-            "موضع الصورة أو الملاحظة",
-            STUDENT_REFERENCE_PLACEMENTS.find((item) => item.key === reference?.placement)?.label,
-          ],
-          ["ملاحظة الصورة", reference?.note],
           [
             "القياس",
             measurements.readySize ||
@@ -126,13 +125,17 @@ export function GraduationStudentSummary({
               <dd>{formatCurrency(line.amount)}</dd>
             </div>
           ))}
-        {typeof reference?.imageUrl === "string" && /^https?:\/\//i.test(reference.imageUrl) && (
-          <div className="col-span-2">
-            <a href={reference.imageUrl} target="_blank" rel="noopener noreferrer">
-              <img src={reference.imageUrl} alt="الصورة المرجعية للطلب" className="h-28 w-28 rounded-xl border object-cover" />
-            </a>
+        {references.map((reference: any, index: number) => (
+          <div key={`${reference.placement}-${index}`} className="col-span-2 rounded-lg border p-2">
+            <strong>{STUDENT_REFERENCE_PLACEMENTS.find((item) => item.key === reference.placement)?.label || "موضع آخر"}</strong>
+            {reference.note && <p className="mt-1 whitespace-pre-wrap">{reference.note}</p>}
+            {typeof reference.imageUrl === "string" && /^https?:\/\//i.test(reference.imageUrl) && (
+              <a href={reference.imageUrl} target="_blank" rel="noopener noreferrer">
+                <img src={reference.imageUrl} alt="الصورة المرجعية للطلب" className="mt-2 h-28 w-28 rounded-xl border object-cover" />
+              </a>
+            )}
           </div>
-        )}
+        ))}
       </dl>
       {text.sashType && (
         <div className="h-56 rounded-lg bg-muted/40 p-2">
@@ -265,6 +268,8 @@ export function GraduationStudentWizard({
 }) {
   const storageKey = `ajn-student-wizard:${scope}`;
   const sashPolicy = resolveGroupSashPolicy(base);
+  const sashNamePrefix = scope !== "individual" && typeof base.customText?.sashNamePrefix === "string"
+    ? base.customText.sashNamePrefix.trim() : "";
   const fixedGroupSash = scope !== "individual" && sashPolicy.mode === "fixed";
   const lockedGroupSashColor = scope !== "individual" && Boolean(sashPolicy.sashColor);
   const lockedGroupEmbroideryColor = scope !== "individual" && Boolean(sashPolicy.embroideryColor);
@@ -337,6 +342,12 @@ export function GraduationStudentWizard({
             size: data.preferredSize || "",
             gender: data.measurements?.gender || "male",
             measurements: { ...data.measurements },
+            references: {
+              ...data.references,
+              ...(data.referencePlacement && !data.references?.[data.referencePlacement] && (data.referenceImage || data.referenceNote)
+                ? { [data.referencePlacement]: { note: data.referenceNote || "", image: data.referenceImage || "", fileName: data.referenceFileName || "" } }
+                : {}),
+            },
           });
         }
       }
@@ -409,7 +420,7 @@ export function GraduationStudentWizard({
     setDone(false);
     go(0);
   }
-  async function selectReferenceImage(file: File) {
+  async function selectReferenceImage(placement: StudentReferencePlacement, file: File) {
     if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
       setError("اختر صورة JPG أو PNG أو WEBP");
       return;
@@ -420,11 +431,14 @@ export function GraduationStudentWizard({
       const image = await processImageFile(file, {
         maxSize: 1600,
         quality: 0.82,
-        maxBytes: 900_000,
+        maxBytes: 600_000,
       });
       if (image.length > 4_000_000)
         throw new Error("الصورة كبيرة جداً، اختر صورة أصغر");
-      change({ referenceImage: image, referenceFileName: file.name.slice(0, 180) });
+      setForm((current) => ({ ...current, references: {
+        ...current.references,
+        [placement]: { ...current.references[placement], note: current.references[placement]?.note || "", image, fileName: file.name.slice(0, 180) },
+      } }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "تعذر تجهيز الصورة");
     } finally {
@@ -992,6 +1006,7 @@ export function GraduationStudentWizard({
                           })
                         }
                       />
+                      {sashNamePrefix && <p className="mt-2 text-sm text-muted-foreground">اللقب الثابت من ممثل الدفعة: <strong>{sashNamePrefix}</strong></p>}
                     </div>
                     {lockedGroupSashColor ? (
                       <p className="text-sm text-muted-foreground">
@@ -1069,7 +1084,7 @@ export function GraduationStudentWizard({
                       type={displayedSashType}
                       color={displayedSashColor}
                       thread={displayedEmbroideryColor}
-                      name={form.sashName}
+                      name={combineSashName(sashNamePrefix, form.sashName)}
                       font={form.font}
                     />
                     <p className="mt-3 text-center text-xs text-muted-foreground">
@@ -1083,7 +1098,7 @@ export function GraduationStudentWizard({
                     <div>
                       <h4 className="font-semibold">صورة وملاحظة للتجهيز</h4>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        أرفق صورة توضيحية واحدة إن أردت، وحدد مكان تنفيذها ليظهر طلبك واضحاً للفريق.
+                        اختر الموضع ثم أرفق صورته وملاحظته. يبقى كل موضع محفوظاً عند الانتقال إلى موضع آخر.
                       </p>
                     </div>
                     <div role="group" aria-label="موضع الصورة أو الملاحظة" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -1097,43 +1112,44 @@ export function GraduationStudentWizard({
                           className="min-h-11 whitespace-normal"
                           onClick={() => change({ referencePlacement: placement.key })}
                         >
-                          {placement.label}
+                          {placement.label}{form.references[placement.key]?.image ? " ✓" : ""}
                         </Button>
                       ))}
                     </div>
-                    <GraduationReferenceImagePicker
+                    {form.referencePlacement && <p className="text-sm font-medium">صورة {STUDENT_REFERENCE_PLACEMENTS.find((item) => item.key === form.referencePlacement)?.label}</p>}
+                    {form.referencePlacement && <GraduationReferenceImagePicker
                       id={`student-reference-image-${scope}`}
-                      fileName={form.referenceFileName}
+                      fileName={form.references[form.referencePlacement]?.fileName || ""}
                       busy={imageBusy}
                       disabled={Boolean(attempt)}
-                      onSelect={(file) => void selectReferenceImage(file)}
-                    />
-                    {form.referenceImage && (
+                      onSelect={(file) => void selectReferenceImage(form.referencePlacement as StudentReferencePlacement, file)}
+                    />}
+                    {form.referencePlacement && form.references[form.referencePlacement]?.image && (
                       <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-3">
-                        <img src={form.referenceImage} alt="معاينة الصورة المرجعية" className="h-24 w-24 rounded-lg border object-cover" />
+                        <img src={form.references[form.referencePlacement]?.image} alt="معاينة الصورة المرجعية" className="h-24 w-24 rounded-lg border object-cover" />
                         <div className="min-w-0 flex-1 text-sm">
-                          <p className="truncate font-medium">{form.referenceFileName}</p>
-                          <p className="text-muted-foreground">صورة واحدة مرتبطة بهذا الطالب فقط</p>
+                          <p className="truncate font-medium">{form.references[form.referencePlacement]?.fileName}</p>
+                          <p className="text-muted-foreground">صورة خاصة بهذا الموضع</p>
                         </div>
-                        <Button type="button" variant="outline" disabled={Boolean(attempt)} onClick={() => change({ referenceImage: "", referenceFileName: "" })}>
+                        <Button type="button" variant="outline" disabled={Boolean(attempt)} onClick={() => setForm((current) => ({ ...current, references: { ...current.references, [current.referencePlacement]: { ...current.references[current.referencePlacement as StudentReferencePlacement], image: "", fileName: "", note: current.references[current.referencePlacement as StudentReferencePlacement]?.note || "" } } }))}>
                           إزالة الصورة
                         </Button>
                       </div>
                     )}
-                    <div>
+                    {form.referencePlacement && <div>
                       <Label htmlFor={`student-reference-note-${scope}`}>
                         ملاحظة على الصورة أو الموضع{form.referencePlacement === "other" ? " *" : " (اختياري)"}
                       </Label>
                       <Textarea
                         id={`student-reference-note-${scope}`}
-                        value={form.referenceNote}
+                        value={form.references[form.referencePlacement]?.note || ""}
                         maxLength={500}
                         disabled={Boolean(attempt)}
                         className="mt-2 min-h-20"
                         placeholder="مثال: ثبّت الزهرة في هذا المكان مثل الصورة"
-                        onChange={(event) => change({ referenceNote: event.target.value })}
+                        onChange={(event) => setForm((current) => ({ ...current, references: { ...current.references, [current.referencePlacement]: { note: event.target.value, image: current.references[current.referencePlacement as StudentReferencePlacement]?.image || "", fileName: current.references[current.referencePlacement as StudentReferencePlacement]?.fileName || "" } } }))}
                       />
-                    </div>
+                    </div>}
                   </div>
                 )}
                 {form.photography && (

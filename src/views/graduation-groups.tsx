@@ -63,7 +63,11 @@ async function graduationFetch<T>(
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error || "تعذر إكمال العملية");
+  if (!response.ok) throw new Error(
+    typeof payload?.error === "string"
+      ? payload.error
+      : payload?.error?.message || "تعذر إكمال العملية",
+  );
   return payload;
 }
 
@@ -213,6 +217,7 @@ const initialGroup = {
   accessories: [] as string[],
   defaultFont: "cairo",
   sashText: "",
+  sashNamePrefix: "",
   robeText: "",
   customGraduationText: "",
   extras: {
@@ -432,6 +437,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
               graduationBatch: form.graduationBatch,
               graduationYear: form.graduationYear,
               sashText: form.sashText,
+              sashNamePrefix: form.sashNamePrefix.trim(),
               robeText: form.robeText,
               text: form.customGraduationText,
               font: form.defaultFont,
@@ -998,6 +1004,18 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                   />
                 </div>
               ))}
+            </div>
+            <div className="mt-4">
+              <Label htmlFor="group-sash-name-prefix">اللقب الثابت قبل اسم الطالب على الوشاح (اختياري)</Label>
+              <Input
+                id="group-sash-name-prefix"
+                className="mt-2"
+                maxLength={40}
+                placeholder="مثال: المهندس"
+                value={form.sashNamePrefix}
+                onChange={(event) => updateText("sashNamePrefix", event.target.value)}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">يثبته ممثل الدفعة ويكتب كل طالب اسمه بعده.</p>
             </div>
             <div className="mt-4">
               <Label>نص تخرج مخصص</Label>
@@ -1613,6 +1631,29 @@ function GroupColorVotePanel({
 // join page. Every action is authorized server-side by the representative's
 // phone (never exposed by the public group read), so revealing the form leaks
 // nothing — the options and tally shown here are already public.
+function GroupSashNameManager({ token, group, onRefetch }: { token: string; group: any; onRefetch: () => void }) {
+  const { toast } = useToast();
+  const currentPrefix = String(group?.defaultConfiguration?.customText?.sashNamePrefix || "");
+  const [prefix, setPrefix] = useState(currentPrefix);
+  const [repPhone, setRepPhone] = useState("");
+  const savePrefix = useMutation({
+    mutationFn: () => graduationFetch(`/groups/${encodeURIComponent(token)}/sash-name-prefix`, {
+      method: "POST", body: JSON.stringify({ prefix: prefix.trim(), repPhone }),
+    }),
+    onSuccess: () => { onRefetch(); toast({ title: "تم تثبيت لقب الوشاح للدفعة" }); },
+    onError: (error: Error) => toast({ title: "تعذر تثبيت اللقب", description: error.message, variant: "destructive" }),
+  });
+  return <details className="rounded-xl border border-border bg-card p-4">
+    <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold"><LockKeyhole className="h-4 w-4" />إدارة الممثل — لقب الاسم على الوشاح</summary>
+    <p className="mt-2 text-xs text-muted-foreground">يظهر اللقب ثابتاً قبل الاسم الذي يكتبه كل طالب. أدخل هاتف ممثل الدفعة لحفظه.</p>
+    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+      <div><Label htmlFor="rep-sash-prefix">اللقب الثابت</Label><Input id="rep-sash-prefix" className="mt-1" maxLength={40} placeholder="مثال: المهندس" value={prefix} onChange={(event) => setPrefix(event.target.value)} /></div>
+      <div><Label htmlFor="rep-sash-phone">هاتف الممثل</Label><Input id="rep-sash-phone" className="mt-1" inputMode="tel" placeholder="07XXXXXXXXX" value={repPhone} onChange={(event) => setRepPhone(formatIraqiPhoneInput(event.target.value))} /></div>
+    </div>
+    <Button className="mt-3" type="button" disabled={savePrefix.isPending || repPhone.replace(/\D/g, "").length < 10 || prefix.trim() === currentPrefix} onClick={() => savePrefix.mutate()}>{savePrefix.isPending ? "جاري الحفظ…" : "تثبيت اللقب"}</Button>
+  </details>;
+}
+
 function GroupVoteManager({
   token,
   group,
@@ -1903,6 +1944,7 @@ export function GraduationGroupStudentRegistration({
                     : "يختار كل طالب",
                 ],
                 ["القماش", locked.fabric?.key],
+                ["لقب الاسم على الوشاح", locked.customText?.sashNamePrefix],
                 ["الباقة", locked.packageKey || "بدون"],
                 ["سنة التخرج", group.graduationYear],
                 [
@@ -1935,6 +1977,7 @@ export function GraduationGroupStudentRegistration({
                 void groupQuery.refetch();
               }}
             />
+            <GroupSashNameManager token={token} group={group} onRefetch={() => { void groupQuery.refetch(); }} />
             <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
               <GraduationStudentWizard key={token} scope={token} base={{
                 ...locked,

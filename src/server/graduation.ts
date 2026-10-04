@@ -1,5 +1,6 @@
 import {
   SASH_TYPES,
+  combineSashName,
   resolveGroupSashPolicy,
   studentSashOverrides,
   withoutStudentReferencePreview,
@@ -1276,7 +1277,10 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
           studentCustomText.studentName || data.customerName || undefined,
         department:
           studentCustomText.department || group.department || undefined,
-        text: studentCustomText.text || undefined,
+        text: combineSashName(
+          typeof lockedCustomText.sashNamePrefix === "string" ? lockedCustomText.sashNamePrefix : "",
+          typeof studentCustomText.text === "string" ? studentCustomText.text : "",
+        ) || undefined,
         studentId: studentCustomText.studentId || undefined,
         university:
           group.university || lockedCustomText.university || undefined,
@@ -1544,37 +1548,47 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   }
   const inventoryItems = [...groupedInventory.values()];
   const groupId = group?.id ?? null;
-  if (data.studentReference) {
-    const reference = data.studentReference;
+  const incomingReferences = data.studentReferences?.length
+    ? data.studentReferences
+    : data.studentReference ? [data.studentReference] : [];
+  if (incomingReferences.length) {
     const requestId = makeRequestId();
-    let imageUrl = "";
-    if (reference.imageData) {
+    for (const reference of incomingReferences) {
+      if (!reference.imageData) continue;
       const parsedImage = parseDataUrl(reference.imageData);
       if (!parsedImage || !GRADUATION_IMAGE_MIMES.has(parsedImage.mime) || parsedImage.bytes.byteLength > GRADUATION_IMAGE_BYTES)
         return { response: studentReferenceError("صورة الطالب غير صالحة أو حجمها كبير", 400, requestId) };
-      try {
-        imageUrl = String(await persistMedia(reference.imageData, "graduation/student-references"));
-      } catch (uploadError) {
-        console.error("graduation student reference upload failed", {
-          requestId,
-          error: safeServerError(uploadError),
-        });
-        return { response: studentReferenceError("تعذر رفع الصورة المرجعية، حاول مرة أخرى", 503, requestId) };
+    }
+    const storedReferences: Array<{ placement: string; note: string; imageUrl?: string; fileName?: string }> = [];
+    for (const reference of incomingReferences) {
+      let imageUrl = "";
+      if (reference.imageData) {
+        try {
+          imageUrl = String(await persistMedia(reference.imageData, "graduation/student-references"));
+        } catch (uploadError) {
+          console.error("graduation student reference upload failed", {
+            requestId,
+            error: safeServerError(uploadError),
+          });
+          return { response: studentReferenceError("تعذر رفع الصورة المرجعية، حاول مرة أخرى", 503, requestId) };
+        }
+        if (imageUrl.startsWith("data:")) {
+          console.error("graduation student reference storage unavailable", { requestId });
+          return { response: studentReferenceError("خدمة رفع الصور غير متاحة حالياً", 503, requestId) };
+        }
       }
-      if (imageUrl.startsWith("data:")) {
-        console.error("graduation student reference storage unavailable", { requestId });
-        return { response: studentReferenceError("خدمة رفع الصور غير متاحة حالياً", 503, requestId) };
-      }
+      storedReferences.push({
+        placement: reference.placement,
+        note: reference.note,
+        ...(imageUrl ? { imageUrl, fileName: reference.fileName || "" } : {}),
+      });
     }
     data = {
       ...data,
       previewAssets: {
         ...data.previewAssets,
-        studentReference: {
-          placement: reference.placement,
-          note: reference.note,
-          ...(imageUrl ? { imageUrl, fileName: reference.fileName || "" } : {}),
-        },
+        studentReferences: storedReferences,
+        ...(data.studentReference && !data.studentReferences?.length ? { studentReference: storedReferences[0] } : {}),
       },
     };
   }
@@ -2906,6 +2920,43 @@ export async function handleGraduationPublic(
         groupMeta: groupMeta(group),
       },
     });
+  }
+  if (method === "POST" && resource === "groups" && parts[2] && parts[3] === "sash-name-prefix") {
+    const requestId = makeRequestId();
+    const identifier = decodeURIComponent(parts[2]);
+    const payload = await requestBody(req);
+    const prefix = String(payload?.prefix ?? "").trim();
+    if (prefix.length > 40 || /[\r\n\x00-\x1f]/.test(prefix))
+      return studentReferenceError("اللقب الثابت يجب أن يكون نصاً قصيراً من سطر واحد", 400, requestId);
+    const claimedPhone = normalizeIraqiPhone(String(payload?.repPhone ?? ""));
+    const result = await db.transaction(async (tx) => {
+      const found = await tx.query.graduationGroupsTable.findFirst({
+        where: and(
+          or(eq(graduationGroupsTable.joinToken, identifier), eq(graduationGroupsTable.groupNo, identifier.toUpperCase())),
+          eq(graduationGroupsTable.status, "open"),
+        ),
+        columns: { id: true, representativePhone: true },
+      });
+      if (!found) return { status: 404, message: "رابط الطلب الجماعي غير صالح أو مغلق" };
+      if (!claimedPhone || claimedPhone !== found.representativePhone)
+        return { status: 403, message: "تثبيت اللقب يتطلب هاتف ممثل الدفعة" };
+      const locked = await tx.execute(sql`
+        SELECT default_configuration AS cfg FROM graduation_groups WHERE id = ${found.id} FOR UPDATE
+      `);
+      const configuration = safeJson((locked.rows?.[0] as any)?.cfg);
+      configuration.customText = { ...safeJson(configuration.customText), sashNamePrefix: prefix };
+      await tx.update(graduationGroupsTable)
+        .set({ defaultConfiguration: configuration as any, updatedAt: new Date() })
+        .where(eq(graduationGroupsTable.id, found.id));
+      await tx.insert(entityTimelineTable).values({
+        entityType: "graduation_group", entityId: found.id, type: "group_sash_name_prefix_updated",
+        title: prefix ? "تم تثبيت لقب اسم الوشاح" : "تمت إزالة لقب اسم الوشاح",
+        actorName: "ممثل الدفعة", metadata: { prefix },
+      });
+      return { prefix };
+    });
+    if ("status" in result) return studentReferenceError(result.message || "تعذر تحديث لقب الوشاح", result.status || 400, requestId);
+    return json(result);
   }
   if (
     method === "POST" &&
