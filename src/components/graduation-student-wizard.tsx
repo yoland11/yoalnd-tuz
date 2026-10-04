@@ -8,6 +8,7 @@ import { formatCurrency } from "@/lib/money";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { vocalizeArabicName } from "@/lib/graduation-name";
 import { processImageFile } from "@/lib/image-tools";
+import { GraduationReferenceImagePicker } from "@/components/graduation-reference-image-picker";
 import {
   MEASUREMENTS,
   newStudent,
@@ -1100,22 +1101,13 @@ export function GraduationStudentWizard({
                         </Button>
                       ))}
                     </div>
-                    <div>
-                      <Label htmlFor={`student-reference-image-${scope}`}>صورة مرجعية (اختياري)</Label>
-                      <Input
-                        id={`student-reference-image-${scope}`}
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp"
-                        disabled={imageBusy || Boolean(attempt)}
-                        className="mt-2 h-auto min-h-11 py-2"
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          if (file) void selectReferenceImage(file);
-                          event.target.value = "";
-                        }}
-                      />
-                      {imageBusy && <p role="status" className="mt-2 text-sm text-muted-foreground">جاري تجهيز الصورة…</p>}
-                    </div>
+                    <GraduationReferenceImagePicker
+                      id={`student-reference-image-${scope}`}
+                      fileName={form.referenceFileName}
+                      busy={imageBusy}
+                      disabled={Boolean(attempt)}
+                      onSelect={(file) => void selectReferenceImage(file)}
+                    />
                     {form.referenceImage && (
                       <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-3">
                         <img src={form.referenceImage} alt="معاينة الصورة المرجعية" className="h-24 w-24 rounded-lg border object-cover" />

@@ -1,6 +1,35 @@
 import assert from "node:assert/strict";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { GraduationReferenceImagePicker } from "../src/components/graduation-reference-image-picker";
 import * as flow from "../src/lib/graduation-student-flow";
 import { graduationOrderInputSchema } from "../src/lib/graduation";
+
+// The upload affordance must be Arabic while the real file input remains
+// associated with its label for keyboard and assistive-technology access.
+Object.assign(globalThis, { React });
+const picker = renderToStaticMarkup(React.createElement(GraduationReferenceImagePicker, {
+  id: "student-reference-image-test",
+  fileName: "",
+  busy: false,
+  disabled: false,
+  onSelect: () => {},
+}));
+assert.match(picker, /اختيار صورة/);
+assert.match(picker, /لم تُختر صورة/);
+assert.match(picker, /type="file"[^>]*accept="image\/jpeg,image\/png,image\/webp"/);
+assert.match(picker, /type="file"[^>]*sr-only/);
+assert.match(picker, /role="status"/);
+const selectedPicker = renderToStaticMarkup(React.createElement(GraduationReferenceImagePicker, {
+  id: "student-reference-image-test",
+  fileName: "cap.png",
+  busy: false,
+  disabled: true,
+  onSelect: () => {},
+}));
+assert.match(selectedPicker, /تغيير الصورة/);
+assert.match(selectedPicker, /cap\.png/);
+assert.match(selectedPicker, /disabled=""/);
 
 assert.equal(
   typeof flow.newStudent,
