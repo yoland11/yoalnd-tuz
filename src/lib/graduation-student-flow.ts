@@ -96,7 +96,6 @@ export function newStudent() {
   return {
     customerName: "",
     phone: "",
-    studentId: "",
     department: "",
     notes: "",
     size: "",
@@ -163,22 +162,76 @@ export function studentIssue(student: StudentForm, step: number) {
   }
   return undefined;
 }
+
+export type GroupSashPolicy = {
+  mode: "fixed" | "per_student";
+  sashType: string;
+  sashColor: string;
+};
+
+export function resolveGroupSashPolicy(
+  configuration: Record<string, unknown>,
+): GroupSashPolicy {
+  const colors =
+    configuration.colors && typeof configuration.colors === "object"
+      ? (configuration.colors as Record<string, unknown>)
+      : {};
+  const fixedColor = colors.sash;
+  const fixedType = configuration.sashType;
+  return {
+    mode:
+      configuration.sashSelectionMode === "fixed" ? "fixed" : "per_student",
+    sashType: SASH_TYPES.some((type) => type.key === fixedType)
+      ? String(fixedType)
+      : "standard",
+    sashColor:
+      typeof fixedColor === "string" && /^#[0-9a-f]{6}$/i.test(fixedColor)
+        ? fixedColor
+        : "#182539",
+  };
+}
+
 // Only these personal fields may override the shared group template.
-export function studentSashOverrides(text: Record<string, unknown>) {
+export function studentSashOverrides(
+  text: Record<string, unknown>,
+  policy?: GroupSashPolicy,
+) {
   const result: Record<string, string> = {};
-  if (SASH_TYPES.some((type) => type.key === text.sashType))
-    result.sashType = String(text.sashType);
+  if (policy?.mode === "fixed") {
+    result.sashType = policy.sashType;
+    result.sashColor = policy.sashColor;
+  } else {
+    if (SASH_TYPES.some((type) => type.key === text.sashType))
+      result.sashType = String(text.sashType);
+    if (
+      typeof text.sashColor === "string" &&
+      /^#[0-9a-f]{6}$/i.test(text.sashColor)
+    )
+      result.sashColor = text.sashColor;
+  }
   if (SASH_FONTS.some((font) => font.key === text.font))
     result.font = String(text.font);
-  for (const key of ["sashColor", "embroideryColor"])
+  for (const key of ["embroideryColor"])
     if (typeof text[key] === "string" && /^#[0-9a-f]{6}$/i.test(text[key]))
-      result[key] = text[key];
+      result[key] = String(text[key]);
   return result;
 }
 export function studentPayload(
   student: StudentForm,
   base: Record<string, any>,
 ) {
+  const baseCustomText = { ...base.customText };
+  delete baseCustomText.studentId;
+  const sashPolicy = resolveGroupSashPolicy(base);
+  const sash = studentSashOverrides(
+    {
+      sashType: student.sashType,
+      sashColor: student.sashColor,
+      embroideryColor: student.embroideryColor,
+      font: student.font,
+    },
+    sashPolicy,
+  );
   return {
     ...base,
     status: "submitted",
@@ -197,21 +250,20 @@ export function studentPayload(
     },
     colors: {
       ...base.colors,
-      sash: student.sashColor,
-      embroidery: student.embroideryColor,
+      sash: sash.sashColor || student.sashColor,
+      embroidery: sash.embroideryColor || student.embroideryColor,
     },
     customText: {
-      ...base.customText,
+      ...baseCustomText,
       studentName: student.customerName.trim(),
-      studentId: student.studentId,
       department: student.department || base.customText?.department,
       preferredSize: student.size,
       text: student.sashName,
-      sashType: student.sashType,
-      sashColor: student.sashColor,
-      embroideryColor: student.embroideryColor,
-      font: student.font,
-      color: student.embroideryColor,
+      sashType: sash.sashType || student.sashType,
+      sashColor: sash.sashColor || student.sashColor,
+      embroideryColor: sash.embroideryColor || student.embroideryColor,
+      font: sash.font || student.font,
+      color: sash.embroideryColor || student.embroideryColor,
     },
     extras: {
       ...base.extras,

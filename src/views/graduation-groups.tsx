@@ -44,6 +44,7 @@ import { processImageFile } from "@/lib/image-tools";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { GraduationRobePreview } from "@/components/graduation-robe-preview";
 import { buildWhatsAppLink } from "@/lib/order-stages";
+import { SASH_TYPES } from "@/lib/graduation-student-flow";
 import type { GraduationConfig } from "@/lib/graduation";
 import {
   GRADUATION_STEPS,
@@ -185,6 +186,8 @@ const initialGroup = {
   showDetailedMeasurements: true,
   styleKey: "",
   packageKey: "",
+  sashSelectionMode: "per_student" as "fixed" | "per_student",
+  sashType: "standard",
   fabricKey: "",
   colors: {
     robe: "#111111",
@@ -402,6 +405,8 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
             styleKey: form.styleKey,
             packageKey: form.packageKey || undefined,
             colors: form.colors,
+            sashSelectionMode: form.sashSelectionMode,
+            sashType: form.sashSelectionMode === "fixed" ? form.sashType : undefined,
             colorVote:
               form.colorVoting.enabled && form.colorVoting.options.length >= 2
                 ? {
@@ -740,6 +745,77 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                   />
                 </label>
               ))}
+            </div>
+            <div className="mt-5 rounded-xl border border-border bg-muted/20 p-4">
+              <h3 className="font-semibold">اختيار الوشاح للطلبة</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                اختر وشاحاً موحّداً للمجموعة أو اترك لكل طالب حرية الاختيار.
+              </p>
+              <div
+                className="mt-3 grid gap-2 sm:grid-cols-2"
+                role="group"
+                aria-label="طريقة اختيار الوشاح"
+              >
+                <Button
+                  type="button"
+                  variant={
+                    form.sashSelectionMode === "fixed" ? "selected" : "outline"
+                  }
+                  aria-pressed={form.sashSelectionMode === "fixed"}
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      sashSelectionMode: "fixed",
+                    }))
+                  }
+                  className="h-auto min-h-12 whitespace-normal"
+                >
+                  وشاح ثابت لجميع الطلبة
+                </Button>
+                <Button
+                  type="button"
+                  variant={
+                    form.sashSelectionMode === "per_student"
+                      ? "selected"
+                      : "outline"
+                  }
+                  aria-pressed={form.sashSelectionMode === "per_student"}
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      sashSelectionMode: "per_student",
+                    }))
+                  }
+                  className="h-auto min-h-12 whitespace-normal"
+                >
+                  كل طالب يختار وشاحه
+                </Button>
+              </div>
+              {form.sashSelectionMode === "fixed" ? (
+                <div className="mt-4 max-w-xl">
+                  <Label>نوع الوشاح الموحّد</Label>
+                  <Select
+                    value={form.sashType}
+                    onValueChange={(sashType) =>
+                      setForm((current) => ({ ...current, sashType }))
+                    }
+                  >
+                    <SelectTrigger className="mt-2">
+                      <SelectValue placeholder="اختر نوع الوشاح" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SASH_TYPES.map((type) => (
+                        <SelectItem key={type.key} value={type.key}>
+                          {type.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    يطبّق نوع الوشاح ولونه المختار أعلاه على جميع طلبة المجموعة.
+                  </p>
+                </div>
+              ) : null}
             </div>
             <div className="mt-5 rounded-lg border border-primary/30 bg-primary/[0.03] p-4">
               <label className="flex cursor-pointer items-start gap-3">
@@ -1806,7 +1882,10 @@ export function GraduationGroupStudentRegistration({
               <h2 className="font-bold">إعدادات المجموعة</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              الروب والقماش من اختيار ممثل الدفعة. خصّص الوشاح والإضافات لكل طالب.
+              الروب والقماش من اختيار ممثل الدفعة.{" "}
+              {locked.sashSelectionMode === "fixed"
+                ? "الوشاح موحّد للمجموعة، ويمكن تخصيص الاسم والإضافات لكل طالب."
+                : "يختار كل طالب وشاحه وإضافاته بنفسه."}
             </p>
             <div className="mt-4 flex justify-center rounded-lg border border-border bg-card p-3">
               <GraduationRobePreview
@@ -1817,6 +1896,12 @@ export function GraduationGroupStudentRegistration({
             <div className="mt-4 space-y-2 text-sm">
               {[
                 ["نوع الروب", locked.styleKey],
+                [
+                  "نوع الوشاح",
+                  locked.sashSelectionMode === "fixed"
+                    ? SASH_TYPES.find((type) => type.key === locked.sashType)?.label || "موحّد للمجموعة"
+                    : "يختار كل طالب",
+                ],
                 ["القماش", locked.fabric?.key],
                 ["الباقة", locked.packageKey || "بدون"],
                 ["سنة التخرج", group.graduationYear],
@@ -1855,6 +1940,7 @@ export function GraduationGroupStudentRegistration({
                 ...locked,
                 groupToken: token,
                 styleKey: locked.styleKey || "standard",
+                sashType: locked.sashType || "standard",
                 fabric: locked.fabric || { key: "standard" },
                 customText: { ...locked.customText, department: group.department },
                 dueDate: group.groupMeta?.deliveryDate || group.eventDate || undefined,

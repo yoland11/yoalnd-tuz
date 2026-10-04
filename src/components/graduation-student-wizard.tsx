@@ -15,6 +15,7 @@ import {
   STUDENT_STEPS,
   studentIssue,
   studentPayload,
+  resolveGroupSashPolicy,
   restoreStudentDraft,
   type StudentForm,
 } from "@/lib/graduation-student-flow";
@@ -63,7 +64,6 @@ export function GraduationStudentSummary({
           ],
           ["الهاتف", order.phone],
           ["القسم", text.department],
-          ["الرقم الجامعي", text.studentId],
           [
             "نوع الوشاح",
             SASH_TYPES.find((item) => item.key === text.sashType)?.label ||
@@ -248,6 +248,8 @@ export function GraduationStudentWizard({
   onComplete?: (order: Receipt) => void;
 }) {
   const storageKey = `ajn-student-wizard:${scope}`;
+  const sashPolicy = resolveGroupSashPolicy(base);
+  const fixedGroupSash = scope !== "individual" && sashPolicy.mode === "fixed";
   const showDetailedMeasurements =
     scope === "individual" || base.showDetailedMeasurements !== false;
   const seed = (): StudentForm => ({
@@ -269,7 +271,10 @@ export function GraduationStudentWizard({
             : null,
         }
       : {}),
-    sashColor: base.colors?.sash || "#182539",
+    sashType: fixedGroupSash ? sashPolicy.sashType : "standard",
+    sashColor: fixedGroupSash
+      ? sashPolicy.sashColor
+      : base.colors?.sash || "#182539",
     embroideryColor: base.colors?.embroidery || "#D4AF37",
   });
   const baseSeed = useRef(seed());
@@ -380,7 +385,10 @@ export function GraduationStudentWizard({
   function another() {
     setForm({
       ...newStudent(),
-      sashColor: base.colors?.sash || "#182539",
+      sashType: fixedGroupSash ? sashPolicy.sashType : "standard",
+      sashColor: fixedGroupSash
+        ? sashPolicy.sashColor
+        : base.colors?.sash || "#182539",
       embroideryColor: base.colors?.embroidery || "#D4AF37",
     });
     setDone(false);
@@ -490,6 +498,8 @@ export function GraduationStudentWizard({
       setBusy(false);
     }
   }
+  const displayedSashType = fixedGroupSash ? sashPolicy.sashType : form.sashType;
+  const displayedSashColor = fixedGroupSash ? sashPolicy.sashColor : form.sashColor;
   return (
     <section className="space-y-6" dir="rtl">
       {receipts.length > 0 && (
@@ -580,7 +590,6 @@ export function GraduationStudentWizard({
                     [
                       ["customerName", "الاسم الكامل *"],
                       ["phone", "رقم الهاتف *"],
-                      ["studentId", "الرقم الجامعي"],
                       ["department", "القسم"],
                     ] as const
                   ).map(([key, label]) => (
@@ -614,32 +623,57 @@ export function GraduationStudentWizard({
             )}
             {step === 1 && (
               <>
-                <h3 className="font-semibold">اختر نوع الوشاح</h3>
+                <h3 className="font-semibold">
+                  {fixedGroupSash
+                    ? "الوشاح الموحّد للمجموعة"
+                    : "اختر نوع الوشاح"}
+                </h3>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  اختر القَصّة المناسبة، ونجهزها ضمن طلب مجموعتكم.
+                  {fixedGroupSash
+                    ? "اعتمد ممثل الدفعة هذا النوع واللون لجميع الطلبة."
+                    : "اختر القَصّة المناسبة، ونجهزها ضمن طلب مجموعتكم."}
                 </p>
-                <div
-                  role="group"
-                  aria-label="أنواع الوشاح"
-                  className="mt-4 grid grid-cols-4 gap-1 rounded-2xl border border-[#f0ccd3] bg-[#fff0f2] p-1"
-                >
-                  {SASH_TYPES.map((type) => (
-                    <Button
-                      key={type.key}
-                      type="button"
-                      aria-label={type.label}
-                      aria-pressed={form.sashType === type.key}
-                      variant={form.sashType === type.key ? "selected" : "outline"}
-                      onClick={() => change({ sashType: type.key })}
-                      className={`min-h-11 rounded-xl px-2 py-2 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:text-sm ${form.sashType === type.key ? "border-[#68002f] bg-[#68002f] text-white shadow-md hover:bg-[#68002f]" : "border-transparent text-[#805c68] hover:bg-white/80"}`}
-                    >
-                      {type.label}
-                    </Button>
-                  ))}
-                </div>
+                {fixedGroupSash ? (
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e8c7a7] bg-[#fff8ef] p-3">
+                    <span className="font-semibold">
+                      {SASH_TYPES.find((type) => type.key === sashPolicy.sashType)
+                        ?.label || "عادي"}
+                    </span>
+                    <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                      لون موحّد
+                      <span
+                        aria-label={`لون الوشاح ${sashPolicy.sashColor}`}
+                        className="h-6 w-6 rounded-full border border-black/10"
+                        style={{ backgroundColor: sashPolicy.sashColor }}
+                      />
+                    </span>
+                  </div>
+                ) : (
+                  <div
+                    role="group"
+                    aria-label="أنواع الوشاح"
+                    className="mt-4 grid grid-cols-4 gap-1 rounded-2xl border border-[#f0ccd3] bg-[#fff0f2] p-1"
+                  >
+                    {SASH_TYPES.map((type) => (
+                      <Button
+                        key={type.key}
+                        type="button"
+                        aria-label={type.label}
+                        aria-pressed={form.sashType === type.key}
+                        variant={
+                          form.sashType === type.key ? "selected" : "outline"
+                        }
+                        onClick={() => change({ sashType: type.key })}
+                        className={`min-h-11 rounded-xl px-2 py-2 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:text-sm ${form.sashType === type.key ? "border-[#68002f] bg-[#68002f] text-white shadow-md hover:bg-[#68002f]" : "border-transparent text-[#805c68] hover:bg-white/80"}`}
+                      >
+                        {type.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
                 {(() => {
                   const selectedSash =
-                    SASH_TYPES.find((type) => type.key === form.sashType) ||
+                    SASH_TYPES.find((type) => type.key === displayedSashType) ||
                     SASH_TYPES[0];
                   return (
                     <div
@@ -656,7 +690,7 @@ export function GraduationStudentWizard({
                             type={selectedSash.key}
                             label={image.label}
                             src={image.src}
-                            color={form.sashColor}
+                            color={displayedSashColor}
                             thread={form.embroideryColor}
                           />
                         ))}
@@ -669,7 +703,9 @@ export function GraduationStudentWizard({
                           {selectedSash.description}
                         </p>
                         <span className="mt-3 inline-flex rounded-full border border-[#e8c7a7] bg-[#fff8ef] px-3 py-1 text-xs font-medium text-[#a96b2c]">
-                          اختيار خاص لكل طالب
+                          {fixedGroupSash
+                            ? "وشاح موحّد للدفعة"
+                            : "اختيار خاص لكل طالب"}
                         </span>
                       </div>
                     </div>
@@ -914,18 +950,24 @@ export function GraduationStudentWizard({
                         }
                       />
                     </div>
-                    <div>
-                      <Label htmlFor="sash-color">لون الوشاح</Label>
-                      <Input
-                        id="sash-color"
-                        type="color"
-                        className="mt-2 h-12"
-                        value={form.sashColor}
-                        onChange={(event) =>
-                          change({ sashColor: event.target.value })
-                        }
-                      />
-                    </div>
+                    {fixedGroupSash ? (
+                      <p className="text-sm text-muted-foreground">
+                        لون الوشاح ثابت حسب اختيار المجموعة.
+                      </p>
+                    ) : (
+                      <div>
+                        <Label htmlFor="sash-color">لون الوشاح</Label>
+                        <Input
+                          id="sash-color"
+                          type="color"
+                          className="mt-2 h-12"
+                          value={form.sashColor}
+                          onChange={(event) =>
+                            change({ sashColor: event.target.value })
+                          }
+                        />
+                      </div>
+                    )}
                     <div>
                       <Label>لون التطريز</Label>
                       <div className="mt-2 flex gap-2">
@@ -973,8 +1015,8 @@ export function GraduationStudentWizard({
                   </div>
                   <div className="rounded-xl bg-muted/50 p-4">
                     <SashPreview
-                      type={form.sashType}
-                      color={form.sashColor}
+                      type={displayedSashType}
+                      color={displayedSashColor}
                       thread={form.embroideryColor}
                       name={form.sashName}
                       font={form.font}
@@ -1010,7 +1052,7 @@ export function GraduationStudentWizard({
                   <strong>{form.customerName}</strong>
                   <p className="mt-2">
                     {
-                      SASH_TYPES.find((type) => type.key === form.sashType)
+                      SASH_TYPES.find((type) => type.key === displayedSashType)
                         ?.label
                     }{" "}
                     · {submissionForm.size || "القياسات لاحقاً"} ·{" "}

@@ -1,4 +1,8 @@
-import { SASH_TYPES, studentSashOverrides } from "../lib/graduation-student-flow";
+import {
+  SASH_TYPES,
+  resolveGroupSashPolicy,
+  studentSashOverrides,
+} from "../lib/graduation-student-flow";
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import QRCode from "qrcode";
@@ -1203,7 +1207,10 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     const lockedMeta = groupMeta(group);
     const lockedCustomText = safeJson(locked.customText);
     const studentCustomText = safeJson(data.customText);
-    const personalSash = studentSashOverrides(studentCustomText);
+    const personalSash = studentSashOverrides(
+      studentCustomText,
+      resolveGroupSashPolicy(locked),
+    );
     const lockedFabric = safeJson(locked.fabric);
     const lockedDecoration = safeJson(locked.decoration);
     const lockedUniversity = safeJson(locked.universityTemplate);

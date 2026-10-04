@@ -73,6 +73,18 @@ assert.equal(payload.measurements.readySize, "XS");
 assert.equal(payload.measurements.method, "ready");
 assert.equal(payload.colors.robe, "#123456");
 assert.equal(payload.extras.flowers[0].quantity, 2);
+const legacyStudentWithUniversityNumber = Object.assign(flow.newStudent(), {
+  studentId: "UNI-123",
+});
+const withoutUniversityNumber = flow.studentPayload(
+  legacyStudentWithUniversityNumber,
+  { customText: { studentId: "UNI-456", department: "الحاسبات" } },
+);
+assert.equal(
+  "studentId" in withoutUniversityNumber.customText,
+  false,
+  "new student registrations must not include a university number from old drafts or base data",
+);
 assert.equal(flow.studentIssue(first, 0), undefined);
 assert.ok(flow.studentIssue(second, 0));
 first.measurements.height = "2";
@@ -91,6 +103,47 @@ assert.deepEqual(
   flow.studentSashOverrides({ sashColor: "url(evil)", sashType: "other" }),
   {},
 );
+const legacySashPolicy = flow.resolveGroupSashPolicy({});
+assert.equal(
+  legacySashPolicy.mode,
+  "per_student",
+  "groups without a policy must preserve the existing individual-choice behavior",
+);
+const fixedSashPolicy = flow.resolveGroupSashPolicy({
+  sashSelectionMode: "fixed",
+  sashType: "royal",
+  colors: { sash: "#AA2233" },
+});
+assert.deepEqual(fixedSashPolicy, {
+  mode: "fixed",
+  sashType: "royal",
+  sashColor: "#AA2233",
+});
+assert.deepEqual(
+  flow.studentSashOverrides(
+    { sashType: "american", sashColor: "#FFFFFF", font: "thuluth" },
+    fixedSashPolicy,
+  ),
+  { sashType: "royal", sashColor: "#AA2233", font: "thuluth" },
+  "fixed group policy must override submitted sash type/color but retain personal font",
+);
+const fixedPayload = flow.studentPayload(
+  { ...first, sashType: "american", sashColor: "#FFFFFF" },
+  {
+    sashSelectionMode: "fixed",
+    sashType: "royal",
+    colors: { robe: "#123456", sash: "#AA2233" },
+  },
+);
+assert.equal(fixedPayload.customText.sashType, "royal");
+assert.equal(fixedPayload.customText.sashColor, "#AA2233");
+assert.equal(fixedPayload.colors.sash, "#AA2233");
+const personalPayload = flow.studentPayload(
+  { ...first, sashType: "american", sashColor: "#FFFFFF" },
+  {},
+);
+assert.equal(personalPayload.customText.sashType, "american");
+assert.equal(personalPayload.colors.sash, "#FFFFFF");
 console.log(
   "Graduation student isolation, payload, validation and legacy customization passed.",
 );
