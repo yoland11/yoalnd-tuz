@@ -53,7 +53,7 @@ const assertions = [
   [
     "the shared rail remains backward compatible and supports direct navigation",
     rail.includes("onStepChange?: (step: number) => void") &&
-      rail.includes("onClick={() => onStepChange(index)}"),
+      rail.includes("onStepChange(getGraduationStepFromRail(index))"),
   ],
 ];
 

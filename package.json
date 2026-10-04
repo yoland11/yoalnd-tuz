@@ -55,7 +55,7 @@
     "test:products-pdf": "node ./scripts/verify-products-pdf-export.mjs",
     "test:graduation-center": "node ./scripts/verify-graduation-order-center.mjs",
     "test:graduation-enterprise": "node ./scripts/verify-graduation-enterprise.mjs",
-    "test:graduation-group-step-flow": "node ./scripts/verify-graduation-group-step-flow.mjs",
+    "test:graduation-group-step-flow": "node ./scripts/verify-graduation-group-step-flow.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-step-navigation.ts",
     "test:graduation-measurement-visibility": "node ./scripts/verify-graduation-measurement-visibility.mjs",
     "test:graduation-student-flow": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-student-flow.ts",
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",

@@ -27,6 +27,18 @@ export const GRADUATION_STEPS = [
   { label: "التأكيد", icon: ClipboardCheck },
 ] as const;
 
+// Preview (8) and price summary (9) share one visible rail item. The
+// confirmation is internal step 10, independently of the visible item count.
+export const GRADUATION_LAST_STEP = 10;
+
+export function getNextGraduationStep(current: number): number {
+  return Math.min(GRADUATION_LAST_STEP, Math.max(0, current + 1));
+}
+
+export function getGraduationStepFromRail(index: number): number {
+  return index >= 8 ? index + 1 : index;
+}
+
 export const GRADUATION_THEME_STYLE = {
   "--primary": "334 100% 23%",
   "--primary-foreground": "0 0% 100%",
@@ -82,7 +94,7 @@ export function GraduationStepRail({
             <button
               key={step.label}
               type="button"
-              onClick={() => onStepChange(index)}
+              onClick={() => onStepChange(getGraduationStepFromRail(index))}
               className={`${className} cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2`}
               aria-current={active ? "step" : undefined}
             >

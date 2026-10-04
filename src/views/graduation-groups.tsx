@@ -48,9 +48,10 @@ import { buildWhatsAppLink } from "@/lib/order-stages";
 import { SASH_TYPES, combineSashName, resolveGroupSashPolicy } from "@/lib/graduation-student-flow";
 import type { GraduationConfig } from "@/lib/graduation";
 import {
-  GRADUATION_STEPS,
+  GRADUATION_LAST_STEP,
   GRADUATION_THEME_STYLE,
   GraduationStepRail,
+  getNextGraduationStep,
 } from "@/components/graduation-step-rail";
 
 type PublicGraduationConfig = GraduationConfig & { aiAvailable: boolean };
@@ -569,7 +570,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
       ),
   );
   const next = () =>
-    setStep((current) => Math.min(GRADUATION_STEPS.length - 1, current + 1));
+    setStep(getNextGraduationStep);
   const previous = () => setStep((current) => Math.max(0, current - 1));
   const updateText = (key: keyof GroupBookingForm, value: string) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -1378,7 +1379,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
             <ArrowRight className="ml-2 h-4 w-4" />
             السابق
           </Button>
-          {step < GRADUATION_STEPS.length - 1 ? (
+          {step < GRADUATION_LAST_STEP ? (
             <Button onClick={next}>
               التالي
               <ArrowLeft className="mr-2 h-4 w-4" />
