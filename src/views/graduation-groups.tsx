@@ -44,7 +44,7 @@ import { processImageFile } from "@/lib/image-tools";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { GraduationRobePreview } from "@/components/graduation-robe-preview";
 import { buildWhatsAppLink } from "@/lib/order-stages";
-import { SASH_TYPES } from "@/lib/graduation-student-flow";
+import { SASH_TYPES, combineSashName } from "@/lib/graduation-student-flow";
 import type { GraduationConfig } from "@/lib/graduation";
 import {
   GRADUATION_STEPS,
@@ -1643,15 +1643,55 @@ function GroupSashNameManager({ token, group, onRefetch }: { token: string; grou
     onSuccess: () => { onRefetch(); toast({ title: "تم تثبيت لقب الوشاح للدفعة" }); },
     onError: (error: Error) => toast({ title: "تعذر تثبيت اللقب", description: error.message, variant: "destructive" }),
   });
-  return <details className="rounded-xl border border-border bg-card p-4">
-    <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold"><LockKeyhole className="h-4 w-4" />إدارة الممثل — لقب الاسم على الوشاح</summary>
-    <p className="mt-2 text-xs text-muted-foreground">يظهر اللقب ثابتاً قبل الاسم الذي يكتبه كل طالب. أدخل هاتف ممثل الدفعة لحفظه.</p>
-    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-      <div><Label htmlFor="rep-sash-prefix">اللقب الثابت</Label><Input id="rep-sash-prefix" className="mt-1" maxLength={40} placeholder="مثال: المهندس" value={prefix} onChange={(event) => setPrefix(event.target.value)} /></div>
-      <div><Label htmlFor="rep-sash-phone">هاتف الممثل</Label><Input id="rep-sash-phone" className="mt-1" inputMode="tel" placeholder="07XXXXXXXXX" value={repPhone} onChange={(event) => setRepPhone(formatIraqiPhoneInput(event.target.value))} /></div>
-    </div>
-    <Button className="mt-3" type="button" disabled={savePrefix.isPending || repPhone.replace(/\D/g, "").length < 10 || prefix.trim() === currentPrefix} onClick={() => savePrefix.mutate()}>{savePrefix.isPending ? "جاري الحفظ…" : "تثبيت اللقب"}</Button>
-  </details>;
+  return (
+    <details open className="rounded-xl border border-primary/30 bg-primary/[0.03] p-4 sm:p-5">
+      <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold">
+        <LockKeyhole className="h-4 w-4 text-primary" />
+        تثبيت كنية الاسم على الوشاح — لممثل الدفعة
+      </summary>
+      <p className="mt-3 text-sm text-muted-foreground">
+        اكتب كنية موحّدة مثل «المهندس». الطالب يكتب اسمه فقط، وتظهر الكنية قبله على الوشاح.
+      </p>
+      <p className="mt-2 text-sm">
+        الكنية المعتمدة الآن: <strong>{currentPrefix || "لم تُحدد بعد"}</strong>
+      </p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div>
+          <Label htmlFor="rep-sash-prefix">الكنية الثابتة لجميع الطلبة</Label>
+          <Input
+            id="rep-sash-prefix"
+            className="mt-1"
+            maxLength={40}
+            placeholder="مثال: المهندس"
+            value={prefix}
+            onChange={(event) => setPrefix(event.target.value)}
+          />
+        </div>
+        <div>
+          <Label htmlFor="rep-sash-phone">هاتف ممثل الدفعة للتحقق</Label>
+          <Input
+            id="rep-sash-phone"
+            className="mt-1"
+            inputMode="tel"
+            placeholder="07XXXXXXXXX"
+            value={repPhone}
+            onChange={(event) => setRepPhone(formatIraqiPhoneInput(event.target.value))}
+          />
+        </div>
+      </div>
+      <p className="mt-3 rounded-lg border border-primary/20 bg-card px-3 py-2 text-sm" aria-live="polite">
+        معاينة الاسم: <strong>{combineSashName(prefix, "محمد علي")}</strong>
+      </p>
+      <Button
+        className="mt-3"
+        type="button"
+        disabled={savePrefix.isPending || repPhone.replace(/\D/g, "").length < 10 || prefix.trim() === currentPrefix}
+        onClick={() => savePrefix.mutate()}
+      >
+        {savePrefix.isPending ? "جاري الحفظ…" : "حفظ الكنية للدفعة"}
+      </Button>
+    </details>
+  );
 }
 
 function GroupVoteManager({

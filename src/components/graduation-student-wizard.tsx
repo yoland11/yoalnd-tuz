@@ -990,10 +990,17 @@ export function GraduationStudentWizard({
                   <div className="space-y-4">
                     <div>
                       <Label htmlFor="sash-name">اكتب اسمك</Label>
+                      {sashNamePrefix && (
+                        <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/[0.04] px-3 py-2 text-sm">
+                          <span className="text-muted-foreground">الكنية المثبتة من ممثل الدفعة</span>
+                          <strong>{sashNamePrefix}</strong>
+                        </div>
+                      )}
                       <Input
                         id="sash-name"
                         className="mt-2"
                         maxLength={50}
+                        placeholder={sashNamePrefix ? "مثال: محمد علي" : "اكتب اسمك"}
                         value={form.sashName}
                         onChange={(event) =>
                           change({ sashName: event.target.value })
@@ -1006,7 +1013,11 @@ export function GraduationStudentWizard({
                           })
                         }
                       />
-                      {sashNamePrefix && <p className="mt-2 text-sm text-muted-foreground">اللقب الثابت من ممثل الدفعة: <strong>{sashNamePrefix}</strong></p>}
+                      {sashNamePrefix && (
+                        <p className="mt-2 text-sm" aria-live="polite">
+                          الاسم على الوشاح: <strong>{combineSashName(sashNamePrefix, form.sashName) || sashNamePrefix}</strong>
+                        </p>
+                      )}
                     </div>
                     {lockedGroupSashColor ? (
                       <p className="text-sm text-muted-foreground">

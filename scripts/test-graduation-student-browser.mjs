@@ -117,6 +117,8 @@ try {
     `${process.env.AJN_BROWSER_ORIGIN || "http://127.0.0.1:3105"}/graduation?group=fixture-students`,
     { waitUntil: "domcontentloaded" },
   );
+  assert.equal(await page.getByLabel("الكنية الثابتة لجميع الطلبة").isVisible(), true);
+  await page.getByText("معاينة الاسم: المهندس محمد علي", { exact: true }).waitFor();
   await page.getByLabel("الاسم الكامل *", { exact: true }).fill("علي أحمد");
   await page.getByLabel("رقم الهاتف *", { exact: true }).fill("07712345678");
   await page.getByRole("button", { name: "التالي", exact: true }).click();
@@ -147,7 +149,7 @@ try {
   await page.getByRole("button", { name: "XS", exact: true }).click();
   await page.getByRole("button", { name: "التالي", exact: true }).click();
   await page.getByLabel("اكتب اسمك", { exact: true }).fill("علي");
-  await page.getByText("اللقب الثابت من ممثل الدفعة:", { exact: false }).waitFor();
+  await page.getByText("الاسم على الوشاح: المهندس علي", { exact: true }).waitFor();
   await page.getByLabel("الخط", { exact: true }).selectOption("thuluth");
   assert.equal(await page.getByLabel("لون الوشاح", { exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "فضي", exact: true }).count(), 0);
