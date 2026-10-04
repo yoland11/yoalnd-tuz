@@ -143,6 +143,7 @@ try {
     .click();
   await page.getByRole("button", { name: "إضافة", exact: true }).click();
   await page.getByRole("button", { name: "التالي", exact: true }).click();
+  await page.getByText("أدخل قياساتك بالتفصيل (اختياري)", { exact: true }).click();
   await page.getByRole("button", { name: "XS", exact: true }).click();
   await page.getByRole("button", { name: "التالي", exact: true }).click();
   await page.getByLabel("اكتب اسمك", { exact: true }).fill("علي");
@@ -231,6 +232,7 @@ try {
     "new student must not inherit extras",
   );
   await page.getByRole("button", { name: "التالي", exact: true }).click();
+  await page.getByText("أدخل قياساتك بالتفصيل (اختياري)", { exact: true }).click();
   assert.equal(
     await page.getByLabel("مقاس البدن (أو اكتب رقم مقاسك)").inputValue(),
     "",

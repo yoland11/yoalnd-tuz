@@ -915,7 +915,11 @@ export function GraduationStudentWizard({
                   ))}
                 </div>
                 {showDetailedMeasurements ? (
-                  <div className="space-y-4">
+                  <details className="rounded-lg border border-border px-4">
+                    <summary className="cursor-pointer py-3 font-semibold">
+                      أدخل قياساتك بالتفصيل (اختياري)
+                    </summary>
+                    <div className="space-y-4 pb-4">
                     <Label htmlFor="student-size">
                       مقاس البدن (أو اكتب رقم مقاسك)
                     </Label>
@@ -947,11 +951,7 @@ export function GraduationStudentWizard({
                           : ""}
                       </p>
                     )}
-                    <details>
-                      <summary className="cursor-pointer py-3 font-semibold">
-                        أدخل قياساتك بالتفصيل (اختياري)
-                      </summary>
-                      <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                      <div className="grid gap-4 sm:grid-cols-2">
                         {MEASUREMENTS.map(([key, label, min, max]) => (
                           <div key={key}>
                             <Label htmlFor={`measure-${key}`}>{label}</Label>
@@ -974,8 +974,8 @@ export function GraduationStudentWizard({
                           </div>
                         ))}
                       </div>
-                    </details>
-                  </div>
+                    </div>
+                  </details>
                 ) : null}
               </>
             )}
