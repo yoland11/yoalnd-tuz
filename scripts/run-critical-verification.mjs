@@ -17,6 +17,7 @@ const steps = [
   ["Payroll movement schema recovery", "pnpm", ["run", "test:payroll-movement-schema"]],
   ["Graduation student sash selection", "pnpm", ["run", "test:graduation-student-flow"]],
   ["Graduation inventory transaction safety", "pnpm", ["run", "test:graduation-inventory-transaction"]],
+  ["Graduation invoice number length", "pnpm", ["run", "test:graduation-invoice-number"]],
   ["Graduation group per-sash pricing", "pnpm", ["run", "test:graduation-group-pricing"]],
   ["Graduation group confirmation navigation", "pnpm", ["run", "test:graduation-group-step-flow"]],
   ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],

@@ -1128,7 +1128,7 @@ async function createInvoice(
   const [invoice] = await connection
     .insert(salesInvoicesTable)
     .values({
-      invoiceNo: `GR-TMP-${randomUUID()}`,
+      invoiceNo: `GR-TMP-${randomUUID().replace(/-/g, "")}`,
       qrToken: order.qrToken,
       date: today(),
       customerName: order.customerName,
