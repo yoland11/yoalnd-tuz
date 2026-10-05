@@ -10,6 +10,7 @@ import {
   fetchAdminMe, hasPerm, isSessionDecision, loginAdmin, logoutAdmin,
   adminFetch, compressImageFile, type AdminMe,
 } from "@/views/admin/_lib";
+import { STUDENT_REFERENCE_PLACEMENTS } from "@/lib/graduation-student-flow";
 import { LiveScanner } from "@/views/staff/live-scanner";
 
 /** All tailor data flows through the assignment-scoped /admin/tailoring API. */
@@ -247,6 +248,35 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <div className="rounded-lg border border-border bg-background px-3 py-2"><div className="text-[11px] text-muted-foreground">{label}</div><div className="mt-0.5 text-sm font-medium">{children || "—"}</div></div>;
 }
 
+type TailorStudentReference = { placement: string; note: string; imageUrl?: string };
+
+export function TailorStudentReferences({ references }: { references: TailorStudentReference[] }) {
+  if (!references.length) return null;
+  return (
+    <section aria-label="صور وملاحظات الطالب" className="rounded-2xl border border-border bg-card p-4">
+      <h3 className="mb-3 flex items-center gap-2 font-bold"><Camera className="h-4 w-4 text-primary" /> صور وملاحظات الطالب للتجهيز</h3>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {references.map((reference, index) => {
+          const placement = STUDENT_REFERENCE_PLACEMENTS.find((item) => item.key === reference.placement)?.label ?? "موضع آخر";
+          const imageUrl = typeof reference.imageUrl === "string" && /^https?:\/\//i.test(reference.imageUrl) ? reference.imageUrl : "";
+          return (
+            <article key={`${reference.placement}-${index}`} className="min-w-0 rounded-xl border border-border bg-background p-3">
+              <h4 className="font-semibold">{placement}</h4>
+              {imageUrl && (
+                <a href={imageUrl} target="_blank" rel="noopener noreferrer" className="mt-2 block rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
+                  <img src={imageUrl} alt={`صورة مرجعية من الطالب: ${placement}`} loading="lazy" className="h-44 w-full rounded-lg border border-border bg-muted/30 object-contain" />
+                  <span className="mt-1 block text-xs text-primary">فتح الصورة بالحجم الكامل</span>
+                </a>
+              )}
+              {reference.note && <p className="mt-2 whitespace-pre-wrap break-words text-sm text-foreground">{reference.note}</p>}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
   const [, navigate] = useLocation();
   const [order, setOrder] = useState<any>(null);
@@ -444,6 +474,8 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
         </div>
         {order.productionNotes && <p className="mt-3 rounded-lg bg-muted/50 p-2 text-xs text-muted-foreground">ملاحظات الإنتاج: {order.productionNotes}</p>}
       </section>
+
+      <TailorStudentReferences references={order.studentReferences ?? []} />
 
       {/* Measurements — all optional, partial save allowed. */}
       <section className="rounded-2xl border border-border bg-card p-4">

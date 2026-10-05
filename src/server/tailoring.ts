@@ -163,6 +163,22 @@ function tailorAssignmentOf(order: OrderRow) {
   return rec(rec(order.productionEstimate).tailorAssignment);
 }
 
+function studentReferencesOf(previewAssets: unknown) {
+  const assets = rec(previewAssets);
+  const references = Array.isArray(assets.studentReferences) && assets.studentReferences.length
+    ? assets.studentReferences
+    : assets.studentReference ? [assets.studentReference] : [];
+  const placements = new Set(["cap_edge", "cap_top", "sash_back", "other"]);
+  return references.flatMap((value) => {
+    const reference = rec(value);
+    if (!placements.has(reference.placement as string)) return [];
+    const note = typeof reference.note === "string" ? reference.note : "";
+    const imageUrl = typeof reference.imageUrl === "string" && /^https?:\/\//i.test(reference.imageUrl)
+      ? reference.imageUrl : "";
+    return [{ placement: reference.placement as string, note, ...(imageUrl ? { imageUrl } : {}) }];
+  });
+}
+
 function serializeSummary(order: OrderRow, group?: GroupRow | null) {
   const m = rec(order.measurements);
   const assignment = tailorAssignmentOf(order);
@@ -208,6 +224,7 @@ function serializeDetail(order: OrderRow, group: GroupRow | null, history: unkno
     colors: rec(order.colors),
     productionNotes: order.notes ?? "",
     measurements: rec(order.measurements),
+    studentReferences: studentReferencesOf(order.previewAssets),
     photos: Array.isArray(garment.tailorPhotos) ? garment.tailorPhotos : [],
     alterations: Array.isArray(garment.alterations) ? garment.alterations : [],
     notesTiers: rec(garment.notesTiers),

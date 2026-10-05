@@ -60,6 +60,7 @@
     "test:graduation-student-flow": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-student-flow.ts",
     "test:graduation-group-pricing": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-group-pricing.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-group-pricing-access.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-group-pricing-ui.ts && node ./scripts/test-graduation-group-pricing-wiring.mjs && node ./scripts/test-graduation-group-pricing-route.mjs && node ./scripts/test-graduation-group-public-pricing.mjs",
     "test:graduation-inventory-transaction": "node ./scripts/test-graduation-inventory-transaction.mjs",
+    "test:tailor-student-references": "node ./scripts/test-tailor-student-references.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-tailor-student-references-ui.ts",
     "test:graduation-invoice-number": "node ./scripts/test-graduation-invoice-number.mjs",
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",
     "test:staff-portal-auth": "node ./scripts/verify-staff-portal-auth.mjs",
