@@ -58,12 +58,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { GraduationGroupPricingEditor } from "@/components/graduation-group-pricing-editor";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/money";
 import { downloadElementPdf } from "@/lib/pdf";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { GRADUATION_STAGE_LABELS, GRADUATION_STAGES } from "@/lib/graduation";
-import { adminFetch, apiErrorMessage } from "./_lib";
+import { canManageGraduationGroupPricing } from "@/lib/graduation-group-pricing-access";
+import { adminFetch, apiErrorMessage, fetchAdminMe } from "./_lib";
 import {
   printWhenImagesReadyScript,
   sheetReportCss,
@@ -550,6 +552,7 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
   const [accessoryOpen, setAccessoryOpen] = useState(false);
   const [studentAccessory, setStudentAccessory] = useState<StudentRow | null>(null);
   const [workspaceTab, setWorkspaceTab] = useState("students");
+  const me = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
   const { data, isLoading } = useQuery<GroupDetail>({
     queryKey: ["admin", "graduation", "group-workspace", groupId],
     queryFn: () => adminFetch(`/admin/graduation/groups/${groupId}`),
@@ -638,6 +641,21 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
         <div className="flex items-start gap-3"><Button size="icon" variant="ghost" onClick={onBack}><ArrowRight className="h-5 w-5" /></Button><div><h2 className="text-xl font-bold">{data.group.title}</h2><p className="mt-1 text-sm text-muted-foreground">{data.group.groupNo} · {[data.group.university, data.group.college, data.group.department].filter(Boolean).join(" · ")}</p></div></div>
         <div className="flex flex-wrap gap-2"><Button onClick={() => setAddOpen(true)}><Plus className="ml-2 h-4 w-4" />إضافة طالب</Button><Button variant="outline" onClick={() => setImportOpen(true)}><Upload className="ml-2 h-4 w-4" />استيراد Excel</Button><Button variant="outline" onClick={exportExcel}><Download className="ml-2 h-4 w-4" />تصدير Excel</Button><Button variant="outline" onClick={printGroupReceipt}><Printer className="ml-2 h-4 w-4" />وصل المجموعة</Button>{workspaceTab === "accessories" ? <Button variant="outline" onClick={() => data.students.length ? setAccessoryOpen(true) : toast({ title: "أضف طلبة إلى المجموعة قبل تطبيق الإكسسوارات." })}><Gift className="ml-2 h-4 w-4" />إدارة إكسسوارات المجموعة</Button> : null}<Button variant="outline" onClick={() => setPaymentOpen(true)}><WalletCards className="ml-2 h-4 w-4" />استلام دفعة</Button></div>
       </div>
+      {me.data && canManageGraduationGroupPricing(me.data) ? <details className="rounded-xl border border-border bg-card p-4">
+        <summary className="cursor-pointer font-semibold">أسعار المجموعة حسب نوع الوشاح</summary>
+        <div className="mt-4"><GraduationGroupPricingEditor
+          key={`${groupId}-${JSON.stringify(data.group.defaultConfiguration)}`}
+          configuration={data.group.defaultConfiguration || {}}
+          endpoint={`/admin/graduation/groups/${groupId}/sash-pricing`}
+          onSaved={(group) => {
+            client.setQueryData<GroupDetail>(["admin", "graduation", "group-workspace", groupId], (current) => current ? { ...current, group: { ...current.group, ...group } } : current);
+            void client.invalidateQueries({ queryKey: ["admin", "graduation"] });
+            void client.invalidateQueries({ queryKey: ["representative"] });
+            void client.invalidateQueries({ queryKey: ["graduation", "group"] });
+            toast({ title: "تم حفظ أسعار المجموعة للطلبات الجديدة" });
+          }}
+        /></div>
+      </details> : null}
       {(data.duplicates.length || data.shortages.length) ? <div className="grid gap-3 lg:grid-cols-2">{data.duplicates.length ? <div className="rounded-xl border border-status-warning/40 bg-status-warning/5 p-3"><div className="flex items-center gap-2 font-semibold text-status-warning"><AlertTriangle className="h-4 w-4" />تنبيه أسماء أو هواتف متكررة</div><p className="mt-1 text-sm text-muted-foreground">راجع {data.duplicates.length} سجلاً قبل اعتماد الطباعة.</p></div> : null}{data.shortages.length ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3"><div className="flex items-center gap-2 font-semibold text-destructive"><AlertTriangle className="h-4 w-4" />نقص في مواد المجموعة</div><p className="mt-1 text-sm text-muted-foreground">{data.shortages.map((item) => `${item.name}: ${item.shortage}`).join(" · ")}</p></div> : null}</div> : null}
       <nav aria-label="مراحل الطلب الجماعي" className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-card p-1.5">
         {[

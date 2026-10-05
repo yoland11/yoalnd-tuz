@@ -1,4 +1,5 @@
 import { GraduationStudentWizard } from "@/components/graduation-student-wizard";
+import { GraduationGroupPricingAccess } from "@/components/graduation-group-pricing-editor";
 import { GroupSashOptionPicker } from "@/components/group-sash-option-picker";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -2015,6 +2016,7 @@ export function GraduationGroupStudentRegistration({
             />
             <GroupSashNameManager token={token} group={group} onRefetch={() => { void groupQuery.refetch(); }} />
             <GroupSashOptionsManager token={token} group={group} onRefetch={() => { void groupQuery.refetch(); }} />
+            <GraduationGroupPricingAccess token={token} onSaved={() => { void groupQuery.refetch(); }} />
             <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
               <GraduationStudentWizard key={token} scope={token} base={{
                 ...locked,

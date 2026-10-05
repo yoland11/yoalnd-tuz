@@ -26,8 +26,11 @@ import {
   sql,
 } from "drizzle-orm";
 import { readRequestBody } from "@/server/request-body";
-import { createApiErrorPayload, makeRequestId } from "@/server/write-safety";
+import { createApiErrorPayload, makeRequestId, type ApiErrorCode } from "@/server/write-safety";
 import { safeServerError } from "@/server/safe-server-log";
+import { applyGroupSashPricing, GroupSashPricingError, groupSashPrice, validateGroupSashPricing } from "@/lib/graduation-group-pricing";
+import { handleGraduationGroupPricing } from "@/server/graduation-group-pricing";
+import { canManageGraduationGroupPricing } from "@/lib/graduation-group-pricing-access";
 import {
   adminActivityLogsTable,
   customersTable,
@@ -214,12 +217,12 @@ function json(data: unknown, status = 200) {
 function error(message: string, status = 400, details?: unknown) {
   return json({ error: message, ...(details ? { details } : {}) }, status);
 }
-function studentReferenceError(message: string, status: number, requestId: string) {
+function studentReferenceError(message: string, status: number, requestId: string, code?: ApiErrorCode) {
   const payload = createApiErrorPayload({
     message,
     status,
     requestId,
-    code: status >= 500 ? "NETWORK_ERROR" : "VALIDATION_ERROR",
+    code: code ?? (status >= 500 ? "NETWORK_ERROR" : undefined),
   });
   return NextResponse.json(payload, {
     status,
@@ -654,6 +657,12 @@ async function createGraduationGroup(
   const configuration = safeJson(data.defaultConfiguration);
   if (configuration.sashSelectionMode === "restricted" && !validateGroupSashOptions(configuration.sashOptions))
     return { response: studentReferenceError("اختر نوعاً أو نوعين مختلفين من الوشاح", 400, makeRequestId()) };
+  const groupPricing = validateGroupSashPricing(configuration.sashPricing, configuration);
+  if (!groupPricing.success)
+    return { response: studentReferenceError(groupPricing.error, 400, makeRequestId()) };
+  if (groupPricing.pricing && (!user || !canManageGraduationGroupPricing(user)))
+    return { response: studentReferenceError("تحديد أسعار المجموعة يتطلب حساباً مخوّلاً بالتسعير", 403, makeRequestId()) };
+  if (groupPricing.pricing) configuration.sashPricing = groupPricing.pricing;
   const representativePhone = normalizeIraqiPhone(data.representativePhone);
   if (!representativePhone)
     return { response: error("رقم هاتف ممثل المجموعة غير صحيح", 400) };
@@ -971,11 +980,14 @@ async function aggregateByStockOwner(
   return [...grouped.values()];
 }
 
+type GraduationWriteExecutor = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 async function applyInventory(
   orderId: number,
   items: Array<{ productId: number; quantity: number; label: string }>,
   direction: -1 | 1,
   user?: GraduationAdminUser | null,
+  executor?: GraduationWriteExecutor,
 ) {
   const grouped = await aggregateByStockOwner(items);
   if (direction < 0) {
@@ -985,7 +997,7 @@ async function applyInventory(
         `المخزون غير كافٍ للمادة: ${missing.label} (المتاح ${missing.available})`,
       );
   }
-  await db.transaction(async (tx) => {
+  const apply = async (tx: GraduationWriteExecutor) => {
     for (const item of grouped) {
       const change = direction * item.quantity;
       const changed = await tx.execute(sql`
@@ -1014,7 +1026,9 @@ async function applyInventory(
         createdByName: user ? user.fullName || user.username : "النظام",
       });
     }
-  });
+  };
+  if (executor) await apply(executor);
+  else await db.transaction(apply);
 }
 
 async function createProductionTasks(
@@ -1105,8 +1119,10 @@ async function createInvoice(
   order: any,
   pricing: ReturnType<typeof graduationPriceSummary>,
   user?: GraduationAdminUser | null,
+  executor?: GraduationWriteExecutor,
 ) {
-  const [invoice] = await db
+  const connection = executor ?? db;
+  const [invoice] = await connection
     .insert(salesInvoicesTable)
     .values({
       invoiceNo: `GR-TMP-${randomUUID()}`,
@@ -1132,11 +1148,11 @@ async function createInvoice(
     })
     .returning();
   const invoiceNo = `AJN-GR-${String(invoice.id).padStart(6, "0")}`;
-  await db
+  await connection
     .update(salesInvoicesTable)
     .set({ invoiceNo })
     .where(eq(salesInvoicesTable.id, invoice.id));
-  await db.insert(salesInvoiceItemsTable).values({
+  await connection.insert(salesInvoiceItemsTable).values({
     invoiceId: invoice.id,
     productId: null,
     productName: `تجهيزات تخرج - ${order.styleKey}`,
@@ -1234,6 +1250,18 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       studentCustomText,
       sashPolicy,
     );
+    try {
+      const selectedType = personalSash.sashType || sashPolicy.sashType;
+      const approvedPrice = groupSashPrice(locked, selectedType);
+      // The submitted snapshot is only compared, never used to authorize money.
+      const displayedPrice = groupSashPrice({ ...locked, sashPricing: safeJson(raw).sashPricing }, selectedType);
+      if (approvedPrice !== displayedPrice)
+        return { response: studentReferenceError("سعر تجهيزات المجموعة تغيّر؛ حدّث الصفحة وراجع السعر قبل تأكيد الطلب", 409, makeRequestId(), "STALE_DATA") };
+    } catch (cause) {
+      if (cause instanceof GroupSashPricingError)
+        return { response: studentReferenceError(cause.message, 409, makeRequestId()) };
+      throw cause;
+    }
     const lockedFabric = safeJson(locked.fabric);
     const lockedDecoration = safeJson(locked.decoration);
     const lockedUniversity = safeJson(locked.universityTemplate);
@@ -1296,6 +1324,21 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
           group.graduationYear || lockedCustomText.graduationYear || undefined,
       } as any,
     };
+    if (locked.sashPricing != null) {
+      // A quoted kit cannot be enlarged by client-selected paid templates.
+      data = {
+        ...data,
+        styleKey: String(locked.styleKey || "standard"),
+        packageKey: String(locked.packageKey || "") || undefined,
+        fabric: typeof lockedFabric.key === "string" ? data.fabric : { key: DEFAULT_GRADUATION_CONFIG.fabrics[0].key },
+        decoration: Object.keys(lockedDecoration).length ? data.decoration : { type: "none", position: "front" },
+        accessories: Array.isArray(locked.accessories) ? locked.accessories.map(String) : [],
+        customPackage: locked.customPackage && typeof locked.customPackage === "object"
+          ? locked.customPackage as typeof data.customPackage
+          : { ...data.customPackage, enabled: false },
+        customText: { ...data.customText, sashType: personalSash.sashType || sashPolicy.sashType } as any,
+      };
+    }
   }
   data = {
     ...data,
@@ -1524,18 +1567,16 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     });
   }
   const basePricing = graduationPriceSummary(data, config);
-  const pricingLines = [...basePricing.lines, ...customLines, ...flowerLines];
-  const pricingSubtotal = pricingLines.reduce((sum, line) => sum + line.amount, 0);
-  const pricingCost = pricingLines.reduce((sum, line) => sum + line.cost, 0);
-  const pricingDiscount = Math.min(Math.max(0, Number(data.discountAmount || 0)), pricingSubtotal);
-  const pricing = {
-    lines: pricingLines,
-    subtotal: pricingSubtotal,
-    discount: pricingDiscount,
-    total: Math.max(0, pricingSubtotal - pricingDiscount),
-    cost: pricingCost,
-    profit: Math.max(0, pricingSubtotal - pricingDiscount) - pricingCost,
-  };
+  const kitLines = [...basePricing.lines, ...customLines];
+  const kitSubtotal = kitLines.reduce((sum, line) => sum + line.amount, 0);
+  const kitCost = kitLines.reduce((sum, line) => sum + line.cost, 0);
+  const pricing = applyGroupSashPricing(
+    group ? safeJson(group.defaultConfiguration) : {},
+    studentSashOverrides(data.customText).sashType,
+    { lines: kitLines, subtotal: kitSubtotal, discount: Math.max(0, Number(data.discountAmount || 0)),
+      total: kitSubtotal, cost: kitCost, profit: kitSubtotal - kitCost },
+    flowerLines,
+  );
   const estimate = estimateGraduationProduction(data, config);
   const baseInventoryItems = graduationInventoryItems(data, config);
   const enterpriseInventoryItems = orderItemsPlan
@@ -1605,7 +1646,16 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     decoration.file = await persistMedia(decoration.file, "graduation/designs");
   const qrToken =
     randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
-  const [draft] = await db
+  const saved = await db.transaction(async (tx) => {
+  // Serialize group sequences and keep invoice/receipt/order writes atomic.
+  if (groupId) {
+    const [lockedGroup] = await tx.select().from(graduationGroupsTable)
+      .where(eq(graduationGroupsTable.id, groupId)).for("update");
+    if (!lockedGroup || lockedGroup.status !== "open" ||
+      JSON.stringify(lockedGroup.defaultConfiguration) !== JSON.stringify(group?.defaultConfiguration))
+      return { response: studentReferenceError("إعدادات أو أسعار المجموعة تغيرت؛ حدّث الصفحة قبل تأكيد الطلب", 409, makeRequestId(), "STALE_DATA") };
+  }
+  const [draft] = await tx
     .insert(graduationOrdersTable)
     .values({
       orderNo: `GR-TMP-${randomUUID()}`,
@@ -1673,7 +1723,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     ? `AJN-GR-G${String(groupId).padStart(3, "0")}-${String(draft.id).padStart(6, "0")}`
     : `AJN-GR-${year}-${String(draft.id).padStart(6, "0")}`;
   const receiptNo = `AJN-GR-R-${year}-${String(draft.id).padStart(6, "0")}`;
-  const [order] = await db
+  const [order] = await tx
     .update(graduationOrdersTable)
     .set({
       orderNo,
@@ -1725,7 +1775,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     .where(eq(graduationOrdersTable.id, draft.id))
     .returning();
   if (orderItemsPlan.length) {
-    await db.insert(graduationOrderItemsTable).values(
+    await tx.insert(graduationOrderItemsTable).values(
       orderItemsPlan.map((row) => ({
         ...row,
         graduationOrderId: order.id,
@@ -1734,11 +1784,11 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     );
   }
   if (groupId) {
-    const [sequenceRow] = await db
+    const [sequenceRow] = await tx
       .select({ next: sql<number>`coalesce(max(${graduationGroupStudentsTable.sequence}), 0)::int + 1` })
       .from(graduationGroupStudentsTable)
       .where(eq(graduationGroupStudentsTable.groupId, groupId));
-    await db
+    await tx
       .insert(graduationGroupStudentsTable)
       .values({
         groupId,
@@ -1749,7 +1799,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       })
       .onConflictDoNothing();
   }
-  await db
+  await tx
     .insert(graduationReceiptsTable)
     .values({
       receiptNo,
@@ -1769,7 +1819,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       issuedByName: user ? user.fullName || user.username : "النظام",
     })
     .onConflictDoNothing();
-  await db
+  await tx
     .insert(qrTokensTable)
     .values({
       entityType: "graduation_order",
@@ -1781,17 +1831,24 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   let invoice: any = null;
   if (data.status === "submitted") {
     if (inventoryItems.length) {
-      await applyInventory(order.id, inventoryItems, -1, user);
-      await db
+      await applyInventory(order.id, inventoryItems, -1, user, tx);
+      await tx
         .update(graduationOrdersTable)
         .set({ inventoryApplied: true })
         .where(eq(graduationOrdersTable.id, order.id));
     }
-    invoice = await createInvoice(order, pricing, user);
-    await db
+    invoice = await createInvoice(order, pricing, user, tx);
+    await tx
       .update(graduationOrdersTable)
       .set({ invoiceId: invoice.id })
       .where(eq(graduationOrdersTable.id, order.id));
+  }
+  return { order, invoice, orderNo };
+  });
+  if ("response" in saved) return saved;
+  const { order, invoice, orderNo } = saved;
+  try {
+  if (data.status === "submitted") {
     await createProductionTasks(order, user);
     if (decoration.file) {
       await db.insert(entityDocumentsTable).values({
@@ -1973,6 +2030,15 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     },
     ...(extrasWarning ? { warning: extrasWarning } : {}),
   };
+  } catch (cause) {
+    const requestId = makeRequestId();
+    console.error("graduation order integration deferred after atomic save", { requestId, orderId: order.id, ...safeServerError(cause) });
+    return {
+      order: { ...publicOrder({ ...order, invoiceId: invoice?.id }), invoiceId: invoice?.id ?? null },
+      warning: "تم حفظ الطلب والبيانات المالية المرتبطة به. تعذر إكمال إجراء تشغيلي داخلي؛ راجع الإدارة ولا تُعد إرسال الطلب.",
+      requestId,
+    };
+  }
 }
 
 export async function updateOrder(
@@ -2708,42 +2774,8 @@ export async function handleGraduationPublic(
   }
   if (method === "POST" && resource === "orders") {
     const payload = await requestBody(req);
-    let result: Awaited<ReturnType<typeof createOrder>>;
-    try {
-      result = await createOrder(payload);
-    } catch (submissionError) {
-      // The order row is created before optional operational integrations
-      // (notifications, tasks, invoice projection and external services). A
-      // failure there must not make a durable customer booking look failed.
-      const input = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
-      const phone = normalizeIraqiPhone(String(input.phone ?? ""));
-      const customerName = String(input.customerName ?? "").trim();
-      const [durableOrder] = phone && customerName
-        ? await db
-            .select()
-            .from(graduationOrdersTable)
-            .where(and(
-              eq(graduationOrdersTable.phone, phone),
-              eq(graduationOrdersTable.customerName, customerName),
-              eq(graduationOrdersTable.status, "submitted"),
-              isNull(graduationOrdersTable.archivedAt),
-              sql`${graduationOrdersTable.createdAt} > now() - interval '10 minutes'`,
-            ))
-            .orderBy(desc(graduationOrdersTable.createdAt))
-            .limit(1)
-        : [];
-      if (durableOrder) {
-        console.error("graduation booking completed with deferred integration", {
-          orderId: durableOrder.id,
-          error: submissionError instanceof Error ? submissionError.message : submissionError,
-        });
-        return json({
-          order: publicOrder(durableOrder),
-          warning: "تم استلام طلبك بنجاح. سيُستكمل إجراء داخلي تلقائياً دون الحاجة لإعادة الإرسال.",
-        }, 201);
-      }
-      throw submissionError;
-    }
+    // Core writes are atomic; failures must never reuse another recent order.
+    const result = await createOrder(payload);
     if (result.response || !result.order?.id)
       return result.response ?? json(result, 201);
 
@@ -2882,7 +2914,7 @@ export async function handleGraduationPublic(
     );
     return json({ order: publicOrder(saved) });
   }
-  if (method === "POST" && resource === "groups") {
+  if (method === "POST" && resource === "groups" && !parts[2]) {
     const result = await createGraduationGroup(
       await requestBody(req),
       null,
@@ -2890,7 +2922,7 @@ export async function handleGraduationPublic(
     );
     return result.response ?? json(result, 201);
   }
-  if (method === "GET" && resource === "groups" && parts[2]) {
+  if (method === "GET" && resource === "groups" && parts[2] && !parts[3]) {
     const identifier = decodeURIComponent(parts[2]);
     const group = await db.query.graduationGroupsTable.findFirst({
       where: and(
@@ -2994,6 +3026,9 @@ export async function handleGraduationPublic(
       configuration.sashSelectionMode = "restricted";
       configuration.sashOptions = sashOptions;
       configuration.sashType = sashOptions[0];
+      const pricingValidation = validateGroupSashPricing(configuration.sashPricing, configuration);
+      if (!pricingValidation.success)
+        return { status: 409, message: "حدد سعر كل نوع جديد من حساب الإدارة أو ممثل المجموعة قبل اعتماده" };
       await tx.update(graduationGroupsTable)
         .set({ defaultConfiguration: configuration as any, updatedAt: new Date() })
         .where(eq(graduationGroupsTable.id, found.id));
@@ -3237,6 +3272,9 @@ export async function handleAdminGraduation(
   await Promise.all([ensureGraduationTables(), ensureMasterCashBoxTables()]);
   const method = req.method;
   const resource = parts[0] ?? "dashboard";
+
+  if (resource === "groups" && parts[1] && parts[2] === "sash-pricing" && !parts[3])
+    return handleGraduationGroupPricing(req, parts[1], user);
 
   if (resource === "media") {
     await ensureGraduationMediaTables();
@@ -3757,9 +3795,9 @@ export async function handleAdminGraduation(
     }
     if ((method === "PATCH" || method === "PUT") && parts[1]) {
       const data = await requestBody(req);
-      const existing = await db.query.graduationGroupsTable.findFirst({
-        where: eq(graduationGroupsTable.id, Number(parts[1])),
-      });
+      return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(graduationGroupsTable)
+        .where(eq(graduationGroupsTable.id, Number(parts[1]))).for("update");
       if (!existing) return error("المجموعة غير موجودة", 404);
       const update: Record<string, unknown> = { updatedAt: new Date() };
       if (["open", "closed", "completed"].includes(String(data?.status)))
@@ -3768,33 +3806,32 @@ export async function handleAdminGraduation(
         update.title = String(data.title).trim();
       if (data?.eventDate !== undefined)
         update.eventDate = data.eventDate || null;
-      if (data?.defaultConfiguration !== undefined)
-        update.defaultConfiguration = safeJson(data.defaultConfiguration);
-      const [saved] = await db
+      if (data?.defaultConfiguration !== undefined) {
+        const previous = safeJson(existing.defaultConfiguration);
+        const configuration = safeJson(data.defaultConfiguration);
+        if (Object.hasOwn(configuration, "sashPricing") &&
+          JSON.stringify(configuration.sashPricing ?? null) !== JSON.stringify(previous.sashPricing ?? null))
+          return studentReferenceError("عدّل أسعار الوشاح من إعداد أسعار الدفعة المخصص", 403, makeRequestId());
+        configuration.sashPricing = previous.sashPricing ?? null;
+        const validation = validateGroupSashPricing(configuration.sashPricing, configuration);
+        if (!validation.success) return studentReferenceError(validation.error, 409, makeRequestId());
+        update.defaultConfiguration = configuration;
+      }
+      const [saved] = await tx
         .update(graduationGroupsTable)
         .set(update as any)
         .where(eq(graduationGroupsTable.id, Number(parts[1])))
         .returning();
       if (saved) {
-        await addTimeline(
-          saved.id,
-          "group_updated",
-          saved.status === "closed"
-            ? "تم إغلاق تسجيل المجموعة"
-            : "تم تحديث المجموعة",
-          user,
-          { previousStatus: existing.status, status: saved.status },
-          "graduation_group",
-        );
-        await addActivity(
-          user,
-          "graduation_group_updated",
-          saved.id,
-          { previousStatus: existing.status, status: saved.status },
-          "graduation_group",
-        );
+        const metadata = { previousStatus: existing.status, status: saved.status };
+        await tx.insert(entityTimelineTable).values({ entityId: saved.id, entityType: "graduation_group",
+          type: "group_updated", title: saved.status === "closed" ? "تم إغلاق تسجيل المجموعة" : "تم تحديث المجموعة",
+          actorId: user.id, actorName: user.fullName || user.username, metadata });
+        await tx.insert(adminActivityLogsTable).values({ entityId: saved.id, entityType: "graduation_group",
+          action: "graduation_group_updated", staffId: user.id, userName: user.fullName || user.username, metadata });
       }
       return saved ? json({ group: saved }) : error("المجموعة غير موجودة", 404);
+      });
     }
   }
   if (resource === "resources") {

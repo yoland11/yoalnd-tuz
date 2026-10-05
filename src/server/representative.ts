@@ -14,6 +14,7 @@ import { normalizePhoneDigits } from "@/lib/phone";
 import type { GraduationAdminUser } from "@/server/graduation";
 import { receivePayment } from "@/server/graduation-operations";
 import { readRequestBody } from "@/server/request-body";
+import { handleGraduationGroupPricing } from "@/server/graduation-group-pricing";
 
 type RecordMap = Record<string, unknown>;
 const paymentInput = z.object({
@@ -137,6 +138,8 @@ export async function handleRepresentativePortal(
   parts: string[],
   user: GraduationAdminUser,
 ): Promise<NextResponse | null> {
+  if (parts[0] === "groups" && parts[1] && parts[2] === "sash-pricing" && !parts[3])
+    return handleGraduationGroupPricing(req, parts[1], user, true);
   await ensureRepresentativeTables();
   const resource = parts[0] || "dashboard";
   if (!has(user, "representative.portal.access"))

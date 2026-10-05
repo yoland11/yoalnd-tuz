@@ -36,6 +36,13 @@ import {
   withGraduationMeasurementStatus,
 } from "@/lib/graduation-measurements";
 import { normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
+import { SASH_TYPES, resolveGroupSashPolicy } from "@/lib/graduation-student-flow";
+import {
+  GroupSashPricingError,
+  groupSashPrice,
+  normalizeSashType,
+} from "@/lib/graduation-group-pricing";
+import { createApiErrorPayload, makeRequestId } from "@/server/write-safety";
 import { ensureGraduationOperationsTables } from "@/server/graduation-schema";
 import {
   handleGraduationEnterprise,
@@ -52,6 +59,7 @@ import {
 } from "@/server/master-cash-box";
 
 type JsonMap = Record<string, any>;
+type GraduationWriteExecutor = Pick<typeof db, "query" | "insert" | "update" | "select">;
 
 const GRANULAR_PERMISSIONS = [
   "graduation.view",
@@ -262,10 +270,10 @@ function studentIdentity(order: any) {
   };
 }
 
-async function ensureIdentity(order: any, user?: GraduationAdminUser) {
+async function ensureIdentity(order: any, user?: GraduationAdminUser, executor: GraduationWriteExecutor = db) {
   const identity = studentIdentity(order);
   if (!order.studentCode || !order.barcodeValue || !order.receiptNo) {
-    const [saved] = await db
+    const [saved] = await executor
       .update(graduationOrdersTable)
       .set({
         ...identity,
@@ -277,15 +285,15 @@ async function ensureIdentity(order: any, user?: GraduationAdminUser) {
     order = saved ?? order;
   }
   if (order.groupId) {
-    const existing = await db.query.graduationGroupStudentsTable.findFirst({
+    const existing = await executor.query.graduationGroupStudentsTable.findFirst({
       where: eq(graduationGroupStudentsTable.graduationOrderId, order.id),
     });
     if (!existing) {
-      const [next] = await db
+      const [next] = await executor
         .select({ value: sql<number>`coalesce(max(${graduationGroupStudentsTable.sequence}),0)::int + 1` })
         .from(graduationGroupStudentsTable)
         .where(eq(graduationGroupStudentsTable.groupId, order.groupId));
-      await db.insert(graduationGroupStudentsTable).values({
+      await executor.insert(graduationGroupStudentsTable).values({
         groupId: order.groupId,
         graduationOrderId: order.id,
         customerId: order.customerId,
@@ -295,7 +303,7 @@ async function ensureIdentity(order: any, user?: GraduationAdminUser) {
       });
     }
   }
-  await db
+  await executor
     .insert(graduationReceiptsTable)
     .values({
       receiptNo: identity.receiptNo,
@@ -1014,19 +1022,19 @@ async function copyAccessories(
   return await groupDetail(groupId, user);
 }
 
-async function findOrCreateCustomer(name: string, phone: string) {
+async function findOrCreateCustomer(name: string, phone: string, executor: GraduationWriteExecutor = db) {
   const normalized = phone ? normalizeIraqiPhone(phone) : null;
   if (!normalized) return null;
-  const existing = await db.query.customersTable.findFirst({
+  const existing = await executor.query.customersTable.findFirst({
     where: eq(customersTable.phone, normalized),
   });
   if (existing) return existing;
-  const [created] = await db
+  const [created] = await executor
     .insert(customersTable)
     .values({ phone: normalized, name, fullName: name })
     .onConflictDoNothing()
     .returning();
-  return created ?? db.query.customersTable.findFirst({ where: eq(customersTable.phone, normalized) });
+  return created ?? executor.query.customersTable.findFirst({ where: eq(customersTable.phone, normalized) });
 }
 
 async function addStudent(groupId: number, raw: unknown, user: GraduationAdminUser) {
@@ -1035,134 +1043,156 @@ async function addStudent(groupId: number, raw: unknown, user: GraduationAdminUs
   }).safeParse(raw);
   if (!parsed.success) return { response: fail("تحقق من بيانات الطالب", 400, parsed.error.issues) };
   const data = parsed.data;
-  const group = await db.query.graduationGroupsTable.findFirst({
-    where: eq(graduationGroupsTable.id, groupId),
-  });
-  if (!group) return { response: fail("المجموعة غير موجودة", 404) };
   const phone = data.phone ? normalizeIraqiPhone(data.phone) : null;
   if (data.phone && !phone) return { response: fail("رقم الهاتف الأول غير صحيح", 400) };
-  if (phone) {
-    const duplicate = await db.query.graduationOrdersTable.findFirst({
-      where: and(
-        eq(graduationOrdersTable.groupId, groupId),
-        eq(graduationOrdersTable.phone, phone),
-        sql`${graduationOrdersTable.archivedAt} is null`,
-      ),
+  try {
+    const result = await db.transaction(async (tx) => {
+      // Serialize group membership and price-policy reads with group updates.
+      const [group] = await tx.select().from(graduationGroupsTable)
+        .where(eq(graduationGroupsTable.id, groupId)).limit(1).for("update");
+      if (!group) return { response: fail("المجموعة غير موجودة", 404) };
+      if (phone) {
+        const duplicate = await tx.query.graduationOrdersTable.findFirst({
+          where: and(
+            eq(graduationOrdersTable.groupId, groupId),
+            eq(graduationOrdersTable.phone, phone),
+            sql`${graduationOrdersTable.archivedAt} is null`,
+          ),
+        });
+        if (duplicate) return { response: fail("يوجد طالب في المجموعة مسجل بنفس رقم الهاتف", 409) };
+      }
+      const defaults = record(group.defaultConfiguration);
+      const sashType = normalizeSashType(data.sashType || resolveGroupSashPolicy(defaults).sashType);
+      const configuredPrice = groupSashPrice(defaults, sashType);
+      const sashLabel = SASH_TYPES.find((item) => item.key === sashType)?.label || sashType || "";
+      const total = configuredPrice ?? amount(data.totalAmount ?? defaults.defaultPrice ?? 0);
+      const discount = configuredPrice !== null ? 0 : Math.min(total, amount(data.discountAmount));
+      const customer = await findOrCreateCustomer(data.customerName, phone || "", tx);
+      const defaultColors = record(defaults.colors);
+      const defaultFabric = record(defaults.fabric);
+      const defaultCustom = record(defaults.customText);
+      const qrToken = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
+      const [draft] = await tx
+        .insert(graduationOrdersTable)
+        .values({
+          orderNo: `GR-TMP-${randomUUID()}`,
+          qrToken,
+          orderType: "group",
+          customerId: customer?.id ?? null,
+          groupId,
+          customerName: data.customerName,
+          phone: phone || "",
+          phone2: data.phone2 ? normalizeIraqiPhone(data.phone2) || data.phone2 : null,
+          phoneLast4: phone ? normalizePhoneDigits(phone).slice(-4) : "",
+          status: "draft",
+          productionStage: "new",
+          styleKey: data.robeType || String(defaults.styleKey || "standard"),
+          packageKey: String(defaults.packageKey || "") || null,
+          studentProfile: {
+            gender: data.gender || "unspecified",
+            size: data.size || "",
+            university: data.university || group.university || "",
+            college: data.college || group.college || "",
+            department: data.department || group.department || "",
+            graduationYear: data.graduationYear || group.graduationYear || "",
+          },
+          garmentDetails: {
+            robeType: data.robeType || defaults.styleKey || "standard",
+            robeColor: data.robeColor || defaultColors.robe || "",
+            sashType: configuredPrice !== null ? sashLabel : data.sashType || record(defaults.garmentDetails).sashType || "",
+            sashColor: data.sashColor || defaultColors.sash || "",
+            capType: data.capType || record(defaults.garmentDetails).capType || "",
+            rightText: data.rightText || "",
+            leftText: data.leftText || "",
+            printingType: data.printingType || "",
+            embroideryType: data.embroideryType || "",
+          },
+          measurements: withGraduationMeasurementStatus({
+            gender: data.gender || "unspecified",
+            height: data.height || null,
+            weight: data.weight || null,
+            suggestedSize: data.size || "",
+            shoulder: data.shoulder || null,
+            sleeveLength: data.sleeveLength || null,
+            chest: data.chest || null,
+          }),
+          colors: {
+            ...defaultColors,
+            ...(data.robeColor ? { robe: data.robeColor } : {}),
+            ...(data.sashColor ? { sash: data.sashColor } : {}),
+          },
+          fabric: { ...defaultFabric, key: defaultFabric.key || "standard" },
+          decoration: record(defaults.decoration),
+          customText: {
+            ...defaultCustom,
+            ...(configuredPrice !== null ? { sashType } : {}),
+            studentName: data.customerName,
+            university: data.university || group.university || "",
+            college: data.college || group.college || "",
+            department: data.department || group.department || "",
+            graduationYear: data.graduationYear || group.graduationYear || "",
+          },
+          accessories: data.accessories || (Array.isArray(defaults.accessories) ? defaults.accessories : []),
+          universityTemplate: record(defaults.universityTemplate),
+          previewAssets: record(defaults.previewAssets),
+          inventoryItems: [],
+          pricing: {
+            subtotal: total, discount, total: total - discount, cost: 0, profit: total - discount,
+            ...(configuredPrice !== null ? {
+              groupSashPricing: { mode: "by_sash", sashType, amount: configuredPrice },
+            } : {}),
+          } as any,
+          subtotal: String(total),
+          discountAmount: String(discount),
+          totalAmount: String(total - discount),
+          paidAmount: "0",
+          remainingAmount: String(total - discount),
+          paymentStatus: total - discount > 0 ? "unpaid" : "paid",
+          productionEstimate: {},
+          qualityChecklist: {},
+          dueDate: group.eventDate,
+          notes: data.notes || null,
+          createdBy: user.id,
+          createdByName: user.fullName || user.username,
+        })
+        .returning();
+      const identity = studentIdentity(draft);
+      const orderNo = `AJN-GRAD-${new Date().getFullYear()}-${String(draft.id).padStart(5, "0")}`;
+      const [order] = await tx
+        .update(graduationOrdersTable)
+        .set({ ...identity, orderNo, updatedAt: new Date() })
+        .where(eq(graduationOrdersTable.id, draft.id))
+        .returning();
+      const identified = await ensureIdentity(order, user, tx);
+      await tx.insert(qrTokensTable).values({
+        entityType: "graduation_order",
+        entityId: identified.id,
+        token: qrToken,
+        targetUrl: `/graduation/track/${qrToken}`,
+      }).onConflictDoNothing();
+      return { order: identified };
     });
-    if (duplicate) return { response: fail("يوجد طالب في المجموعة مسجل بنفس رقم الهاتف", 409) };
-  }
-  const customer = await findOrCreateCustomer(data.customerName, phone || "");
-  const defaults = record(group.defaultConfiguration);
-  const defaultColors = record(defaults.colors);
-  const defaultFabric = record(defaults.fabric);
-  const defaultCustom = record(defaults.customText);
-  const qrToken = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
-  const total = amount(data.totalAmount ?? defaults.defaultPrice ?? 0);
-  const discount = Math.min(total, amount(data.discountAmount));
-  const [draft] = await db
-    .insert(graduationOrdersTable)
-    .values({
-      orderNo: `GR-TMP-${randomUUID()}`,
-      qrToken,
-      orderType: "group",
-      customerId: customer?.id ?? null,
+    if ("response" in result) return result;
+    const order = result.order;
+    await syncGraduationEnterpriseOrder(order.id, user);
+    if (getGraduationMeasurementStatus(order.measurements) === "not_started")
+      await notifyTailorsMeasurementsPending(order);
+    await audit(user, "graduation_student_added", "graduation_order", order.id, {
       groupId,
-      customerName: data.customerName,
-      phone: phone || "",
-      phone2: data.phone2 ? normalizeIraqiPhone(data.phone2) || data.phone2 : null,
-      phoneLast4: phone ? normalizePhoneDigits(phone).slice(-4) : "",
-      status: "draft",
-      productionStage: "new",
-      styleKey: data.robeType || String(defaults.styleKey || "standard"),
-      packageKey: String(defaults.packageKey || "") || null,
-      studentProfile: {
-        gender: data.gender || "unspecified",
-        size: data.size || "",
-        university: data.university || group.university || "",
-        college: data.college || group.college || "",
-        department: data.department || group.department || "",
-        graduationYear: data.graduationYear || group.graduationYear || "",
-      },
-      garmentDetails: {
-        robeType: data.robeType || defaults.styleKey || "standard",
-        robeColor: data.robeColor || defaultColors.robe || "",
-        sashType: data.sashType || record(defaults.garmentDetails).sashType || "",
-        sashColor: data.sashColor || defaultColors.sash || "",
-        capType: data.capType || record(defaults.garmentDetails).capType || "",
-        rightText: data.rightText || "",
-        leftText: data.leftText || "",
-        printingType: data.printingType || "",
-        embroideryType: data.embroideryType || "",
-      },
-      measurements: withGraduationMeasurementStatus({
-        gender: data.gender || "unspecified",
-        height: data.height || null,
-        weight: data.weight || null,
-        suggestedSize: data.size || "",
-        shoulder: data.shoulder || null,
-        sleeveLength: data.sleeveLength || null,
-        chest: data.chest || null,
-      }),
-      colors: {
-        ...defaultColors,
-        ...(data.robeColor ? { robe: data.robeColor } : {}),
-        ...(data.sashColor ? { sash: data.sashColor } : {}),
-      },
-      fabric: { ...defaultFabric, key: defaultFabric.key || "standard" },
-      decoration: record(defaults.decoration),
-      customText: {
-        ...defaultCustom,
-        studentName: data.customerName,
-        university: data.university || group.university || "",
-        college: data.college || group.college || "",
-        department: data.department || group.department || "",
-        graduationYear: data.graduationYear || group.graduationYear || "",
-      },
-      accessories: data.accessories || (Array.isArray(defaults.accessories) ? defaults.accessories : []),
-      universityTemplate: record(defaults.universityTemplate),
-      previewAssets: record(defaults.previewAssets),
-      inventoryItems: [],
-      pricing: { subtotal: total, discount, total: total - discount, cost: 0, profit: total - discount },
-      subtotal: String(total),
-      discountAmount: String(discount),
-      totalAmount: String(total - discount),
-      paidAmount: "0",
-      remainingAmount: String(total - discount),
-      paymentStatus: total - discount > 0 ? "unpaid" : "paid",
-      productionEstimate: {},
-      qualityChecklist: {},
-      dueDate: group.eventDate,
-      notes: data.notes || null,
-      createdBy: user.id,
-      createdByName: user.fullName || user.username,
-    })
-    .returning();
-  const identity = studentIdentity(draft);
-  const orderNo = `AJN-GRAD-${new Date().getFullYear()}-${String(draft.id).padStart(5, "0")}`;
-  const [order] = await db
-    .update(graduationOrdersTable)
-    .set({ ...identity, orderNo, updatedAt: new Date() })
-    .where(eq(graduationOrdersTable.id, draft.id))
-    .returning();
-  await ensureIdentity(order, user);
-  await syncGraduationEnterpriseOrder(order.id, user);
-  if (getGraduationMeasurementStatus(order.measurements) === "not_started")
-    await notifyTailorsMeasurementsPending(order);
-  await db.insert(qrTokensTable).values({
-    entityType: "graduation_order",
-    entityId: order.id,
-    token: qrToken,
-    targetUrl: `/graduation/track/${qrToken}`,
-  }).onConflictDoNothing();
-  await audit(user, "graduation_student_added", "graduation_order", order.id, {
-    groupId,
-    studentCode: identity.studentCode,
-  });
-  await timeline(user, "graduation_group", groupId, "student_added", `تمت إضافة الطالب ${order.customerName}`, {
-    orderId: order.id,
-    studentCode: identity.studentCode,
-  });
-  return { order: formatStudent(order) };
+      studentCode: order.studentCode,
+    });
+    await timeline(user, "graduation_group", groupId, "student_added", `تمت إضافة الطالب ${order.customerName}`, {
+      orderId: order.id,
+      studentCode: order.studentCode,
+    });
+    return { order: formatStudent(order) };
+  } catch (pricingError) {
+    if (!(pricingError instanceof GroupSashPricingError)) throw pricingError;
+    const requestId = makeRequestId();
+    return { response: NextResponse.json(createApiErrorPayload({
+      message: pricingError.message, status: pricingError.status, requestId,
+    }), { status: pricingError.status, headers: { "x-request-id": requestId } }) };
+  }
 }
 
 async function patchStudent(orderId: number, raw: unknown, user: GraduationAdminUser) {
@@ -1827,6 +1857,9 @@ export async function handleAdminGraduationOperations(
   parts: string[],
   user: GraduationAdminUser,
 ): Promise<NextResponse | null> {
+  // The dedicated pricing route owns its narrower permission gate.
+  if (parts[0] === "groups" && parts[1] && parts[2] === "sash-pricing" && !parts[3])
+    return null;
   await ensureGraduationOperationsTables();
   const enterprise = await handleGraduationEnterprise(req, parts, user);
   if (enterprise) return enterprise;

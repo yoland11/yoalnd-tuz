@@ -42,6 +42,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { GraduationGroupPricingEditor } from "@/components/graduation-group-pricing-editor";
 import {
   apiErrorMessage,
   adminFetch,
@@ -660,6 +661,8 @@ function StudentRows({
 }
 
 function Dashboard() {
+  const client = useQueryClient();
+  const { toast } = useToast();
   const data = useQuery({
     queryKey: ["representative", "dashboard"],
     queryFn: () => api<any>("/dashboard"),
@@ -723,6 +726,21 @@ function Dashboard() {
           </div>
         </div>
       </section>
+      {d.groups?.map((item: any) => <details key={item.id} className="rounded-xl border border-rose-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+        <summary className="cursor-pointer text-sm font-semibold">أسعار الوشاح — {item.title || item.groupNo}</summary>
+        <div className="mt-4"><GraduationGroupPricingEditor
+          key={`${item.id}-${JSON.stringify(item.defaultConfiguration)}`}
+          configuration={item.defaultConfiguration || {}}
+          endpoint={`/admin/representative/groups/${item.id}/sash-pricing`}
+          onSaved={(group) => {
+            client.setQueryData<any>(["representative", "dashboard"], (current: any) => current ? { ...current, groups: current.groups.map((entry: any) => entry.id === group.id ? { ...entry, ...group } : entry) } : current);
+            void client.invalidateQueries({ queryKey: ["representative"] });
+            void client.invalidateQueries({ queryKey: ["admin", "graduation"] });
+            void client.invalidateQueries({ queryKey: ["graduation", "group"] });
+            toast({ title: "تم حفظ أسعار المجموعة للطلبات الجديدة" });
+          }}
+        /></div>
+      </details>)}
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_250px]">
         <div className="min-w-0 space-y-4">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

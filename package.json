@@ -58,6 +58,7 @@
     "test:graduation-group-step-flow": "node ./scripts/verify-graduation-group-step-flow.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-step-navigation.ts",
     "test:graduation-measurement-visibility": "node ./scripts/verify-graduation-measurement-visibility.mjs",
     "test:graduation-student-flow": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-student-flow.ts",
+    "test:graduation-group-pricing": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-group-pricing.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-group-pricing-access.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-group-pricing-ui.ts && node ./scripts/test-graduation-group-pricing-wiring.mjs && node ./scripts/test-graduation-group-pricing-route.mjs && node ./scripts/test-graduation-group-public-pricing.mjs",
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",
     "test:staff-portal-auth": "node ./scripts/verify-staff-portal-auth.mjs",
     "test:installments": "node ./scripts/verify-installments.mjs",

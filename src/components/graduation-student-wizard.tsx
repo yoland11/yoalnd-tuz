@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { formatCurrency } from "@/lib/money";
+import { groupSashPrice, validateGroupSashPricing } from "@/lib/graduation-group-pricing";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { vocalizeArabicName } from "@/lib/graduation-name";
 import { processImageFile } from "@/lib/image-tools";
@@ -312,6 +313,7 @@ export function GraduationStudentWizard({
   const [busy, setBusy] = useState(false);
   const [imageBusy, setImageBusy] = useState(false);
   const [error, setError] = useState("");
+  const [priceStale, setPriceStale] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [attempt, setAttempt] = useState<{ key: string; body: string } | null>(
     null,
@@ -458,6 +460,10 @@ export function GraduationStudentWizard({
   }
   async function save(addAnother: boolean) {
     if (saving.current) return;
+    if (priceStale) {
+      setError("حدّث الصفحة وراجع سعر المجموعة قبل تأكيد الطلب");
+      return;
+    }
     if (imageBusy) {
       setError("انتظر حتى تجهز الصورة المرجعية");
       return;
@@ -504,6 +510,16 @@ export function GraduationStudentWizard({
       });
       const result = await response.json();
       if (!response.ok) {
+        if (result.code === "STALE_DATA") {
+          setAttempt(null);
+          setPriceStale(true);
+          try {
+            sessionStorage.setItem(storageKey, JSON.stringify({ form, step, receipts, done,
+              attempt: null, baseSeed: baseSeed.current }));
+          } catch {
+            console.warn("Graduation draft storage is unavailable; stale price confirmation is blocked.");
+          }
+        }
         if (
           response.status >= 400 &&
           response.status < 500 &&
@@ -565,11 +581,14 @@ export function GraduationStudentWizard({
       setBusy(false);
     }
   }
-  const displayedSashType = fixedGroupSash || limitedGroupSash
+  const displayedSashType = scope !== "individual"
     ? selectedGroupSashType(form.sashType, sashPolicy)
     : form.sashType;
   const displayedSashColor = lockedGroupSashColor ? sashPolicy.sashColor! : form.sashColor;
   const displayedEmbroideryColor = lockedGroupEmbroideryColor ? sashPolicy.embroideryColor! : form.embroideryColor;
+  const groupPricing = scope === "individual" ? null : validateGroupSashPricing(base.sashPricing, base);
+  const pricingError = groupPricing && !groupPricing.success ? groupPricing.error : "";
+  const selectedKitPrice = groupPricing?.success ? groupSashPrice(base, displayedSashType) : null;
   return (
     <section className="space-y-6" dir="rtl">
       {receipts.length > 0 && (
@@ -649,6 +668,13 @@ export function GraduationStudentWizard({
           >
             {STUDENT_STEPS[step]}
           </h2>
+          {pricingError ? <p role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{pricingError} تواصل مع ممثل الدفعة لاعتماد الأسعار.</p> : null}
+          {selectedKitPrice !== null ? (
+            <div aria-live="polite" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/5 p-4">
+              <div><p className="font-semibold">سعر تجهيز الطالب — {SASH_TYPES.find((type) => type.key === displayedSashType)?.label}</p><p className="mt-1 text-xs text-muted-foreground">يشمل تجهيزات الطالب حسب الوشاح المختار. الورود والمسكات إضافية، والتصوير بطلب مستقل.</p></div>
+              <strong className="text-xl text-primary">{formatCurrency(selectedKitPrice)}</strong>
+            </div>
+          ) : null}
           <fieldset
             disabled={busy || !hydrated || Boolean(attempt)}
             className="min-w-0 space-y-5"
@@ -710,6 +736,7 @@ export function GraduationStudentWizard({
                     <span className="font-semibold">
                       {SASH_TYPES.find((type) => type.key === sashPolicy.sashType)
                         ?.label || "عادي"}
+                      {selectedKitPrice !== null ? <strong className="mr-3 text-primary">{formatCurrency(selectedKitPrice)}</strong> : null}
                     </span>
                     <span className="flex items-center gap-2 text-sm text-muted-foreground">
                       لون موحّد
@@ -726,21 +753,24 @@ export function GraduationStudentWizard({
                     aria-label="أنواع الوشاح"
                     className={`mt-4 grid gap-1 rounded-2xl border border-[#f0ccd3] bg-[#fff0f2] p-1 ${limitedGroupSash ? "grid-cols-2" : "grid-cols-4"}`}
                   >
-                    {groupSashChoices.map((type) => (
+                    {groupSashChoices.map((type) => {
+                      const price = groupPricing?.success ? groupSashPrice(base, type.key) : null;
+                      return (
                       <Button
                         key={type.key}
                         type="button"
-                        aria-label={type.label}
+                        aria-label={price !== null ? `${type.label}، سعر تجهيز الطالب ${formatCurrency(price)}` : type.label}
                         aria-pressed={displayedSashType === type.key}
                         variant={
                           displayedSashType === type.key ? "selected" : "outline"
                         }
                         onClick={() => change({ sashType: type.key })}
-                        className={`min-h-11 rounded-xl px-2 py-2 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:text-sm ${displayedSashType === type.key ? "border-[#68002f] bg-[#68002f] text-white shadow-md hover:bg-[#68002f]" : "border-transparent text-[#805c68] hover:bg-white/80"}`}
+                        className={`min-h-11 flex-col rounded-xl px-2 py-2 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:text-sm ${displayedSashType === type.key ? "border-[#68002f] bg-[#68002f] text-white shadow-md hover:bg-[#68002f]" : "border-transparent text-[#805c68] hover:bg-white/80"}`}
                       >
                         {type.label}
+                        {price !== null ? <span className="text-xs">{formatCurrency(price)}</span> : null}
                       </Button>
-                    ))}
+                    ); })}
                   </div>
                 )}
                 {(() => {
@@ -1225,6 +1255,9 @@ export function GraduationStudentWizard({
               {error}
             </p>
           )}
+          {priceStale && <Button type="button" variant="outline" onClick={() => window.location.reload()}>
+            تحديث الصفحة ومراجعة السعر
+          </Button>}
           {attempt && !busy && (
             <p className="text-sm text-muted-foreground">
               لم يتأكد الحفظ بعد. اضغط زر الحفظ نفسه لإعادة المحاولة دون إنشاء
@@ -1240,19 +1273,19 @@ export function GraduationStudentWizard({
               رجوع
             </Button>
             {step < 3 ? (
-              <Button disabled={busy || imageBusy || !hydrated} onClick={next}>
+              <Button disabled={busy || imageBusy || !hydrated || Boolean(pricingError) || priceStale} onClick={next}>
                 التالي
               </Button>
             ) : (
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
-                  disabled={busy || imageBusy}
+                  disabled={busy || imageBusy || Boolean(pricingError) || priceStale}
                   onClick={() => void save(true)}
                 >
                   {busy ? "جاري الحفظ…" : "إضافة طالب آخر"}
                 </Button>
-                <Button disabled={busy || imageBusy} onClick={() => void save(false)}>
+                <Button disabled={busy || imageBusy || Boolean(pricingError) || priceStale} onClick={() => void save(false)}>
                   {busy ? "جاري الحفظ…" : "اكتمال"}
                 </Button>
               </div>
