@@ -7,7 +7,7 @@ import {
   validateGroupSashOptions,
   withoutStudentReferencePreview,
 } from "../lib/graduation-student-flow";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import QRCode from "qrcode";
 import { z } from "zod/v4";
@@ -930,8 +930,9 @@ export async function notifyTailorsMeasurementsPending(order: {
   );
 }
 
-async function stockOwner(productId: number) {
-  const origin = await db.query.productsTable.findFirst({
+async function stockOwner(productId: number, executor?: GraduationWriteExecutor) {
+  const connection = executor ?? db;
+  const origin = await connection.query.productsTable.findFirst({
     where: eq(productsTable.id, productId),
   });
   if (!origin) return null;
@@ -942,7 +943,7 @@ async function stockOwner(productId: number) {
     !visited.has(current.sharedStockProductId)
   ) {
     visited.add(current.sharedStockProductId);
-    const next = await db.query.productsTable.findFirst({
+    const next = await connection.query.productsTable.findFirst({
       where: eq(productsTable.id, current.sharedStockProductId),
     });
     if (!next) break;
@@ -953,6 +954,7 @@ async function stockOwner(productId: number) {
 
 async function aggregateByStockOwner(
   items: Array<{ productId: number; quantity: number; label: string }>,
+  executor?: GraduationWriteExecutor,
 ) {
   const grouped = new Map<
     number,
@@ -965,7 +967,7 @@ async function aggregateByStockOwner(
     }
   >();
   for (const item of items) {
-    const resolved = await stockOwner(item.productId);
+    const resolved = await stockOwner(item.productId, executor);
     if (!resolved) throw new Error(`مادة المخزون غير موجودة: ${item.label}`);
     const key = resolved.owner.id;
     const previous = grouped.get(key);
@@ -989,7 +991,7 @@ async function applyInventory(
   user?: GraduationAdminUser | null,
   executor?: GraduationWriteExecutor,
 ) {
-  const grouped = await aggregateByStockOwner(items);
+  const grouped = await aggregateByStockOwner(items, executor);
   if (direction < 0) {
     const missing = grouped.find((item) => item.available < item.quantity);
     if (missing)
@@ -1069,6 +1071,7 @@ async function createProductionTasks(
 }
 
 function publicOrder(row: any) {
+  const { submissionFingerprint: _privateSubmissionFingerprint, ...templateSnapshot } = safeJson(row.templateSnapshot);
   return {
     id: row.id,
     orderNo: row.orderNo,
@@ -1099,7 +1102,7 @@ function publicOrder(row: any) {
     studentProfile: row.studentProfile ?? {},
     garmentDetails: row.garmentDetails ?? {},
     templateVersionId: row.templateVersionId ?? null,
-    templateSnapshot: row.templateSnapshot ?? {},
+    templateSnapshot,
     previewAssets: row.previewAssets,
     pricing: row.pricing,
     totalAmount: money(row.totalAmount),
@@ -1203,7 +1206,7 @@ function describeGraduationIssues(
     : "تحقق من بيانات طلب التخرج";
 }
 
-export async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
+export async function createOrder(raw: unknown, user?: GraduationAdminUser | null, requestKey?: string | null) {
   await ensureGraduationTables();
   const parsed = graduationOrderInputSchema.safeParse(raw);
   if (!parsed.success)
@@ -1220,6 +1223,31 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   let data = parsed.data;
   const normalizedPhone = normalizeIraqiPhone(data.phone);
   if (!normalizedPhone) return { response: error("رقم الهاتف غير صحيح", 400) };
+  const idempotencyKey = requestKey?.trim() || null;
+  if (idempotencyKey && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey))
+    return { response: studentReferenceError("رمز محاولة الحفظ غير صالح؛ حدّث الصفحة وأعد المحاولة", 400, makeRequestId()) };
+  const idempotencyToken = idempotencyKey
+    ? createHash("sha256").update("ajn-graduation-order\0").update(idempotencyKey).digest("hex")
+    : null;
+  const submissionFingerprint = idempotencyKey
+    ? createHash("sha256").update(idempotencyKey).update("\0").update(JSON.stringify(raw)).digest("hex")
+    : null;
+  const previouslySaved = async () => {
+    if (!idempotencyToken) return null;
+    const existing = await db.query.graduationOrdersTable.findFirst({
+      where: eq(graduationOrdersTable.qrToken, idempotencyToken),
+    });
+    if (!existing) return null;
+    if (safeJson(existing.templateSnapshot).submissionFingerprint !== submissionFingerprint)
+      return { response: studentReferenceError("رمز الحفظ مستخدم لطلب مختلف؛ حدّث الصفحة قبل المحاولة", 409, makeRequestId(), "CONFLICT") };
+    const qrDataUrl = await QRCode.toDataURL(
+      `${process.env.APP_BASE_URL || ""}/graduation/track/${existing.qrToken}`,
+      { width: 320, margin: 1 },
+    );
+    return { order: { ...publicOrder(existing), qrDataUrl } };
+  };
+  const previous = await previouslySaved();
+  if (previous) return previous;
   const customer = await ensureCustomer(normalizedPhone, data.customerName);
   if (!customer) return { response: error("تعذر إنشاء ملف الزبون", 500) };
   let group: typeof graduationGroupsTable.$inferSelect | null = null;
@@ -1644,7 +1672,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   const orderMeasurements = withGraduationMeasurementStatus(data.measurements);
   if (decoration.file)
     decoration.file = await persistMedia(decoration.file, "graduation/designs");
-  const qrToken =
+  const qrToken = idempotencyToken ??
     randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
   const saved = await db.transaction(async (tx) => {
   // Serialize group sequences and keep invoice/receipt/order writes atomic.
@@ -1677,8 +1705,8 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       accessories: data.accessories as any,
       universityTemplate: data.universityTemplate as any,
       previewAssets: data.previewAssets as any,
-      templateSnapshot: customPackage.enabled
-        ? {
+      templateSnapshot: {
+        ...(customPackage.enabled ? {
             mode: enterprisePackage ? "enterprise_package" : "custom_package",
             selected: customPackage,
             package: enterprisePackage,
@@ -1694,8 +1722,9 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
               previewImageUrl: item.previewImageUrl,
               modelUrl: item.modelUrl,
             })),
-          }
-        : {},
+          } : {}),
+        ...(submissionFingerprint ? { submissionFingerprint } : {}),
+      },
       inventoryItems: inventoryItems as any,
       pricing: pricing as any,
       subtotal: String(pricing.subtotal),
@@ -1844,7 +1873,14 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       .where(eq(graduationOrdersTable.id, order.id));
   }
   return { order, invoice, orderNo };
+  }).catch(async (cause) => {
+    if (idempotencyToken && (cause as { code?: string } | null)?.code === "23505") {
+      const replay = await previouslySaved();
+      if (replay) return { replay };
+    }
+    throw cause;
   });
+  if ("replay" in saved) return saved.replay;
   if ("response" in saved) return saved;
   const { order, invoice, orderNo } = saved;
   try {
@@ -2775,7 +2811,7 @@ export async function handleGraduationPublic(
   if (method === "POST" && resource === "orders") {
     const payload = await requestBody(req);
     // Core writes are atomic; failures must never reuse another recent order.
-    const result = await createOrder(payload);
+    const result = await createOrder(payload, null, req.headers.get("x-idempotency-key"));
     if (result.response || !result.order?.id)
       return result.response ?? json(result, 201);
 

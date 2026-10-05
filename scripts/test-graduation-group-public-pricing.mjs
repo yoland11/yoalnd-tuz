@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve, dirname } from "node:path";
@@ -54,7 +54,7 @@ function fixture(configuration = policyConfig, { failInvoice = false } = {}) {
   const noop = async () => {};
   const context = vm.createContext({ ...lib, ...flow, ...pricing, ...access, ...safety, ...phone, ...measures, ...tables, db, eq, and, or,
     asc: (x) => x, desc: (x) => x, isNull: () => () => true, sql: (parts, ...values) => ({ parts, values }),
-    z: require("zod/v4").z, randomUUID, Date, console, process, Object, JSON,
+    z: require("zod/v4").z, createHash, randomUUID, Date, console, process, Object, JSON,
     NextResponse: { json: (body, options) => Response.json(body, options) },
     ensureGraduationTables: noop, ensureCustomer: async () => ({ id: 1 }), getConfig: async () => config,
     persistMedia: async (value) => value, getGraduationEnterpriseCatalog: async () => ({}),
@@ -120,4 +120,29 @@ const rollback = fixture(policyConfig, { failInvoice: true });
 await assert.rejects(rollback.create(), /invoice item failure/);
 for (const name of ["graduationOrdersTable", "graduationReceiptsTable", "salesInvoicesTable", "qrTokensTable", "graduationGroupStudentsTable"])
   assert.equal(rollback.rows()[name].length, 0, `${name} must roll back with failed invoice`);
+
+const retried = fixture();
+const retryKey = randomUUID();
+const retryBody = JSON.stringify({ customerName: "طالب اختبار", phone: "07700000000", styleKey: "standard",
+  fabric: { key: fabricKey }, groupToken: "token", sashPricing: policyConfig.sashPricing,
+  customText: { sashType: "royal" } });
+const retryRequest = () => new Request("http://localhost/api/graduation/orders", {
+  method: "POST", headers: { "Content-Type": "application/json", "x-idempotency-key": retryKey }, body: retryBody,
+});
+const firstRetryResponse = await retried.context.handle(retryRequest(), ["graduation", "orders"]);
+const secondRetryResponse = await retried.context.handle(retryRequest(), ["graduation", "orders"]);
+assert.equal(firstRetryResponse.status, 201);
+assert.equal(secondRetryResponse.status, 201);
+const firstRetryOrder = (await firstRetryResponse.json()).order;
+assert.equal(firstRetryOrder.id, (await secondRetryResponse.json()).order.id);
+assert.equal(firstRetryOrder.templateSnapshot?.submissionFingerprint, undefined,
+  "the private retry fingerprint must not appear in the public receipt");
+assert.equal(retried.rows().graduationOrdersTable.length, 1, "repeating the same save key must not create another order");
+assert.equal(retried.rows().salesInvoicesTable.length, 1, "repeating the same save key must not create another invoice");
+const changedRetry = await retried.context.handle(new Request("http://localhost/api/graduation/orders", {
+  method: "POST", headers: { "Content-Type": "application/json", "x-idempotency-key": retryKey },
+  body: JSON.stringify({ ...JSON.parse(retryBody), customerName: "طالب مختلف" }),
+}), ["graduation", "orders"]);
+assert.equal(changedRetry.status, 409, "a retry key cannot silently confirm a different order");
+assert.equal(retried.rows().graduationOrdersTable.length, 1);
 console.log("PASS real public creator pricing/receipt/invoice agreement, authorization, fallback, atomic rollback and failure isolation");
