@@ -47,7 +47,7 @@ import { formatIraqiPhoneInput } from "@/lib/phone";
 import { GraduationRobePreview } from "@/components/graduation-robe-preview";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { SASH_TYPES, combineSashName, resolveGroupSashPolicy } from "@/lib/graduation-student-flow";
-import type { GraduationConfig } from "@/lib/graduation";
+import { DEFAULT_GRADUATION_CONFIG, type GraduationConfig } from "@/lib/graduation";
 import {
   GRADUATION_LAST_STEP,
   GRADUATION_THEME_STYLE,
@@ -1888,6 +1888,17 @@ function GroupVoteManager({
   );
 }
 
+/** Arabic name of a configured robe style / fabric / package key; falls back to the defaults, then the raw key. */
+function graduationOptionName(
+  configured: Array<{ key: string; name: string }> | undefined,
+  defaults: Array<{ key: string; name: string }>,
+  key: unknown,
+) {
+  const value = String(key ?? "").trim();
+  if (!value) return "";
+  return configured?.find((item) => item.key === value)?.name || defaults.find((item) => item.key === value)?.name || value;
+}
+
 export function GraduationGroupStudentRegistration({
   token,
   onBack,
@@ -1906,9 +1917,15 @@ export function GraduationGroupStudentRegistration({
       return cv?.enabled && !cv?.closed ? 15000 : false;
     },
   });
+  const configQuery = useQuery({
+    queryKey: ["graduation", "config"],
+    queryFn: () => graduationFetch<PublicGraduationConfig>("/config"),
+    staleTime: 5 * 60_000,
+  });
   const group = groupQuery.data?.group;
   const locked = group?.defaultConfiguration ?? {};
   const sashPolicy = resolveGroupSashPolicy(locked);
+  const config = configQuery.data;
   if (groupQuery.isLoading)
     return (
       <div className="mx-auto max-w-4xl px-4 py-10">
@@ -1973,16 +1990,16 @@ export function GraduationGroupStudentRegistration({
             </div>
             <div className="mt-4 space-y-2 text-sm">
               {[
-                ["نوع الروب", locked.styleKey],
+                ["نوع الروب", graduationOptionName(config?.styles, DEFAULT_GRADUATION_CONFIG.styles, locked.styleKey)],
                 [
                   "نوع الوشاح",
                   sashPolicy.mode === "fixed" || sashPolicy.mode === "restricted"
                     ? (sashPolicy.sashOptions || [sashPolicy.sashType]).map((key) => SASH_TYPES.find((type) => type.key === key)?.label).filter(Boolean).join("، ")
                     : "يختار كل طالب",
                 ],
-                ["القماش", locked.fabric?.key],
+                ["القماش", locked.fabric?.name || graduationOptionName(config?.fabrics, DEFAULT_GRADUATION_CONFIG.fabrics, locked.fabric?.key)],
                 ["لقب الاسم على الوشاح", locked.customText?.sashNamePrefix],
-                ["الباقة", locked.packageKey || "بدون"],
+                ["الباقة", locked.packageKey ? graduationOptionName(config?.packages, DEFAULT_GRADUATION_CONFIG.packages, locked.packageKey) : "بدون"],
                 ["سنة التخرج", group.graduationYear],
                 [
                   "موعد التسليم",
