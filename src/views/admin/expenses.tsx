@@ -157,11 +157,11 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
     win.focus();
     setTimeout(() => win.print(), 250);
   }
-  function printReceipt80() {
-    void recordReportAudit("report_printed", "تقرير المصاريف", "80mm");
+  function printReceipt(size: "58mm" | "80mm") {
+    void recordReportAudit("report_printed", "تقرير المصاريف", size);
     const win = window.open("", "_blank", "width=420,height=760");
     if (!win) { toast({ title: "اسمح بالنوافذ المنبثقة للطباعة", variant: "destructive" }); return; }
-    win.document.write(buildExpensesReceiptHtml(expenses, filters, total, logoSrc(settings), settings?.site_name || "مجموعة علي جان نهاد"));
+    win.document.write(buildExpensesReceiptHtml(size, expenses, filters, total, logoSrc(settings), settings?.site_name || "مجموعة علي جان نهاد"));
     win.document.close();
     win.focus();
   }
@@ -181,7 +181,8 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
           <Button onClick={() => setForm(blankForm())} size="sm" className="gap-1.5"><Plus className="w-4 h-4" /> إضافة مصروف</Button>
           <Button variant={showCategories ? "default" : "outline"} size="sm" onClick={() => setShowCategories((value) => !value)} className="gap-1.5"><Tags className="w-4 h-4" /> التصنيفات</Button>
           <Button variant="outline" size="sm" onClick={printReport} className="gap-1.5"><Printer className="w-4 h-4" /> طباعة A4</Button>
-          <Button variant="outline" size="sm" onClick={printReceipt80} className="gap-1.5" title="طباعة حرارية بعرض 80 ملم"><Printer className="w-4 h-4" /> طباعة 80mm</Button>
+          <Button variant="outline" size="sm" onClick={() => printReceipt("80mm")} className="gap-1.5" title="طباعة حرارية بعرض 80 ملم"><Printer className="w-4 h-4" /> طباعة 80mm</Button>
+          <Button variant="outline" size="sm" onClick={() => printReceipt("58mm")} className="gap-1.5" title="طباعة حرارية بعرض 58 ملم"><Printer className="w-4 h-4" /> طباعة 58mm</Button>
           <Button variant="outline" size="sm" onClick={exportPdf} className="gap-1.5"><FileText className="w-4 h-4" /> PDF</Button>
           <Button variant="outline" size="sm" onClick={exportExcel} className="gap-1.5"><FileSpreadsheet className="w-4 h-4" /> Excel</Button>
         </div>
@@ -357,17 +358,19 @@ function buildExpensesPrintHtml(expenses: Expense[], filters: { from: string; to
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>@page{size:A4;margin:12mm}*{color:#000!important;box-shadow:none!important}body{font-family:Arial,sans-serif;background:#fff}.head{display:flex;justify-content:space-between;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:12px}img{width:64px;height:50px;object-fit:contain}h1{font-size:20px;margin:0}.meta{font-size:11px}.total{border:1px solid #000;padding:8px;margin-bottom:10px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:12px}td,th{border:1px solid #000;padding:5px;font-weight:700}</style></head><body><div class="head"><div><img src="${escapeHtml(logo)}"><h1>تقرير المصاريف</h1></div><div class="meta">${escapeHtml(expenseDateRangeLabel(filters.from, filters.to))}<br>${new Date().toLocaleString("ar-IQ-u-nu-latn")}</div></div><div class="total">الإجمالي: ${escapeHtml(formatCurrency(total))}</div><table><thead><tr><th>التاريخ</th><th>العنوان</th><th>التصنيف</th><th>المبلغ</th><th>الدفع</th><th>بواسطة</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
 }
 const EXPENSE_STATUS_LABELS: Record<string, string> = { executed: "معتمد", pending: "بانتظار الموافقة", rejected: "مرفوض", reversed: "معكوس", cancelled: "ملغي" };
-/** 80mm thermal receipt: one block per expense instead of a squeezed A4 table. */
-function buildExpensesReceiptHtml(expenses: Expense[], filters: { from: string; to: string }, total: number, logo: string, company: string) {
+/** 58mm / 80mm thermal receipt: one block per expense instead of a squeezed A4 table. */
+function buildExpensesReceiptHtml(size: "58mm" | "80mm", expenses: Expense[], filters: { from: string; to: string }, total: number, logo: string, company: string) {
   const rows = expenses.map((e) => {
     const status = e.approvalStatus ?? "executed";
     const meta = [e.date, e.categoryName, paymentLabel(e.paymentMethod), status === "executed" ? "" : EXPENSE_STATUS_LABELS[status] ?? status].filter(Boolean).join(" · ");
     return `<tr><td class="name">${escapeHtml(e.name)}<div class="meta-line">${escapeHtml(meta)}</div></td><td class="amt num">${escapeHtml(formatCurrency(e.amount))}</td></tr>`;
   }).join("");
   const excluded = expenses.filter((e) => (e.approvalStatus ?? "executed") !== "executed").length;
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>تقرير المصاريف 80mm</title><style>${thermalReceiptCss("80mm")}
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>تقرير المصاريف ${size}</title><style>${thermalReceiptCss(size)}
     table.items td.amt { text-align: left; white-space: nowrap; font-weight: 900; }
     .meta-line { font-weight: 600; font-size: .85em; margin-top: 1px; }
+    .grand .num { white-space: nowrap; }
+    ${size === "58mm" ? ".grand { font-size: 1.12em; padding: 3px 4px; }" : ""}
   </style></head><body><div class="receipt">
     <div class="r-head">${logo ? `<img class="r-logo" src="${escapeHtml(logo)}" alt="">` : ""}<div class="r-company">${escapeHtml(company)}</div><div class="r-sub">تقرير المصاريف</div></div>
     <hr class="rule">
