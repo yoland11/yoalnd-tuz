@@ -8,6 +8,7 @@ import { fileToDataUrl, adminFetch, formatCurrency, getCachedAdminMe } from "./_
 import { EmptyState } from "./_layout";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { printWhenImagesReadyScript, thermalReceiptCss } from "./print-helpers";
 
 type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; financialTransactionId?: number | null; createdByName: string; createdAt: string; costCategory?: string | null; koshaId?: number | null; bookingId?: number | null; constructionProjectId?: number | null; expenseType?: string | null; beneficiaryName?: string | null };
 type Category = { id: number; name: string; nameAr: string; isActive: number };
@@ -147,14 +148,22 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
       mode: "download",
     });
   }
-  function printReport(thermal = false) {
-    void recordReportAudit("report_printed", "تقرير المصاريف", thermal ? "thermal" : "a4");
+  function printReport() {
+    void recordReportAudit("report_printed", "تقرير المصاريف", "a4");
     const win = window.open("", "_blank", "width=920,height=760");
     if (!win) return;
-    win.document.write(buildExpensesPrintHtml(expenses, filters, total, logoSrc(settings), thermal));
+    win.document.write(buildExpensesPrintHtml(expenses, filters, total, logoSrc(settings)));
     win.document.close();
     win.focus();
     setTimeout(() => win.print(), 250);
+  }
+  function printReceipt80() {
+    void recordReportAudit("report_printed", "تقرير المصاريف", "80mm");
+    const win = window.open("", "_blank", "width=420,height=760");
+    if (!win) { toast({ title: "اسمح بالنوافذ المنبثقة للطباعة", variant: "destructive" }); return; }
+    win.document.write(buildExpensesReceiptHtml(expenses, filters, total, logoSrc(settings), settings?.site_name || "مجموعة علي جان نهاد"));
+    win.document.close();
+    win.focus();
   }
   function exportExcel() {
     downloadCsv(`expenses-${filters.from || "all"}-${filters.to || "all"}.csv`, ["التاريخ", "العنوان", "التصنيف", "طريقة الدفع", "المبلغ", "بواسطة", "ملاحظات"], expenses.map((e) => [e.date, e.name, e.categoryName, paymentLabel(e.paymentMethod), e.amount, e.createdByName, e.notes ?? ""]));
@@ -171,8 +180,8 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => setForm(blankForm())} size="sm" className="gap-1.5"><Plus className="w-4 h-4" /> إضافة مصروف</Button>
           <Button variant={showCategories ? "default" : "outline"} size="sm" onClick={() => setShowCategories((value) => !value)} className="gap-1.5"><Tags className="w-4 h-4" /> التصنيفات</Button>
-          <Button variant="outline" size="sm" onClick={() => printReport(false)} className="gap-1.5"><Printer className="w-4 h-4" /> طباعة A4</Button>
-          <Button variant="outline" size="sm" onClick={() => printReport(true)} className="gap-1.5"><Printer className="w-4 h-4" /> حراري</Button>
+          <Button variant="outline" size="sm" onClick={printReport} className="gap-1.5"><Printer className="w-4 h-4" /> طباعة A4</Button>
+          <Button variant="outline" size="sm" onClick={printReceipt80} className="gap-1.5" title="طباعة حرارية بعرض 80 ملم"><Printer className="w-4 h-4" /> طباعة 80mm</Button>
           <Button variant="outline" size="sm" onClick={exportPdf} className="gap-1.5"><FileText className="w-4 h-4" /> PDF</Button>
           <Button variant="outline" size="sm" onClick={exportExcel} className="gap-1.5"><FileSpreadsheet className="w-4 h-4" /> Excel</Button>
         </div>
@@ -343,9 +352,34 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
   link.click();
   URL.revokeObjectURL(url);
 }
-function buildExpensesPrintHtml(expenses: Expense[], filters: { from: string; to: string }, total: number, logo: string, thermal: boolean) {
-  const rows = expenses.map((e) => `<tr><td>${escapeHtml(e.date)}</td><td>${escapeHtml(e.name)}</td><td>${escapeHtml(e.categoryName)}</td><td>${escapeHtml(formatCurrency(e.amount))}</td>${thermal ? "" : `<td>${escapeHtml(paymentLabel(e.paymentMethod))}</td><td>${escapeHtml(e.createdByName)}</td>`}</tr>`).join("");
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>@page{size:${thermal ? "80mm auto" : "A4"};margin:${thermal ? "4mm" : "12mm"}}*{color:#000!important;box-shadow:none!important}body{font-family:Arial,sans-serif;width:${thermal ? "72mm" : "auto"};background:#fff}.head{display:flex;justify-content:space-between;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:12px}img{width:64px;height:50px;object-fit:contain}h1{font-size:${thermal ? "15px" : "20px"};margin:0}.meta{font-size:11px}.total{border:1px solid #000;padding:8px;margin-bottom:10px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:${thermal ? "10px" : "12px"}}td,th{border:1px solid #000;padding:5px;font-weight:700}</style></head><body><div class="head"><div><img src="${escapeHtml(logo)}"><h1>تقرير المصاريف</h1></div><div class="meta">${escapeHtml(expenseDateRangeLabel(filters.from, filters.to))}<br>${new Date().toLocaleString("ar-IQ-u-nu-latn")}</div></div><div class="total">الإجمالي: ${escapeHtml(formatCurrency(total))}</div><table><thead><tr><th>التاريخ</th><th>العنوان</th><th>التصنيف</th><th>المبلغ</th>${thermal ? "" : "<th>الدفع</th><th>بواسطة</th>"}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
+function buildExpensesPrintHtml(expenses: Expense[], filters: { from: string; to: string }, total: number, logo: string) {
+  const rows = expenses.map((e) => `<tr><td>${escapeHtml(e.date)}</td><td>${escapeHtml(e.name)}</td><td>${escapeHtml(e.categoryName)}</td><td>${escapeHtml(formatCurrency(e.amount))}</td><td>${escapeHtml(paymentLabel(e.paymentMethod))}</td><td>${escapeHtml(e.createdByName)}</td></tr>`).join("");
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>@page{size:A4;margin:12mm}*{color:#000!important;box-shadow:none!important}body{font-family:Arial,sans-serif;background:#fff}.head{display:flex;justify-content:space-between;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:12px}img{width:64px;height:50px;object-fit:contain}h1{font-size:20px;margin:0}.meta{font-size:11px}.total{border:1px solid #000;padding:8px;margin-bottom:10px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:12px}td,th{border:1px solid #000;padding:5px;font-weight:700}</style></head><body><div class="head"><div><img src="${escapeHtml(logo)}"><h1>تقرير المصاريف</h1></div><div class="meta">${escapeHtml(expenseDateRangeLabel(filters.from, filters.to))}<br>${new Date().toLocaleString("ar-IQ-u-nu-latn")}</div></div><div class="total">الإجمالي: ${escapeHtml(formatCurrency(total))}</div><table><thead><tr><th>التاريخ</th><th>العنوان</th><th>التصنيف</th><th>المبلغ</th><th>الدفع</th><th>بواسطة</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+}
+const EXPENSE_STATUS_LABELS: Record<string, string> = { executed: "معتمد", pending: "بانتظار الموافقة", rejected: "مرفوض", reversed: "معكوس", cancelled: "ملغي" };
+/** 80mm thermal receipt: one block per expense instead of a squeezed A4 table. */
+function buildExpensesReceiptHtml(expenses: Expense[], filters: { from: string; to: string }, total: number, logo: string, company: string) {
+  const rows = expenses.map((e) => {
+    const status = e.approvalStatus ?? "executed";
+    const meta = [e.date, e.categoryName, paymentLabel(e.paymentMethod), status === "executed" ? "" : EXPENSE_STATUS_LABELS[status] ?? status].filter(Boolean).join(" · ");
+    return `<tr><td class="name">${escapeHtml(e.name)}<div class="meta-line">${escapeHtml(meta)}</div></td><td class="amt num">${escapeHtml(formatCurrency(e.amount))}</td></tr>`;
+  }).join("");
+  const excluded = expenses.filter((e) => (e.approvalStatus ?? "executed") !== "executed").length;
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>تقرير المصاريف 80mm</title><style>${thermalReceiptCss("80mm")}
+    table.items td.amt { text-align: left; white-space: nowrap; font-weight: 900; }
+    .meta-line { font-weight: 600; font-size: .85em; margin-top: 1px; }
+  </style></head><body><div class="receipt">
+    <div class="r-head">${logo ? `<img class="r-logo" src="${escapeHtml(logo)}" alt="">` : ""}<div class="r-company">${escapeHtml(company)}</div><div class="r-sub">تقرير المصاريف</div></div>
+    <hr class="rule">
+    <div class="kv"><span>الفترة</span><span class="v">${escapeHtml(expenseDateRangeLabel(filters.from, filters.to))}</span></div>
+    <div class="kv"><span>تاريخ الطباعة</span><span class="v num">${escapeHtml(new Date().toLocaleString("ar-IQ-u-nu-latn"))}</span></div>
+    <div class="kv"><span>عدد الحركات</span><span class="v num">${expenses.length.toLocaleString("en-US")}</span></div>
+    <hr class="rule">
+    <table class="items"><thead><tr><th class="name">المصروف</th><th>المبلغ</th></tr></thead><tbody>${rows || `<tr><td class="name" colspan="2">لا توجد مصاريف ضمن الفلاتر الحالية</td></tr>`}</tbody></table>
+    <div class="grand"><span>الإجمالي المعتمد</span><span class="num">${escapeHtml(formatCurrency(total))}</span></div>
+    ${excluded ? `<div class="center" style="font-size:.88em">لا يشمل الإجمالي ${excluded.toLocaleString("en-US")} مصروفاً غير معتمد</div>` : ""}
+    <div class="thanks">نظام AJN</div>
+  </div>${printWhenImagesReadyScript()}</body></html>`;
 }
 function escapeHtml(value: unknown) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char] as string));
