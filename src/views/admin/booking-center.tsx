@@ -2175,13 +2175,24 @@ function SoundItemsSelector({ products, categories, loading, items, onChange }: 
   </section>;
 }
 
+export function bookingWorkspacePath(source: "service" | "kosha", id: number) {
+  return source === "service" ? `/admin/booking-center/service/${id}` : `/admin/kosha-bookings/${id}`;
+}
+
 function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: number }) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("edit") === "1");
-  const serviceOrdersQuery = useQuery({ queryKey: ["admin", "booking-workspace", "service-orders"], queryFn: () => adminFetch<ServiceOrder[]>("/admin/service-orders?limit=250"), enabled: source === "service" });
-  const koshaQuery = useQuery({ queryKey: ["admin", "booking-workspace", "kosha"], queryFn: () => adminFetch<KoshaBooking[]>("/admin/kosha-bookings?search=&status="), enabled: source === "kosha" });
-  const activeQuery = source === "service" ? serviceOrdersQuery : koshaQuery;
-  const data = useMemo(() => unify(serviceOrdersQuery.data ?? [], koshaQuery.data ?? []).find((booking) => booking.source === source && booking.id === id), [source, id, serviceOrdersQuery.data, koshaQuery.data]);
+  const activeQuery = useQuery({
+    queryKey: ["admin", "booking-workspace", source, id],
+    queryFn: () => adminFetch<ServiceOrder | KoshaBooking>(bookingWorkspacePath(source, id)),
+  });
+  const data = useMemo(() => {
+    const record = activeQuery.data;
+    if (!record) return null;
+    return source === "service"
+      ? unify([record as ServiceOrder], [])[0]
+      : unify([], [record as KoshaBooking])[0];
+  }, [source, activeQuery.data]);
   if (activeQuery.isLoading) return <div className="space-y-4"><Skeleton className="h-44 rounded-2xl" /><Skeleton className="h-[520px] rounded-2xl" /></div>;
   if (activeQuery.isError) return <div className="ajn-empty" role="alert"><AlertTriangle /><h2>تعذر فتح الحجز</h2><p>حدث خطأ أثناء تحميل بيانات الحجز. لم يتم اعتبار هذا الخطأ حجزاً غير موجود.</p><div className="flex flex-wrap justify-center gap-2"><Button type="button" variant="outline" onClick={() => activeQuery.refetch()}>إعادة المحاولة</Button><Button asChild><Link href="/admin/bookings">العودة إلى مركز الحجوزات</Link></Button></div></div>;
   if (!data) return <div className="ajn-empty"><AlertTriangle /><h2>الحجز غير موجود</h2><p>قد يكون مؤرشفاً أو لم تعد لديك صلاحية عرضه.</p><Button asChild><Link href="/admin/bookings">العودة إلى مركز الحجوزات</Link></Button></div>;

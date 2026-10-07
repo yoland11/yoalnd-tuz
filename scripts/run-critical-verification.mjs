@@ -21,6 +21,7 @@ const steps = [
   ["Graduation invoice number length", "pnpm", ["run", "test:graduation-invoice-number"]],
   ["Graduation group per-sash pricing", "pnpm", ["run", "test:graduation-group-pricing"]],
   ["Graduation group confirmation navigation", "pnpm", ["run", "test:graduation-group-step-flow"]],
+  ["Calendar event target", "pnpm", ["run", "test:calendar-event-target"]],
   ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice customer search", "pnpm", ["run", "test:sales-customer-search"]],

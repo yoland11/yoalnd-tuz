@@ -34518,6 +34518,57 @@ async function handleCentralBookingCenter(
   }
   const auth = await requirePermission(req, "orders");
   if (isResponse(auth)) return auth;
+  // The calendar and booking workspace need the selected booking by ID.
+  // A capped list can incorrectly report a valid older booking as missing.
+  if (parts[2] === "service" && parts.length === 4) {
+    const id = int(parts[3]);
+    if (!id) return error("معرف الحجز غير صحيح", 400);
+    const row = await db.query.serviceOrdersTable.findFirst({
+      where: and(eq(serviceOrdersTable.id, id), sql`${serviceOrdersTable.archivedAt} is null`),
+    });
+    if (!row) return error("الحجز غير موجود", 404);
+    const [service, itemRows, lastPayments] = await Promise.all([
+      db.query.servicesTable.findFirst({ where: eq(servicesTable.id, row.serviceId) }),
+      db.select().from(serviceOrderItemsTable).where(eq(serviceOrderItemsTable.serviceOrderId, row.id)),
+      collectionLastPayments("service_order", [row.id]),
+    ]);
+    return json({
+      id: row.id,
+      trackingCode: row.trackingCode,
+      serviceId: row.serviceId,
+      serviceName: service?.nameAr ?? "",
+      serviceType: service?.type ?? null,
+      customerName: row.customerName,
+      phone: row.phone,
+      eventDate: row.eventDate,
+      eventLocation: row.eventLocation,
+      notes: row.notes,
+      internalNotes: row.internalNotes ?? null,
+      totalAmount: Number.parseFloat(row.totalAmount ?? "0"),
+      serviceItems: itemRows.map((item) => ({
+        id: item.id,
+        productId: item.productId,
+        productName: item.productName,
+        unit: item.unit,
+        quantity: Number(item.quantity),
+        unitPrice: Number(item.unitPrice),
+        discount: Number(item.discount),
+        total: Number(item.total),
+      })),
+      depositAmount: Number.parseFloat(row.depositAmount ?? "0"),
+      remainingAmount: Number.parseFloat(row.remainingAmount ?? "0"),
+      paymentStatus: row.paymentStatus ?? "unpaid",
+      lastPayment: lastPayments.get(row.id) ?? null,
+      customFields: row.customFields ?? {},
+      status: row.status,
+      customerConfirmation: row.customerConfirmation ?? null,
+      requestedDate: row.requestedDate ?? null,
+      confirmationNote: row.confirmationNote ?? null,
+      confirmationAt: row.confirmationAt ? row.confirmationAt.toISOString() : null,
+      preRescheduleStatus: row.preRescheduleStatus ?? null,
+      createdAt: row.createdAt.toISOString(),
+    });
+  }
   // The on-screen list keeps the newest 500 per source. Printed reports
   // (?scope=report) need every booking — a remaining-balance report must not
   // silently drop older debts — so they lift the cap and say if one is hit.
