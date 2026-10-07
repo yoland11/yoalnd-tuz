@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { Switch, Route, useLocation, Redirect } from "wouter";
+import { Switch, Route, useLocation, useSearch, Redirect } from "wouter";
 import { Loader2 } from "lucide-react";
 import {
   fetchAdminMe,
@@ -256,6 +256,15 @@ function Guard({
   return <>{children}</>;
 }
 
+export function invoiceRoutePermission(type: string | null): "orders" | "invoices" {
+  return type === "kosha" ? "orders" : "invoices";
+}
+
+function InvoiceRoutePage({ me }: { me: AdminMe }) {
+  const type = new URLSearchParams(useSearch()).get("type");
+  return <Guard me={me} perm={invoiceRoutePermission(type)}><InvoicePage /></Guard>;
+}
+
 function AdminPageLoader() {
   return (
     <div className="min-h-[320px] flex items-center justify-center" dir="rtl">
@@ -402,16 +411,12 @@ export default function Admin() {
             )}
           </Route>
           <Route path="/admin/invoice/:id">
-            {() => (
-              <Guard me={me} perm="invoices">
-                <InvoicePage />
-              </Guard>
-            )}
+            {() => <InvoiceRoutePage me={me} />}
           </Route>
           <Route path="/admin/calendar">
             {() => (
               <Guard me={me} perm="orders">
-                <CalendarPage />
+                <CalendarPage canViewInvoices={hasPerm(me, "invoices")} />
               </Guard>
             )}
           </Route>

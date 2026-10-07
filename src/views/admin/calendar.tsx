@@ -27,16 +27,18 @@ type Service = { id: number; nameAr: string; name: string };
 
 export function calendarEventTarget(event: Pick<CalendarEvent, "kind" | "id">): { href: string; label: string } | null {
   if (!Number.isSafeInteger(event.id) || event.id <= 0) return null;
-  if (event.kind === "service" || event.kind === "kosha") {
-    return { href: `/admin/bookings/${event.kind}/${event.id}`, label: "فتح الحجز" };
-  }
+  if (event.kind === "service") return { href: `/admin/invoice/${event.id}?type=booking`, label: "فتح الفاتورة" };
+  if (event.kind === "kosha") return { href: `/admin/invoice/${event.id}?type=kosha`, label: "فتح الفاتورة" };
   if (event.kind === "order") return { href: `/admin/invoice/${event.id}`, label: "فتح الفاتورة" };
   return null;
 }
 
-export function CalendarEventOpenButton({ event }: { event: Pick<CalendarEvent, "kind" | "id"> }) {
+export function CalendarEventOpenButton({ event, canViewInvoices }: { event: Pick<CalendarEvent, "kind" | "id">; canViewInvoices: boolean }) {
   const target = calendarEventTarget(event);
   if (!target) return <Button type="button" disabled>الطلب غير متاح</Button>;
+  if (event.kind !== "kosha" && !canViewInvoices) {
+    return <Button type="button" disabled title="صلاحية الفواتير مطلوبة">صلاحية الفواتير مطلوبة</Button>;
+  }
   return <Button asChild className="gap-2">
     <a href={target.href}><ExternalLink className="w-4 h-4" /> {target.label}</a>
   </Button>;
@@ -79,7 +81,7 @@ function conflictKey(event: CalendarEvent) {
   return dateKey && resource ? `${dateKey}::${resource}` : "";
 }
 
-export default function CalendarPage() {
+export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boolean }) {
   const [view, setView] = useState<"day" | "week" | "month">("week");
   const [from, setFrom] = useState(todayIso());
   const [serviceId, setServiceId] = useState("");
@@ -248,7 +250,7 @@ export default function CalendarPage() {
             </div>
             <div className="mt-5 grid grid-cols-2 gap-2">
               <Button type="button" variant="outline" onClick={() => setSelected(null)}>إغلاق</Button>
-              <CalendarEventOpenButton event={selected} />
+              <CalendarEventOpenButton event={selected} canViewInvoices={canViewInvoices} />
             </div>
           </div>
         </div>
