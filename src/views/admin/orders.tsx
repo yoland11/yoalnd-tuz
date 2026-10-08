@@ -19,6 +19,7 @@ import {
 } from "@/lib/service-details";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import { shortBookingNumber } from "@/lib/booking-number";
+import { serviceOrderFocusId } from "@/lib/orders-route";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { SelectedColorLabel } from "@/components/product-colors";
@@ -244,7 +245,8 @@ export default function OrdersPage() {
   const { toast } = useToast();
   const showMutationError = (err: any) => toast({ title: "تعذر تنفيذ العملية", description: err?.message, variant: "destructive" });
   const routeSearch = useSearch();
-  const [tab, setTab] = useState<"products" | "services">("products");
+  const focusedServiceOrderId = serviceOrderFocusId(routeSearch);
+  const [tab, setTab] = useState<"products" | "services">(focusedServiceOrderId ? "services" : "products");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [dateFilter, setDateFilter] = useState("");
@@ -267,10 +269,22 @@ export default function OrdersPage() {
     }
   }, [routeSearch]);
 
+  useEffect(() => {
+    if (!focusedServiceOrderId) return;
+    setTab("services");
+    setSearch("");
+    setStatusFilter("");
+    setDateFilter("");
+    setServiceFilter("");
+    setCrewFilter("");
+    setGovernorateFilter("");
+    setPaymentFilter("");
+  }, [focusedServiceOrderId]);
+
   const { data: productOrders, isLoading: loadingP } = useListOrders({ limit: 200 });
-  const { data: serviceOrders, isLoading: loadingS } = useQuery({
-    queryKey: ["admin", "service-orders"],
-    queryFn: () => adminFetch<ServiceOrder[]>("/admin/service-orders?limit=200"),
+  const { data: serviceOrders, isLoading: loadingS, isError: serviceOrdersError, error: serviceOrdersFailure, refetch: retryServiceOrders } = useQuery({
+    queryKey: ["admin", "service-orders", focusedServiceOrderId],
+    queryFn: () => adminFetch<ServiceOrder[]>(`/admin/service-orders?limit=200${focusedServiceOrderId ? `&focusId=${focusedServiceOrderId}` : ""}`),
   });
 
   useEffect(() => {
@@ -389,11 +403,21 @@ export default function OrdersPage() {
     }
     // Pin pending reschedule requests to the top so they don't get missed.
     return [...rows].sort((a, b) => {
+      if (focusedServiceOrderId) {
+        if (a.id === focusedServiceOrderId) return -1;
+        if (b.id === focusedServiceOrderId) return 1;
+      }
       const ar = a.status === "reschedule_pending" ? 0 : 1;
       const br = b.status === "reschedule_pending" ? 0 : 1;
       return ar - br;
     });
-  }, [serviceOrders, statusFilter, dateFilter, serviceFilter, crewFilter, governorateFilter, paymentFilter, search]);
+  }, [serviceOrders, statusFilter, dateFilter, serviceFilter, crewFilter, governorateFilter, paymentFilter, search, focusedServiceOrderId]);
+
+  useEffect(() => {
+    if (!focusedServiceOrderId || tab !== "services" || !filteredServices.some((order) => order.id === focusedServiceOrderId)) return;
+    const frame = window.requestAnimationFrame(() => document.getElementById(`service-order-${focusedServiceOrderId}`)?.scrollIntoView({ block: "center" }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusedServiceOrderId, filteredServices, tab]);
 
   const governorateOptions = useMemo(() => {
     const values = new Set<string>();
@@ -444,6 +468,12 @@ export default function OrdersPage() {
           className={`px-4 py-2 rounded-lg text-sm transition-colors ${tab === "services" ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:text-foreground"}`}
         >حجوزات الخدمات ({serviceOrders?.length ?? 0})</Button>
       </div>
+
+      {focusedServiceOrderId && tab === "services" && !loadingS && !serviceOrdersError && !serviceOrders?.some((order) => order.id === focusedServiceOrderId) && (
+        <div role="alert" className="rounded-xl border border-status-warning/30 bg-status-warning/10 p-4 text-sm text-status-warning">
+          تعذر العثور على الحجز المطلوب في الطلبات؛ قد يكون مؤرشفاً أو غير متاح.
+        </div>
+      )}
 
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[240px]">
@@ -649,6 +679,10 @@ export default function OrdersPage() {
         )
       ) : (
         loadingS ? <div className="space-y-3">{[1,2,3].map(i => <Skeleton key={i} className="h-24 rounded-xl" />)}</div>
+        : serviceOrdersError ? <div role="alert" className="rounded-xl border border-status-danger/30 bg-status-danger/10 p-4 text-sm text-status-danger">
+          <p>تعذر تحميل حجوزات الخدمات: {serviceOrdersFailure instanceof Error ? serviceOrdersFailure.message : "حدث خطأ غير متوقع"}</p>
+          <Button type="button" variant="outline" className="mt-3" onClick={() => void retryServiceOrders()}>إعادة المحاولة</Button>
+        </div>
         : filteredServices.length === 0 ? <EmptyState message="لا توجد حجوزات" /> : (
           <div className="space-y-3">
             {filteredServices.map(o => {
@@ -660,7 +694,7 @@ export default function OrdersPage() {
               const detailRows = serviceDetailsToRows(o.serviceType, o.customFields);
               const canArchive = ["delivered", "completed", "cancelled"].includes(o.status);
               return (
-                <div key={o.id} className={`bg-card rounded-xl border p-4 ${isReschedulePending ? "border-status-warning/50 ring-1 ring-status-warning/30" : "border-border/30"}`}>
+                <div id={`service-order-${o.id}`} key={o.id} className={`bg-card rounded-xl border p-4 ${o.id === focusedServiceOrderId ? "border-primary ring-2 ring-primary/30" : isReschedulePending ? "border-status-warning/50 ring-1 ring-status-warning/30" : "border-border/30"}`}>
                   {isReschedulePending && (
                     <div className="mb-3 rounded-lg bg-status-warning/10 border border-status-warning/30 p-3">
                       <p className="text-sm text-status-warning font-semibold mb-1">

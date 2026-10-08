@@ -44,6 +44,13 @@ export function CalendarEventOpenButton({ event, canViewInvoices }: { event: Pic
   </Button>;
 }
 
+export function CalendarServiceOrderButton({ event }: { event: Pick<CalendarEvent, "kind" | "id"> }) {
+  if (event.kind !== "service" || !Number.isSafeInteger(event.id) || event.id <= 0) return null;
+  return <Button asChild className="gap-2">
+    <a href={`/admin/orders?serviceOrder=${event.id}`}><ExternalLink className="w-4 h-4" /> فتح الطلب في الطلبات</a>
+  </Button>;
+}
+
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار",
   confirmed: "مؤكد",
@@ -250,8 +257,11 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
             </div>
             <div className="mt-5 grid grid-cols-2 gap-2">
               <Button type="button" variant="outline" onClick={() => setSelected(null)}>إغلاق</Button>
-              <CalendarEventOpenButton event={selected} canViewInvoices={canViewInvoices} />
+              {selected.kind === "service"
+                ? <CalendarServiceOrderButton event={selected} />
+                : <CalendarEventOpenButton event={selected} canViewInvoices={canViewInvoices} />}
             </div>
+            {selected.kind === "service" && <div className="mt-2 flex justify-end"><CalendarEventOpenButton event={selected} canViewInvoices={canViewInvoices} /></div>}
           </div>
         </div>
       )}

@@ -50369,6 +50369,8 @@ async function handleAdmin(
         ),
         250,
       );
+      const focusText = req.nextUrl.searchParams.get("focusId") ?? "";
+      const focusId = /^[1-9]\d*$/.test(focusText) ? Number(focusText) : 0;
       const offset = Math.max(
         Number.parseInt(req.nextUrl.searchParams.get("offset") ?? "0", 10) || 0,
         0,
@@ -50379,6 +50381,12 @@ async function handleAdmin(
         limit,
         offset,
       });
+      if (Number.isSafeInteger(focusId) && focusId > 0 && !rows.some((row) => row.id === focusId)) {
+        const focused = await db.query.serviceOrdersTable.findFirst({
+          where: and(eq(serviceOrdersTable.id, focusId), sql`${serviceOrdersTable.archivedAt} is null`),
+        });
+        if (focused) rows.push(focused);
+      }
       const services = await db.query.servicesTable.findMany();
       const sMap = new Map(services.map((s) => [s.id, s]));
       const lastPayments = await collectionLastPayments(

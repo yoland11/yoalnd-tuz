@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as calendar from "../src/views/admin/calendar";
+import { serviceOrderFocusId } from "../src/lib/orders-route";
 
 // The page imports styles for the browser; Node only needs its route behavior.
 const testRequire = createRequire(import.meta.url);
@@ -52,6 +53,17 @@ assert.match(restrictedBookingButton, /disabled/, "the missing invoice permissio
 assert.match(restrictedBookingButton, /صلاحية الفواتير/, "the disabled action should explain the missing permission");
 const restrictedStoreButton = renderToStaticMarkup(React.createElement(OpenButton, { event: { kind: "order", id: 79 }, canViewInvoices: false }));
 assert.doesNotMatch(restrictedStoreButton, /href=/, "store invoices also require the invoices permission");
+
+const ServiceOrderButton = (calendar as typeof calendar & {
+  CalendarServiceOrderButton?: React.ComponentType<{ event: { kind: "service" | "kosha" | "order"; id: number } }>;
+}).CalendarServiceOrderButton;
+assert.equal(typeof ServiceOrderButton, "function", "service bookings need a direct action to their record in /admin/orders");
+const serviceOrderButton = renderToStaticMarkup(React.createElement(ServiceOrderButton, { event: { kind: "service", id: 103 } }));
+assert.match(serviceOrderButton, /href="\/admin\/orders\?serviceOrder=103"/, "the calendar must open the exact service booking in /admin/orders");
+assert.match(serviceOrderButton, /فتح الطلب/, "the calendar must distinguish the booking record from its A4 invoice");
+assert.equal(serviceOrderFocusId("?serviceOrder=103"), 103);
+assert.equal(serviceOrderFocusId("?serviceOrder=0"), null);
+assert.equal(serviceOrderFocusId("?serviceOrder=103x"), null);
 
 const workspacePath = (bookingCenter as typeof bookingCenter & {
   bookingWorkspacePath?: (source: "service" | "kosha", id: number) => string;
