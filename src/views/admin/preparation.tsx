@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Link } from "wouter";
@@ -9,7 +9,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
-import { adminFetch } from "./_lib";
+import { printStandaloneDocument } from "@/lib/pdf";
+import { buildPreparationThermalHtml } from "@/lib/preparation-thermal-print";
+import { adminFetch, apiErrorMessage } from "./_lib";
 import { EmptyState } from "./_layout";
 import { EmployeeSelect } from "@/components/employee-select";
 
@@ -251,6 +253,15 @@ function AddPrepItemForm({ busy, onSubmit }: { busy: boolean; onSubmit: (payload
   );
 }
 
+export function PreparationPrintActions({ busy, onPrint }: { busy: boolean; onPrint: (format: "a4" | "80mm") => void }) {
+  return (
+    <div role="group" aria-label="طباعة قائمة التجهيز" className="grid grid-cols-2 gap-2">
+      <Button type="button" size="sm" variant="outline" className="w-full gap-1.5" disabled={busy} onClick={() => onPrint("a4")}><Printer className="h-3.5 w-3.5" /> طباعة A4</Button>
+      <Button type="button" size="sm" variant="outline" className="w-full gap-1.5" disabled={busy} onClick={() => onPrint("80mm")}><Printer className="h-3.5 w-3.5" /> طباعة 80 حراري</Button>
+    </div>
+  );
+}
+
 export default function PreparationPage() {
   const query = useQuery<PrepList>({ queryKey: ["admin", "preparation"], queryFn: () => adminFetch("/admin/preparation"), staleTime: 15_000 });
   const [search, setSearch] = useState("");
@@ -281,12 +292,31 @@ export default function PreparationPage() {
   }, [cards, search, department, quick]);
 
   const [printingId, setPrintingId] = useState<string | null>(null);
-  async function printCard(card: PrepCard) {
+  async function printCard(card: PrepCard, format: "a4" | "80mm") {
     const cardKey = `${card.source}-${card.id}`;
     setPrintingId(cardKey);
     try {
       const detail = await adminFetch<PrepDetail>(`/admin/booking-operations/${card.source}/${card.id}/preparation`);
-      const items = detail.items ?? [];
+      if (!Array.isArray(detail.items)) throw new Error("تعذّر قراءة عناصر تجهيز الحجز");
+      const items = detail.items;
+      if (format === "80mm") {
+        printStandaloneDocument(buildPreparationThermalHtml({
+          bookingNumber: card.number,
+          customerName: card.customerName,
+          eventDate: card.eventDate?.slice(0, 10) || null,
+          location: card.location,
+          items: items.map((item) => ({
+            department: deptLabel(item.department),
+            name: item.name,
+            required: item.required,
+            available: item.manual ? null : item.available,
+            status: STATUS_META[item.status]?.label ?? item.status,
+            assigneeName: item.assigneeName,
+            note: item.note,
+          })),
+        }), 320);
+        return;
+      }
       const columns: ReportColumn<PrepItem>[] = [
         { key: "department", header: "القسم", width: 12, priority: "high", value: (r) => deptLabel(r.department) },
         { key: "name", header: "العنصر", width: 20, priority: "high" },
@@ -311,8 +341,8 @@ export default function PreparationPage() {
         filename: `قائمة-تجهيز-${card.number}.pdf`,
         mode: "print",
       });
-    } catch {
-      toast.error("تعذّرت الطباعة");
+    } catch (error) {
+      toast.error(apiErrorMessage(error, "تعذّرت طباعة قائمة التجهيز"));
     } finally {
       setPrintingId(null);
     }
@@ -386,11 +416,13 @@ export default function PreparationPage() {
                     <p className="mt-1 text-xs text-muted-foreground">{done} من {card.rollup.total} عنصر جاهز · {card.rollup.progress}%</p>
                   </div>
                 </div>
-                <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/30 p-3">
-                  <Button size="sm" variant="outline" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><ChevronDown className={`h-3.5 w-3.5 transition ${expanded === cardKey ? "rotate-180" : ""}`} /> عرض التجهيز</Button>
-                  <Button size="sm" variant="ghost" asChild><Link href={`/admin/bookings/${card.source}/${card.id}`}>فتح الحجز</Link></Button>
-                  <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><UserRound className="h-3.5 w-3.5" /> تعيين موظف</Button>
-                  <Button size="sm" variant="ghost" className="text-muted-foreground" disabled={printingId === cardKey} onClick={() => printCard(card)}><Printer className="h-3.5 w-3.5" /> طباعة</Button>
+                <div className="mt-auto space-y-2 border-t border-border/30 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><ChevronDown className={`h-3.5 w-3.5 transition ${expanded === cardKey ? "rotate-180" : ""}`} /> عرض التجهيز</Button>
+                    <Button size="sm" variant="ghost" asChild><Link href={`/admin/bookings/${card.source}/${card.id}`}>فتح الحجز</Link></Button>
+                    <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><UserRound className="h-3.5 w-3.5" /> تعيين موظف</Button>
+                  </div>
+                  <PreparationPrintActions busy={printingId === cardKey} onPrint={(format) => void printCard(card, format)} />
                 </div>
                 {expanded === cardKey ? <PreparationDetail card={card} /> : null}
               </article>

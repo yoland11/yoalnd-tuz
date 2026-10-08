@@ -77,6 +77,7 @@
     "test:critical-file-changes": "node ./scripts/check-critical-file-changes.mjs",
     "test:no-runtime-ddl": "node ./scripts/verify-no-runtime-ddl.mjs",
     "test:export-pdf": "node ./scripts/test-export-pdf-dependencies.mjs",
+    "test:preparation-print": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-thermal-print.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-print-controls.tsx",
     "test:graduation-media": "node ./scripts/verify-graduation-media-gallery.mjs",
     "test:research-center": "node ./scripts/verify-research-center.mjs",
     "test:bride-dashboard": "node ./scripts/verify-bride-dashboard.mjs",
