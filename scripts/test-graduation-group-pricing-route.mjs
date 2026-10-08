@@ -25,7 +25,7 @@ const config = { sashSelectionMode: "restricted", sashOptions: ["royal", "americ
 const policy = { mode: "by_sash", prices: { royal: 23000, american: 25000 } };
 const admin = { id: 1, role: "admin", permissions: [], isActive: true, fullName: "إدارة", username: "admin" };
 const rep = { ...admin, id: 2, role: "employee", permissions: ["representative.portal.access"] };
-function fixture({ assigned = true, rejectAudit = false, status = "open" } = {}) {
+function fixture({ assigned = true, assignmentGroupIds, rejectAudit = false, status = "open" } = {}) {
   let state = { graduationGroupsTable: [{ id: 8, joinToken: "token", groupNo: "G-8", title: "مجموعة", status, defaultConfiguration: structuredClone(config) }],
     entityTimelineTable: [], adminActivityLogsTable: [] };
   let writes = 0;
@@ -49,7 +49,7 @@ function fixture({ assigned = true, rejectAudit = false, status = "open" } = {})
       then(done, failed) { return Promise.resolve().then(run).then(done, failed); } };
   }
   const db = { select: () => builder("select"), update: (table) => builder("update", table), insert: (table) => builder("insert", table),
-    execute: async () => ({ rows: assigned ? [{ group_id: 8 }] : [] }),
+    execute: async () => ({ rows: (assignmentGroupIds ?? (assigned ? [8] : [])).map((group_id) => ({ group_id })) }),
     transaction: async (callback) => { const before = structuredClone(state); try { return await callback(db); } catch (cause) { state = before; throw cause; } } };
   const handler = load("src/server/graduation-group-pricing.ts", {
     "@workspace/db": { db, ...tables }, "drizzle-orm": { eq, or, sql: (parts, ...values) => ({ parts, values }) },
@@ -76,6 +76,12 @@ for (const options of [{ assigned: false }, {}]) {
   const test = fixture(options);
   const response = await test.call(options.assigned === false ? rep : { ...rep, isActive: false }, true);
   assert.equal(response.status, 403); assert.equal(test.writes(), 0);
+}
+for (const permissions of [["representative.portal.access"], ["representative.portal.access", "graduation"]]) {
+  const ambiguous = fixture({ assignmentGroupIds: [8, 9] });
+  const response = await ambiguous.call({ ...rep, permissions }, true);
+  assert.equal(response.status, 403, "two active groups must not grant sash-pricing access");
+  assert.equal(ambiguous.writes(), 0);
 }
 const closed = fixture({ status: "closed" });
 assert.equal((await closed.call(admin)).status, 409);

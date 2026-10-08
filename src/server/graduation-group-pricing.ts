@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { eq, or, sql } from "drizzle-orm";
 import { adminActivityLogsTable, db, entityTimelineTable, graduationGroupsTable } from "@workspace/db";
 import { validateGroupSashPricing } from "@/lib/graduation-group-pricing";
-import { canManageAssignedGroupPricing, canManageGraduationGroupPricing } from "@/lib/graduation-group-pricing-access";
+import { canManageGraduationGroupPricing } from "@/lib/graduation-group-pricing-access";
+import { classifyRepresentativeScope, canAccessRepresentativeGroup } from "@/lib/representative-group-access";
 import type { GraduationAdminUser } from "@/server/graduation";
 import { InvalidJsonBodyError, readRequestBody, RequestBodyTooLargeError } from "@/server/request-body";
 import { createApiErrorPayload, makeRequestId } from "@/server/write-safety";
@@ -34,12 +35,13 @@ export async function handleGraduationGroupPricing(
         eq(graduationGroupsTable.groupNo, identifier.toUpperCase()),
       )).for("update");
       if (!group) return { status: 404, message: "المجموعة غير موجودة" };
-      if (representative && !canManageGraduationGroupPricing(user)) {
+      if (representative && user.role !== "admin") {
         const assignments = await tx.execute(sql`
           SELECT group_id FROM representative_group_assignments
-          WHERE staff_id = ${user.id} AND group_id = ${group.id} AND is_active = true FOR SHARE
+          WHERE staff_id = ${user.id} AND is_active = true FOR SHARE
         `);
-        if (!canManageAssignedGroupPricing(user, assignments.rows.length > 0))
+        const scope = classifyRepresentativeScope(user, assignments.rows.map((row) => Number(row.group_id)));
+        if (!canAccessRepresentativeGroup(scope, group.id))
           return { status: 403, message: "لا تملك صلاحية تسعير هذه المجموعة" };
       }
       if (req.method === "GET") return { group: { id: group.id, title: group.title, defaultConfiguration: group.defaultConfiguration } };

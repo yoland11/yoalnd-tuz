@@ -34,6 +34,7 @@ const PhotographyStaffPortal = lazy(
 );
 const TailorsStaffPortal = lazy(() => import("@/views/staff/tailors/index"));
 const RepresentativePortal = lazy(() => import("@/views/representative/index"));
+const RepresentativeLogin = lazy(() => import("@/views/representative/login"));
 const WeddingOS = lazy(() => import("@/views/wedding-os"));
 const BrideDashboard = lazy(() => import("@/views/bride-dashboard"));
 
@@ -209,6 +210,11 @@ function Router() {
         </Suspense>
       </Route>
 
+      <Route path="/representative/login">
+        <Suspense fallback={<AdminSpinner />}>
+          <RepresentativeLogin />
+        </Suspense>
+      </Route>
       <Route path="/representative/*">
         <Suspense fallback={<AdminSpinner />}>
           <RepresentativePortal />

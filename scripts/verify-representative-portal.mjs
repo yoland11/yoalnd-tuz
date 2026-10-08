@@ -1,5 +1,6 @@
 /** Read-only contract checks for the Class Representatives Portal. */
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 const read = (path) => readFileSync(path, "utf8");
 const server = read("src/server/representative.ts");
@@ -10,11 +11,16 @@ const migration = read("lib/db/migrations/0081_representative_portal.sql");
 const operations = read("src/server/graduation-operations.ts");
 const compactUi = ui.replace(/\s+/g, " ");
 const compactServer = server.replace(/\s+/g, " ");
+const routeScope = spawnSync(process.execPath, ["./scripts/test-representative-route-scope.mjs"], { encoding: "utf8" });
+const financialWrite = spawnSync(process.execPath, ["./scripts/test-representative-financial-write-route.mjs"], { encoding: "utf8" });
+const accessErrorLogout = spawnSync(process.execPath, ["./scripts/test-representative-error-logout.mjs"], { encoding: "utf8" });
 
 const checks = [
   ["representative route is registered", app.includes('path="/representative/*"') && app.includes('path="/representative"')],
   ["server-side representative permissions exist", ["representative.portal.access", "representative.group.view", "representative.payments.create", "representative.reports.export"].every((permission) => api.includes(permission))],
-  ["group access is server-enforced", server.includes("groupIdsFor") && server.includes("requireGroup") && server.includes("!ids.includes(groupId)")],
+  ["group access is server-enforced", routeScope.status === 0],
+  ["financial writes recheck group under the assignment lock", financialWrite.status === 0],
+  ["blocked representatives can sign out and switch accounts", accessErrorLogout.status === 0],
   ["representative has no implicit graduation-wide access", !server.includes('user.permissions.includes("graduation")')],
   ["payment recording remains pending", server.includes("status: \"pending\"") && server.includes("representative_payment_requests")],
   ["approved payment uses central graduation allocation", server.includes("receivePayment(") && operations.includes("export async function receivePayment")],
@@ -34,5 +40,8 @@ for (const [name, passed] of checks) {
   console.log(`${passed ? "PASS" : "FAIL"}  ${name}`);
   if (!passed) failed = true;
 }
+if (routeScope.status !== 0) console.error(routeScope.stderr || routeScope.stdout);
+if (financialWrite.status !== 0) console.error(financialWrite.stderr || financialWrite.stdout);
+if (accessErrorLogout.status !== 0) console.error(accessErrorLogout.stderr || accessErrorLogout.stdout);
 if (failed) process.exit(1);
 console.log(`Representative Portal contract checks passed (${checks.length}/${checks.length})`);

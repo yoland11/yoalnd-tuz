@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Route, Switch, useLocation } from "wouter";
+import { Link, Redirect, Route, Switch, useLocation } from "wouter";
 import {
   BarChart3,
   Eye,
@@ -45,6 +45,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { GraduationGroupPricingEditor } from "@/components/graduation-group-pricing-editor";
 import {
   apiErrorMessage,
+  apiErrorStatus,
   adminFetch,
   fetchAdminMe,
   formatCurrency,
@@ -61,6 +62,9 @@ import {
 
 const api = <T,>(path: string, init?: RequestInit) =>
   adminFetch<T>(`/admin/representative${path}`, init);
+type PortalScope =
+  | { kind: "admin"; group: null }
+  | { kind: "group"; group: { id: number; title: string; groupNo: string } };
 const paymentLabels: Record<string, string> = {
   unpaid: "غير مدفوع",
   partial: "مدفوع جزئياً",
@@ -137,21 +141,32 @@ function ProductionBadge({ value }: { value: string }) {
 }
 
 function PortalGate({ children }: { children: React.ReactNode }) {
-  const [, navigate] = useLocation();
   const me = useQuery({
     queryKey: ["representative", "me"],
-    queryFn: () => fetchAdminMe({ force: true }),
+    queryFn: async () => {
+      try {
+        return (await adminFetch<{ user: AdminMe }>("/admin/auth/me")).user;
+      } catch (error) {
+        if (apiErrorStatus(error) === 401) return null;
+        throw error;
+      }
+    },
+    retry: false,
   });
-  if (me.isLoading)
+  const scope = useQuery({
+    queryKey: ["representative", "scope"],
+    queryFn: () => api<PortalScope>("/scope"),
+    enabled: Boolean(me.data && hasPerm(me.data, "representative.portal.access")),
+    retry: false,
+  });
+  if (me.isPending)
     return (
       <div className="min-h-dvh p-6" dir="rtl">
         <Skeleton className="mx-auto h-96 max-w-7xl" />
       </div>
     );
-  if (!me.data) {
-    navigate("/admin/login");
-    return null;
-  }
+  if (me.isError) return <PortalAccessError error={me.error} retry={() => void me.refetch()} />;
+  if (!me.data) return <Redirect to="/representative/login" />;
   if (!hasPerm(me.data, "representative.portal.access"))
     return (
       <main
@@ -169,17 +184,51 @@ function PortalGate({ children }: { children: React.ReactNode }) {
         </Card>
       </main>
     );
-  return <Shell user={me.data}>{children}</Shell>;
+  if (scope.isPending) return <div className="min-h-dvh p-6" dir="rtl"><Skeleton className="mx-auto h-96 max-w-7xl" /></div>;
+  if (scope.isError) return <PortalAccessError error={scope.error} retry={() => void scope.refetch()} />;
+  return <Shell user={me.data} scope={scope.data}>{children}</Shell>;
+}
+
+function PortalAccessError({ error, retry }: { error: unknown; retry: () => void }) {
+  const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [loggingOut, setLoggingOut] = useState(false);
+  return <main className="grid min-h-dvh place-items-center bg-[#fff8fa] p-5" dir="rtl">
+    <Card className="w-full max-w-md border-rose-100"><CardContent className="space-y-3 p-7 text-center">
+      <GraduationCap className="mx-auto h-9 w-9 text-[#b85c65]" />
+      <h1 className="text-lg font-bold">تعذر فتح بوابة الممثلين</h1>
+      <p role="alert" className="text-sm text-slate-600">{apiErrorMessage(error)}</p>
+      <p className="text-xs text-slate-500">إذا كان التعيين مفقوداً أو مكرراً، اطلب من الإدارة تصحيحه.</p>
+      <div className="flex flex-wrap justify-center gap-2">
+        <Button variant="outline" onClick={retry}>إعادة المحاولة</Button>
+        <Button variant="outline" disabled={loggingOut} onClick={async () => {
+          setLoggingOut(true);
+          try {
+            await logoutAdmin();
+            queryClient.removeQueries({ queryKey: ["representative"] });
+            navigate("/representative/login");
+          } catch (cause) {
+            toast({ title: "تعذر تسجيل الخروج", description: apiErrorMessage(cause), variant: "destructive" });
+            setLoggingOut(false);
+          }
+        }}>تسجيل الخروج / تبديل الحساب</Button>
+      </div>
+    </CardContent></Card>
+  </main>;
 }
 
 function Shell({
   user,
+  scope,
   children,
 }: {
   user: AdminMe;
+  scope: PortalScope;
   children: React.ReactNode;
 }) {
   const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
   return (
     <div
       className="representative-v2 min-h-dvh bg-[#fff8fa] text-slate-800 dark:bg-slate-950 dark:text-slate-100"
@@ -193,8 +242,8 @@ function Shell({
             </span>
             <div>
               <h1 className="text-base font-bold">بوابة الممثلين</h1>
-              <p className="text-xs text-muted-foreground">
-                إدارة مدفوعات طلبة التخرج
+              <p className="max-w-[180px] truncate text-xs text-muted-foreground sm:max-w-none">
+                {scope.kind === "admin" ? "جميع مجموعات التخرج" : scope.group.title}
               </p>
             </div>
           </div>
@@ -205,7 +254,7 @@ function Shell({
           <div className="flex items-center gap-2">
             <div className="hidden text-left text-xs sm:block">
               <b>{user.fullName || user.username}</b>
-              <p className="text-muted-foreground">ممثل المجموعة</p>
+              <p className="text-muted-foreground">{scope.kind === "admin" ? "مدير النظام" : "ممثل المجموعة"}</p>
             </div>
             <span className="grid h-9 w-9 place-items-center rounded-full bg-rose-100 text-xs font-bold text-[#e91e63]">
               {initials(user.fullName || user.username)}
@@ -216,7 +265,8 @@ function Shell({
               aria-label="تسجيل الخروج"
               onClick={async () => {
                 await logoutAdmin();
-                navigate("/admin/login");
+                queryClient.removeQueries({ queryKey: ["representative"] });
+                navigate("/representative/login");
               }}
             >
               <LogOut className="h-4 w-4" />
@@ -702,15 +752,16 @@ function Dashboard() {
   const d = data.data;
   const s = d.stats;
   const group = d.groups?.[0];
+  const isAdminOverview = d.groups?.length > 1;
   const today = students.filter((student) => student.paid > 0).length;
   return (
     <div className="space-y-4">
       <section className="rounded-xl border border-rose-100 bg-white px-4 py-3.5 dark:border-slate-800 dark:bg-slate-900">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="font-bold">{group?.title || "مجموعة التخرج"}</h2>
+            <h2 className="font-bold">{isAdminOverview ? "جميع مجموعات التخرج" : group?.title || "مجموعة التخرج"}</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {[
+              {isAdminOverview ? `${d.groups.length} مجموعات ضمن عرض الإدارة` : [
                 group?.university,
                 group?.college,
                 group?.department,
@@ -722,7 +773,7 @@ function Dashboard() {
           </div>
           <div className="text-left text-xs">
             <b>{d.representative?.name}</b>
-            <p className="text-muted-foreground">ممثل المجموعة</p>
+            <p className="text-muted-foreground">{isAdminOverview ? "مدير النظام" : "ممثل المجموعة"}</p>
           </div>
         </div>
       </section>
@@ -1081,16 +1132,21 @@ function Assignments() {
   });
   const [staffId, setStaffId] = useState("");
   const [groupId, setGroupId] = useState("");
+  const [resolveAmbiguous, setResolveAmbiguous] = useState(false);
+  const activeAssignments = (q.data?.items ?? []).filter((item: any) =>
+    item.isActive && String(item.staffId) === staffId);
+  const needsCorrection = activeAssignments.length > 1;
   const save = useMutation({
     mutationFn: () =>
       api("/assignments", {
         method: "POST",
-        body: JSON.stringify({ staffId, groupId }),
+        body: JSON.stringify({ staffId, groupId, resolveAmbiguous }),
       }),
     onSuccess: () => {
       toast({ title: "تم تعيين ممثل المجموعة" });
       setStaffId("");
       setGroupId("");
+      setResolveAmbiguous(false);
       qc.invalidateQueries({ queryKey: ["representative", "assignments"] });
     },
     onError: (error) =>
@@ -1100,24 +1156,26 @@ function Assignments() {
         variant: "destructive",
       }),
   });
+  if (q.isPending) return <Skeleton className="h-72" />;
+  if (q.isError) return <PortalAccessError error={q.error} retry={() => void q.refetch()} />;
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-xl font-bold">تعيين ممثلي المجموعات</h2>
         <p className="text-sm text-muted-foreground">
-          تحديد وصول الممثل إلى مجموعات التخرج فقط.
+          اربط حساب موظف واحداً بمجموعة فعّالة واحدة. تُنشأ بيانات الدخول من إدارة الموظفين.
         </p>
       </div>
       <Card className="border-rose-100 dark:border-slate-800">
         <CardContent className="grid gap-3 p-4 sm:grid-cols-3">
-          <Select value={staffId} onValueChange={setStaffId}>
+          <Select value={staffId} onValueChange={(value) => { setStaffId(value); setResolveAmbiguous(false); }}>
             <SelectTrigger>
               <SelectValue placeholder="اختر ممثلاً" />
             </SelectTrigger>
             <SelectContent>
               {q.data?.staff?.map((staff: any) => (
                 <SelectItem key={staff.id} value={String(staff.id)}>
-                  {staff.fullName || staff.username}
+                  {staff.fullName || staff.username} ({staff.username})
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1137,11 +1195,20 @@ function Assignments() {
           <Button
             className="bg-[#e91e63] hover:bg-[#d81b60]"
             onClick={() => save.mutate()}
-            disabled={!staffId || !groupId || save.isPending}
+            disabled={!staffId || !groupId || save.isPending || (needsCorrection && !resolveAmbiguous)}
           >
             <UserRoundCheck className="ml-2 h-4 w-4" />
             تعيين
           </Button>
+          {staffId && <p className="text-xs text-muted-foreground sm:col-span-3">
+            {activeAssignments.length === 0 ? "لا توجد مجموعة نشطة لهذا الحساب." :
+              `المجموعة الحالية: ${activeAssignments.map((item: any) => `${item.groupNo} — ${item.groupTitle}`).join("، ")}`}
+          </p>}
+          {needsCorrection && <label className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 sm:col-span-3">
+            <input type="checkbox" checked={resolveAmbiguous} onChange={(event) => setResolveAmbiguous(event.target.checked)}
+              className="mt-0.5" />
+            أؤكد تصحيح التعيين المكرر إلى المجموعة المختارة. إذا سُجّلت دفعات أو عهدة، سيرفض النظام التغيير حفاظاً على السجل المالي.
+          </label>}
         </CardContent>
       </Card>
       <Card className="border-rose-100 dark:border-slate-800">

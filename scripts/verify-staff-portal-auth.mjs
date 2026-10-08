@@ -130,7 +130,7 @@ check(
 check(
   "simple salary portal derives the employee from the authenticated session",
   api.includes('if (resource === "salary")') &&
-    api.includes("where l.staff_id=${auth.id} and r.run_kind='simple'") &&
+    api.includes("where l.staff_id=${auth.id} and r.deleted_at is null") &&
     !api.includes("resource === \"salary\" && employeeId"),
 );
 check(

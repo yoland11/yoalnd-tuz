@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { apiErrorMessage, fetchAdminMe, loginAdmin, hasPerm, isSessionDecision, type AdminMe } from "./_lib";
 import { ADMIN_NAV } from "./_layout";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { adminLoginDestination } from "@/lib/representative-login-routing";
 
 export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => void }) {
   const [, setLocation] = useLocation();
@@ -21,7 +22,7 @@ export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => v
       if (me) {
         onAuthed?.(me);
         const first = ADMIN_NAV.find(n => hasPerm(me, n.perm));
-        setLocation(first?.href ?? "/admin/dashboard");
+        setLocation(adminLoginDestination(me, first?.href));
       }
     });
     return () => { alive = false; };
@@ -35,7 +36,7 @@ export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => v
       const user = await loginAdmin(username.trim(), password, { forceReplace });
       onAuthed?.(user);
       const first = ADMIN_NAV.find(n => hasPerm(user, n.perm));
-      setLocation(first?.href ?? "/admin/dashboard");
+      setLocation(adminLoginDestination(user, first?.href));
     }
     try {
       await attempt(false);

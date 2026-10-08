@@ -15,6 +15,17 @@ import type { GraduationAdminUser } from "@/server/graduation";
 import { receivePayment } from "@/server/graduation-operations";
 import { readRequestBody } from "@/server/request-body";
 import { handleGraduationGroupPricing } from "@/server/graduation-group-pricing";
+import {
+  canAccessRepresentativeGroup,
+  classifyRepresentativeScope,
+  type RepresentativeScope,
+} from "@/lib/representative-group-access";
+import { createApiErrorPayload, makeRequestId } from "@/server/write-safety";
+import { safeServerError } from "@/server/safe-server-log";
+import {
+  assignmentDecision,
+  representativeStaffIsEligible,
+} from "@/lib/representative-assignment-policy";
 
 type RecordMap = Record<string, unknown>;
 const paymentInput = z.object({
@@ -45,9 +56,6 @@ const issueInput = z.object({
 function json(data: unknown, status = 200) {
   return NextResponse.json(data, { status });
 }
-function fail(error: string, status = 400) {
-  return json({ error }, status);
-}
 function money(value: unknown) {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
@@ -67,16 +75,16 @@ async function ensureRepresentativeTables() {
   return ready;
 }
 
-async function groupIdsFor(user: GraduationAdminUser) {
-  if (user.role === "admin") return null;
+async function loadRepresentativeScope(user: GraduationAdminUser): Promise<RepresentativeScope> {
+  if (!user.isActive || user.role === "admin" || !user.permissions.includes("representative.portal.access"))
+    return classifyRepresentativeScope(user, []);
   const rows = await db.execute(
     sql`SELECT group_id FROM representative_group_assignments WHERE staff_id = ${user.id} AND is_active = true`,
   );
-  return rows.rows.map((row: any) => Number(row.group_id)).filter(Boolean);
+  return classifyRepresentativeScope(user, rows.rows.map((row: any) => Number(row.group_id)));
 }
-async function requireGroup(user: GraduationAdminUser, groupId: number) {
-  const ids = await groupIdsFor(user);
-  if (ids && !ids.includes(groupId)) return null;
+async function requireGroup(scope: RepresentativeScope, groupId: number) {
+  if (!canAccessRepresentativeGroup(scope, groupId)) return null;
   return db.query.graduationGroupsTable.findFirst({
     where: eq(graduationGroupsTable.id, groupId),
   });
@@ -138,16 +146,47 @@ export async function handleRepresentativePortal(
   parts: string[],
   user: GraduationAdminUser,
 ): Promise<NextResponse | null> {
+  const requestId = makeRequestId(req.headers.get("x-request-id"));
+  const fail = (message: string, status = 400) => NextResponse.json(
+    createApiErrorPayload({ message, status, requestId, ...(status >= 500 ? { code: "DATABASE_ERROR" as const } : {}) }),
+    { status, headers: { "x-request-id": requestId } },
+  );
   if (parts[0] === "groups" && parts[1] && parts[2] === "sash-pricing" && !parts[3])
     return handleGraduationGroupPricing(req, parts[1], user, true);
-  await ensureRepresentativeTables();
   const resource = parts[0] || "dashboard";
-  if (!has(user, "representative.portal.access"))
-    return fail("لا تملك صلاحية الدخول إلى بوابة ممثلي الشعب", 403);
-  const ids = await groupIdsFor(user);
-  if (ids && !ids.length) return fail("لم تُسند إليك أي مجموعة تخرج", 403);
+  let scope: RepresentativeScope;
+  try {
+    await ensureRepresentativeTables();
+    scope = await loadRepresentativeScope(user);
+  } catch (cause) {
+    console.error("representative group scope lookup failed", { requestId, actorId: user.id, ...safeServerError(cause) });
+    return fail("تعذر التحقق من صلاحية المجموعة؛ حاول مجدداً", 500);
+  }
+  if (scope.kind === "denied") {
+    const reason = {
+      inactive: "الحساب غير مفعّل",
+      permission: "لا تملك صلاحية الدخول إلى بوابة ممثلي الشعب",
+      missing: "لم تُسند إليك أي مجموعة تخرج؛ تواصل مع الإدارة",
+      ambiguous: "حسابك مرتبط بأكثر من مجموعة؛ اطلب من الإدارة تصحيح التعيين",
+    }[scope.reason];
+    return fail(reason, 403);
+  }
+  if (resource === "scope" && req.method === "GET") {
+    if (scope.kind === "admin") return json({ kind: "admin", group: null });
+    try {
+      const group = await db.query.graduationGroupsTable.findFirst({
+        columns: { id: true, title: true, groupNo: true },
+        where: eq(graduationGroupsTable.id, scope.groupId),
+      });
+      if (!group) return fail("المجموعة المسندة غير موجودة؛ تواصل مع الإدارة", 404);
+      return json({ kind: "group", group });
+    } catch (cause) {
+      console.error("representative group header lookup failed", { requestId, actorId: user.id, ...safeServerError(cause) });
+      return fail("تعذر تحميل المجموعة؛ حاول مجدداً", 500);
+    }
+  }
   const groupIds =
-    ids ??
+    scope.kind === "group" ? [scope.groupId] :
     (
       await db
         .select({ id: graduationGroupsTable.id })
@@ -219,6 +258,8 @@ export async function handleRepresentativePortal(
             fullName: staffTable.fullName,
             username: staffTable.username,
             role: staffTable.role,
+            permissions: staffTable.permissions,
+            isActive: staffTable.isActive,
           })
           .from(staffTable)
           .where(eq(staffTable.isActive, true))
@@ -232,7 +273,7 @@ export async function handleRepresentativePortal(
           .from(graduationGroupsTable)
           .orderBy(desc(graduationGroupsTable.createdAt)),
       ]);
-      return json({ items: rows.rows, staff, groups });
+      return json({ items: rows.rows, staff: staff.filter(representativeStaffIsEligible), groups });
     }
     if (req.method === "POST") {
       const parsed = z
@@ -240,19 +281,85 @@ export async function handleRepresentativePortal(
           staffId: z.coerce.number().int().positive(),
           groupId: z.coerce.number().int().positive(),
           isActive: z.boolean().optional().default(true),
+          resolveAmbiguous: z.boolean().optional().default(false),
         })
         .safeParse(await readRequestBody(req));
       if (!parsed.success) return fail("تحقق من بيانات تعيين ممثل الشعبة");
-      const group = await db.query.graduationGroupsTable.findFirst({
-        where: eq(graduationGroupsTable.id, parsed.data.groupId),
-      });
-      if (!group) return fail("مجموعة التخرج غير موجودة", 404);
-      const result = await db.execute(sql`
-        INSERT INTO representative_group_assignments (staff_id, group_id, is_active)
-        VALUES (${parsed.data.staffId}, ${parsed.data.groupId}, ${parsed.data.isActive})
-        ON CONFLICT (staff_id, group_id) DO UPDATE SET is_active = EXCLUDED.is_active
-        RETURNING *`);
-      return json({ assignment: result.rows[0] }, 201);
+      try {
+        const result = await db.transaction(async (tx) => {
+          const [staff] = await tx.select().from(staffTable)
+            .where(eq(staffTable.id, parsed.data.staffId)).for("update");
+          if (!staff) return { status: 404, message: "حساب الموظف غير موجود" };
+          if (!representativeStaffIsEligible(staff))
+            return { status: 403, message: "اختر حساب موظف مفعّلاً لديه صلاحية بوابة الممثلين" };
+          const [group] = await tx.select({ id: graduationGroupsTable.id })
+            .from(graduationGroupsTable).where(eq(graduationGroupsTable.id, parsed.data.groupId));
+          if (!group) return { status: 404, message: "مجموعة التخرج غير موجودة" };
+          const current = await tx.execute(sql`
+            SELECT group_id FROM representative_group_assignments
+            WHERE staff_id = ${staff.id} AND is_active = true FOR UPDATE`);
+          const financial = await tx.execute(sql`
+            SELECT EXISTS(SELECT 1 FROM representative_payment_requests WHERE representative_id = ${staff.id}) AS "hasPayments",
+              EXISTS(SELECT 1 FROM representative_custody_handovers WHERE representative_id = ${staff.id}) AS "hasCustody"`);
+          const history = financial.rows[0] as { hasPayments?: boolean; hasCustody?: boolean } | undefined;
+          const financiallyBound = Boolean(history?.hasPayments || history?.hasCustody);
+          if (!parsed.data.isActive) {
+            if (financiallyBound)
+              return { status: 409, message: "لا يمكن تعطيل مجموعة ممثل لديه دفعات أو تسليم عهدة سابق" };
+            const disabled = await tx.execute(sql`
+              UPDATE representative_group_assignments SET is_active = false
+              WHERE staff_id = ${staff.id} AND group_id = ${group.id} AND is_active = true
+              RETURNING *`);
+            return disabled.rows[0]
+              ? { assignment: disabled.rows[0] }
+              : { status: 404, message: "التعيين النشط غير موجود" };
+          }
+          let historicalGroupIds: number[] = [];
+          let paymentGroupIds: number[] = [];
+          if (financiallyBound && current.rows.length === 0) {
+            const [allAssignments, paymentGroups] = await Promise.all([
+              tx.execute(sql`SELECT group_id FROM representative_group_assignments WHERE staff_id = ${staff.id}`),
+              tx.execute(sql`SELECT DISTINCT group_id FROM representative_payment_requests WHERE representative_id = ${staff.id}`),
+            ]);
+            historicalGroupIds = [...new Set(allAssignments.rows.map((row) => Number(row.group_id)))];
+            paymentGroupIds = [...new Set(paymentGroups.rows.map((row) => Number(row.group_id)))];
+          }
+          const decision = assignmentDecision({
+            currentActiveGroupIds: current.rows.map((row) => Number(row.group_id)),
+            targetGroupId: group.id,
+            hasPaymentRequests: Boolean(history?.hasPayments),
+            hasCustodyHandovers: Boolean(history?.hasCustody),
+            resolveAmbiguous: parsed.data.resolveAmbiguous,
+            historicalGroupIds,
+            paymentGroupIds,
+          });
+          if (decision === "ambiguous")
+            return { status: 409, message: "للموظف أكثر من مجموعة نشطة؛ راجع التعيينات وأكّد التصحيح" };
+          if (decision === "financiallyLocked")
+            return { status: 409, message: "لا يمكن تغيير مجموعة ممثل لديه دفعات أو تسليم عهدة سابق" };
+          if (decision === "same") {
+            const existing = await tx.execute(sql`
+              SELECT * FROM representative_group_assignments
+              WHERE staff_id = ${staff.id} AND group_id = ${group.id} AND is_active = true`);
+            return { assignment: existing.rows[0] };
+          }
+          if (decision === "replace") await tx.execute(sql`
+            UPDATE representative_group_assignments SET is_active = false
+            WHERE staff_id = ${staff.id} AND is_active = true`);
+          const saved = await tx.execute(sql`
+            INSERT INTO representative_group_assignments (staff_id, group_id, is_active)
+            VALUES (${staff.id}, ${group.id}, true)
+            ON CONFLICT (staff_id, group_id) DO UPDATE SET is_active = true
+            RETURNING *`);
+          return { assignment: saved.rows[0] };
+        });
+        if ("status" in result && typeof result.status === "number")
+          return fail(result.message ?? "تعذر حفظ تعيين الممثل", result.status);
+        return json(result, 201);
+      } catch (cause) {
+        console.error("representative assignment save failed", { requestId, actorId: user.id, staffId: parsed.data.staffId, ...safeServerError(cause) });
+        return fail("تعذر حفظ تعيين الممثل؛ حاول مجدداً", 500);
+      }
     }
   }
   if (resource === "students" && req.method === "GET") {
@@ -280,27 +387,59 @@ export async function handleRepresentativePortal(
       return fail("لا تملك صلاحية تسجيل الدفعات", 403);
     const parsed = paymentInput.safeParse(await readRequestBody(req));
     if (!parsed.success) return fail("تحقق من بيانات الدفعة");
-    const order = await db.query.graduationOrdersTable.findFirst({
-      where: eq(graduationOrdersTable.id, parsed.data.orderId),
-    });
-    if (!order?.groupId || !(await requireGroup(user, order.groupId)))
-      return fail("غير مخول للوصول إلى هذا الطالب", 403);
-    if (parsed.data.amount > money(order.remainingAmount))
-      return fail("المبلغ أكبر من الرصيد المتبقي", 409);
-    const request = (
-      await db.execute(
-        sql`INSERT INTO representative_payment_requests (group_id, graduation_order_id, amount, payment_method, receipt_number, receipt_image, occurred_at, notes, representative_id, representative_name) VALUES (${order.groupId}, ${order.id}, ${String(parsed.data.amount)}, ${parsed.data.paymentMethod}, ${parsed.data.receiptNumber || null}, ${parsed.data.receiptImage || null}, ${parsed.data.occurredAt ? new Date(parsed.data.occurredAt) : new Date()}, ${parsed.data.notes || null}, ${user.id}, ${user.fullName || user.username}) RETURNING *`,
-      )
-    ).rows[0] as any;
-    await timeline(user, order.id, "سجّل ممثل الشعبة مبلغاً بانتظار الاعتماد", {
-      requestId: (request as any).id,
-      amount: parsed.data.amount,
-    });
-    return json({ request, status: "pending" }, 201);
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [staff] = await tx.select({ id: staffTable.id }).from(staffTable)
+          .where(eq(staffTable.id, user.id)).for("update");
+        if (!staff) return { status: 403, message: "حساب الممثل غير متاح" };
+        let currentScope: RepresentativeScope = scope;
+        if (scope.kind !== "admin") {
+          const assignments = await tx.execute(sql`
+            SELECT group_id FROM representative_group_assignments
+            WHERE staff_id = ${user.id} AND is_active = true`);
+          currentScope = classifyRepresentativeScope(user, assignments.rows.map((row) => Number(row.group_id)));
+          if (currentScope.kind !== "group" || currentScope.groupId !== scope.groupId)
+            return { status: 409, message: "تغيّر تعيين المجموعة؛ أعد فتح البوابة قبل تسجيل الدفعة" };
+        }
+        const order = await tx.query.graduationOrdersTable.findFirst({
+          where: eq(graduationOrdersTable.id, parsed.data.orderId),
+        });
+        if (!order?.groupId || !canAccessRepresentativeGroup(currentScope, order.groupId))
+          return { status: 403, message: "غير مخول للوصول إلى هذا الطالب" };
+        const group = await tx.query.graduationGroupsTable.findFirst({
+          where: eq(graduationGroupsTable.id, order.groupId),
+        });
+        if (!group) return { status: 403, message: "غير مخول للوصول إلى هذا الطالب" };
+        if (parsed.data.amount > money(order.remainingAmount))
+          return { status: 409, message: "المبلغ أكبر من الرصيد المتبقي" };
+        const request = (await tx.execute(sql`
+          INSERT INTO representative_payment_requests
+            (group_id, graduation_order_id, amount, payment_method, receipt_number, receipt_image,
+             occurred_at, notes, representative_id, representative_name)
+          VALUES (${order.groupId}, ${order.id}, ${String(parsed.data.amount)}, ${parsed.data.paymentMethod},
+            ${parsed.data.receiptNumber || null}, ${parsed.data.receiptImage || null},
+            ${parsed.data.occurredAt ? new Date(parsed.data.occurredAt) : new Date()},
+            ${parsed.data.notes || null}, ${user.id}, ${user.fullName || user.username}) RETURNING *
+        `)).rows[0] as any;
+        await tx.insert(entityTimelineTable).values({
+          entityType: "graduation_order", entityId: order.id, type: "representative",
+          title: "سجّل ممثل الشعبة مبلغاً بانتظار الاعتماد", actorId: user.id,
+          actorName: user.fullName || user.username,
+          metadata: { requestId: request.id, amount: parsed.data.amount },
+        });
+        return { request };
+      });
+      if ("status" in result && typeof result.status === "number")
+        return fail(result.message ?? "تعذر تسجيل الدفعة", result.status);
+      return json({ request: result.request, status: "pending" }, 201);
+    } catch (cause) {
+      console.error("representative payment request failed", { requestId, actorId: user.id, orderId: parsed.data.orderId, ...safeServerError(cause) });
+      return fail("تعذر تسجيل الدفعة؛ حاول مجدداً", 500);
+    }
   }
   if (resource === "payments" && parts.length === 1 && req.method === "GET") {
     const rows = await db.execute(
-      user.role === "admin"
+      scope.kind === "admin"
         ? sql`
       SELECT p.*, r.receipt_no AS "receiptNo", o.customer_name AS "studentName", o.student_code AS "studentCode", g.title AS "groupTitle"
       FROM representative_payment_requests p JOIN graduation_orders o ON o.id=p.graduation_order_id JOIN graduation_groups g ON g.id=p.group_id
@@ -310,7 +449,8 @@ export async function handleRepresentativePortal(
       SELECT p.*, r.receipt_no AS "receiptNo", o.customer_name AS "studentName", o.student_code AS "studentCode", g.title AS "groupTitle"
       FROM representative_payment_requests p JOIN graduation_orders o ON o.id=p.graduation_order_id JOIN graduation_groups g ON g.id=p.group_id
       LEFT JOIN graduation_receipts r ON r.payment_id=p.posted_payment_id
-      WHERE p.representative_id=${user.id} ORDER BY p.created_at DESC`,
+      WHERE p.representative_id=${user.id} AND p.group_id=${scope.kind === "group" ? scope.groupId : -1}
+      ORDER BY p.created_at DESC`,
     );
     return json({ items: rows.rows });
   }
@@ -397,7 +537,7 @@ export async function handleRepresentativePortal(
     if (!has(user, "representative.receipts.print"))
       return fail("لا تملك صلاحية طباعة الوصولات", 403);
     const rows = await db.execute(
-      user.role === "admin"
+      scope.kind === "admin"
         ? sql`
       SELECT p.*, r.receipt_no AS "receiptNo", r.snapshot AS snapshot, o.customer_name AS "studentName", o.student_code AS "studentCode", g.title AS "groupTitle"
       FROM representative_payment_requests p
@@ -409,7 +549,8 @@ export async function handleRepresentativePortal(
       FROM representative_payment_requests p
       JOIN graduation_orders o ON o.id=p.graduation_order_id JOIN graduation_groups g ON g.id=p.group_id
       LEFT JOIN graduation_receipts r ON r.payment_id=p.posted_payment_id
-      WHERE p.id=${Number(parts[1])} AND p.representative_id=${user.id}`,
+      WHERE p.id=${Number(parts[1])} AND p.representative_id=${user.id}
+        AND p.group_id=${scope.kind === "group" ? scope.groupId : -1}`,
     );
     const receipt = rows.rows[0];
     if (
@@ -425,12 +566,34 @@ export async function handleRepresentativePortal(
     const data = await readRequestBody(req);
     const value = money(data?.amount);
     if (value <= 0) return fail("أدخل مبلغ التسليم");
-    const handover = (
-      await db.execute(
-        sql`INSERT INTO representative_custody_handovers (representative_id, amount, receipt_image, notes) VALUES (${user.id}, ${String(value)}, ${String(data?.receiptImage || "") || null}, ${String(data?.notes || "") || null}) RETURNING *`,
-      )
-    ).rows[0] as any;
-    return json({ handover }, 201);
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [staff] = await tx.select({ id: staffTable.id }).from(staffTable)
+          .where(eq(staffTable.id, user.id)).for("update");
+        if (!staff) return { status: 403, message: "حساب الممثل غير متاح" };
+        if (scope.kind !== "admin") {
+          const assignments = await tx.execute(sql`
+            SELECT group_id FROM representative_group_assignments
+            WHERE staff_id = ${user.id} AND is_active = true`);
+          const currentScope = classifyRepresentativeScope(user, assignments.rows.map((row) => Number(row.group_id)));
+          if (currentScope.kind !== "group" || currentScope.groupId !== scope.groupId)
+            return { status: 409, message: "تغيّر تعيين المجموعة؛ أعد فتح البوابة قبل تسليم العهدة" };
+        }
+        const handover = (await tx.execute(sql`
+          INSERT INTO representative_custody_handovers
+            (representative_id, amount, receipt_image, notes)
+          VALUES (${user.id}, ${String(value)}, ${String(data?.receiptImage || "") || null},
+            ${String(data?.notes || "") || null}) RETURNING *
+        `)).rows[0];
+        return { handover };
+      });
+      if ("status" in result && typeof result.status === "number")
+        return fail(result.message ?? "تعذر تسجيل التسليم", result.status);
+      return json({ handover: result.handover }, 201);
+    } catch (cause) {
+      console.error("representative custody handover failed", { requestId, actorId: user.id, ...safeServerError(cause) });
+      return fail("تعذر تسجيل التسليم؛ حاول مجدداً", 500);
+    }
   }
   if (resource === "custody" && req.method === "GET") {
     const rows = await db.execute(
@@ -462,7 +625,7 @@ export async function handleRepresentativePortal(
     const order = await db.query.graduationOrdersTable.findFirst({
       where: eq(graduationOrdersTable.id, parsed.data.orderId),
     });
-    if (!order?.groupId || !(await requireGroup(user, order.groupId)))
+    if (!order?.groupId || !(await requireGroup(scope, order.groupId)))
       return fail("غير مخول للوصول إلى هذا الطالب", 403);
     const issue = (
       await db.execute(
