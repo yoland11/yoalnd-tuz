@@ -24,6 +24,9 @@ const html = buildPreparationThermalHtml({
 });
 
 assert.match(html, /@page\s*\{\s*size:\s*80mm auto/);
+const receiptWidth = Number(html.match(/\.receipt\s*\{[^}]*\bwidth:\s*([\d.]+)mm/)?.[1]);
+assert.ok(Number.isFinite(receiptWidth), "thermal receipt must define its printable content width");
+assert.ok(receiptWidth <= 68, "80mm paper needs at least 6mm safety space on each side");
 assert.match(html, /AJN-1042/);
 assert.match(html, /ورد أبيض كبير/);
 assert.match(html, /الكمية المطلوبة[^<]*<\/span>\s*<b[^>]*>4<\/b>/);
