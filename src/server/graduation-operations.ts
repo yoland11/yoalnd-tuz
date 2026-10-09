@@ -37,6 +37,7 @@ import {
 } from "@/lib/graduation-measurements";
 import { normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import { SASH_TYPES, resolveGroupSashPolicy } from "@/lib/graduation-student-flow";
+import { hasDuplicateGroupStudentName, normalizeGroupStudentName } from "@/lib/graduation-group-student-identity";
 import {
   GroupSashPricingError,
   groupSashPrice,
@@ -481,16 +482,14 @@ async function groupDetail(groupId: number, user: GraduationAdminUser) {
     return result;
   }, {});
   const nameCounts = new Map<string, number>();
-  const phoneCounts = new Map<string, number>();
   for (const row of students) {
-    const name = row.customerName.trim().toLocaleLowerCase("ar");
-    const phone = normalizePhoneDigits(row.phone);
+    if (row.status === "cancelled") continue;
+    const name = normalizeGroupStudentName(row.customerName);
     if (name) nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
-    if (phone) phoneCounts.set(phone, (phoneCounts.get(phone) || 0) + 1);
   }
   const duplicates = students.filter((row) =>
-    (nameCounts.get(row.customerName.trim().toLocaleLowerCase("ar")) || 0) > 1 ||
-    (normalizePhoneDigits(row.phone) && (phoneCounts.get(normalizePhoneDigits(row.phone)) || 0) > 1),
+    row.status !== "cancelled" &&
+    (nameCounts.get(normalizeGroupStudentName(row.customerName)) || 0) > 1,
   );
   const inventory = new Map<number, { productId: number; label: string; required: number }>();
   for (const order of orders) {
@@ -1051,16 +1050,14 @@ async function addStudent(groupId: number, raw: unknown, user: GraduationAdminUs
       const [group] = await tx.select().from(graduationGroupsTable)
         .where(eq(graduationGroupsTable.id, groupId)).limit(1).for("update");
       if (!group) return { response: fail("المجموعة غير موجودة", 404) };
-      if (phone) {
-        const duplicate = await tx.query.graduationOrdersTable.findFirst({
-          where: and(
-            eq(graduationOrdersTable.groupId, groupId),
-            eq(graduationOrdersTable.phone, phone),
-            sql`${graduationOrdersTable.archivedAt} is null`,
-          ),
-        });
-        if (duplicate) return { response: fail("يوجد طالب في المجموعة مسجل بنفس رقم الهاتف", 409) };
-      }
+      const existingStudents = await tx.select({
+        id: graduationOrdersTable.id,
+        customerName: graduationOrdersTable.customerName,
+        status: graduationOrdersTable.status,
+        archivedAt: graduationOrdersTable.archivedAt,
+      }).from(graduationOrdersTable).where(eq(graduationOrdersTable.groupId, groupId));
+      if (hasDuplicateGroupStudentName(data.customerName, existingStudents))
+        return { response: fail("اسم الطالب مسجل مسبقاً في هذه الدفعة؛ أدخل الاسم الكامل الصحيح", 409) };
       const defaults = record(group.defaultConfiguration);
       const sashType = normalizeSashType(data.sashType || resolveGroupSashPolicy(defaults).sashType);
       const configuredPrice = groupSashPrice(defaults, sashType);
@@ -1195,12 +1192,12 @@ async function addStudent(groupId: number, raw: unknown, user: GraduationAdminUs
   }
 }
 
-async function patchStudent(orderId: number, raw: unknown, user: GraduationAdminUser) {
+async function patchStudent(orderId: number, raw: unknown, user: GraduationAdminUser, expectedGroupId: number) {
   const parsed = studentPatchSchema.safeParse(raw);
   if (!parsed.success) return { response: fail("تحقق من بيانات الطالب", 400, parsed.error.issues) };
   const data = parsed.data;
   const order = await db.query.graduationOrdersTable.findFirst({
-    where: eq(graduationOrdersTable.id, orderId),
+    where: and(eq(graduationOrdersTable.id, orderId), eq(graduationOrdersTable.groupId, expectedGroupId)),
   });
   if (!order) return { response: fail("سجل الطالب غير موجود", 404) };
   const profile = record(order.studentProfile);
@@ -1227,8 +1224,28 @@ async function patchStudent(orderId: number, raw: unknown, user: GraduationAdmin
   const total = data.totalAmount ?? amount(order.totalAmount);
   const discount = data.discountAmount ?? amount(order.discountAmount);
   const remaining = Math.max(0, total - amount(order.paidAmount));
-  const [saved] = await db
-    .update(graduationOrdersTable)
+  const result = await db.transaction(async (tx) => {
+    // Match both public registration and admin addition: one name per group.
+    const [group] = await tx.select({ id: graduationGroupsTable.id }).from(graduationGroupsTable)
+      .where(eq(graduationGroupsTable.id, expectedGroupId)).for("update");
+    if (!group) return { response: fail("المجموعة غير موجودة", 404) };
+    const [current] = await tx.select().from(graduationOrdersTable)
+      .where(and(eq(graduationOrdersTable.id, orderId), eq(graduationOrdersTable.groupId, expectedGroupId)))
+      .for("update");
+    if (!current || current.archivedAt || current.status === "cancelled")
+      return { response: fail("سجل الطالب غير موجود", 404) };
+    if (data.customerName !== undefined) {
+      const existingStudents = await tx.select({
+        id: graduationOrdersTable.id,
+        customerName: graduationOrdersTable.customerName,
+        status: graduationOrdersTable.status,
+        archivedAt: graduationOrdersTable.archivedAt,
+      }).from(graduationOrdersTable).where(eq(graduationOrdersTable.groupId, expectedGroupId));
+      if (hasDuplicateGroupStudentName(data.customerName, existingStudents, current.id))
+        return { response: fail("اسم الطالب مسجل مسبقاً في هذه الدفعة؛ أدخل الاسم الكامل الصحيح", 409) };
+    }
+    const [saved] = await tx
+      .update(graduationOrdersTable)
     .set({
       ...(data.customerName !== undefined ? { customerName: data.customerName } : {}),
       ...(data.phone !== undefined ? { phone: normalizedPhone || "", phoneLast4: normalizePhoneDigits(normalizedPhone || "").slice(-4) } : {}),
@@ -1272,22 +1289,27 @@ async function patchStudent(orderId: number, raw: unknown, user: GraduationAdmin
       paymentStatus: remaining <= 0 ? "paid" : amount(order.paidAmount) > 0 ? "partial" : "unpaid",
       updatedAt: new Date(),
     })
-    .where(eq(graduationOrdersTable.id, orderId))
+    .where(and(eq(graduationOrdersTable.id, orderId), eq(graduationOrdersTable.groupId, expectedGroupId)))
     .returning();
-  if (saved.invoiceId && (data.totalAmount !== undefined || data.discountAmount !== undefined)) {
-    await db.update(salesInvoicesTable).set({
+    if (!saved) return { response: fail("سجل الطالب غير موجود", 404) };
+    if (saved.invoiceId && (data.totalAmount !== undefined || data.discountAmount !== undefined)) {
+      await tx.update(salesInvoicesTable).set({
       total: String(total),
       discountAmount: String(discount),
       remainingAmount: String(remaining),
       paymentStatus: remaining <= 0 ? "paid" : amount(saved.paidAmount) > 0 ? "partial" : "unpaid",
       updatedAt: new Date(),
     }).where(eq(salesInvoicesTable.id, saved.invoiceId));
-    await db.update(salesInvoiceItemsTable).set({
+      await tx.update(salesInvoiceItemsTable).set({
       unitPrice: String(total + discount),
       discount: String(discount),
       total: String(total),
     }).where(eq(salesInvoiceItemsTable.invoiceId, saved.invoiceId));
-  }
+    }
+    return { saved };
+  });
+  if ("response" in result) return result;
+  const { saved } = result;
   await audit(user, "graduation_student_updated", "graduation_order", saved.id, {
     oldValue: formatStudent(order),
     newValue: formatStudent(saved),
@@ -1957,7 +1979,7 @@ export async function handleAdminGraduationOperations(
     if (action === "students" && parts[3] && (method === "PATCH" || method === "PUT")) {
       const denied = requireOperationPermission(user, "graduation.edit");
       if (denied) return denied;
-      const result = await patchStudent(Number(parts[3]), await body(req), user);
+      const result = await patchStudent(Number(parts[3]), await body(req), user, groupId);
       return result.response ?? json(result);
     }
     if (action === "students" && parts[3] && method === "DELETE") {

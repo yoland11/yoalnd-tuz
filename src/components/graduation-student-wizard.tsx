@@ -510,6 +510,12 @@ export function GraduationStudentWizard({
       });
       const result = await response.json();
       if (!response.ok) {
+        if (result.code === "CONFLICT") {
+          // The server confirmed that nothing was saved for this attempt.
+          // Let the student correct a duplicate name and submit fresh data.
+          setAttempt(null);
+          setStep(0);
+        }
         if (result.code === "STALE_DATA") {
           setAttempt(null);
           setPriceStale(true);

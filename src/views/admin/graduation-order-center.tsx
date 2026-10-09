@@ -65,6 +65,7 @@ import { downloadElementPdf } from "@/lib/pdf";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { GRADUATION_STAGE_LABELS, GRADUATION_STAGES } from "@/lib/graduation";
 import { canManageGraduationGroupPricing } from "@/lib/graduation-group-pricing-access";
+import { normalizeGroupStudentName } from "@/lib/graduation-group-student-identity";
 import { adminFetch, apiErrorMessage, fetchAdminMe } from "./_lib";
 import {
   printWhenImagesReadyScript,
@@ -491,14 +492,15 @@ function ImportStudentsDialog({ groupId, open, onOpenChange }: { groupId: number
       totalAmount: Number(row["السعر"] || row.price || 0) || 0,
       notes: row["ملاحظات"] || row.notes || "",
     }));
-    const seenPhones = new Set<string>();
+    const seenNames = new Set<string>();
     const validation: string[] = [];
     mapped.forEach((row) => {
       if (String(row.customerName).trim().length < 2) validation.push(`السطر ${row.row}: اسم الطالب مطلوب`);
       const phone = String(row.phone).replace(/\D/g, "");
       if (phone && phone.length < 10) validation.push(`السطر ${row.row}: رقم الهاتف غير مكتمل`);
-      if (phone && seenPhones.has(phone)) validation.push(`السطر ${row.row}: رقم هاتف مكرر داخل الملف`);
-      if (phone) seenPhones.add(phone);
+      const name = normalizeGroupStudentName(String(row.customerName));
+      if (name && seenNames.has(name)) validation.push(`السطر ${row.row}: اسم طالب مكرر داخل الملف`);
+      if (name) seenNames.add(name);
     });
     setRows(mapped);
     setErrors(validation);
@@ -656,7 +658,7 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
           }}
         /></div>
       </details> : null}
-      {(data.duplicates.length || data.shortages.length) ? <div className="grid gap-3 lg:grid-cols-2">{data.duplicates.length ? <div className="rounded-xl border border-status-warning/40 bg-status-warning/5 p-3"><div className="flex items-center gap-2 font-semibold text-status-warning"><AlertTriangle className="h-4 w-4" />تنبيه أسماء أو هواتف متكررة</div><p className="mt-1 text-sm text-muted-foreground">راجع {data.duplicates.length} سجلاً قبل اعتماد الطباعة.</p></div> : null}{data.shortages.length ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3"><div className="flex items-center gap-2 font-semibold text-destructive"><AlertTriangle className="h-4 w-4" />نقص في مواد المجموعة</div><p className="mt-1 text-sm text-muted-foreground">{data.shortages.map((item) => `${item.name}: ${item.shortage}`).join(" · ")}</p></div> : null}</div> : null}
+      {(data.duplicates.length || data.shortages.length) ? <div className="grid gap-3 lg:grid-cols-2">{data.duplicates.length ? <div className="rounded-xl border border-status-warning/40 bg-status-warning/5 p-3"><div className="flex items-center gap-2 font-semibold text-status-warning"><AlertTriangle className="h-4 w-4" />تنبيه أسماء طلاب متكررة</div><p className="mt-1 text-sm text-muted-foreground">راجع {data.duplicates.length} سجلاً قبل اعتماد الطباعة.</p></div> : null}{data.shortages.length ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3"><div className="flex items-center gap-2 font-semibold text-destructive"><AlertTriangle className="h-4 w-4" />نقص في مواد المجموعة</div><p className="mt-1 text-sm text-muted-foreground">{data.shortages.map((item) => `${item.name}: ${item.shortage}`).join(" · ")}</p></div> : null}</div> : null}
       <nav aria-label="مراحل الطلب الجماعي" className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-card p-1.5">
         {[
           ["information", "معلومات الطلب الجماعي"],

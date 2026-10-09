@@ -102,6 +102,7 @@ import {
   syncGraduationEnterpriseOrder,
 } from "@/server/graduation-enterprise";
 import { getGraduationProductionMeasurementBlock } from "@/server/graduation-measurements";
+import { hasDuplicateGroupStudentName } from "@/lib/graduation-group-student-identity";
 
 export type GraduationAdminUser = {
   id: number;
@@ -1682,6 +1683,14 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     if (!lockedGroup || lockedGroup.status !== "open" ||
       JSON.stringify(lockedGroup.defaultConfiguration) !== JSON.stringify(group?.defaultConfiguration))
       return { response: studentReferenceError("إعدادات أو أسعار المجموعة تغيرت؛ حدّث الصفحة قبل تأكيد الطلب", 409, makeRequestId(), "STALE_DATA") };
+    const existingStudents = await tx.select({
+      id: graduationOrdersTable.id,
+      customerName: graduationOrdersTable.customerName,
+      status: graduationOrdersTable.status,
+      archivedAt: graduationOrdersTable.archivedAt,
+    }).from(graduationOrdersTable).where(eq(graduationOrdersTable.groupId, groupId));
+    if (hasDuplicateGroupStudentName(data.customerName, existingStudents))
+      return { response: studentReferenceError("اسم الطالب مسجل مسبقاً في هذه الدفعة؛ أدخل الاسم الكامل الصحيح", 409, makeRequestId(), "CONFLICT") };
   }
   const [draft] = await tx
     .insert(graduationOrdersTable)

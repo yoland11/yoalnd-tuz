@@ -31,11 +31,13 @@ const measurements = loadTs("src/lib/graduation-measurements.ts");
 const safety = loadTs("src/server/write-safety.ts");
 const pricing = existsSync("src/lib/graduation-group-pricing.ts")
   ? loadTs("src/lib/graduation-group-pricing.ts") : {};
+const studentIdentity = existsSync("src/lib/graduation-group-student-identity.ts")
+  ? loadTs("src/lib/graduation-group-student-identity.ts") : {};
 const source = readFileSync("src/server/graduation-operations.ts", "utf8");
 const parsed = ts.createSourceFile("operations.ts", source, ts.ScriptTarget.Latest, true);
 const functions = new Set([
   "json", "fail", "record", "amount", "studentIdentity", "receiptSnapshot",
-  "ensureIdentity", "findOrCreateCustomer", "addStudent", "formatStudent",
+  "ensureIdentity", "findOrCreateCustomer", "addStudent", "patchStudent", "formatStudent",
 ]);
 const snippets = parsed.statements.filter((statement) =>
   ts.isFunctionDeclaration(statement) ? functions.has(statement.name?.text)
@@ -109,20 +111,23 @@ function fixture(configuration, { rejectReceipt = false } = {}) {
     },
   };
   const context = vm.createContext({
-    ...tables, ...flow, ...phone, ...measurements, ...safety, ...pricing,
+    ...tables, ...flow, ...phone, ...measurements, ...safety, ...pricing, ...studentIdentity,
     db, eq, and, sql, randomUUID, Date, console,
     z: require("zod/v4").z,
     NextResponse: { json: (body, options) => Response.json(body, options) },
     syncGraduationEnterpriseOrder: async () => {}, notifyTailorsMeasurementsPending: async () => {},
     audit: async () => {}, timeline: async () => {},
   });
-  vm.runInContext(ts.transpileModule(`${snippets}\nglobalThis.save = addStudent;`, {
+  vm.runInContext(ts.transpileModule(`${snippets}\nglobalThis.save = addStudent; globalThis.patch = patchStudent;`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText, context);
   return {
     save: (input) => context.save(8, { customerName: "طالب اختبار", ...input }, {
       id: 1, role: "admin", username: "admin", fullName: "إدارة", permissions: [], isActive: true,
     }),
+    patch: (orderId, input) => context.patch(orderId, input, {
+      id: 1, role: "admin", username: "admin", fullName: "إدارة", permissions: [], isActive: true,
+    }, 8),
     rows: (name) => state[name],
   };
 }
@@ -153,6 +158,17 @@ assert.equal(free.rows("graduationOrdersTable")[0].paymentStatus, "paid");
 const legacy = fixture({ defaultPrice: 500 });
 assert.equal((await legacy.save({ totalAmount: 500, discountAmount: 50 })).order.total, 450);
 assert.equal(legacy.rows("graduationOrdersTable")[0].pricing.groupSashPricing, undefined);
+const sharedPhone = fixture(active);
+assert.ok((await sharedPhone.save({ customerName: "محمد علي", phone: "07700000000", sashType: "royal" })).order);
+assert.ok((await sharedPhone.save({ customerName: "حسن علي", phone: "07700000000", sashType: "royal" })).order,
+  "different students can share a contact phone");
+const duplicateName = await sharedPhone.save({ customerName: "مُحَمَّد  علي", phone: "07711111111", sashType: "royal" });
+assert.equal(duplicateName.response.status, 409, "the same student name must be rejected within one group");
+assert.equal(sharedPhone.rows("graduationOrdersTable").length, 2);
+const editedDuplicate = await sharedPhone.patch(2, { customerName: "مُحَمَّد  علي" });
+assert.equal(editedDuplicate.response.status, 409, "editing a student cannot duplicate another active name");
+assert.equal(sharedPhone.rows("graduationOrdersTable")[1].customerName, "حسن علي");
+assert.equal((await sharedPhone.patch(2, { customerName: "حسن محمد" })).order.customerName, "حسن محمد");
 for (const configuration of [
   { ...active, sashPricing: { mode: "by_sash", prices: { american: 45000 } } },
   active,
