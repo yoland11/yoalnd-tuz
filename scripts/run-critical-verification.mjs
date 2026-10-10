@@ -23,6 +23,7 @@ const steps = [
   ["Graduation group confirmation navigation", "pnpm", ["run", "test:graduation-group-step-flow"]],
   ["Calendar event target", "pnpm", ["run", "test:calendar-event-target"]],
   ["Preparation A4 and 80mm printing", "pnpm", ["run", "test:preparation-print"]],
+  ["Kosha preparation booking cards", "pnpm", ["run", "test:preparation-cards"]],
   ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice customer search", "pnpm", ["run", "test:sales-customer-search"]],

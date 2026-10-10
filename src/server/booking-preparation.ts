@@ -324,9 +324,10 @@ export type PreparationCard = {
 };
 
 /**
- * Lightweight per-booking rollup for the main page cards, computed in two batch
+ * Lightweight per-booking rollup for the main page cards, computed in batch
  * reads (all live reservations + the bookings) so availability stays real without
- * a query per booking. Assets are not counted here (kept for the detail view).
+ * a query per booking. Every non-cancelled, non-archived Kosha booking gets a
+ * card even before stock is assigned. Assets are counted in the detail view.
  */
 export async function listPreparationCards(executor: Executor = db): Promise<PreparationCard[]> {
   const reservations = (
@@ -367,22 +368,30 @@ export async function listPreparationCards(executor: Executor = db): Promise<Pre
   }
 
   const serviceIds: number[] = [];
-  const koshaIds: number[] = [];
   for (const key of byBooking.keys()) {
     const [source, idStr] = key.split(":");
-    (source === "kosha" ? koshaIds : serviceIds).push(Number(idStr));
+    if (source === "service") serviceIds.push(Number(idStr));
   }
   const [serviceRows, koshaRows] = await Promise.all([
     serviceIds.length
       ? executor.execute(sql`SELECT id, coalesce(tracking_code, 'SRV-'||id) AS number, customer_name, event_date, event_location FROM service_orders WHERE id IN (${sql.join(serviceIds.map((i) => sql`${i}`), sql`,`)})`)
       : Promise.resolve({ rows: [] } as any),
-    koshaIds.length
-      ? executor.execute(sql`SELECT id, coalesce(tracking_code, 'KOSHA-'||id) AS number, customer_name, event_date FROM kosha_bookings WHERE id IN (${sql.join(koshaIds.map((i) => sql`${i}`), sql`,`)})`)
-      : Promise.resolve({ rows: [] } as any),
+    executor.execute(sql`
+      SELECT id, coalesce(tracking_code, 'KOSHA-'||id) AS number, customer_name, event_date, status, archived_at
+      FROM kosha_bookings
+      WHERE archived_at IS NULL AND coalesce(status, '') NOT IN ('cancelled', 'canceled')
+    `),
   ]);
   const infoByKey = new Map<string, any>();
   for (const row of (serviceRows.rows ?? []) as any[]) infoByKey.set(`service:${Number(row.id)}`, row);
-  for (const row of (koshaRows.rows ?? []) as any[]) infoByKey.set(`kosha:${Number(row.id)}`, row);
+  for (const row of (koshaRows.rows ?? []) as any[]) {
+    if (row.archived_at || ["cancelled", "canceled"].includes(String(row.status ?? ""))) continue;
+    const key = `kosha:${Number(row.id)}`;
+    infoByKey.set(key, row);
+    if (!byBooking.has(key)) byBooking.set(key, []);
+    if (!departmentsByBooking.has(key)) departmentsByBooking.set(key, new Set());
+    departmentsByBooking.get(key)!.add("kosha");
+  }
 
   const cards: PreparationCard[] = [];
   for (const [key, items] of byBooking) {
