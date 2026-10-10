@@ -101,6 +101,14 @@ assert.ok((await sharedPhone.create({ customerName: "حسن علي", phone: "077
 const repeatedName = await sharedPhone.create({ customerName: "مُحَمَّد  علي", phone: "07711111111" });
 assert.equal(repeatedName.response.status, 409, "the public form rejects a duplicate name in its group");
 assert.equal(sharedPhone.rows().graduationOrdersTable.length, 2);
+const invalidGroup = fixture();
+let customerWrites = 0;
+invalidGroup.context.ensureCustomer = async () => { customerWrites++; return { id: 1 }; };
+assert.equal((await invalidGroup.create({ groupToken: "missing" })).response?.status, 404);
+assert.equal(customerWrites, 0, "an invalid group link must not create a customer");
+sharedPhone.context.ensureCustomer = async () => { customerWrites++; return { id: 1 }; };
+assert.equal((await sharedPhone.create({ customerName: "محمد علي", phone: "07722222222" })).response?.status, 409);
+assert.equal(customerWrites, 0, "a duplicate student name must not create a customer");
 const injectedKit = fixture();
 const approvedKit = await injectedKit.create({
   styleKey: "luxury", packageKey: "unapproved", accessories: ["unapproved"],

@@ -5,6 +5,10 @@ type GroupStudentNameRecord = {
   archivedAt: Date | null;
 };
 
+export function isActiveGroupStudent(student: Pick<GroupStudentNameRecord, "status" | "archivedAt">): boolean {
+  return !student.archivedAt && student.status !== "cancelled";
+}
+
 export function normalizeGroupStudentName(value: string): string {
   return value.normalize("NFKC")
     .replace(/[\u0640\u064B-\u065F\u0670]/g, "")
@@ -21,8 +25,7 @@ export function hasDuplicateGroupStudentName(
   const normalized = normalizeGroupStudentName(name);
   return Boolean(normalized) && students.some((student) =>
     student.id !== excludeOrderId &&
-    !student.archivedAt &&
-    student.status !== "cancelled" &&
+    isActiveGroupStudent(student) &&
     normalizeGroupStudentName(student.customerName) === normalized,
   );
 }

@@ -66,6 +66,7 @@ import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { GRADUATION_STAGE_LABELS, GRADUATION_STAGES } from "@/lib/graduation";
 import { canManageGraduationGroupPricing } from "@/lib/graduation-group-pricing-access";
 import { normalizeGroupStudentName } from "@/lib/graduation-group-student-identity";
+import { importGroupStudentRows } from "@/lib/graduation-group-import";
 import { adminFetch, apiErrorMessage, fetchAdminMe } from "./_lib";
 import {
   printWhenImagesReadyScript,
@@ -469,6 +470,7 @@ function ImportStudentsDialog({ groupId, open, onOpenChange }: { groupId: number
   const client = useQueryClient();
   const [rows, setRows] = useState<any[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
+  const [saveFailures, setSaveFailures] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   async function readFile(file: File) {
     const XLSX = await import("xlsx");
@@ -504,25 +506,26 @@ function ImportStudentsDialog({ groupId, open, onOpenChange }: { groupId: number
     });
     setRows(mapped);
     setErrors(validation);
+    setSaveFailures([]);
   }
   async function importRows() {
     if (errors.length || !rows.length) return;
     setSaving(true);
-    const failures: string[] = [];
-    for (const row of rows) {
-      try {
-        await adminFetch(`/admin/graduation/groups/${groupId}/students`, { method: "POST", body: JSON.stringify(row) });
-      } catch (error) {
-        failures.push(`السطر ${row.row}: ${apiErrorMessage(error)}`);
-      }
-    }
+    const result = await importGroupStudentRows(rows, (row) =>
+      adminFetch(`/admin/graduation/groups/${groupId}/students`, { method: "POST", body: JSON.stringify(row) }),
+    );
     setSaving(false);
-    if (failures.length) {
-      setErrors(failures);
+    if (result.succeeded.length)
+      client.invalidateQueries({ queryKey: ["admin", "graduation"] });
+    if (result.failed.length) {
+      setRows(result.failed.map(({ rowData }) => rowData));
+      setSaveFailures(result.failed.map(({ rowData, error }) => `السطر ${rowData.row}: ${apiErrorMessage(error)}`));
+      if (result.succeeded.length)
+        toast({ title: `تم حفظ ${result.succeeded.length} طالباً، وبقي ${result.failed.length} للمراجعة` });
       return;
     }
-    client.invalidateQueries({ queryKey: ["admin", "graduation"] });
-    toast({ title: `تم استيراد ${rows.length} طالباً بنجاح` });
+    setSaveFailures([]);
+    toast({ title: `تم استيراد ${result.succeeded.length} طالباً بنجاح` });
     setRows([]);
     onOpenChange(false);
   }
@@ -532,8 +535,9 @@ function ImportStudentsDialog({ groupId, open, onOpenChange }: { groupId: number
         <DialogHeader><DialogTitle>استيراد الطلاب من Excel</DialogTitle></DialogHeader>
         <div className="rounded-lg border border-dashed border-border p-6 text-center"><FileSpreadsheet className="mx-auto h-10 w-10 text-primary" /><p className="mt-2 text-sm text-muted-foreground">يدعم XLSX وXLS وCSV، مع معاينة وفحص قبل الحفظ.</p><Input className="mx-auto mt-4 max-w-sm" type="file" accept=".xlsx,.xls,.csv" onChange={(event) => event.target.files?.[0] && readFile(event.target.files[0]).catch((error) => setErrors([apiErrorMessage(error)]))} /></div>
         {errors.length ? <div className="max-h-32 overflow-y-auto rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{errors.map((item) => <p key={item}>{item}</p>)}</div> : null}
+        {saveFailures.length ? <div className="max-h-32 overflow-y-auto rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{saveFailures.map((item) => <p key={item}>{item}</p>)}</div> : null}
         {rows.length ? <div className="max-h-72 overflow-auto rounded-lg border border-border"><Table><TableHeader><TableRow><TableHead>السطر</TableHead><TableHead>الطالب</TableHead><TableHead>الهاتف</TableHead><TableHead>المقاس</TableHead><TableHead>السعر</TableHead></TableRow></TableHeader><TableBody>{rows.slice(0, 100).map((row) => <TableRow key={row.row}><TableCell>{row.row}</TableCell><TableCell>{row.customerName || <span className="text-destructive">مفقود</span>}</TableCell><TableCell>{row.phone || "—"}</TableCell><TableCell>{row.size || "—"}</TableCell><TableCell>{formatCurrency(row.totalAmount)}</TableCell></TableRow>)}</TableBody></Table></div> : null}
-        <DialogFooter className="sm:justify-start"><Button onClick={importRows} disabled={saving || !rows.length || Boolean(errors.length)}>{saving ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Upload className="ml-2 h-4 w-4" />}اعتماد الاستيراد</Button></DialogFooter>
+        <DialogFooter className="sm:justify-start"><Button onClick={importRows} disabled={saving || !rows.length || Boolean(errors.length)}>{saving ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Upload className="ml-2 h-4 w-4" />}{saveFailures.length ? "إعادة محاولة الصفوف المتبقية" : "اعتماد الاستيراد"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );

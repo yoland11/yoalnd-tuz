@@ -426,6 +426,7 @@ async function groupDetail(groupId: number, user: GraduationAdminUser) {
       and(
         eq(graduationOrdersTable.groupId, groupId),
         sql`${graduationOrdersTable.archivedAt} is null`,
+        sql`${graduationOrdersTable.status} <> 'cancelled'`,
       ),
     )
     .orderBy(asc(graduationOrdersTable.id));

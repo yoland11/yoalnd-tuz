@@ -803,21 +803,21 @@ async function createGraduationGroup(
   };
 }
 
-async function ensureCustomer(phone: string, name: string) {
+async function ensureCustomer(phone: string, name: string, executor: Pick<typeof db, "query" | "insert"> = db) {
   const normalized = normalizeIraqiPhone(phone);
   if (!normalized) throw new Error("رقم الهاتف غير صحيح");
-  const existing = await db.query.customersTable.findFirst({
+  const existing = await executor.query.customersTable.findFirst({
     where: eq(customersTable.phone, normalized),
   });
   if (existing) return existing;
-  const [created] = await db
+  const [created] = await executor
     .insert(customersTable)
     .values({ phone: normalized, name, fullName: name })
     .onConflictDoNothing()
     .returning();
   return (
     created ??
-    (await db.query.customersTable.findFirst({
+    (await executor.query.customersTable.findFirst({
       where: eq(customersTable.phone, normalized),
     }))
   );
@@ -1249,8 +1249,6 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   };
   const previous = await previouslySaved();
   if (previous) return previous;
-  const customer = await ensureCustomer(normalizedPhone, data.customerName);
-  if (!customer) return { response: error("تعذر إنشاء ملف الزبون", 500) };
   let group: typeof graduationGroupsTable.$inferSelect | null = null;
   if (data.groupToken) {
     group =
@@ -1692,6 +1690,8 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     if (hasDuplicateGroupStudentName(data.customerName, existingStudents))
       return { response: studentReferenceError("اسم الطالب مسجل مسبقاً في هذه الدفعة؛ أدخل الاسم الكامل الصحيح", 409, makeRequestId(), "CONFLICT") };
   }
+  const customer = await ensureCustomer(normalizedPhone, data.customerName, tx);
+  if (!customer) return { response: error("تعذر إنشاء ملف الزبون", 500) };
   const [draft] = await tx
     .insert(graduationOrdersTable)
     .values({
@@ -1881,7 +1881,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       .set({ invoiceId: invoice.id })
       .where(eq(graduationOrdersTable.id, order.id));
   }
-  return { order, invoice, orderNo };
+  return { order, invoice, orderNo, customer };
   }).catch(async (cause) => {
     if (idempotencyToken && (cause as { code?: string } | null)?.code === "23505") {
       const replay = await previouslySaved();
@@ -1891,7 +1891,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   });
   if ("replay" in saved) return saved.replay;
   if ("response" in saved) return saved;
-  const { order, invoice, orderNo } = saved;
+  const { order, invoice, orderNo, customer } = saved;
   try {
   if (data.status === "submitted") {
     await createProductionTasks(order, user);
@@ -3773,7 +3773,9 @@ export async function handleAdminGraduation(
             status: graduationOrdersTable.status,
           })
           .from(graduationOrdersTable)
-          .where(sql`${graduationOrdersTable.groupId} is not null`),
+          .where(sql`${graduationOrdersTable.groupId} is not null
+            and ${graduationOrdersTable.archivedAt} is null
+            and ${graduationOrdersTable.status} <> 'cancelled'`),
       ]);
       return json({
         items: groups.map((group) => {
