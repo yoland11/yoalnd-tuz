@@ -29,6 +29,7 @@ import {
   PackageCheck,
   PartyPopper,
   Pencil,
+  Plane,
   Plus,
   Printer,
   QrCode,
@@ -58,6 +59,7 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { printStandaloneDocument } from "@/lib/pdf";
 import { shortBookingNumber } from "@/lib/booking-number";
+import { aerialPhotographyCharge } from "@/lib/booking-aerial-photography";
 import { formatIraqiPhone } from "@/lib/phone";
 import { CustomerQuickAddDialog } from "./customer-quick-add";
 import { BookingOperationsWorkspace } from "./booking-operations-workspace";
@@ -1230,9 +1232,11 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
   const [imageUploading, setImageUploading] = useState(false);
   const [notes, setNotes] = useState("");
   const [selected, setSelected] = useState<ServiceKey[]>(["kosha"]);
-  // A photo session and a video shoot are independent choices; a booking may take one or both.
+  // Session, video and aerial photography are independent choices on the same booking.
   const [photoSessionOn, setPhotoSessionOn] = useState(true);
   const [videoOn, setVideoOn] = useState(false);
+  const [aerialOn, setAerialOn] = useState(false);
+  const [aerialPrice, setAerialPrice] = useState("");
   const [videoItems, setVideoItems] = useState<StoreBookingItem[]>([]);
   const [giftItems, setGiftItems] = useState<StoreBookingItem[]>([]);
   const [photographyLocation, setPhotographyLocation] = useState<"indoor" | "outdoor">("indoor");
@@ -1299,6 +1303,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
       serviceId: "booking-service-picker",
       photography: "booking-photo-kind-session",
       videoItems: "booking-video-items-search",
+      aerialPrice: "booking-aerial-photography-price",
     };
     window.requestAnimationFrame(() =>
       document.getElementById(fieldId[field] ?? "booking-date")?.focus(),
@@ -1326,19 +1331,22 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
       const primary = resolveUnifiedBookingService(selected, services);
       if (!primary) failField("serviceId", "لم يتم العثور على خدمة صالحة لهذا الحجز. تحقق من تفعيل خدمة في إدارة الخدمات.");
       const photographyChosen = selected.includes("photography");
-      if (photographyChosen && !photoSessionOn && !videoOn) failField("photography", "اختر جلسة تصوير أو تصوير فيديو (أو كليهما)");
+      if (photographyChosen && !photoSessionOn && !videoOn && !aerialOn) failField("photography", "اختر جلسة تصوير أو تصوير فيديو أو تصوير جوي");
       if (photographyChosen && videoOn && !videoItems.length) failField("videoItems", "اختر منتج تصوير الفيديو من المتجر");
+      const aerialCharge = aerialPhotographyCharge(photographyChosen && aerialOn, aerialPrice);
+      if (aerialCharge === null) return failField("aerialPrice", "أدخل سعراً صحيحاً للتصوير الجوي");
       // النقل بواسطة AJN يبقى ضمن إجمالي الحجز: يُضاف إلى المبلغ الكلي المرسل.
       const transportFee = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
       // Chosen flower products are part of the booking total, like AJN transport.
       const flowersTotal = selected.includes("flowers") ? flowerItemsTotal(flowerItems) : 0;
       const videoTotal = photographyChosen && videoOn ? storeItemsTotal(videoItems) : 0;
       const giftsTotal = selected.includes("gifts") ? storeItemsTotal(giftItems) : 0;
-      const baseTotal = num(totalAmount) + transportFee + flowersTotal + videoTotal + giftsTotal;
-      const photographyKinds = [...(photoSessionOn ? ["photo_session"] : []), ...(videoOn ? ["video"] : [])];
+      const baseTotal = num(totalAmount) + transportFee + flowersTotal + videoTotal + giftsTotal + aerialCharge;
+      const photographyKinds = [...(photoSessionOn ? ["photo_session"] : []), ...(videoOn ? ["video"] : []), ...(aerialOn ? ["aerial"] : [])];
       const photographyNotes = [
         photoSessionOn ? `جلسة تصوير (${photographyLocation === "outdoor" ? "خارجية" : "داخلية"} · ${photographyDelivery === "album" ? "ألبوم" : "لقطات"}${photographyShotsCount ? ` · ${num(photographyShotsCount)} لقطة` : ""})` : "",
         videoOn && videoItems.length ? `تصوير فيديو: ${storeItemsSummary(videoItems)}` : "",
+        aerialOn ? `تصوير جوي: ${formatCurrency(aerialCharge)}` : "",
         photographyReelsRequested ? "مع ريلز" : "",
       ].filter(Boolean).join(" | ");
       const serviceLinesTotal = photographyServiceItems.reduce((sum, item) => sum + Math.max(0, item.quantity * item.unitPrice - item.discount), 0);
@@ -1384,7 +1392,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
                   : type === "flowers" && flowerItems.length
                     ? { type, status: "waiting", amount: flowersTotal, notes: flowerItemsSummary(flowerItems) }
                     : type === "photography"
-                      ? { type, status: "waiting", amount: videoTotal, notes: photographyNotes }
+                      ? { type, status: "waiting", amount: videoTotal + aerialCharge, notes: photographyNotes }
                       : type === "gifts" && giftItems.length
                         ? { type, status: "waiting", amount: giftsTotal, notes: storeItemsSummary(giftItems) }
                         : { type, status: "waiting", amount: 0 },
@@ -1407,9 +1415,12 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
               ? {
                   // Legacy single-kind key kept for existing readers; "both" when the
                   // booking takes a photo session and a video shoot.
-                  photographyServiceKind: photoSessionOn && videoOn ? "both" : videoOn ? "video" : "photo_session",
+                  photographyServiceKind: photoSessionOn && videoOn ? "both" : videoOn ? "video" : photoSessionOn ? "photo_session" : "aerial",
                   photographyKinds,
                   photographyReelsRequested,
+                  aerialPhotographyRequested: aerialOn,
+                  aerialPhotographyPrice: aerialCharge,
+                  ...(aerialOn ? { photographyItems: [{ name: "تصوير جوي", quantity: 1 }] } : {}),
                   ...(photoSessionOn
                     ? {
                         photoSessionLocation: photographyLocation,
@@ -1438,10 +1449,11 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
   const transportFeeValue = selected.includes("transportation") && transportationMode === "ajn" ? num(transportationFee) : 0;
   const flowersTotalValue = flowersSelected ? flowerItemsTotal(flowerItems) : 0;
   const videoTotalValue = selected.includes("photography") && videoOn ? storeItemsTotal(videoItems) : 0;
+  const aerialTotalValue = aerialPhotographyCharge(selected.includes("photography") && aerialOn, aerialPrice) ?? 0;
   const giftsTotalValue = giftsSelected ? storeItemsTotal(giftItems) : 0;
   const baseTotalValue = num(totalAmount);
   const photographyServicesTotalValue = photographyServiceItems.reduce((sum, item) => sum + Math.max(0, item.quantity * item.unitPrice - item.discount), 0);
-  const baseBookingTotalValue = baseTotalValue + transportFeeValue + flowersTotalValue + videoTotalValue + giftsTotalValue;
+  const baseBookingTotalValue = baseTotalValue + transportFeeValue + flowersTotalValue + videoTotalValue + giftsTotalValue + aerialTotalValue;
   const totalValue = baseBookingTotalValue + photographyServicesTotalValue;
   const depositValue = num(depositAmount);
   const depositTooHigh = depositValue > totalValue;
@@ -1465,7 +1477,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
     if (type === "transportation") { setTransportationMode(null); setTransportationFee(""); }
     if (type === "kosha") { setKoshaMode(null); setKoshaPick(null); setKoshaSearch(""); }
     if (type === "flowers") setFlowerItems([]);
-    if (type === "photography") { setPhotographyServiceItems([]); setVideoItems([]); }
+    if (type === "photography") { setPhotographyServiceItems([]); setVideoItems([]); setAerialOn(false); setAerialPrice(""); }
     if (type === "gifts") setGiftItems([]);
   };
   const toggle = (type: ServiceKey) => {
@@ -1504,7 +1516,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
             <div className="space-y-2"><Label htmlFor="booking-time">وقت المناسبة</Label><Input id="booking-time" type="time" value={eventTime} onChange={(event) => setEventTime(event.target.value)} /></div>
             <div className="space-y-2"><Label htmlFor="booking-hall">القاعة / الموقع</Label><Input id="booking-hall" value={hallName} onChange={(event) => setHallName(event.target.value)} placeholder="اسم القاعة والعنوان" /></div>
             <div className="space-y-2"><Label htmlFor="booking-map">رابط Google Maps</Label><Input id="booking-map" dir="ltr" value={mapUrl} onChange={(event) => setMapUrl(event.target.value)} placeholder="https://maps.google.com/..." /></div>
-            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الأساسي قبل الخدمات الإضافية</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}{transportFeeValue > 0 || flowersTotalValue > 0 || videoTotalValue > 0 || giftsTotalValue > 0 || photographyServicesTotalValue > 0 ? <p className="text-xs text-muted-foreground">{transportFeeValue > 0 ? `+ أجرة النقل ${formatCurrency(transportFeeValue)} ` : ""}{flowersTotalValue > 0 ? `+ الورد ${formatCurrency(flowersTotalValue)} ` : ""}{videoTotalValue > 0 ? `+ الفيديو ${formatCurrency(videoTotalValue)} ` : ""}{giftsTotalValue > 0 ? `+ التوزيعات ${formatCurrency(giftsTotalValue)} ` : ""}{photographyServicesTotalValue > 0 ? `+ خدمات التصوير ${formatCurrency(photographyServicesTotalValue)} ` : ""}= الإجمالي <b className="text-foreground">{formatCurrency(totalValue)}</b></p> : null}</div>
+            <div className="space-y-2"><Label htmlFor="booking-total">المبلغ الأساسي قبل الخدمات الإضافية</Label><Input id="booking-total" inputMode="decimal" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}{transportFeeValue > 0 || flowersTotalValue > 0 || videoTotalValue > 0 || aerialTotalValue > 0 || giftsTotalValue > 0 || photographyServicesTotalValue > 0 ? <p className="text-xs text-muted-foreground">{transportFeeValue > 0 ? `+ أجرة النقل ${formatCurrency(transportFeeValue)} ` : ""}{flowersTotalValue > 0 ? `+ الورد ${formatCurrency(flowersTotalValue)} ` : ""}{videoTotalValue > 0 ? `+ الفيديو ${formatCurrency(videoTotalValue)} ` : ""}{aerialTotalValue > 0 ? `+ التصوير الجوي ${formatCurrency(aerialTotalValue)} ` : ""}{giftsTotalValue > 0 ? `+ التوزيعات ${formatCurrency(giftsTotalValue)} ` : ""}{photographyServicesTotalValue > 0 ? `+ خدمات التصوير ${formatCurrency(photographyServicesTotalValue)} ` : ""}= الإجمالي <b className="text-foreground">{formatCurrency(totalValue)}</b></p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-deposit">العربون</Label><Input id="booking-deposit" inputMode="decimal" aria-invalid={depositTooHigh} className={depositTooHigh ? "border-destructive" : ""} value={depositAmount} onChange={(event) => setDepositAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" />{depositTooHigh ? <p className="text-xs text-destructive">لا يمكن أن يتجاوز العربون المبلغ الكلي.</p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-remaining">المتبقي</Label><Input id="booking-remaining" value={formatCurrency(remainingValue)} readOnly className="bg-muted/35 tabular-nums" dir="ltr" /><p className="text-xs font-medium text-primary">{paymentStatusLabel}</p></div>
           </div>
@@ -1580,16 +1592,23 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
           /> : null}
           {photographySelected ? <section id="booking-photography-settings" className="mt-4 space-y-3 rounded-xl border border-rose-200/70 bg-rose-50/45 p-3 dark:border-rose-900/60 dark:bg-rose-950/20">
             <div><h3 className="font-semibold text-foreground">تفاصيل التصوير</h3><p className="mt-1 text-xs text-muted-foreground">تُحفظ هذه التفاصيل مع الحجز لتظهر لفريق التصوير.</p></div>
-            <div className="grid grid-cols-2 gap-2" role="group" aria-label="نوع التصوير — يمكن اختيار الاثنين">
+            <div className="grid gap-2 sm:grid-cols-3" role="group" aria-label="أنواع التصوير — يمكن اختيار أكثر من نوع">
               {([
                 { key: "session", label: "جلسة تصوير", hint: "داخلية أو خارجية · ألبوم أو لقطات", Icon: Camera, on: photoSessionOn, set: setPhotoSessionOn },
                 { key: "video", label: "تصوير فيديو", hint: "تختار منتج الفيديو من المتجر", Icon: Video, on: videoOn, set: setVideoOn },
-              ]).map(({ key, label, hint, Icon, on, set }) => <Button key={key} id={`booking-photo-kind-${key}`} type="button" variant="ghost" aria-pressed={on} onClick={() => { set(!on); setFieldErrors((current) => ({ ...current, photography: "", videoItems: "" })); }} className={`h-auto flex-col items-stretch gap-1 whitespace-normal rounded-xl border p-3 text-right ${on ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-foreground hover:border-primary/40"}`}>
+                { key: "aerial", label: "تصوير جوي", hint: "أدخل سعر التصوير الجوي للحجز", Icon: Plane, on: aerialOn, set: setAerialOn },
+              ]).map(({ key, label, hint, Icon, on, set }) => <Button key={key} id={`booking-photo-kind-${key}`} type="button" variant="ghost" aria-pressed={on} onClick={() => { set(!on); setFieldErrors((current) => ({ ...current, photography: "", videoItems: "", aerialPrice: "" })); }} className={`h-auto flex-col items-stretch gap-1 whitespace-normal rounded-xl border p-3 text-right ${on ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-foreground hover:border-primary/40"}`}>
                 <span className="flex items-center justify-between gap-2 text-sm font-semibold"><span className="flex items-center gap-1.5"><Icon className="h-4 w-4" />{label}</span>{on ? <CheckCircle2 className="h-4 w-4" /> : null}</span>
                 <span className="text-[11px] font-normal leading-4 text-muted-foreground">{hint}</span>
               </Button>)}
             </div>
             {fieldErrors.photography ? <p className="text-xs text-destructive">{fieldErrors.photography}</p> : null}
+            {aerialOn ? <div className="space-y-1.5 rounded-lg border border-border/45 bg-background/80 p-3">
+              <Label htmlFor="booking-aerial-photography-price">سعر التصوير الجوي (د.ع)</Label>
+              <Input id="booking-aerial-photography-price" type="number" inputMode="decimal" min="0.01" step="0.01" value={aerialPrice} aria-invalid={Boolean(fieldErrors.aerialPrice)} onChange={(event) => { setAerialPrice(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, aerialPrice: "" })); }} placeholder="مثال: 50,000" />
+              <p className="text-xs text-muted-foreground">يُضاف السعر مرة واحدة إلى إجمالي الحجز ويظهر ضمن تفاصيل التصوير.</p>
+              {fieldErrors.aerialPrice ? <p role="alert" className="text-xs text-destructive">{fieldErrors.aerialPrice}</p> : null}
+            </div> : null}
             {photoSessionOn ? <div className="space-y-2 rounded-lg border border-border/45 bg-background/80 p-3">
               <h4 className="flex items-center gap-1.5 text-sm font-semibold"><Camera className="h-4 w-4 text-primary" />جلسة التصوير</h4>
               <div className="grid grid-cols-2 gap-2"><div className="space-y-1.5"><Label htmlFor="booking-photography-location">المكان</Label><select id="booking-photography-location" value={photographyLocation} onChange={(event) => setPhotographyLocation(event.target.value as "indoor" | "outdoor")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="indoor">داخلي</option><option value="outdoor">خارجي</option></select></div><div className="space-y-1.5"><Label htmlFor="booking-photography-delivery">الطلب</Label><select id="booking-photography-delivery" value={photographyDelivery} onChange={(event) => setPhotographyDelivery(event.target.value as "album" | "shots")} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="album">ألبوم</option><option value="shots">لقطات</option></select></div></div>
