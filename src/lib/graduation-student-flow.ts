@@ -87,14 +87,10 @@ export const SASH_FONTS = [
   },
 ];
 export const MEASUREMENTS: [string, string, number, number][] = [
-  ["height", "الطول (سم)", 80, 250],
-  ["weight", "الوزن (كغم)", 20, 300],
+  ["robeLength", "طول روب (سم)", 80, 250],
+  ["sashLength", "طول وشاح (سم)", 30, 250],
   ["shoulder", "عرض الكتف (سم)", 20, 100],
-  ["chest", "محيط الصدر (سم)", 40, 220],
-  ["waist", "محيط الخصر (سم)", 35, 220],
-  ["hip", "محيط الورك (سم)", 35, 240],
-  ["sleeveLength", "طول الكم (سم)", 20, 120],
-  ["neck", "محيط الرقبة (سم)", 20, 80],
+  ["capSize", "قياس قبعة (سم)", 30, 80],
 ];
 export type StudentFlower = {
   productId: number;
@@ -348,6 +344,11 @@ export function studentPayload(
         }
       : {}),
     measurements: {
+      ...Object.fromEntries(
+        ["height", "weight", "chest", "waist", "hip", "sleeveLength", "neck"]
+          .filter((key) => student.measurements[key]?.trim())
+          .map((key) => [key, Number(student.measurements[key])]),
+      ),
       ...Object.fromEntries(
         MEASUREMENTS.filter(([key]) => student.measurements[key]?.trim()).map(
           ([key]) => [key, Number(student.measurements[key])],

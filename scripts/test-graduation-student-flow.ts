@@ -131,9 +131,9 @@ assert.equal(
 );
 assert.equal(flow.studentIssue(first, 0), undefined);
 assert.ok(flow.studentIssue(second, 0));
-first.measurements.height = "2";
+first.measurements.robeLength = "2";
 assert.ok(flow.studentIssue(first, 2));
-first.measurements.height = "";
+first.measurements.robeLength = "";
 assert.equal(flow.studentIssue(first, 2), undefined);
 const merged = flow.studentSashOverrides({
   sashType: "royal",

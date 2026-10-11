@@ -172,26 +172,18 @@ const GRADUATION_THEME_STYLE = {
 } as CSSProperties;
 
 const MEASUREMENTS = [
-  ["height", "الطول (سم)"],
-  ["weight", "الوزن (كغم)"],
+  ["robeLength", "طول روب (سم)"],
+  ["sashLength", "طول وشاح (سم)"],
   ["shoulder", "عرض الكتف (سم)"],
-  ["chest", "محيط الصدر (سم)"],
-  ["waist", "محيط الخصر (سم)"],
-  ["hip", "محيط الورك (سم)"],
-  ["sleeveLength", "طول الكم (سم)"],
-  ["neck", "محيط الرقبة (سم)"],
+  ["capSize", "قياس قبعة (سم)"],
 ] as const;
 
 // إرشادات «كيف أقيس؟» لكل قياس — نص مساعد يظهر تحت الحقل بضغطة.
 const MEASUREMENT_HELP: Record<string, string> = {
-  height: "قف مستقيماً بدون حذاء، وقِس من أعلى الرأس إلى الأرض.",
-  weight: "وزنك بالكيلوغرام — يساعد في اقتراح المقاس الأنسب.",
+  robeLength: "قِس من أعلى الكتف إلى نهاية الروب المطلوبة.",
+  sashLength: "قِس طول الوشاح المطلوب من الكتف حتى نهايته.",
   shoulder: "من نهاية عظمة الكتف إلى الكتف الثاني، مستقيماً على الظهر.",
-  chest: "لِفّ الشريط حول أعرض نقطة في الصدر تحت الإبط، أفقياً وبدون شد.",
-  waist: "حول الخصر عند أضيق نقطة (فوق السرّة غالباً)، بدون شدّ الشريط.",
-  hip: "حول أعرض نقطة في الورك والمقعدة، والشريط أفقي.",
-  sleeveLength: "من نهاية الكتف إلى عظمة المعصم والذراع مسترخية بجانبك.",
-  neck: "حول قاعدة الرقبة حيث تستقر ياقة القميص، مع ترك فسحة إصبع.",
+  capSize: "قِس محيط الرأس من فوق الحاجبين وحول أوسع نقطة في الخلف.",
 };
 
 const DECORATION_POSITIONS = [
@@ -234,6 +226,9 @@ const initialForm = {
   groupToken: "",
   status: "submitted" as const,
   measurements: {
+    robeLength: "",
+    sashLength: "",
+    capSize: "",
     height: "",
     weight: "",
     shoulder: "",
@@ -667,6 +662,9 @@ function PreviewPanel({
           <span className="text-muted-foreground">الاسم</span>
           <p className="mt-1 truncate font-semibold">
             {form.customText.studentName || "لم يُدخل بعد"}
+          </p>
+          <p className="mt-1 truncate text-muted-foreground" dir="ltr">
+            {form.phone || "رقم الموبايل غير مدخل"}
           </p>
         </div>
         <div className="bg-card p-3">

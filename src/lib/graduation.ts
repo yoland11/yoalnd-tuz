@@ -373,6 +373,9 @@ export const graduationMeasurementsSchema = z
     hip: optionalMeasurementNumber(35, 240),
     sleeveLength: optionalMeasurementNumber(20, 120),
     neck: optionalMeasurementNumber(20, 80),
+    robeLength: optionalMeasurementNumber(80, 250),
+    sashLength: optionalMeasurementNumber(30, 250),
+    capSize: optionalMeasurementNumber(30, 80),
     gender: z.enum(["male", "female"]).optional(),
     suggestedSize: z.string().max(20).optional(),
   })

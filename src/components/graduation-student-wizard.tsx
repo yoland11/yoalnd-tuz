@@ -67,13 +67,13 @@ export function GraduationStudentSummary({
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
         {[
           ["الاسم", order.customerName],
+          ["رقم الموبايل", order.phone],
           [
             "إجمالي الطلب المحفوظ",
             order.totalAmount !== undefined
               ? formatCurrency(order.totalAmount)
               : "",
           ],
-          ["الهاتف", order.phone],
           ["القسم", text.department],
           [
             "نوع الوشاح",
@@ -687,7 +687,7 @@ export function GraduationStudentWizard({
           >
             {step === 0 && (
               <>
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-4">
                   {(
                     [
                       ["customerName", "الاسم الكامل *"],
@@ -1237,6 +1237,7 @@ export function GraduationStudentWizard({
                 )}
                 <div className="rounded-lg border p-4 text-sm">
                   <strong>{form.customerName}</strong>
+                  <p className="mt-1 text-muted-foreground" dir="ltr">{form.phone}</p>
                   <p className="mt-2">
                     {
                       SASH_TYPES.find((type) => type.key === displayedSashType)
