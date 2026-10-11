@@ -898,7 +898,7 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
                 {Object.entries(order.measurements ?? {})
                   .filter(([, value]) => value !== "")
                   .map(([key, value]) => (
-                    <Info key={key} label={key} value={String(value)} />
+                    <Info key={key} label={({ sashWidth: "عرض الوشاح", americanSashBack: "خلف الوشاح الأمريكي" } as Record<string, string>)[key] ?? key} value={String(value)} />
                   ))}
               </div>
             </div>

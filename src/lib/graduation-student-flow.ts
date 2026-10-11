@@ -89,6 +89,8 @@ export const SASH_FONTS = [
 export const MEASUREMENTS: [string, string, number, number][] = [
   ["robeLength", "طول روب (سم)", 80, 250],
   ["sashLength", "طول وشاح (سم)", 30, 250],
+  ["sashWidth", "عرض الوشاح (سم)", 3, 100],
+  ["americanSashBack", "خلف الوشاح الأمريكي (سم)", 20, 250],
   ["shoulder", "عرض الكتف (سم)", 20, 100],
   ["capSize", "قياس قبعة (سم)", 30, 80],
 ];

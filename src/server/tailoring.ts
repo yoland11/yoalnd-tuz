@@ -131,7 +131,7 @@ function visibleCondition(user: TailorUser) {
 // ---------------------------------------------------------------------------
 const MEASUREMENT_NUMERIC_KEYS = [
   "height", "weight", "shoulder", "chest", "waist",
-  "sleeveLength", "robeLength", "neck", "capSize",
+  "sleeveLength", "robeLength", "neck", "capSize", "sashLength", "sashWidth", "americanSashBack",
 ] as const;
 const MEASUREMENT_TEXT_KEYS = [
   "gender", "standardSize", "customSize", "bodyShapeNotes", "tailorNotes",
@@ -338,6 +338,7 @@ function serializeGroupRow(order: OrderRow) {
     name: order.customerName,
     height: num("height"), weight: num("weight"), shoulder: num("shoulder"),
     sleeveLength: num("sleeveLength"), robeLength: num("robeLength"), capSize: num("capSize"),
+    sashLength: num("sashLength"), sashWidth: num("sashWidth"), americanSashBack: num("americanSashBack"),
     finalSize: (m.standardSize as string) || (m.readySize as string) || (m.customSize as string) || "",
     measurementStatus: deriveStatus(m),
     tailorName: (rec(rec(order.productionEstimate).tailorAssignment).tailorName as string) ?? "",

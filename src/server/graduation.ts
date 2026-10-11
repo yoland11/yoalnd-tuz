@@ -1181,6 +1181,8 @@ const GRADUATION_MEASUREMENT_RANGES: Record<string, [number, number, string]> = 
   hip: [35, 240, "محيط الورك"],
   sleeveLength: [20, 120, "طول الكم"],
   neck: [20, 80, "محيط الرقبة"],
+  sashWidth: [3, 100, "عرض الوشاح"],
+  americanSashBack: [20, 250, "خلف الوشاح الأمريكي"],
 };
 const GRADUATION_FIELD_LABELS: Record<string, string> = {
   customerName: "اسم الزبون",

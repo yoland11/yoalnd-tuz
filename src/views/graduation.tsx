@@ -174,6 +174,8 @@ const GRADUATION_THEME_STYLE = {
 const MEASUREMENTS = [
   ["robeLength", "طول روب (سم)"],
   ["sashLength", "طول وشاح (سم)"],
+  ["sashWidth", "عرض الوشاح (سم)"],
+  ["americanSashBack", "خلف الوشاح الأمريكي (سم)"],
   ["shoulder", "عرض الكتف (سم)"],
   ["capSize", "قياس قبعة (سم)"],
 ] as const;
@@ -182,6 +184,8 @@ const MEASUREMENTS = [
 const MEASUREMENT_HELP: Record<string, string> = {
   robeLength: "قِس من أعلى الكتف إلى نهاية الروب المطلوبة.",
   sashLength: "قِس طول الوشاح المطلوب من الكتف حتى نهايته.",
+  sashWidth: "قِس عرض الوشاح من الحافة إلى الحافة.",
+  americanSashBack: "قِس الجزء الخلفي للوشاح الأمريكي من أعلى الكتف إلى نهايته.",
   shoulder: "من نهاية عظمة الكتف إلى الكتف الثاني، مستقيماً على الظهر.",
   capSize: "قِس محيط الرأس من فوق الحاجبين وحول أوسع نقطة في الخلف.",
 };
@@ -228,6 +232,8 @@ const initialForm = {
   measurements: {
     robeLength: "",
     sashLength: "",
+    sashWidth: "",
+    americanSashBack: "",
     capSize: "",
     height: "",
     weight: "",

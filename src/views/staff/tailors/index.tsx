@@ -56,6 +56,9 @@ const NUMERIC_FIELDS: { key: string; label: string }[] = [
   { key: "robeLength", label: "طول الروب" },
   { key: "neck", label: "محيط الرقبة" },
   { key: "capSize", label: "مقاس القبعة" },
+  { key: "sashLength", label: "طول وشاح" },
+  { key: "sashWidth", label: "عرض الوشاح" },
+  { key: "americanSashBack", label: "خلف الوشاح الأمريكي" },
 ];
 
 const PROD_STAGES: { key: string; label: string }[] = [
@@ -379,7 +382,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
     @media print{@page{size:A4;margin:14mm}}`;
   function measureRows() {
     const m = order.measurements || {};
-    return [["الطول", m.height], ["الوزن", m.weight], ["الكتف", m.shoulder], ["الصدر", m.chest], ["الخصر", m.waist], ["الكم", m.sleeveLength], ["طول الروب", m.robeLength], ["الرقبة", m.neck], ["القبعة", m.capSize], ["المقاس", m.standardSize || m.readySize || m.customSize]]
+    return [["الطول", m.height], ["الوزن", m.weight], ["الكتف", m.shoulder], ["الصدر", m.chest], ["الخصر", m.waist], ["الكم", m.sleeveLength], ["طول الروب", m.robeLength], ["الرقبة", m.neck], ["القبعة", m.capSize], ["طول وشاح", m.sashLength], ["عرض الوشاح", m.sashWidth], ["خلف الوشاح الأمريكي", m.americanSashBack], ["المقاس", m.standardSize || m.readySize || m.customSize]]
       .map(([k, v]) => `<tr><td>${k}</td><td>${v ?? "—"}</td></tr>`).join("");
   }
   const infoGrid = () => `<div class="grid">
@@ -699,10 +702,13 @@ const EDIT_COLS: { key: string; label: string }[] = [
   { key: "sleeveLength", label: "الكم" },
   { key: "robeLength", label: "طول الروب" },
   { key: "capSize", label: "القبعة" },
+  { key: "sashLength", label: "طول وشاح" },
+  { key: "sashWidth", label: "عرض الوشاح" },
+  { key: "americanSashBack", label: "خلف الوشاح الأمريكي" },
 ];
-const CSV_HEAD = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "finalSize", "status"];
+const CSV_HEAD = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "sashLength", "sashWidth", "americanSashBack", "finalSize", "status"];
 const csvCell = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-const EXCEL_COLUMNS = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "finalSize", "status"] as const;
+const EXCEL_COLUMNS = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "sashLength", "sashWidth", "americanSashBack", "finalSize", "status"] as const;
 
 function GroupPage({ id }: { id: string }) {
   const [, navigate] = useLocation();
@@ -737,7 +743,7 @@ function GroupPage({ id }: { id: string }) {
   const toggleAll = () => setSel(allSelected ? new Set() : new Set(visible.map((r) => r.id)));
 
   function payloadFor(r: any) {
-    return { orderId: r.id, height: r.height, weight: r.weight, shoulder: r.shoulder, sleeveLength: r.sleeveLength, robeLength: r.robeLength, capSize: r.capSize, standardSize: r.finalSize };
+    return { orderId: r.id, height: r.height, weight: r.weight, shoulder: r.shoulder, sleeveLength: r.sleeveLength, robeLength: r.robeLength, capSize: r.capSize, sashLength: r.sashLength, sashWidth: r.sashWidth, americanSashBack: r.americanSashBack, standardSize: r.finalSize };
   }
   async function saveItems(items: any[]) {
     if (!items.length) { setMsg("لا توجد صفوف محددة"); return; }
@@ -760,14 +766,14 @@ function GroupPage({ id }: { id: string }) {
     const src = rows.find((r) => sel.has(r.id));
     if (!src) { setMsg("حدّد صفاً مصدراً أولاً"); return; }
     setRows((cur) => cur.map((r) => (sel.has(r.id) && r.id !== src.id
-      ? { ...r, height: src.height, weight: src.weight, shoulder: src.shoulder, sleeveLength: src.sleeveLength, robeLength: src.robeLength, capSize: src.capSize, finalSize: src.finalSize, _dirty: true }
+      ? { ...r, height: src.height, weight: src.weight, shoulder: src.shoulder, sleeveLength: src.sleeveLength, robeLength: src.robeLength, capSize: src.capSize, sashLength: src.sashLength, sashWidth: src.sashWidth, americanSashBack: src.americanSashBack, finalSize: src.finalSize, _dirty: true }
       : r)));
     setMsg("نُسخت قياسات أول صف محدد إلى البقية (اضغط حفظ)");
   }
 
   function printGroup() {
-    const head = ["رمز الطالب", "الاسم", "الطول", "الوزن", "الكتف", "الكم", "طول الروب", "القبعة", "المقاس", "الحالة"];
-    const rowsHtml = rows.map((r) => `<tr><td>${r.studentCode || ""}</td><td>${r.name || ""}</td><td>${r.height || ""}</td><td>${r.weight || ""}</td><td>${r.shoulder || ""}</td><td>${r.sleeveLength || ""}</td><td>${r.robeLength || ""}</td><td>${r.capSize || ""}</td><td>${r.finalSize || ""}</td><td>${STATUS_LABEL[r.measurementStatus] || r.measurementStatus}</td></tr>`).join("");
+    const head = ["رمز الطالب", "الاسم", "الطول", "الوزن", "الكتف", "الكم", "طول الروب", "القبعة", "طول وشاح", "عرض الوشاح", "خلف الوشاح الأمريكي", "المقاس", "الحالة"];
+    const rowsHtml = rows.map((r) => `<tr><td>${r.studentCode || ""}</td><td>${r.name || ""}</td><td>${r.height || ""}</td><td>${r.weight || ""}</td><td>${r.shoulder || ""}</td><td>${r.sleeveLength || ""}</td><td>${r.robeLength || ""}</td><td>${r.capSize || ""}</td><td>${r.sashLength ?? ""}</td><td>${r.sashWidth ?? ""}</td><td>${r.americanSashBack ?? ""}</td><td>${r.finalSize || ""}</td><td>${STATUS_LABEL[r.measurementStatus] || r.measurementStatus}</td></tr>`).join("");
     const w = window.open("", "_blank", "width=1000,height=1000");
     if (!w) { setMsg("اسمح بالنوافذ المنبثقة للطباعة"); return; }
     w.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>قياسات المجموعة</title>
@@ -784,7 +790,7 @@ function GroupPage({ id }: { id: string }) {
   }
   function exportCSV() {
     const lines = [CSV_HEAD.join(",")];
-    rows.forEach((r) => lines.push([r.studentCode, r.name, r.height, r.weight, r.shoulder, r.sleeveLength, r.robeLength, r.capSize, r.finalSize, r.measurementStatus].map(csvCell).join(",")));
+    rows.forEach((r) => lines.push([r.studentCode, r.name, r.height, r.weight, r.shoulder, r.sleeveLength, r.robeLength, r.capSize, r.sashLength, r.sashWidth, r.americanSashBack, r.finalSize, r.measurementStatus].map(csvCell).join(",")));
     const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = `group-${group?.groupNo || id}-measurements.csv`; a.click();
@@ -807,7 +813,7 @@ function GroupPage({ id }: { id: string }) {
         const row = byCode.get(String(code));
         if (!row) continue;
         const patch: any = { ...row, _dirty: true };
-        for (const c of ["height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize"]) if (idx(c) >= 0 && cells[idx(c)] !== undefined) patch[c] = cells[idx(c)];
+        for (const c of ["height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "sashLength", "sashWidth", "americanSashBack"]) if (idx(c) >= 0 && cells[idx(c)] !== undefined) patch[c] = cells[idx(c)];
         if (idx("finalSize") >= 0 && cells[idx("finalSize")]) patch.finalSize = cells[idx("finalSize")];
         updates.set(row.id, patch); hit++;
       }
@@ -821,10 +827,11 @@ function GroupPage({ id }: { id: string }) {
     const sheetRows = rows.map((r) => ({
       studentCode: r.studentCode ?? "", name: r.name ?? "", height: r.height ?? "", weight: r.weight ?? "",
       shoulder: r.shoulder ?? "", sleeveLength: r.sleeveLength ?? "", robeLength: r.robeLength ?? "",
-      capSize: r.capSize ?? "", finalSize: r.finalSize ?? "", status: r.measurementStatus ?? "",
+      capSize: r.capSize ?? "", sashLength: r.sashLength ?? "", sashWidth: r.sashWidth ?? "", americanSashBack: r.americanSashBack ?? "",
+      finalSize: r.finalSize ?? "", status: r.measurementStatus ?? "",
     }));
     const sheet = XLSX.utils.json_to_sheet(sheetRows, { header: [...EXCEL_COLUMNS] });
-    sheet["!cols"] = [14, 24, 10, 10, 11, 14, 13, 11, 12, 16].map((wch) => ({ wch }));
+    sheet["!cols"] = [14, 24, 10, 10, 11, 14, 13, 11, 13, 13, 22, 12, 16].map((wch) => ({ wch }));
     const book = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(book, sheet, "Measurements");
     XLSX.writeFile(book, `group-${group?.groupNo || id}-measurements.xlsx`, { compression: true });
@@ -843,7 +850,7 @@ function GroupPage({ id }: { id: string }) {
         const row = byCode.get(String(item.studentCode ?? "").trim());
         if (!row) continue;
         const patch: any = { ...row, _dirty: true };
-        for (const key of ["height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "finalSize"])
+        for (const key of ["height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "sashLength", "sashWidth", "americanSashBack", "finalSize"])
           if (item[key] !== undefined && item[key] !== "") patch[key] = String(item[key]);
         updates.set(row.id, patch); hit += 1;
       }
@@ -923,7 +930,7 @@ function GroupPage({ id }: { id: string }) {
                 </td>
               </tr>
             ))}
-            {!visible.length && <tr><td colSpan={12} className="p-10 text-center text-muted-foreground">لا يوجد طلاب</td></tr>}
+            {!visible.length && <tr><td colSpan={17} className="p-10 text-center text-muted-foreground">لا يوجد طلاب</td></tr>}
           </tbody>
         </table>
       </div>
