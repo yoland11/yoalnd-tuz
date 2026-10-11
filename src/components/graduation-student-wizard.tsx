@@ -12,6 +12,7 @@ import { processImageFile } from "@/lib/image-tools";
 import { GraduationReferenceImagePicker } from "@/components/graduation-reference-image-picker";
 import {
   MEASUREMENTS,
+  MEASUREMENT_HELP,
   newStudent,
   SASH_FONTS,
   SASH_TYPES,
@@ -966,7 +967,7 @@ export function GraduationStudentWizard({
                   ))}
                 </div>
                 {showDetailedMeasurements ? (
-                  <details className="rounded-lg border border-border px-4">
+                  <details className="rounded-lg border border-border px-4" open={scope !== "individual"}>
                     <summary className="cursor-pointer py-3 font-semibold">
                       أدخل قياساتك بالتفصيل (اختياري)
                     </summary>
@@ -1022,6 +1023,10 @@ export function GraduationStudentWizard({
                                 })
                               }
                             />
+                            <details className="mt-1">
+                              <summary className="cursor-pointer list-none text-xs text-primary hover:underline">كيف أقيس؟</summary>
+                              <p className="mt-1 text-xs leading-5 text-muted-foreground">{MEASUREMENT_HELP[key]}</p>
+                            </details>
                           </div>
                         ))}
                       </div>

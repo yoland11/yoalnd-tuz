@@ -118,7 +118,12 @@ type StudentRow = {
   height: string | number;
   weight: string | number;
   size: string;
+  robeLength: string | number;
+  sashLength: string | number;
+  sashWidth: string | number;
+  americanSashBack: string | number;
   shoulder: string | number;
+  capSize: string | number;
   sleeveLength: string | number;
   chest: string | number;
   measurementStatus: "none" | "partial" | "complete";
@@ -161,6 +166,15 @@ type GroupDetail = {
   materialRequirements: Record<string, number>;
   shortages: Array<{ productId: number; name: string; required: number; available: number; shortage: number }>;
 };
+
+const GROUP_MEASUREMENT_FIELDS = [
+  { key: "robeLength", label: "طول روب" },
+  { key: "sashLength", label: "طول وشاح" },
+  { key: "sashWidth", label: "عرض الوشاح" },
+  { key: "americanSashBack", label: "خلف الوشاح الأمريكي" },
+  { key: "shoulder", label: "عرض كتف" },
+  { key: "capSize", label: "قياس قبعة" },
+] as const;
 
 const DESIGN_LABELS: Record<string, string> = {
   approved: "معتمد",
@@ -293,6 +307,12 @@ const emptyStudent = {
   height: "",
   weight: "",
   size: "",
+  robeLength: "",
+  sashLength: "",
+  sashWidth: "",
+  americanSashBack: "",
+  shoulder: "",
+  capSize: "",
   robeType: "",
   robeColor: "#111111",
   sashType: "",
@@ -383,7 +403,7 @@ function AddStudentDialog({ groupId, open, onOpenChange }: { groupId: number; op
     ["phone2", "رقم الهاتف الثاني"],
     ["height", "الطول", "number"],
     ["weight", "الوزن", "number"],
-    ["size", "المقاس"],
+    ["size", "المقاس المثالي"],
     ["robeType", "نوع الروب"],
     ["sashType", "نوع الوشاح"],
     ["totalAmount", "السعر", "number"],
@@ -397,6 +417,12 @@ function AddStudentDialog({ groupId, open, onOpenChange }: { groupId: number; op
             <div key={key}>
               <Label>{label}</Label>
               <Input className="mt-2" type={type || "text"} value={String(form[key])} onChange={(event) => setForm((current) => ({ ...current, [key]: type === "number" ? Number(event.target.value) : event.target.value }))} />
+            </div>
+          ))}
+          {GROUP_MEASUREMENT_FIELDS.map((field) => (
+            <div key={field.key}>
+              <Label htmlFor={`new-group-student-${field.key}`}>{field.label} (سم)</Label>
+              <Input id={`new-group-student-${field.key}`} className="mt-2" type="number" min={0} step="any" value={form[field.key]} onChange={(event) => setForm((current) => ({ ...current, [field.key]: event.target.value }))} />
             </div>
           ))}
           <div>
@@ -607,7 +633,8 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
       الجنس: student.gender,
       الطول: student.height,
       الوزن: student.weight,
-      المقاس: student.size,
+      "المقاس المثالي": student.size,
+      ...Object.fromEntries(GROUP_MEASUREMENT_FIELDS.map((field) => [`${field.label} (سم)`, student[field.key] ?? ""])),
       "حالة القياسات": student.measurementStatus === "complete" ? "مكتملة" : student.measurementStatus === "partial" ? "جزئية" : "غير مدخلة",
       الجامعة: student.university,
       الكلية: student.college,
@@ -694,13 +721,45 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
           <Select onValueChange={(value) => bulk.mutate({ action: "production_stage", value })}><SelectTrigger className="h-8 w-44"><SelectValue placeholder="تحديث الإنتاج" /></SelectTrigger><SelectContent>{GRADUATION_STAGES.map((stage) => <SelectItem key={stage} value={stage}>{GRADUATION_STAGE_LABELS[stage]}</SelectItem>)}</SelectContent></Select>
         </div>
       </section>
-      <div className="hidden overflow-x-auto rounded-xl border border-border bg-card md:block">
+      {workspaceTab === "measurements" ? (
+        <section className="space-y-3 rounded-xl border border-border bg-card p-4">
+          <div>
+            <h3 className="font-bold">قياسات طلبة المجموعة</h3>
+            <p className="mt-1 text-sm text-muted-foreground">أدخل القياسات بالسنتيمتر لكل طالب. المقاس المثالي يبقى متاحاً حتى لو لم تُدخل القياسات التفصيلية.</p>
+          </div>
+          <div className="hidden overflow-x-auto md:block">
+            <Table className="min-w-[1050px] text-xs">
+              <TableHeader><TableRow>
+                <TableHead>الطالب</TableHead><TableHead>الجنس</TableHead><TableHead>المقاس المثالي</TableHead>
+                {GROUP_MEASUREMENT_FIELDS.map((field) => <TableHead key={field.key}>{field.label} (سم)</TableHead>)}
+                <TableHead>الحالة</TableHead>
+              </TableRow></TableHeader>
+              <TableBody>{filtered.map((student) => <TableRow key={student.id}>
+                <TableCell><strong>{student.customerName}</strong><span className="block font-mono text-[11px] text-muted-foreground">{student.studentCode}</span></TableCell>
+                <TableCell><Select value={student.gender} onValueChange={(value) => patch.mutate({ id: student.id, changes: { gender: value } })}><SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unspecified">—</SelectItem><SelectItem value="male">رجالي</SelectItem><SelectItem value="female">نسائي</SelectItem></SelectContent></Select></TableCell>
+                <TableCell><EditableCell key={`${student.id}-size-${student.size}`} value={student.size} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { size: value } })} /></TableCell>
+                {GROUP_MEASUREMENT_FIELDS.map((field) => <TableCell key={field.key}><EditableCell key={`${student.id}-${field.key}-${student[field.key]}`} type="number" value={student[field.key]} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { [field.key]: value.trim() ? Number(value) : null } })} /></TableCell>)}
+                <TableCell><MeasurementBadge value={student.measurementStatus} /></TableCell>
+              </TableRow>)}</TableBody>
+            </Table>
+          </div>
+          <div className="space-y-3 md:hidden">{filtered.map((student) => <div key={student.id} className="rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between gap-2"><strong>{student.customerName}</strong><MeasurementBadge value={student.measurementStatus} /></div>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <div><Label>الجنس</Label><Select value={student.gender} onValueChange={(value) => patch.mutate({ id: student.id, changes: { gender: value } })}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unspecified">—</SelectItem><SelectItem value="male">رجالي</SelectItem><SelectItem value="female">نسائي</SelectItem></SelectContent></Select></div>
+              <div><Label>المقاس المثالي</Label><EditableCell key={`${student.id}-mobile-size-${student.size}`} value={student.size} className="mt-1 w-full" onCommit={(value) => patch.mutate({ id: student.id, changes: { size: value } })} /></div>
+              {GROUP_MEASUREMENT_FIELDS.map((field) => <div key={field.key}><Label>{field.label} (سم)</Label><EditableCell key={`${student.id}-mobile-${field.key}-${student[field.key]}`} type="number" value={student[field.key]} className="mt-1 w-full" onCommit={(value) => patch.mutate({ id: student.id, changes: { [field.key]: value.trim() ? Number(value) : null } })} /></div>)}
+            </div>
+          </div>)}</div>
+        </section>
+      ) : null}
+      <div className={workspaceTab === "measurements" ? "hidden" : "hidden overflow-x-auto rounded-xl border border-border bg-card md:block"}>
         <Table className="min-w-[3520px] text-xs">
           <TableHeader><TableRow><TableHead className="sticky right-0 z-10 bg-card"><Checkbox checked={allSelected} onCheckedChange={(checked) => setSelected(checked ? filtered.map((row) => row.id) : [])} /></TableHead><TableHead>ت</TableHead><TableHead>كود الطالب / QR</TableHead><TableHead>اسم الطالب</TableHead><TableHead>الهاتف الأول</TableHead><TableHead>الهاتف الثاني</TableHead><TableHead>الجنس</TableHead><TableHead>الطول</TableHead><TableHead>الوزن</TableHead><TableHead>المقاس</TableHead><TableHead>حالة القياسات</TableHead><TableHead>نوع الروب</TableHead><TableHead>لون الروب</TableHead><TableHead>نوع الوشاح</TableHead><TableHead>لون الوشاح</TableHead><TableHead>كتابة اليمين</TableHead><TableHead>كتابة اليسار</TableHead><TableHead>الجامعة</TableHead><TableHead>الكلية</TableHead><TableHead>القسم</TableHead><TableHead>سنة التخرج</TableHead><TableHead>الطباعة</TableHead><TableHead>التطريز</TableHead><TableHead>الإكسسوارات</TableHead><TableHead>عدد الإكسسوارات</TableHead><TableHead>سعر الإكسسوارات</TableHead><TableHead>السعر</TableHead><TableHead>المدفوع</TableHead><TableHead>المتبقي</TableHead><TableHead>التصميم</TableHead><TableHead>الإنتاج</TableHead><TableHead>التسليم</TableHead><TableHead>الوصل</TableHead><TableHead>الإجراءات</TableHead></TableRow></TableHeader>
           <TableBody>{filtered.map((student) => <TableRow key={student.id}><TableCell className="sticky right-0 z-10 bg-card"><Checkbox checked={selected.includes(student.id)} onCheckedChange={(checked) => setSelected((current) => checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /></TableCell><TableCell>{student.sequence}</TableCell><TableCell><div className="font-mono text-[11px] text-primary">{student.studentCode}</div><div className="mt-1 flex gap-1"><QrCode className="h-3.5 w-3.5" /><span>{student.barcodeValue}</span></div></TableCell><TableCell><EditableCell value={student.customerName} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { customerName: value } })} /></TableCell><TableCell><EditableCell value={student.phone} onCommit={(value) => patch.mutate({ id: student.id, changes: { phone: value } })} /></TableCell><TableCell><EditableCell value={student.phone2} onCommit={(value) => patch.mutate({ id: student.id, changes: { phone2: value } })} /></TableCell><TableCell><Select value={student.gender} onValueChange={(value) => patch.mutate({ id: student.id, changes: { gender: value } })}><SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unspecified">—</SelectItem><SelectItem value="male">ذكر</SelectItem><SelectItem value="female">أنثى</SelectItem></SelectContent></Select></TableCell><TableCell><EditableCell type="number" value={student.height} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { height: Number(value) } })} /></TableCell><TableCell><EditableCell type="number" value={student.weight} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { weight: Number(value) } })} /></TableCell><TableCell><EditableCell value={student.size} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { size: value } })} /></TableCell><TableCell><MeasurementBadge value={student.measurementStatus} /></TableCell><TableCell><EditableCell value={student.robeType} onCommit={(value) => patch.mutate({ id: student.id, changes: { robeType: value } })} /></TableCell><TableCell><EditableCell type="color" value={student.robeColor || "#111111"} className="w-16" onCommit={(value) => patch.mutate({ id: student.id, changes: { robeColor: value } })} /></TableCell><TableCell><EditableCell value={student.sashType} onCommit={(value) => patch.mutate({ id: student.id, changes: { sashType: value } })} /></TableCell><TableCell><EditableCell type="color" value={student.sashColor || "#d4af37"} className="w-16" onCommit={(value) => patch.mutate({ id: student.id, changes: { sashColor: value } })} /></TableCell><TableCell><EditableCell value={student.rightText} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { rightText: value } })} /></TableCell><TableCell><EditableCell value={student.leftText} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { leftText: value } })} /></TableCell><TableCell><EditableCell value={student.university} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { university: value } })} /></TableCell><TableCell><EditableCell value={student.college} className="w-36" onCommit={(value) => patch.mutate({ id: student.id, changes: { college: value } })} /></TableCell><TableCell><EditableCell value={student.department} className="w-32" onCommit={(value) => patch.mutate({ id: student.id, changes: { department: value } })} /></TableCell><TableCell><EditableCell value={student.graduationYear} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { graduationYear: value } })} /></TableCell><TableCell><EditableCell value={student.printingType} onCommit={(value) => patch.mutate({ id: student.id, changes: { printingType: value } })} /></TableCell><TableCell><EditableCell value={student.embroideryType} onCommit={(value) => patch.mutate({ id: student.id, changes: { embroideryType: value } })} /></TableCell><TableCell><div className="flex max-w-56 flex-wrap items-center gap-1">{student.accessoryItems?.length ? student.accessoryItems.map((item) => <Badge key={item.itemId} variant="secondary" className="text-[10px]">{item.name}{item.quantity > 1 ? ` ×${item.quantity}` : ""}{item.free ? " (مجاني)" : ""}</Badge>) : <span className="text-muted-foreground">—</span>}<Button size="icon" variant="ghost" className="h-6 w-6" title="إدارة إكسسوارات الطالب" onClick={() => setStudentAccessory(student)}><Plus className="h-3.5 w-3.5" /></Button></div></TableCell><TableCell className="text-center">{student.accessoriesCount || 0}</TableCell><TableCell>{formatCurrency(student.accessoriesTotal || 0)}</TableCell><TableCell><EditableCell type="number" value={student.total} onCommit={(value) => patch.mutate({ id: student.id, changes: { totalAmount: Number(value) } })} /></TableCell><TableCell>{formatCurrency(student.paid)}</TableCell><TableCell className={student.remaining > 0 ? "font-bold text-destructive" : "font-bold text-status-success"}>{formatCurrency(student.remaining)}</TableCell><TableCell><StatusBadge kind="design" value={student.designStatus} /></TableCell><TableCell><StatusBadge kind="production" value={student.productionStage} /></TableCell><TableCell><StatusBadge kind="delivery" value={student.deliveryStatus} /></TableCell><TableCell><ReceiptActions student={student} /></TableCell><TableCell><div className="flex gap-1"><Button size="icon" variant="ghost" title="نسخ إعدادات الطالب" onClick={() => navigator.clipboard.writeText(JSON.stringify(student)).then(() => toast({ title: "تم نسخ إعدادات الطالب" }))}><Copy className="h-4 w-4" /></Button><Button size="icon" variant="ghost" title="فتح ملف الطالب" onClick={() => window.open(student.trackingUrl, "_blank")}><Eye className="h-4 w-4" /></Button><Button size="icon" variant="ghost" className="text-destructive" title="أرشفة الطالب" onClick={() => confirm("سيتم أرشفة الطالب مع حفظ سجله. هل تريد المتابعة؟") && remove.mutate(student.id)}><Trash2 className="h-4 w-4" /></Button></div></TableCell></TableRow>)}</TableBody>
         </Table>
       </div>
-      <div className="space-y-3 md:hidden">{filtered.map((student) => <Card key={student.id}><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Checkbox checked={selected.includes(student.id)} onCheckedChange={(checked) => setSelected((current) => checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /><strong>{student.customerName}</strong></div><p className="mt-1 font-mono text-xs text-primary">{student.studentCode}</p></div><ReceiptActions student={student} /></div><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><span className="text-muted-foreground">المقاس</span><strong className="block">{student.size || "—"}</strong></div><div><span className="text-muted-foreground">حالة القياسات</span><div className="mt-1"><MeasurementBadge value={student.measurementStatus} /></div></div><div><span className="text-muted-foreground">المتبقي</span><strong className="block">{formatCurrency(student.remaining)}</strong></div><div><StatusBadge kind="design" value={student.designStatus} /></div><div><StatusBadge kind="production" value={student.productionStage} /></div></div></CardContent></Card>)}</div>
+      <div className={workspaceTab === "measurements" ? "hidden" : "space-y-3 md:hidden"}>{filtered.map((student) => <Card key={student.id}><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Checkbox checked={selected.includes(student.id)} onCheckedChange={(checked) => setSelected((current) => checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /><strong>{student.customerName}</strong></div><p className="mt-1 font-mono text-xs text-primary">{student.studentCode}</p></div><ReceiptActions student={student} /></div><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><span className="text-muted-foreground">المقاس</span><strong className="block">{student.size || "—"}</strong></div><div><span className="text-muted-foreground">حالة القياسات</span><div className="mt-1"><MeasurementBadge value={student.measurementStatus} /></div></div><div><span className="text-muted-foreground">المتبقي</span><strong className="block">{formatCurrency(student.remaining)}</strong></div><div><StatusBadge kind="design" value={student.designStatus} /></div><div><StatusBadge kind="production" value={student.productionStage} /></div></div></CardContent></Card>)}</div>
       <section className="grid gap-4 lg:grid-cols-3">
         <div className="rounded-xl border border-border bg-card p-4"><h3 className="font-bold">توزيع المقاسات</h3><div className="mt-3 space-y-2">{Object.entries(data.sizeDistribution).map(([size, count]) => <div key={size} className="flex items-center justify-between text-sm"><span>{size}</span><strong>{count}</strong></div>)}</div></div>
         <div className="rounded-xl border border-border bg-card p-4"><h3 className="font-bold">احتياج المواد</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm">{Object.entries(data.materialRequirements).map(([key, value]) => <div key={key} className="rounded-lg bg-muted p-2"><span className="text-muted-foreground">{key}</span><strong className="block">{value}</strong></div>)}</div></div>

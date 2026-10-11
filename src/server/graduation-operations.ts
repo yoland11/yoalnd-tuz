@@ -102,7 +102,12 @@ const studentPatchSchema = z
     height: z.coerce.number().min(0).max(300).optional(),
     weight: z.coerce.number().min(0).max(300).optional(),
     size: z.string().trim().max(20).optional(),
-    shoulder: z.coerce.number().min(0).max(120).optional(),
+    shoulder: z.coerce.number().min(0).max(120).nullable().optional(),
+    robeLength: z.coerce.number().min(0).max(250).nullable().optional(),
+    sashLength: z.coerce.number().min(0).max(250).nullable().optional(),
+    sashWidth: z.coerce.number().min(0).max(100).nullable().optional(),
+    americanSashBack: z.coerce.number().min(0).max(250).nullable().optional(),
+    capSize: z.coerce.number().min(0).max(80).nullable().optional(),
     sleeveLength: z.coerce.number().min(0).max(150).optional(),
     chest: z.coerce.number().min(0).max(250).optional(),
     university: z.string().trim().max(180).optional(),
@@ -379,6 +384,11 @@ function formatStudent(order: any, sequence?: number) {
     weight: measurements.weight || "",
     size: profile.size || measurements.suggestedSize || "",
     shoulder: measurements.shoulder || "",
+    robeLength: measurements.robeLength || "",
+    sashLength: measurements.sashLength || "",
+    sashWidth: measurements.sashWidth || "",
+    americanSashBack: measurements.americanSashBack || "",
+    capSize: measurements.capSize || "",
     sleeveLength: measurements.sleeveLength || "",
     chest: measurements.chest || "",
     measurementStatus: getGraduationMeasurementFilter(measurements),
@@ -1111,6 +1121,11 @@ async function addStudent(groupId: number, raw: unknown, user: GraduationAdminUs
             weight: data.weight || null,
             suggestedSize: data.size || "",
             shoulder: data.shoulder || null,
+            robeLength: data.robeLength || null,
+            sashLength: data.sashLength || null,
+            sashWidth: data.sashWidth || null,
+            americanSashBack: data.americanSashBack || null,
+            capSize: data.capSize || null,
             sleeveLength: data.sleeveLength || null,
             chest: data.chest || null,
           }),
@@ -1209,7 +1224,7 @@ async function patchStudent(orderId: number, raw: unknown, user: GraduationAdmin
   const nextMeasurements = withGraduationMeasurementStatus({
     ...measurements,
     ...Object.fromEntries(
-      ["height", "weight", "shoulder", "sleeveLength", "chest"]
+      ["height", "weight", "shoulder", "sleeveLength", "chest", "robeLength", "sashLength", "sashWidth", "americanSashBack", "capSize"]
         .filter((key) => (data as any)[key] !== undefined)
         .map((key) => [key, (data as any)[key]]),
     ),

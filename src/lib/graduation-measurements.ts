@@ -6,6 +6,15 @@ export const GRADUATION_CORE_MEASUREMENT_KEYS = [
   "sleeveLength",
 ] as const;
 
+export const GRADUATION_DETAILED_MEASUREMENT_KEYS = [
+  "robeLength",
+  "sashLength",
+  "sashWidth",
+  "americanSashBack",
+  "shoulder",
+  "capSize",
+] as const;
+
 export type GraduationMeasurementStatus =
   | "not_started"
   | "partial"
@@ -38,15 +47,21 @@ export function getGraduationMeasurementStatus(
     return "complete";
   if (
     measurements.method === "ready" &&
-    hasValue(measurements.readySize ?? measurements.standardSize)
+    (hasValue(measurements.readySize) || hasValue(measurements.standardSize))
   )
     return "complete";
 
-  const filled = GRADUATION_CORE_MEASUREMENT_KEYS.filter((key) =>
+  const legacyFilled = GRADUATION_CORE_MEASUREMENT_KEYS.filter((key) =>
     hasValue(measurements[key]),
   ).length;
-  if (filled === 0) return "not_started";
-  if (filled === GRADUATION_CORE_MEASUREMENT_KEYS.length) return "complete";
+  const detailedFilled = GRADUATION_DETAILED_MEASUREMENT_KEYS.filter((key) =>
+    hasValue(measurements[key]),
+  ).length;
+  if (
+    legacyFilled === GRADUATION_CORE_MEASUREMENT_KEYS.length ||
+    detailedFilled === GRADUATION_DETAILED_MEASUREMENT_KEYS.length
+  ) return "complete";
+  if (legacyFilled === 0 && detailedFilled === 0) return "not_started";
   return "partial";
 }
 

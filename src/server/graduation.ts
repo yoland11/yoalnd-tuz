@@ -2664,6 +2664,14 @@ function graduationMeasurementCompleteCondition() {
       and coalesce(nullif(${graduationOrdersTable.measurements}->>'sleeveLength', ''), '') <> ''
     )
     or (
+      coalesce(nullif(${graduationOrdersTable.measurements}->>'robeLength', ''), '') <> ''
+      and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashLength', ''), '') <> ''
+      and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashWidth', ''), '') <> ''
+      and coalesce(nullif(${graduationOrdersTable.measurements}->>'americanSashBack', ''), '') <> ''
+      and coalesce(nullif(${graduationOrdersTable.measurements}->>'shoulder', ''), '') <> ''
+      and coalesce(nullif(${graduationOrdersTable.measurements}->>'capSize', ''), '') <> ''
+    )
+    or (
       ${graduationOrdersTable.measurements}->>'method' = 'ready'
       and coalesce(
         nullif(${graduationOrdersTable.measurements}->>'readySize', ''),
@@ -2681,6 +2689,11 @@ function graduationMeasurementNoneCondition() {
     and coalesce(nullif(${graduationOrdersTable.measurements}->>'chest', ''), '') = ''
     and coalesce(nullif(${graduationOrdersTable.measurements}->>'waist', ''), '') = ''
     and coalesce(nullif(${graduationOrdersTable.measurements}->>'sleeveLength', ''), '') = ''
+    and coalesce(nullif(${graduationOrdersTable.measurements}->>'robeLength', ''), '') = ''
+    and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashLength', ''), '') = ''
+    and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashWidth', ''), '') = ''
+    and coalesce(nullif(${graduationOrdersTable.measurements}->>'americanSashBack', ''), '') = ''
+    and coalesce(nullif(${graduationOrdersTable.measurements}->>'capSize', ''), '') = ''
     and not (
       coalesce(${graduationOrdersTable.measurements}->>'status', '') in ('complete', 'needs_review', 'approved')
       or (

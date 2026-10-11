@@ -71,18 +71,18 @@ new Function("module", "exports", compiled)(module, module.exports);
 const { newStudent, studentIssue, studentPayload } = module.exports;
 const draft = {
   ...newStudent(), customerName: "طالب تجريبي", phone: "07700000000",
-  gender: "female", size: "XL", measurements: { height: "invalid", chest: "900" },
+  gender: "female", size: "XL", measurements: { robeLength: "invalid", sashWidth: "900" },
 };
 const hidden = prepare(draft, false);
 assert.equal(studentIssue(hidden, 2), undefined);
 assert.equal(studentIssue(hidden, 0), undefined);
 const payload = studentPayload(hidden, {});
 assert.equal(payload.measurements.gender, "female");
-assert.equal(payload.measurements.height, undefined);
-assert.equal(payload.measurements.chest, undefined);
+assert.equal(payload.measurements.robeLength, undefined);
+assert.equal(payload.measurements.sashWidth, undefined);
 assert.equal(payload.measurements.readySize, undefined);
 assert.equal(payload.customText.preferredSize, "");
-assert.equal(draft.measurements.height, "invalid", "keep the draft intact");
+assert.equal(draft.measurements.robeLength, "invalid", "keep the draft intact");
 assert.equal(prepare(draft, true), draft, "visible measurements preserve existing validation");
 assert.ok(studentIssue(prepare(draft, true), 2));
 assert.match(studentWizard, /studentIssue\(submissionForm, step\)/);

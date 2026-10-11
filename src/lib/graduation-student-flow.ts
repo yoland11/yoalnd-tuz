@@ -94,6 +94,14 @@ export const MEASUREMENTS: [string, string, number, number][] = [
   ["shoulder", "عرض الكتف (سم)", 20, 100],
   ["capSize", "قياس قبعة (سم)", 30, 80],
 ];
+export const MEASUREMENT_HELP: Record<string, string> = {
+  robeLength: "قِس من أعلى الكتف إلى نهاية الروب المطلوبة.",
+  sashLength: "قِس طول الوشاح المطلوب من الكتف حتى نهايته.",
+  sashWidth: "قِس عرض الوشاح من الحافة إلى الحافة.",
+  americanSashBack: "قِس الجزء الخلفي للوشاح الأمريكي من أعلى الكتف إلى نهايته.",
+  shoulder: "من نهاية عظمة الكتف إلى الكتف الثاني، مستقيماً على الظهر.",
+  capSize: "قِس محيط الرأس من فوق الحاجبين وحول أوسع نقطة في الخلف.",
+};
 export type StudentFlower = {
   productId: number;
   variantId?: number;

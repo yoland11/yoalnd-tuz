@@ -10,7 +10,7 @@ import {
   fetchAdminMe, hasPerm, isSessionDecision, loginAdmin, logoutAdmin,
   adminFetch, compressImageFile, type AdminMe,
 } from "@/views/admin/_lib";
-import { STUDENT_REFERENCE_PLACEMENTS } from "@/lib/graduation-student-flow";
+import { MEASUREMENTS as STUDENT_MEASUREMENTS, STUDENT_REFERENCE_PLACEMENTS } from "@/lib/graduation-student-flow";
 import { LiveScanner } from "@/views/staff/live-scanner";
 
 /** All tailor data flows through the assignment-scoped /admin/tailoring API. */
@@ -46,19 +46,28 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 const READY_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "XXXL"];
+const CURRENT_MEASUREMENT_KEYS = ["robeLength", "sashLength", "sashWidth", "americanSashBack", "shoulder", "capSize"] as const;
+const MEASUREMENT_GUIDE: Record<string, string> = {
+  robeLength: "قِس من أعلى الكتف إلى نهاية الروب المطلوبة.",
+  sashLength: "قِس طول الوشاح المطلوب من الكتف حتى نهايته.",
+  sashWidth: "قِس عرض الوشاح من الحافة إلى الحافة.",
+  americanSashBack: "قِس الجزء الخلفي للوشاح الأمريكي من أعلى الكتف إلى نهايته.",
+  shoulder: "من نهاية عظمة الكتف إلى الكتف الثاني، مستقيماً على الظهر.",
+  capSize: "قِس محيط الرأس من فوق الحاجبين وحول أوسع نقطة في الخلف.",
+};
 const NUMERIC_FIELDS: { key: string; label: string }[] = [
+  { key: "robeLength", label: "طول روب (سم)" },
+  { key: "sashLength", label: "طول وشاح (سم)" },
+  { key: "sashWidth", label: "عرض الوشاح (سم)" },
+  { key: "americanSashBack", label: "خلف الوشاح الأمريكي (سم)" },
+  { key: "shoulder", label: "عرض الكتف (سم)" },
+  { key: "capSize", label: "قياس قبعة (سم)" },
   { key: "height", label: "الطول (سم)" },
   { key: "weight", label: "الوزن (كغم)" },
-  { key: "shoulder", label: "عرض الكتف" },
   { key: "chest", label: "محيط الصدر" },
   { key: "waist", label: "محيط الخصر" },
   { key: "sleeveLength", label: "طول الكم" },
-  { key: "robeLength", label: "طول الروب" },
   { key: "neck", label: "محيط الرقبة" },
-  { key: "capSize", label: "مقاس القبعة" },
-  { key: "sashLength", label: "طول وشاح" },
-  { key: "sashWidth", label: "عرض الوشاح" },
-  { key: "americanSashBack", label: "خلف الوشاح الأمريكي" },
 ];
 
 const PROD_STAGES: { key: string; label: string }[] = [
@@ -382,7 +391,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
     @media print{@page{size:A4;margin:14mm}}`;
   function measureRows() {
     const m = order.measurements || {};
-    return [["الطول", m.height], ["الوزن", m.weight], ["الكتف", m.shoulder], ["الصدر", m.chest], ["الخصر", m.waist], ["الكم", m.sleeveLength], ["طول الروب", m.robeLength], ["الرقبة", m.neck], ["القبعة", m.capSize], ["طول وشاح", m.sashLength], ["عرض الوشاح", m.sashWidth], ["خلف الوشاح الأمريكي", m.americanSashBack], ["المقاس", m.standardSize || m.readySize || m.customSize]]
+    return [["طول روب", m.robeLength], ["طول وشاح", m.sashLength], ["عرض الوشاح", m.sashWidth], ["خلف الوشاح الأمريكي", m.americanSashBack], ["عرض الكتف", m.shoulder], ["قياس قبعة", m.capSize], ["المقاس المثالي", m.suggestedSize], ["المقاس النهائي", m.standardSize || m.readySize || m.customSize], ["الطول", m.height], ["الوزن", m.weight], ["الصدر", m.chest], ["الخصر", m.waist], ["الكم", m.sleeveLength], ["الرقبة", m.neck]]
       .map(([k, v]) => `<tr><td>${k}</td><td>${v ?? "—"}</td></tr>`).join("");
   }
   const infoGrid = () => `<div class="grid">
@@ -410,7 +419,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
       @media print{@page{size:70mm 40mm;margin:0}}</style></head><body>
       <div class="lbl">${qr ? `<img src="${qr}" width="90" height="90"/>` : ""}
       <div class="t"><b>${order.name || ""}</b><span>${order.studentCode || ""}</span><span>${order.groupName || ""}</span>
-      <span>المقاس: ${(order.measurements?.standardSize || order.measurements?.readySize || order.measurements?.customSize || "—")}</span></div></div>
+      <span>المقاس: ${(order.measurements?.standardSize || order.measurements?.readySize || order.measurements?.customSize || order.measurements?.suggestedSize || "—")}</span></div></div>
       </body></html>`);
   }
   async function printProductionSheet() {
@@ -490,6 +499,13 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
           </div>
         </div>
 
+        {form.suggestedSize && (
+          <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-sm">
+            <span className="text-muted-foreground">المقاس المثالي (المقترح): </span>
+            <strong className="text-primary">{form.suggestedSize}</strong>
+          </div>
+        )}
+
         {method === "ready" ? (
           <div className="flex flex-wrap gap-2">
             {READY_SIZES.map((s) => (
@@ -499,14 +515,38 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
             ))}
           </div>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {NUMERIC_FIELDS.map((f) => (
-              <div key={f.key}>
-                <label className="text-xs text-muted-foreground">{f.label}</label>
-                <input type="number" inputMode="decimal" value={form[f.key] ?? ""} onChange={(e) => setForm((cur) => ({ ...cur, [f.key]: e.target.value }))}
-                  className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm" />
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {NUMERIC_FIELDS.filter((field) => CURRENT_MEASUREMENT_KEYS.some((key) => key === field.key)).map((field) => {
+                const limits = STUDENT_MEASUREMENTS.find(([key]) => key === field.key);
+                return (
+                  <div key={field.key}>
+                    <label htmlFor={`tailor-${field.key}`} className="text-xs text-muted-foreground">{field.label}</label>
+                    <input id={`tailor-${field.key}`} type="number" inputMode="decimal" min={limits?.[2]} max={limits?.[3]}
+                      value={form[field.key] ?? ""} onChange={(e) => setForm((cur) => ({ ...cur, [field.key]: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm" />
+                    <details className="mt-1 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer text-primary">كيف أقيس؟</summary>
+                      <p className="mt-1 leading-5">{MEASUREMENT_GUIDE[field.key]}</p>
+                    </details>
+                  </div>
+                );
+              })}
+            </div>
+            <details className="rounded-lg border border-border px-3">
+              <summary className="cursor-pointer py-2 text-sm font-medium">قياسات إضافية للطلبات السابقة (اختياري)</summary>
+              <div className="grid gap-3 pb-3 sm:grid-cols-2 lg:grid-cols-3">
+                {NUMERIC_FIELDS.filter((field) => !CURRENT_MEASUREMENT_KEYS.some((key) => key === field.key)).map((field) => (
+                  <div key={field.key}>
+                    <label htmlFor={`tailor-${field.key}`} className="text-xs text-muted-foreground">{field.label}</label>
+                    <input id={`tailor-${field.key}`} type="number" inputMode="decimal" value={form[field.key] ?? ""}
+                      onChange={(e) => setForm((cur) => ({ ...cur, [field.key]: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm" />
+                  </div>
+                ))}
               </div>
-            ))}
+            </details>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label className="text-xs text-muted-foreground">المقاس القياسي</label>
               <select value={form.standardSize ?? ""} onChange={(e) => setForm((c) => ({ ...c, standardSize: e.target.value }))} className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm">
@@ -522,6 +562,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
               <select value={form.gender ?? ""} onChange={(e) => setForm((c) => ({ ...c, gender: e.target.value }))} className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm">
                 <option value="">—</option><option value="male">ذكر</option><option value="female">أنثى</option>
               </select>
+            </div>
             </div>
           </div>
         )}
@@ -696,19 +737,19 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
 
 /* ---------------- Group measurement table (Phase 2) ---------------- */
 const EDIT_COLS: { key: string; label: string }[] = [
+  { key: "robeLength", label: "طول روب (سم)" },
+  { key: "sashLength", label: "طول وشاح (سم)" },
+  { key: "sashWidth", label: "عرض الوشاح (سم)" },
+  { key: "americanSashBack", label: "خلف الوشاح الأمريكي (سم)" },
+  { key: "shoulder", label: "عرض الكتف (سم)" },
+  { key: "capSize", label: "قياس قبعة (سم)" },
   { key: "height", label: "الطول" },
   { key: "weight", label: "الوزن" },
-  { key: "shoulder", label: "الكتف" },
   { key: "sleeveLength", label: "الكم" },
-  { key: "robeLength", label: "طول الروب" },
-  { key: "capSize", label: "القبعة" },
-  { key: "sashLength", label: "طول وشاح" },
-  { key: "sashWidth", label: "عرض الوشاح" },
-  { key: "americanSashBack", label: "خلف الوشاح الأمريكي" },
 ];
-const CSV_HEAD = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "sashLength", "sashWidth", "americanSashBack", "finalSize", "status"];
+const CSV_HEAD = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "sashLength", "sashWidth", "americanSashBack", "suggestedSize", "finalSize", "status"];
 const csvCell = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-const EXCEL_COLUMNS = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "sashLength", "sashWidth", "americanSashBack", "finalSize", "status"] as const;
+const EXCEL_COLUMNS = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "sashLength", "sashWidth", "americanSashBack", "suggestedSize", "finalSize", "status"] as const;
 
 function GroupPage({ id }: { id: string }) {
   const [, navigate] = useLocation();
@@ -718,6 +759,7 @@ function GroupPage({ id }: { id: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [onlyIncomplete, setOnlyIncomplete] = useState(false);
+  const [showLegacyColumns, setShowLegacyColumns] = useState(false);
   const [applySize, setApplySize] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -735,6 +777,9 @@ function GroupPage({ id }: { id: string }) {
     () => (onlyIncomplete ? rows.filter((r) => !["complete", "needs_review", "approved"].includes(r.measurementStatus)) : rows),
     [rows, onlyIncomplete],
   );
+  const visibleColumns = showLegacyColumns
+    ? EDIT_COLS
+    : EDIT_COLS.filter((column) => CURRENT_MEASUREMENT_KEYS.some((key) => key === column.key));
 
   const setCell = (oid: number, key: string, val: string) =>
     setRows((cur) => cur.map((r) => (r.id === oid ? { ...r, [key]: val, _dirty: true } : r)));
@@ -772,8 +817,8 @@ function GroupPage({ id }: { id: string }) {
   }
 
   function printGroup() {
-    const head = ["رمز الطالب", "الاسم", "الطول", "الوزن", "الكتف", "الكم", "طول الروب", "القبعة", "طول وشاح", "عرض الوشاح", "خلف الوشاح الأمريكي", "المقاس", "الحالة"];
-    const rowsHtml = rows.map((r) => `<tr><td>${r.studentCode || ""}</td><td>${r.name || ""}</td><td>${r.height || ""}</td><td>${r.weight || ""}</td><td>${r.shoulder || ""}</td><td>${r.sleeveLength || ""}</td><td>${r.robeLength || ""}</td><td>${r.capSize || ""}</td><td>${r.sashLength ?? ""}</td><td>${r.sashWidth ?? ""}</td><td>${r.americanSashBack ?? ""}</td><td>${r.finalSize || ""}</td><td>${STATUS_LABEL[r.measurementStatus] || r.measurementStatus}</td></tr>`).join("");
+    const head = ["رمز الطالب", "الاسم", "الطول", "الوزن", "الكتف", "الكم", "طول الروب", "القبعة", "طول وشاح", "عرض الوشاح", "خلف الوشاح الأمريكي", "المقاس المثالي", "المقاس النهائي", "الحالة"];
+    const rowsHtml = rows.map((r) => `<tr><td>${r.studentCode || ""}</td><td>${r.name || ""}</td><td>${r.height || ""}</td><td>${r.weight || ""}</td><td>${r.shoulder || ""}</td><td>${r.sleeveLength || ""}</td><td>${r.robeLength || ""}</td><td>${r.capSize || ""}</td><td>${r.sashLength ?? ""}</td><td>${r.sashWidth ?? ""}</td><td>${r.americanSashBack ?? ""}</td><td>${r.suggestedSize || ""}</td><td>${r.finalSize || ""}</td><td>${STATUS_LABEL[r.measurementStatus] || r.measurementStatus}</td></tr>`).join("");
     const w = window.open("", "_blank", "width=1000,height=1000");
     if (!w) { setMsg("اسمح بالنوافذ المنبثقة للطباعة"); return; }
     w.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>قياسات المجموعة</title>
@@ -790,7 +835,7 @@ function GroupPage({ id }: { id: string }) {
   }
   function exportCSV() {
     const lines = [CSV_HEAD.join(",")];
-    rows.forEach((r) => lines.push([r.studentCode, r.name, r.height, r.weight, r.shoulder, r.sleeveLength, r.robeLength, r.capSize, r.sashLength, r.sashWidth, r.americanSashBack, r.finalSize, r.measurementStatus].map(csvCell).join(",")));
+    rows.forEach((r) => lines.push([r.studentCode, r.name, r.height, r.weight, r.shoulder, r.sleeveLength, r.robeLength, r.capSize, r.sashLength, r.sashWidth, r.americanSashBack, r.suggestedSize, r.finalSize, r.measurementStatus].map(csvCell).join(",")));
     const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = `group-${group?.groupNo || id}-measurements.csv`; a.click();
@@ -828,10 +873,10 @@ function GroupPage({ id }: { id: string }) {
       studentCode: r.studentCode ?? "", name: r.name ?? "", height: r.height ?? "", weight: r.weight ?? "",
       shoulder: r.shoulder ?? "", sleeveLength: r.sleeveLength ?? "", robeLength: r.robeLength ?? "",
       capSize: r.capSize ?? "", sashLength: r.sashLength ?? "", sashWidth: r.sashWidth ?? "", americanSashBack: r.americanSashBack ?? "",
-      finalSize: r.finalSize ?? "", status: r.measurementStatus ?? "",
+      suggestedSize: r.suggestedSize ?? "", finalSize: r.finalSize ?? "", status: r.measurementStatus ?? "",
     }));
     const sheet = XLSX.utils.json_to_sheet(sheetRows, { header: [...EXCEL_COLUMNS] });
-    sheet["!cols"] = [14, 24, 10, 10, 11, 14, 13, 11, 13, 13, 22, 12, 16].map((wch) => ({ wch }));
+    sheet["!cols"] = [14, 24, 10, 10, 11, 14, 13, 11, 13, 13, 22, 15, 12, 16].map((wch) => ({ wch }));
     const book = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(book, sheet, "Measurements");
     XLSX.writeFile(book, `group-${group?.groupNo || id}-measurements.xlsx`, { compression: true });
@@ -886,11 +931,21 @@ function GroupPage({ id }: { id: string }) {
         <Button variant="ghost" type="button" onClick={copyToSelected} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Copy className="h-3.5 w-3.5" /> نسخ للمحدد</Button>
         <span className="mx-1 h-4 w-px bg-border" />
         <Button variant="ghost" type="button" onClick={() => setOnlyIncomplete((v) => !v)} className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 ${onlyIncomplete ? "border-primary text-primary" : "border-border"}`}><Filter className="h-3.5 w-3.5" /> غير المكتملة</Button>
+        <Button variant="ghost" type="button" onClick={() => setShowLegacyColumns((value) => !value)} className={`rounded-lg border px-3 py-1.5 ${showLegacyColumns ? "border-primary text-primary" : "border-border"}`}>{showLegacyColumns ? "إخفاء القياسات القديمة" : "عرض القياسات القديمة"}</Button>
         <label className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Upload className="h-3.5 w-3.5" /> استيراد Excel<input type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden onChange={(e) => e.target.files?.[0] && void importWorkbook(e.target.files[0])} /></label>
         <Button variant="ghost" type="button" onClick={() => void exportWorkbook()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Download className="h-3.5 w-3.5" /> تصدير Excel</Button>
         <Button variant="ghost" type="button" onClick={printGroup} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Printer className="h-3.5 w-3.5" /> طباعة</Button>
       </div>
       {msg && <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}
+      <p className="text-xs text-muted-foreground">الحقول الستة هي قياسات الطلب الحالي. المقاس المثالي للمرجع، والمقاس النهائي يحدده الخياط. يمكن عرض القياسات القديمة عند الحاجة.</p>
+      <details className="rounded-lg border border-border bg-card px-3 text-xs text-muted-foreground">
+        <summary className="cursor-pointer py-2 font-medium text-primary">كيف أقيس؟</summary>
+        <div className="grid gap-2 pb-3 sm:grid-cols-2">
+          {CURRENT_MEASUREMENT_KEYS.map((key) => (
+            <p key={key}><strong className="text-foreground">{EDIT_COLS.find((column) => column.key === key)?.label}: </strong>{MEASUREMENT_GUIDE[key]}</p>
+          ))}
+        </div>
+      </details>
 
       {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-border" id="group-print">
@@ -900,7 +955,8 @@ function GroupPage({ id }: { id: string }) {
               <th className="p-2"><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="تحديد الكل" /></th>
               <th className="p-2 text-right">رمز الطالب</th>
               <th className="p-2 text-right">الاسم</th>
-              {EDIT_COLS.map((c) => <th key={c.key} className="p-2">{c.label}</th>)}
+              {visibleColumns.map((c) => <th key={c.key} className="p-2">{c.label}</th>)}
+              <th className="p-2">المقاس المثالي</th>
               <th className="p-2">المقاس النهائي</th>
               <th className="p-2">الحالة</th>
               <th className="p-2">الخياط</th>
@@ -914,11 +970,12 @@ function GroupPage({ id }: { id: string }) {
                 <td className="p-1.5 text-center"><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggleSel(r.id)} aria-label={`تحديد ${r.name}`} /></td>
                 <td className="p-1.5 whitespace-nowrap font-mono text-[11px]">{r.studentCode}</td>
                 <td className="p-1.5 whitespace-nowrap font-medium">{r.name}</td>
-                {EDIT_COLS.map((c) => (
+                {visibleColumns.map((c) => (
                   <td key={c.key} className="p-1">
                     <input inputMode="decimal" value={r[c.key] ?? ""} onChange={(e) => setCell(r.id, c.key, e.target.value)} className="w-14 rounded border border-border bg-background p-1 text-center" />
                   </td>
                 ))}
+                <td className="p-1.5 text-center font-medium text-primary">{r.suggestedSize || "—"}</td>
                 <td className="p-1">
                   <input value={r.finalSize ?? ""} onChange={(e) => setCell(r.id, "finalSize", e.target.value)} className="w-14 rounded border border-border bg-background p-1 text-center" />
                 </td>
@@ -930,7 +987,7 @@ function GroupPage({ id }: { id: string }) {
                 </td>
               </tr>
             ))}
-            {!visible.length && <tr><td colSpan={17} className="p-10 text-center text-muted-foreground">لا يوجد طلاب</td></tr>}
+            {!visible.length && <tr><td colSpan={visibleColumns.length + 9} className="p-10 text-center text-muted-foreground">لا يوجد طلاب</td></tr>}
           </tbody>
         </table>
       </div>

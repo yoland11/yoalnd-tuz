@@ -67,6 +67,7 @@ import { formatCurrency } from "@/lib/money";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
+import { MEASUREMENT_HELP } from "@/lib/graduation-student-flow";
 import {
   GRADUATION_STAGE_LABELS,
   customPackagePriceSummary,
@@ -179,16 +180,6 @@ const MEASUREMENTS = [
   ["shoulder", "عرض الكتف (سم)"],
   ["capSize", "قياس قبعة (سم)"],
 ] as const;
-
-// إرشادات «كيف أقيس؟» لكل قياس — نص مساعد يظهر تحت الحقل بضغطة.
-const MEASUREMENT_HELP: Record<string, string> = {
-  robeLength: "قِس من أعلى الكتف إلى نهاية الروب المطلوبة.",
-  sashLength: "قِس طول الوشاح المطلوب من الكتف حتى نهايته.",
-  sashWidth: "قِس عرض الوشاح من الحافة إلى الحافة.",
-  americanSashBack: "قِس الجزء الخلفي للوشاح الأمريكي من أعلى الكتف إلى نهايته.",
-  shoulder: "من نهاية عظمة الكتف إلى الكتف الثاني، مستقيماً على الظهر.",
-  capSize: "قِس محيط الرأس من فوق الحاجبين وحول أوسع نقطة في الخلف.",
-};
 
 const DECORATION_POSITIONS = [
   ["front", "الواجهة الأمامية"],

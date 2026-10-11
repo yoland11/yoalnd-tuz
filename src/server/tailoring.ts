@@ -111,6 +111,14 @@ function pendingMeasurementsCondition() {
         and coalesce(nullif(${graduationOrdersTable.measurements}->>'sleeveLength', ''), '') <> ''
       )
       or (
+        coalesce(nullif(${graduationOrdersTable.measurements}->>'robeLength', ''), '') <> ''
+        and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashLength', ''), '') <> ''
+        and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashWidth', ''), '') <> ''
+        and coalesce(nullif(${graduationOrdersTable.measurements}->>'americanSashBack', ''), '') <> ''
+        and coalesce(nullif(${graduationOrdersTable.measurements}->>'shoulder', ''), '') <> ''
+        and coalesce(nullif(${graduationOrdersTable.measurements}->>'capSize', ''), '') <> ''
+      )
+      or (
         ${graduationOrdersTable.measurements}->>'method' = 'ready'
         and coalesce(
           nullif(${graduationOrdersTable.measurements}->>'readySize', ''),
@@ -339,6 +347,7 @@ function serializeGroupRow(order: OrderRow) {
     height: num("height"), weight: num("weight"), shoulder: num("shoulder"),
     sleeveLength: num("sleeveLength"), robeLength: num("robeLength"), capSize: num("capSize"),
     sashLength: num("sashLength"), sashWidth: num("sashWidth"), americanSashBack: num("americanSashBack"),
+    suggestedSize: (m.suggestedSize as string) || (m.readySize as string) || String(rec(order.studentProfile).size || ""),
     finalSize: (m.standardSize as string) || (m.readySize as string) || (m.customSize as string) || "",
     measurementStatus: deriveStatus(m),
     tailorName: (rec(rec(order.productionEstimate).tailorAssignment).tailorName as string) ?? "",
