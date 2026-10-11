@@ -12,6 +12,7 @@ import {
 } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { staffPhotoUpdateSchema } from "./staff-photo";
+import { readKoshaEquipment, saveKoshaEquipment, koshaEquipmentCatalog, bookingKoshaEquipment, KoshaEquipmentError } from "./kosha-equipment";
 import {
   canAssignStaffRole,
   canAssignStaffRoleTo,
@@ -12695,7 +12696,7 @@ async function adjustVariantStock(
   if (!variantId || !delta) return;
   await ensureVariantTables();
   const res: any = await db.execute(sql`
-    update product_variants set stock = greatest(0, stock + ${Math.floor(delta)}), updated_at = now()
+    update product_variants set stock = greatest(0, stock + ${delta}), updated_at = now()
     where id = ${variantId} returning product_id
   `);
   const row = (res.rows ?? res ?? [])[0];
@@ -20498,6 +20499,24 @@ async function handleAdminKoshas(
         where: eq(koshasTable.id, id),
       });
       if (!existing) return error("الكوشة غير موجودة", 404);
+
+      if (parts[3] === "equipment") {
+        await ensureVariantTables();
+        if (method === "GET") return json(parts[4] === "catalog"
+          ? { items: await koshaEquipmentCatalog(req.nextUrl.searchParams.get("q") ?? "") }
+          : { items: await readKoshaEquipment(id) });
+        if (method === "PUT") {
+          try {
+            const result = await saveKoshaEquipment(id, (await body(req))?.items, actor(auth).id);
+            void logAdminActivity(req, "kosha_equipment_template_saved", "kosha", id, { count: result.count });
+            return json(result);
+          } catch (cause) {
+            if (cause instanceof KoshaEquipmentError) return error(cause.message, cause.status);
+            throw cause;
+          }
+        }
+        return error("الإجراء غير مدعوم", 405);
+      }
 
       if (method === "GET") return json(await formatKosha(existing, true));
 
@@ -31172,15 +31191,16 @@ async function loadBookingOperationsReference(
 async function saveBookingOperations(
   reference: BookingOperationsReference,
   operations: Record<string, any>,
+  connection: Pick<typeof db, "update"> = db,
 ) {
   const details = { ...reference.details, bookingOperations: operations };
   if (reference.source === "kosha") {
-    await db
+    await connection
       .update(koshaBookingsTable)
       .set({ bookingDetails: details, updatedAt: new Date() })
       .where(eq(koshaBookingsTable.id, reference.id));
   } else {
-    await db
+    await connection
       .update(serviceOrdersTable)
       .set({
         customFields: routedKoshaCustomFieldsSql(
@@ -31196,6 +31216,7 @@ async function saveBookingOperations(
 
 async function stampBookingSoundDepartment(
   reference: BookingOperationsReference,
+  connection: Pick<typeof db, "update"> = db,
 ) {
   const current = Array.isArray(reference.details.departments)
     ? reference.details.departments.map((value: unknown) => String(value))
@@ -31220,12 +31241,12 @@ async function stampBookingSoundDepartment(
     : [...existingServices, { type: "sound", status: "waiting", amount: 0 }];
   const details = { ...reference.details, departments, bookingCenterServices };
   if (reference.source === "kosha") {
-    await db
+    await connection
       .update(koshaBookingsTable)
       .set({ bookingDetails: details, updatedAt: new Date() })
       .where(eq(koshaBookingsTable.id, reference.id));
   } else {
-    await db
+    await connection
       .update(serviceOrdersTable)
       .set({
         customFields: routedKoshaCustomFieldsSql(
@@ -31459,15 +31480,16 @@ async function bookingOperationAssets(reference: BookingOperationsReference) {
 async function assetConflictForBooking(
   reference: BookingOperationsReference,
   productId: number,
+  connection: Pick<typeof db, "query"> = db,
 ) {
   const day = String(reference.eventDate ?? "").slice(0, 10);
   if (!day) return null;
   const [koshaRows, serviceRows] = await Promise.all([
-    db.query.koshaBookingsTable.findMany({
+    connection.query.koshaBookingsTable.findMany({
       where: sql`${koshaBookingsTable.archivedAt} is null and ${koshaBookingsTable.status} not in ('cancelled','completed') and ${koshaBookingsTable.eventDate}::text like ${`${day}%`}`,
       limit: 200,
     }),
-    db.query.serviceOrdersTable.findMany({
+    connection.query.serviceOrdersTable.findMany({
       where: sql`${serviceOrdersTable.archivedAt} is null and ${serviceOrdersTable.status} not in ('cancelled','completed','delivered') and ${serviceOrdersTable.eventDate} like ${`${day}%`}`,
       limit: 200,
     }),
@@ -31513,15 +31535,50 @@ async function executeBookingAssetAction(
   reference: BookingOperationsReference,
   input: z.infer<typeof BookingAssetActionSchema>,
 ) {
+  await ensureAdminExtensionsTables();
+  const initialProduct = await db.query.productsTable.findFirst({where:eq(productsTable.id,input.productId)});
+  if (!initialProduct) return error("الأصل غير موجود",404);
+  // Resolve department outside the transaction: Vercel uses a single pooled
+  // connection. All booking/custody reads and writes below use the same tx.
+  const isSound = input.mode !== "unlink" && (await getSoundStoreProducts([initialProduct])).length > 0;
+  return db.transaction(async (tx) => {
+    const locked = await tx.execute(reference.source === "kosha"
+      ? sql`select id from kosha_bookings where id=${reference.id} and archived_at is null for update`
+      : sql`select id from service_orders where id=${reference.id} and archived_at is null for update`);
+    if (!locked.rows.length) return error("الحجز غير موجود",404);
+    await tx.execute(sql`select id from products where id=${input.productId} for update`);
+    const row = reference.source === "kosha"
+      ? await tx.query.koshaBookingsTable.findFirst({where:eq(koshaBookingsTable.id,reference.id)})
+      : await tx.query.serviceOrdersTable.findFirst({where:eq(serviceOrdersTable.id,reference.id)});
+    if (!row) return error("الحجز غير موجود",404);
+    const details = (("bookingDetails" in row ? row.bookingDetails : row.customFields) ?? {}) as Record<string,any>;
+    const fresh = {...reference,row,details,operations:bookingOperationsState(details)};
+    return executeLockedBookingAssetAction(req,auth,fresh,input,tx,isSound);
+  });
+}
+
+async function executeLockedBookingAssetAction(
+  req: NextRequest,
+  auth: AdminUser,
+  reference: BookingOperationsReference,
+  input: z.infer<typeof BookingAssetActionSchema>,
+  db: Pick<typeof import("@workspace/db").db,"query"|"insert"|"update">,
+  isSound: boolean,
+) {
+  // Validate before any transactional writes (a returned HTTP error is not a rollback).
+  if (input.mode === "return" && input.problem !== "none" && !input.description)
+    return error("اكتب وصف التلف أو النقص",422);
+  if (input.mode === "return" && input.problem === "missing" && !input.managerApproval)
+    return error("تسجيل النقص يتطلب اعتماد المدير",422);
   const product: any = await db.query.productsTable.findFirst({
     where: eq(productsTable.id, input.productId),
   });
   if (!product) return error("الأصل غير موجود", 404);
   if (
     input.mode !== "unlink" &&
-    (await getSoundStoreProducts([product])).length > 0
+    isSound
   ) {
-    await stampBookingSoundDepartment(reference);
+    await stampBookingSoundDepartment(reference,db);
   }
   const assets = Array.isArray(reference.operations.assets)
     ? [...reference.operations.assets]
@@ -31559,6 +31616,7 @@ async function executeBookingAssetAction(
       const conflict = await assetConflictForBooking(
         reference,
         input.productId,
+        db,
       );
       if (conflict)
         return error(
@@ -31810,8 +31868,8 @@ async function executeBookingAssetAction(
     if (index >= 0) assets[index] = next;
     else assets.push(next);
   }
-  await saveBookingOperations(reference, { ...reference.operations, assets });
-  await addEntityTimeline({
+  await saveBookingOperations(reference, { ...reference.operations, assets },db);
+  await db.insert(entityTimelineTable).values({
     entityType: reference.entityType,
     entityId: reference.id,
     type: `booking_asset_${input.mode}`,
@@ -31827,7 +31885,8 @@ async function executeBookingAssetAction(
       } as any
     )[input.mode],
     body: product.nameAr || product.name,
-    actor: erpActorFromAdmin(auth),
+    actorId: auth.id,
+    actorName: actor(auth).name,
     metadata: {
       productId: input.productId,
       problem: input.problem,
@@ -32258,6 +32317,25 @@ async function handleBookingOperations(
   const reference = await loadBookingOperationsReference(source, id);
   if (!reference) return error("الحجز غير موجود", 404);
   const method = req.method;
+
+  if (resource === "kosha-equipment") {
+    if (!can("booking_assets_manage", "booking_products_manage")) return error("ليس لديك صلاحية إدارة معدات الحجز",403);
+    try {
+      if (method === "GET") return json(await bookingKoshaEquipment(reference,"preview",undefined,actor(auth)));
+      if (method === "POST") {
+        const data = await body(req);
+        if (data?.confirmation !== true || !Array.isArray(data?.items)) return error("راجع المعدات وأكد الاستيراد",422);
+        if (!can("asset_reserve") || !can("booking_products_manage")) return error("يلزم امتلاك صلاحية حجز الأصول وإدارة مواد الحجز",403);
+        const result = await bookingKoshaEquipment(reference,"confirm",data.items,actor(auth));
+        void logAdminActivity(req,"kosha_equipment_imported",reference.entityType,reference.id,{count:result.imported ?? 0});
+        return json(result);
+      }
+      return error("الإجراء غير مدعوم",405);
+    } catch (cause) {
+      if (cause instanceof KoshaEquipmentError) return error(cause.message,cause.status);
+      throw cause;
+    }
+  }
 
   if (resource === "staff-assignment") {
     if (!canManageBookingStaffAssignments(auth))

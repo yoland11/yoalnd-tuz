@@ -13,6 +13,7 @@ import { shortBookingNumber } from "@/lib/booking-number";
 import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory, KoshaPackage } from "@/views/koshas";
+import { KoshaEquipmentPanel } from "./kosha-equipment-panel";
 import { formatMoney } from "@/lib/money";
 import { AccountSummaryCard } from "./payment-collection";
 import { CustomerFinancialSummary } from "./customer-financial-summary";
@@ -729,6 +730,7 @@ function LinkedStoreProductsPanel({ sectionType, sectionId }: { sectionType: str
 }
 
 function KoshaForm({ mode }: { mode: "new" | "edit" }) {
+  const [section, setSection] = useState<"details" | "equipment">("details");
   const params = useParams<{ id?: string }>();
   const id = Number(params.id ?? 0);
   const [, setLocation] = useLocation();
@@ -809,11 +811,13 @@ function KoshaForm({ mode }: { mode: "new" | "edit" }) {
         </div>
         <div className="flex gap-2">
           <Link href="/admin/koshas"><Button type="button" variant="outline">إلغاء</Button></Link>
-          <Button type="submit" disabled={save.isPending} className="gap-2"><Save className="h-4 w-4" /> {save.isPending ? "جاري الحفظ..." : "حفظ"}</Button>
+          {section === "details" ? <Button type="submit" disabled={save.isPending} className="gap-2"><Save className="h-4 w-4" /> {save.isPending ? "جاري الحفظ..." : "حفظ"}</Button> : null}
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_0.85fr]">
+      {mode === "edit" ? <div role="tablist" aria-label="أقسام الكوشة" className="flex gap-2"><Button type="button" role="tab" aria-selected={section === "details"} variant={section === "details" ? "default" : "outline"} onClick={() => setSection("details")}>بيانات الكوشة</Button><Button type="button" role="tab" aria-selected={section === "equipment"} variant={section === "equipment" ? "default" : "outline"} onClick={() => setSection("equipment")}>المعدات والمواد</Button></div> : null}
+      {section === "equipment" && mode === "edit" ? <KoshaEquipmentPanel koshaId={id} /> : null}
+      <div className={section === "details" ? "grid gap-4 lg:grid-cols-[1fr_0.85fr]" : "hidden"}>
         <div className="space-y-4 rounded-xl border border-border/30 bg-card p-4">
           <div className="grid gap-3 md:grid-cols-2">
             <Field label="اسم الكوشة" value={form.name} onChange={(value) => setForm((f) => ({ ...f, name: value }))} />
