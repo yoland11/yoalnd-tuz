@@ -15,6 +15,7 @@ import type { GraduationAdminUser } from "@/server/graduation";
 import { receivePayment } from "@/server/graduation-operations";
 import { readRequestBody } from "@/server/request-body";
 import { handleGraduationGroupPricing } from "@/server/graduation-group-pricing";
+import { handleRepresentativeWorkspace } from "@/server/representative-workspace";
 import {
   canAccessRepresentativeGroup,
   classifyRepresentativeScope,
@@ -171,6 +172,10 @@ export async function handleRepresentativePortal(
     }[scope.reason];
     return fail(reason, 403);
   }
+  // Academic batches and per-group workspaces (read + non-financial edits),
+  // scoped with the same resolved representative scope.
+  const workspace = await handleRepresentativeWorkspace(req, parts, user, scope, fail, requestId);
+  if (workspace) return workspace;
   if (resource === "scope" && req.method === "GET") {
     if (scope.kind === "admin") return json({ kind: "admin", group: null });
     try {

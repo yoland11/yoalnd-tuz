@@ -64,6 +64,8 @@
     "test:tailor-student-references": "node ./scripts/test-tailor-student-references.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-tailor-student-references-ui.ts",
     "test:graduation-invoice-number": "node ./scripts/test-graduation-invoice-number.mjs",
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",
+    "test:representative-workspace": "node ./scripts/test-representative-workspace-scope.mjs",
+    "test:graduation-batches": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-batches.ts",
     "test:representative-group-access": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-representative-group-access.ts",
     "test:representative-assignment-policy": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-representative-assignment-policy.ts",
     "test:representative-assignment-route": "node ./scripts/test-representative-assignment-route.mjs",

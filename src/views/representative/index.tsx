@@ -1,28 +1,18 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Redirect, Route, Switch, useLocation } from "wouter";
+import { Link, Redirect, Route, Switch, useLocation, useParams } from "wouter";
 import {
-  BarChart3,
-  Eye,
   FileText,
   GraduationCap,
+  Layers3,
   LogOut,
-  Plus,
   Printer,
-  Search,
-  Users,
   UserRoundCheck,
+  Users,
   WalletCards,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -41,8 +31,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
-import { GraduationGroupPricingEditor } from "@/components/graduation-group-pricing-editor";
 import {
   apiErrorMessage,
   apiErrorStatus,
@@ -59,6 +47,9 @@ import {
   printWhenImagesReadyScript,
   thermalReceiptCss,
 } from "@/views/admin/print-helpers";
+import { BatchDashboard, BatchesHome, useBatchesOverview } from "./batches";
+import { GroupWorkspace } from "./workspace";
+import { BRAND, Breadcrumbs, EmptyState, ErrorCard } from "./shared";
 
 const api = <T,>(path: string, init?: RequestInit) =>
   adminFetch<T>(`/admin/representative${path}`, init);
@@ -70,29 +61,12 @@ const paymentLabels: Record<string, string> = {
   partial: "مدفوع جزئياً",
   paid: "مدفوع بالكامل",
 };
-const productionLabels: Record<string, string> = {
-  new: "بانتظار التجهيز",
-  awaiting_measurements: "بانتظار القياسات",
-  printing: "قيد الطباعة",
-  ready: "جاهز",
-  delivered: "تم التسليم",
-};
-
-type Student = {
-  id: number;
-  name: string;
-  phone: string;
-  studentCode: string;
-  package: string;
-  total: number;
-  paid: number;
-  remaining: number;
-  paymentStatus: string;
-  productionStatus: string;
-  qr?: string;
-  barcode?: string;
-  trackingUrl?: string;
-};
+const useScope = () =>
+  useQuery({
+    queryKey: ["representative", "scope"],
+    queryFn: () => api<PortalScope>("/scope"),
+    retry: false,
+  });
 
 function initials(name: string) {
   return (
@@ -124,18 +98,6 @@ function PaymentBadge({ value }: { value: string }) {
       className={`inline-flex rounded-md px-2 py-1 text-[11px] font-medium ring-1 ${tone}`}
     >
       {paymentLabels[value] || value}
-    </span>
-  );
-}
-function ProductionBadge({ value }: { value: string }) {
-  const tone = ["ready", "delivered"].includes(value)
-    ? "text-emerald-700"
-    : value === "printing"
-      ? "text-violet-700"
-      : "text-sky-700";
-  return (
-    <span className={`text-xs font-medium ${tone}`}>
-      {productionLabels[value] || value}
     </span>
   );
 }
@@ -227,36 +189,48 @@ function Shell({
   scope: PortalScope;
   children: React.ReactNode;
 }) {
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const home = scope.kind === "group" ? `/representative/groups/${scope.group.id}` : "/representative";
+  const nav = [
+    { href: home, label: scope.kind === "group" ? "مجموعتي" : "وجبات التخرج", icon: Layers3, active: location === "/representative" || location.startsWith("/representative/batches") || location.startsWith("/representative/groups") },
+    { href: scope.kind === "group" ? `${home}?tab=students` : "/representative", label: "الطلاب", icon: Users, active: false, mobileOnly: true },
+    { href: "/representative/payments", label: "المدفوعات والعهدة", short: "المدفوعات", icon: WalletCards, active: location.startsWith("/representative/payments") },
+    { href: "/representative/reports", label: "التقارير", icon: FileText, active: location.startsWith("/representative/reports") },
+    ...(scope.kind === "admin" ? [{ href: "/representative/assignments", label: "تعيين الممثلين", icon: UserRoundCheck, active: location.startsWith("/representative/assignments") }] : []),
+  ];
   return (
     <div
-      className="representative-v2 min-h-dvh bg-[#fff8fa] text-slate-800 dark:bg-slate-950 dark:text-slate-100"
+      className="representative-v2 min-h-dvh bg-[#fffafb] text-slate-800 dark:bg-slate-950 dark:text-slate-100"
       dir="rtl"
     >
       <header className="sticky top-0 z-20 border-b border-rose-100/80 bg-white/95 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
-        <div className="mx-auto flex h-[70px] max-w-[1440px] items-center justify-between px-4 sm:px-6">
-          <div className="flex items-center gap-3">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#e91e63] text-white shadow-sm">
+        <div className="mx-auto flex h-[68px] max-w-[1440px] items-center justify-between gap-3 px-4 sm:px-6">
+          <Link href={home} className="flex min-w-0 items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#7b1e3a] text-white shadow-sm">
               <GraduationCap className="h-5 w-5" />
             </span>
-            <div>
-              <h1 className="text-base font-bold">بوابة الممثلين</h1>
+            <div className="min-w-0">
+              <h1 className="text-base font-bold">بوابة ممثلي التخرج</h1>
               <p className="max-w-[180px] truncate text-xs text-muted-foreground sm:max-w-none">
-                {scope.kind === "admin" ? "جميع مجموعات التخرج" : scope.group.title}
+                {scope.kind === "admin" ? "كل وجبات ومجموعات التخرج" : scope.group.title}
               </p>
             </div>
-          </div>
-          <div className="hidden text-center md:block">
-            <p className="font-semibold">مجموعة علي جان نهاد</p>
-            <p className="text-xs text-muted-foreground">Graduation ERP</p>
-          </div>
+          </Link>
+          <nav aria-label="أقسام البوابة" className="hidden items-center gap-1 md:flex">
+            {nav.filter((item) => !item.mobileOnly).map((item) => (
+              <Link key={item.href + item.label} href={item.href} aria-current={item.active ? "page" : undefined}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm ${item.active ? "bg-[#fbeff2] font-semibold text-[#7b1e3a]" : "text-slate-600 hover:bg-rose-50/60"}`}>
+                <item.icon className="h-4 w-4" />{item.label}
+              </Link>
+            ))}
+          </nav>
           <div className="flex items-center gap-2">
             <div className="hidden text-left text-xs sm:block">
               <b>{user.fullName || user.username}</b>
               <p className="text-muted-foreground">{scope.kind === "admin" ? "مدير النظام" : "ممثل المجموعة"}</p>
             </div>
-            <span className="grid h-9 w-9 place-items-center rounded-full bg-rose-100 text-xs font-bold text-[#e91e63]">
+            <span className="grid h-9 w-9 place-items-center rounded-full bg-[#fbeff2] text-xs font-bold text-[#7b1e3a]">
               {initials(user.fullName || user.username)}
             </span>
             <Button
@@ -277,649 +251,49 @@ function Shell({
       <main className="mx-auto max-w-[1440px] px-4 py-5 pb-24 sm:px-6">
         {children}
       </main>
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid border-t border-rose-100 bg-white px-3 py-2 shadow-[0_-6px_20px_rgba(233,30,99,.08)] md:hidden dark:border-slate-800 dark:bg-slate-950">
+      <nav aria-label="التنقل السريع" className="fixed inset-x-0 bottom-0 z-30 border-t border-rose-100 bg-white px-3 py-2 shadow-[0_-6px_20px_rgba(123,30,58,.08)] md:hidden dark:border-slate-800 dark:bg-slate-950">
         <div className="mx-auto grid w-full max-w-md grid-cols-4">
-          <Link
-            href="/representative"
-            className="grid place-items-center gap-1 py-1 text-[11px] text-[#e91e63]"
-          >
-            <BarChart3 className="h-4 w-4" />
-            الرئيسية
-          </Link>
-          <Link
-            href="/representative/students"
-            className="grid place-items-center gap-1 py-1 text-[11px]"
-          >
-            <Users className="h-4 w-4" />
-            الطلبة
-          </Link>
-          <Link
-            href="/representative/payments"
-            className="grid place-items-center gap-1 py-1 text-[11px]"
-          >
-            <WalletCards className="h-4 w-4" />
-            المدفوعات
-          </Link>
-          <Link
-            href="/representative/reports"
-            className="grid place-items-center gap-1 py-1 text-[11px]"
-          >
-            <FileText className="h-4 w-4" />
-            التقارير
-          </Link>
+          {nav.slice(0, 4).map((item) => (
+            <Link key={item.href + item.label} href={item.href}
+              className={`grid place-items-center gap-1 py-1 text-[11px] ${item.active ? "font-semibold text-[#7b1e3a]" : ""}`}>
+              <item.icon className="h-4 w-4" />
+              {"short" in item && item.short ? item.short : item.label}
+            </Link>
+          ))}
         </div>
       </nav>
     </div>
   );
 }
 
-function Metric({
-  label,
-  value,
-  accent,
-  progress,
-}: {
-  label: string;
-  value: string | number;
-  accent?: "green" | "pink";
-  progress?: number;
-}) {
-  return (
-    <Card className="border-rose-100/80 shadow-[0_4px_14px_rgba(55,20,35,.035)] dark:border-slate-800">
-      <CardContent className="p-4">
-        <p className="text-xs text-muted-foreground">{label}</p>
-        <strong
-          className={`mt-1 block text-lg tabular-nums ${accent === "green" ? "text-emerald-600" : accent === "pink" ? "text-[#e91e63]" : ""}`}
-        >
-          {value}
-        </strong>
-        {progress !== undefined ? (
-          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-rose-100 dark:bg-slate-800">
-            <div
-              className="h-full rounded-full bg-[#e91e63] transition-[width] duration-200"
-              style={{ width: `${Math.min(100, progress)}%` }}
-            />
-          </div>
-        ) : (
-          <span className="mt-1 block text-[11px] text-muted-foreground">
-            IQD
-          </span>
-        )}
-      </CardContent>
-    </Card>
-  );
+/** Administrators start at the batches page; a representative goes straight to their group. */
+function Home() {
+  const scope = useScope();
+  if (scope.isPending) return <Skeleton className="h-[620px] rounded-2xl" />;
+  if (scope.isError) return <ErrorCard error={scope.error} retry={() => void scope.refetch()} />;
+  if (scope.data.kind === "group") return <Redirect to={`/representative/groups/${scope.data.group.id}`} />;
+  return <BatchesHome />;
 }
 
-function DetailDialog({
-  student,
-  onClose,
-}: {
-  student: Student | null;
-  onClose: () => void;
-}) {
-  return (
-    <Dialog open={Boolean(student)} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent dir="rtl" className="max-w-xl">
-        <DialogHeader>
-          <DialogTitle>تفاصيل الطالب والمدفوعات</DialogTitle>
-        </DialogHeader>
-        {student ? (
-          <div className="space-y-4">
-            <div className="flex items-center gap-3 rounded-xl bg-rose-50 p-3 dark:bg-rose-950/25">
-              <span className="grid h-12 w-12 place-items-center rounded-full bg-[#e91e63] text-sm font-bold text-white">
-                {initials(student.name)}
-              </span>
-              <div>
-                <b>{student.name}</b>
-                <p className="text-xs text-muted-foreground">
-                  {student.studentCode} · {student.phone}
-                </p>
-              </div>
-            </div>
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-lg border p-3">
-                <span className="block text-xs text-muted-foreground">
-                  الإجمالي
-                </span>
-                <b>{formatCurrency(student.total)}</b>
-              </div>
-              <div className="rounded-lg border p-3">
-                <span className="block text-xs text-muted-foreground">
-                  المدفوع
-                </span>
-                <b className="text-emerald-600">
-                  {formatCurrency(student.paid)}
-                </b>
-              </div>
-              <div className="rounded-lg border p-3">
-                <span className="block text-xs text-muted-foreground">
-                  المتبقي
-                </span>
-                <b className="text-[#e91e63]">
-                  {formatCurrency(student.remaining)}
-                </b>
-              </div>
-            </div>
-            <div className="grid gap-2 text-sm sm:grid-cols-2">
-              <p>
-                <span className="text-muted-foreground">الباقة: </span>
-                {student.package || "—"}
-              </p>
-              <p>
-                <span className="text-muted-foreground">الإنتاج: </span>
-                <ProductionBadge value={student.productionStatus} />
-              </p>
-            </div>
-          </div>
-        ) : null}
-      </DialogContent>
-    </Dialog>
-  );
+function StudentsRedirect() {
+  const scope = useScope();
+  if (scope.isPending) return <Skeleton className="h-72 rounded-2xl" />;
+  if (scope.data?.kind === "group") return <Redirect to={`/representative/groups/${scope.data.group.id}?tab=students`} />;
+  return <Redirect to="/representative" />;
 }
 
-function PaymentDialog({
-  open,
-  student,
-  onClose,
-}: {
-  open: boolean;
-  student: Student | null;
-  onClose: () => void;
-}) {
-  const { toast } = useToast();
-  const qc = useQueryClient();
-  const [form, setForm] = useState({
-    amount: "",
-    paymentMethod: "cash",
-    receiptNumber: "",
-    notes: "",
-  });
-  const save = useMutation({
-    mutationFn: () =>
-      api("/payments", {
-        method: "POST",
-        body: JSON.stringify({ orderId: student?.id, ...form }),
-      }),
-    onSuccess: () => {
-      toast({ title: "تم تسجيل الدفعة بانتظار اعتماد الإدارة" });
-      qc.invalidateQueries({ queryKey: ["representative"] });
-      onClose();
-    },
-    onError: (error) =>
-      toast({
-        title: "تعذر تسجيل الدفعة",
-        description: apiErrorMessage(error),
-        variant: "destructive",
-      }),
-  });
-  return (
-    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent dir="rtl" className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>تسجيل دفعة جديدة</DialogTitle>
-        </DialogHeader>
-        <div className="grid gap-4 sm:grid-cols-[1.2fr_.8fr]">
-          <div className="space-y-3">
-            <div className="flex items-center gap-3 rounded-xl border border-rose-100 bg-rose-50/60 p-3">
-              <span className="grid h-10 w-10 place-items-center rounded-full bg-[#e91e63] text-xs font-bold text-white">
-                {initials(student?.name || "")}
-              </span>
-              <div>
-                <b>{student?.name || "اختر طالباً"}</b>
-                <p className="text-xs text-muted-foreground">
-                  {student?.studentCode} · {student?.package}
-                </p>
-              </div>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <Label>مبلغ الدفعة</Label>
-                <Input
-                  className="mt-1.5"
-                  inputMode="decimal"
-                  value={form.amount}
-                  onChange={(event) =>
-                    setForm({ ...form, amount: event.target.value })
-                  }
-                  placeholder="0"
-                />
-              </div>
-              <div>
-                <Label>طريقة الدفع</Label>
-                <Select
-                  value={form.paymentMethod}
-                  onValueChange={(paymentMethod) =>
-                    setForm({ ...form, paymentMethod })
-                  }
-                >
-                  <SelectTrigger className="mt-1.5">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="cash">نقدي</SelectItem>
-                    <SelectItem value="transfer">تحويل مصرفي</SelectItem>
-                    <SelectItem value="card">بطاقة</SelectItem>
-                    <SelectItem value="other">أخرى</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div>
-              <Label>المرجع أو رقم الوصل</Label>
-              <Input
-                className="mt-1.5"
-                value={form.receiptNumber}
-                onChange={(event) =>
-                  setForm({ ...form, receiptNumber: event.target.value })
-                }
-              />
-            </div>
-            <div>
-              <Label>ملاحظات</Label>
-              <Textarea
-                className="mt-1.5 min-h-20"
-                value={form.notes}
-                onChange={(event) =>
-                  setForm({ ...form, notes: event.target.value })
-                }
-                placeholder="ملاحظات اختيارية"
-              />
-            </div>
-          </div>
-          <div className="space-y-3 rounded-xl border border-rose-100 p-4">
-            <h3 className="font-semibold">ملخص الدفعة</h3>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">الإجمالي</span>
-                <b>{formatCurrency(student?.total || 0)}</b>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">المدفوع</span>
-                <b className="text-emerald-600">
-                  {formatCurrency(student?.paid || 0)}
-                </b>
-              </div>
-              <div className="flex justify-between border-t pt-2">
-                <span className="text-muted-foreground">المتبقي</span>
-                <b className="text-[#e91e63]">
-                  {formatCurrency(student?.remaining || 0)}
-                </b>
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              تُسجل الدفعة كسند مستقل ولا يتم تعديل أي دفعة سابقة.
-            </p>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button
-            className="bg-[#e91e63] hover:bg-[#d81b60]"
-            onClick={() => save.mutate()}
-            disabled={!student?.id || !Number(form.amount) || save.isPending}
-          >
-            {save.isPending ? "جارٍ الحفظ…" : "تأكيد الدفعة"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+function BatchRoute() {
+  const params = useParams<{ key: string }>();
+  return <BatchDashboard batchKey={decodeURIComponent(params.key || "")} />;
 }
 
-function StudentRows({
-  items,
-  compact = false,
-  onPayment,
-  onView,
-}: {
-  items: Student[];
-  compact?: boolean;
-  onPayment: (student: Student) => void;
-  onView: (student: Student) => void;
-}) {
-  return (
-    <>
-      {!compact ? (
-        <div className="hidden overflow-hidden rounded-xl border border-rose-100 bg-white shadow-[0_4px_14px_rgba(55,20,35,.03)] md:block dark:border-slate-800 dark:bg-slate-900">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-rose-50/60 hover:bg-rose-50/60 dark:bg-slate-800">
-                <TableHead>الطالب</TableHead>
-                <TableHead>الهاتف</TableHead>
-                <TableHead>كود التتبع</TableHead>
-                <TableHead>الباقة</TableHead>
-                <TableHead>حالة الإنتاج</TableHead>
-                <TableHead>الإجمالي</TableHead>
-                <TableHead>المدفوع</TableHead>
-                <TableHead>المتبقي</TableHead>
-                <TableHead>الحالة</TableHead>
-                <TableHead className="text-left">الإجراءات</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {items.map((student) => (
-                <TableRow key={student.id} className="hover:bg-rose-50/35">
-                  <TableCell>
-                    <div className="flex items-center gap-2.5">
-                      <span className="grid h-9 w-9 place-items-center rounded-full bg-rose-100 text-xs font-bold text-[#e91e63]">
-                        {initials(student.name)}
-                      </span>
-                      <span>
-                        <b className="block whitespace-nowrap">
-                          {student.name}
-                        </b>
-                        <small className="text-muted-foreground">
-                          {student.studentCode}
-                        </small>
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell dir="ltr" className="text-right text-xs">
-                    {student.phone}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {student.studentCode}
-                  </TableCell>
-                  <TableCell>{student.package || "—"}</TableCell>
-                  <TableCell>
-                    <ProductionBadge value={student.productionStatus} />
-                  </TableCell>
-                  <TableCell>{formatCurrency(student.total)}</TableCell>
-                  <TableCell className="text-emerald-600">
-                    {formatCurrency(student.paid)}
-                  </TableCell>
-                  <TableCell
-                    className={
-                      student.remaining ? "font-medium text-[#e91e63]" : ""
-                    }
-                  >
-                    {formatCurrency(student.remaining)}
-                  </TableCell>
-                  <TableCell>
-                    <PaymentBadge value={student.paymentStatus} />
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        size="icon"
-                        variant="outline"
-                        className="h-8 w-8 border-rose-200 text-[#e91e63]"
-                        onClick={() => onView(student)}
-                        aria-label={`عرض ${student.name}`}
-                      >
-                        <Eye className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        size="sm"
-                        className="h-8 bg-[#e91e63] px-2.5 text-xs hover:bg-[#d81b60]"
-                        onClick={() => onPayment(student)}
-                      >
-                        <Plus className="ml-1 h-3.5 w-3.5" />
-                        دفعة
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      ) : null}
-      <div className="grid gap-2 md:hidden">
-        {items.map((student) => (
-          <Card
-            key={student.id}
-            className="border-rose-100 dark:border-slate-800"
-          >
-            <CardContent className="flex items-center justify-between gap-3 p-3">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-rose-100 text-xs font-bold text-[#e91e63]">
-                  {initials(student.name)}
-                </span>
-                <div className="min-w-0">
-                  <b className="block truncate text-sm">{student.name}</b>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {student.studentCode}
-                  </p>
-                  <div className="mt-1">
-                    <PaymentBadge value={student.paymentStatus} />
-                  </div>
-                </div>
-              </div>
-              <div className="flex shrink-0 gap-1">
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-9 w-9 border-rose-200 text-[#e91e63]"
-                  onClick={() => onView(student)}
-                >
-                  <Eye className="h-4 w-4" />
-                </Button>
-                <Button
-                  size="icon"
-                  className="h-9 w-9 bg-[#e91e63] hover:bg-[#d81b60]"
-                  onClick={() => onPayment(student)}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-    </>
-  );
+function GroupRoute() {
+  const params = useParams<{ id: string }>();
+  const id = Number(params.id);
+  if (!Number.isInteger(id) || id <= 0) return <EmptyState text="رقم المجموعة غير صحيح." />;
+  return <GroupWorkspace key={id} groupId={id} />;
 }
 
-function Dashboard() {
-  const client = useQueryClient();
-  const { toast } = useToast();
-  const data = useQuery({
-    queryKey: ["representative", "dashboard"],
-    queryFn: () => api<any>("/dashboard"),
-  });
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("all");
-  const [paymentStudent, setPaymentStudent] = useState<Student | null>(null);
-  const [detailStudent, setDetailStudent] = useState<Student | null>(null);
-  const students = useMemo(
-    () => (data.data?.students || []) as Student[],
-    [data.data],
-  );
-  const shown = useMemo(
-    () =>
-      students.filter((student) => {
-        const needle = search.trim().toLowerCase();
-        const match =
-          !needle ||
-          [
-            student.name,
-            student.phone,
-            student.studentCode,
-            student.qr,
-            student.barcode,
-            student.package,
-          ].some((value) =>
-            String(value || "")
-              .toLowerCase()
-              .includes(needle),
-          );
-        return match && (filter === "all" || student.paymentStatus === filter);
-      }),
-    [students, search, filter],
-  );
-  if (data.isLoading) return <Skeleton className="h-[680px]" />;
-  if (data.error) return <ErrorState error={data.error} />;
-  const d = data.data;
-  const s = d.stats;
-  const group = d.groups?.[0];
-  const isAdminOverview = d.groups?.length > 1;
-  const today = students.filter((student) => student.paid > 0).length;
-  return (
-    <div className="space-y-4">
-      <section className="rounded-xl border border-rose-100 bg-white px-4 py-3.5 dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-bold">{isAdminOverview ? "جميع مجموعات التخرج" : group?.title || "مجموعة التخرج"}</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {isAdminOverview ? `${d.groups.length} مجموعات ضمن عرض الإدارة` : [
-                group?.university,
-                group?.college,
-                group?.department,
-                group?.graduationYear,
-              ]
-                .filter(Boolean)
-                .join(" · ") || "بيانات المجموعة"}
-            </p>
-          </div>
-          <div className="text-left text-xs">
-            <b>{d.representative?.name}</b>
-            <p className="text-muted-foreground">{isAdminOverview ? "مدير النظام" : "ممثل المجموعة"}</p>
-          </div>
-        </div>
-      </section>
-      {d.groups?.map((item: any) => <details key={item.id} className="rounded-xl border border-rose-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-        <summary className="cursor-pointer text-sm font-semibold">أسعار الوشاح — {item.title || item.groupNo}</summary>
-        <div className="mt-4"><GraduationGroupPricingEditor
-          key={`${item.id}-${JSON.stringify(item.defaultConfiguration)}`}
-          configuration={item.defaultConfiguration || {}}
-          endpoint={`/admin/representative/groups/${item.id}/sash-pricing`}
-          onSaved={(group) => {
-            client.setQueryData<any>(["representative", "dashboard"], (current: any) => current ? { ...current, groups: current.groups.map((entry: any) => entry.id === group.id ? { ...entry, ...group } : entry) } : current);
-            void client.invalidateQueries({ queryKey: ["representative"] });
-            void client.invalidateQueries({ queryKey: ["admin", "graduation"] });
-            void client.invalidateQueries({ queryKey: ["graduation", "group"] });
-            toast({ title: "تم حفظ أسعار المجموعة للطلبات الجديدة" });
-          }}
-        /></div>
-      </details>)}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_250px]">
-        <div className="min-w-0 space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric label="إجمالي الطلبة" value={s.students} />
-            <Metric label="إجمالي العقد" value={formatCurrency(s.total)} />
-            <Metric
-              label="إجمالي المدفوع"
-              value={formatCurrency(s.paid)}
-              accent="green"
-            />
-            <Metric
-              label="المتبقي"
-              value={formatCurrency(s.remaining)}
-              accent="pink"
-            />
-          </div>
-          <section className="rounded-xl border border-rose-100 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="relative min-w-[220px] flex-1">
-                <Search className="absolute right-3 top-2.5 h-4 w-4 text-[#e91e63]" />
-                <Input
-                  className="border-rose-100 pr-9"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="ابحث بالاسم، الهاتف أو الكود"
-                />
-              </div>
-              <div className="flex gap-1 overflow-x-auto">
-                <Button
-                  size="sm"
-                  variant={filter === "all" ? "default" : "outline"}
-                  className={
-                    filter === "all"
-                      ? "bg-[#e91e63] hover:bg-[#d81b60]"
-                      : "border-rose-100"
-                  }
-                  onClick={() => setFilter("all")}
-                >
-                  الكل
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="border-rose-100"
-                  onClick={() => setFilter("paid")}
-                >
-                  مدفوع بالكامل
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="border-rose-100"
-                  onClick={() => setFilter("partial")}
-                >
-                  مدفوع جزئياً
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="border-rose-100"
-                  onClick={() => setFilter("unpaid")}
-                >
-                  غير مدفوع
-                </Button>
-              </div>
-            </div>
-          </section>
-          <StudentRows
-            items={shown}
-            onPayment={setPaymentStudent}
-            onView={setDetailStudent}
-          />
-        </div>
-        <aside className="space-y-3 xl:sticky xl:top-[90px] xl:h-fit">
-          <Metric
-            label="نسبة التحصيل"
-            value={`${s.collectionProgress}%`}
-            progress={s.collectionProgress}
-          />
-          <Card className="border-rose-100 shadow-[0_4px_14px_rgba(55,20,35,.03)] dark:border-slate-800">
-            <CardContent className="p-4">
-              <h3 className="font-semibold">إحصائيات المجموعة</h3>
-              <div className="mt-3 space-y-3 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">مدفوع بالكامل</span>
-                  <b className="text-emerald-600">{s.paidFull}</b>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">مدفوع جزئياً</span>
-                  <b className="text-amber-600">{s.partial}</b>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">غير مدفوع</span>
-                  <b className="text-[#e91e63]">{s.unpaid}</b>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">دفعات اليوم</span>
-                  <b>{today}</b>
-                </div>
-                <div className="flex justify-between border-t pt-3">
-                  <span className="text-muted-foreground">
-                    المتبقي الإجمالي
-                  </span>
-                  <b className="text-[#e91e63]">
-                    {formatCurrency(s.remaining)}
-                  </b>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </aside>
-      </div>
-      <PaymentDialog
-        open={Boolean(paymentStudent)}
-        student={paymentStudent}
-        onClose={() => setPaymentStudent(null)}
-      />
-      <DetailDialog
-        student={detailStudent}
-        onClose={() => setDetailStudent(null)}
-      />
-    </div>
-  );
-}
-
-function Students() {
-  return <Dashboard />;
-}
 function Payments() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -1084,45 +458,42 @@ function Payments() {
     </div>
   );
 }
+
+/** Reports are always produced per batch or per group, never as one mixed list. */
 function Reports() {
-  const q = useQuery({
-    queryKey: ["representative", "reports"],
-    queryFn: () => api<any>("/reports"),
-  });
-  const download = () => {
-    const rows = q.data?.items || [];
-    const csv = [
-      "الطالب,الكود,الإجمالي,المستلم,المتبقي",
-      ...rows.map((x: any) =>
-        [x.name, x.studentCode, x.total, x.paid, x.remaining].join(","),
-      ),
-    ].join("\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(
-      new Blob([csv], { type: "text/csv;charset=utf-8" }),
-    );
-    a.download = "representative-students.csv";
-    a.click();
-  };
+  const scope = useScope();
+  const overview = useBatchesOverview();
+  if (scope.isPending || overview.isPending) return <Skeleton className="h-72 rounded-2xl" />;
+  if (scope.data?.kind === "group") return <Redirect to={`/representative/groups/${scope.data.group.id}?tab=reports`} />;
+  if (overview.isError) return <ErrorCard error={overview.error} retry={() => void overview.refetch()} />;
   return (
-    <Card className="border-rose-100 dark:border-slate-800">
-      <CardContent className="p-5">
-        <FileText className="mb-3 h-7 w-7 text-[#e91e63]" />
-        <h2 className="font-bold">قائمة الطلبة والأرصدة</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          تصدير بيانات الطلبة المسموح بها للممثل فقط.
-        </p>
-        <Button
-          className="mt-4 bg-[#e91e63] hover:bg-[#d81b60]"
-          onClick={download}
-          disabled={!q.data}
-        >
-          تصدير CSV
-        </Button>
-      </CardContent>
-    </Card>
+    <div className="space-y-4">
+      <Breadcrumbs items={[{ label: "وجبات التخرج", href: "/representative" }, { label: "التقارير" }]} />
+      <div>
+        <h2 className="text-xl font-bold">التقارير</h2>
+        <p className="text-sm text-muted-foreground">اختر الوجبة لتقرير المجموعات، أو افتح مجموعة لتقارير طلابها ودفعاتها وتجهيزها وتسليمها.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {overview.data.batches.map((batch) => (
+          <Card key={batch.key} className={BRAND.card}>
+            <CardContent className="flex h-full flex-col gap-3 p-4">
+              <div>
+                <FileText className={`mb-2 h-6 w-6 ${BRAND.text}`} />
+                <h3 className="font-bold">{batch.label}</h3>
+                <p className="mt-1 text-xs text-muted-foreground">{batch.groups} مجموعات · {batch.stats.students} طالب · المتبقي {formatCurrency(batch.stats.remaining)}</p>
+              </div>
+              <Button asChild className={`${BRAND.button} mt-auto`}>
+                <Link href={`/representative/batches/${encodeURIComponent(batch.key)}`}><Printer className="ml-1 h-4 w-4" />تقرير الوجبة ومجموعاتها</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+      {!overview.data.batches.length ? <EmptyState text="لا توجد وجبات بعد." /> : null}
+    </div>
   );
 }
+
 function Assignments() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -1240,24 +611,18 @@ function Assignments() {
     </div>
   );
 }
-function ErrorState({ error }: { error: unknown }) {
-  return (
-    <Card>
-      <CardContent className="p-6 text-destructive">
-        {apiErrorMessage(error)}
-      </CardContent>
-    </Card>
-  );
-}
+
 export default function RepresentativePortal() {
   return (
     <PortalGate>
       <Switch>
-        <Route path="/representative/students" component={Students} />
+        <Route path="/representative/batches/:key" component={BatchRoute} />
+        <Route path="/representative/groups/:id" component={GroupRoute} />
+        <Route path="/representative/students" component={StudentsRedirect} />
         <Route path="/representative/payments" component={Payments} />
         <Route path="/representative/reports" component={Reports} />
         <Route path="/representative/assignments" component={Assignments} />
-        <Route component={Dashboard} />
+        <Route component={Home} />
       </Switch>
     </PortalGate>
   );

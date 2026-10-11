@@ -14,6 +14,7 @@ const compactServer = server.replace(/\s+/g, " ");
 const routeScope = spawnSync(process.execPath, ["./scripts/test-representative-route-scope.mjs"], { encoding: "utf8" });
 const financialWrite = spawnSync(process.execPath, ["./scripts/test-representative-financial-write-route.mjs"], { encoding: "utf8" });
 const accessErrorLogout = spawnSync(process.execPath, ["./scripts/test-representative-error-logout.mjs"], { encoding: "utf8" });
+const workspaceScope = spawnSync(process.execPath, ["./scripts/test-representative-workspace-scope.mjs"], { encoding: "utf8" });
 
 const checks = [
   ["representative route is registered", app.includes('path="/representative/*"') && app.includes('path="/representative"')],
@@ -21,6 +22,7 @@ const checks = [
   ["group access is server-enforced", routeScope.status === 0],
   ["financial writes recheck group under the assignment lock", financialWrite.status === 0],
   ["blocked representatives can sign out and switch accounts", accessErrorLogout.status === 0],
+  ["batches and group workspaces are isolated on the server", workspaceScope.status === 0],
   ["representative has no implicit graduation-wide access", !server.includes('user.permissions.includes("graduation")')],
   ["payment recording remains pending", server.includes("status: \"pending\"") && server.includes("representative_payment_requests")],
   ["approved payment uses central graduation allocation", server.includes("receivePayment(") && operations.includes("export async function receivePayment")],
@@ -43,5 +45,6 @@ for (const [name, passed] of checks) {
 if (routeScope.status !== 0) console.error(routeScope.stderr || routeScope.stdout);
 if (financialWrite.status !== 0) console.error(financialWrite.stderr || financialWrite.stdout);
 if (accessErrorLogout.status !== 0) console.error(accessErrorLogout.stderr || accessErrorLogout.stdout);
+if (workspaceScope.status !== 0) console.error(workspaceScope.stderr || workspaceScope.stdout);
 if (failed) process.exit(1);
 console.log(`Representative Portal contract checks passed (${checks.length}/${checks.length})`);
