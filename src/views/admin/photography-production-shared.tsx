@@ -537,13 +537,13 @@ export function PhotographyProductionPanel({ bookingId }: { bookingId: number })
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
               {data.items.map((item) => (
-                <button key={item.id} type="button" onClick={() => setSelected(item)} className="flex items-center justify-between gap-2 rounded-xl border p-3 text-start transition hover:bg-muted/40">
+                <Button key={item.id} type="button" variant="ghost" size="flush" onClick={() => setSelected(item)} className="h-auto whitespace-normal font-normal leading-normal max-md:min-h-0 flex w-full items-center justify-between gap-2 rounded-xl border border-border p-3 text-start transition hover:bg-muted/40">
                   <span className="space-y-1">
                     <KindBadge kind={item.kind} />
                     <span className="block text-xs text-muted-foreground">{item.assigneeName || "غير مسند"} · {readableDay(item.dueDate)}</span>
                   </span>
                   <StatusBadge status={item.status} dueDate={item.dueDate} today={data.today} />
-                </button>
+                </Button>
               ))}
             </div>
           </div>

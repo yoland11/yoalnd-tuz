@@ -119,7 +119,7 @@ function readInitial() {
 function SummaryCard({ label, value, tone = "", active, onClick }: { label: string; value: number; tone?: string; active?: boolean; onClick?: () => void }) {
   const body = <><div className={`text-2xl font-bold tabular-nums ${tone}`}>{value}</div><div className="mt-0.5 text-xs text-muted-foreground">{label}</div></>;
   return onClick ? (
-    <button type="button" onClick={onClick} aria-pressed={active} className={`rounded-xl border bg-card p-3 text-start transition hover:border-primary/40 ${active ? "border-primary ring-1 ring-primary/30" : "border-border/50"}`}>{body}</button>
+    <Button type="button" variant="ghost" size="flush" onClick={onClick} aria-pressed={active} className={`h-auto whitespace-normal font-normal leading-normal max-md:min-h-0 block w-full rounded-xl border bg-card p-3 text-start transition hover:bg-card hover:border-primary/40 ${active ? "border-primary ring-1 ring-primary/30" : "border-border/50"}`}>{body}</Button>
   ) : <div className="rounded-xl border border-border/50 bg-card p-3">{body}</div>;
 }
 
@@ -281,7 +281,7 @@ export default function PhotographyProductionPage() {
             <Button size="sm" variant={filters.mine ? "default" : "outline"} className="rounded-full" aria-pressed={filters.mine} onClick={() => patch({ mine: !filters.mine })}>أعمالي</Button>
           ) : null}
           {filters.booking ? (
-            <Badge variant="secondary" className="gap-1 rounded-full py-1">حجز رقم {filters.booking}<button type="button" aria-label="إزالة فلتر الحجز" onClick={() => patch({ booking: "" })}><X className="h-3.5 w-3.5" /></button></Badge>
+            <Badge variant="secondary" className="gap-1 rounded-full py-1">حجز رقم {filters.booking}<Button type="button" variant="ghost" size="flush" className="h-auto rounded-full max-md:min-h-0 [&_svg]:size-3.5" aria-label="إزالة فلتر الحجز" onClick={() => patch({ booking: "" })}><X /></Button></Badge>
           ) : null}
           {activeFilterCount ? (
             <Button size="sm" variant="ghost" onClick={() => { setFilters(EMPTY_FILTERS); setSearch(""); }}><FilterX className="h-4 w-4" /> مسح الفلاتر ({activeFilterCount})</Button>
@@ -362,7 +362,7 @@ function Board({ data, onOpen }: { data: BoardResponse; onOpen: (item: Productio
                     onDragEnd={() => { setDragging(null); setOver(null); }}
                     className={`rounded-xl border bg-card p-3 shadow-sm ${isOverdue(item, data.today) ? "border-rose-300 dark:border-rose-900" : ""} ${canMove(item) ? "cursor-grab active:cursor-grabbing" : ""}`}
                   >
-                    <button type="button" className="block w-full space-y-2 text-start" onClick={() => onOpen(item)}>
+                    <Button type="button" variant="ghost" size="flush" className="h-auto whitespace-normal font-normal leading-normal max-md:min-h-0 block w-full space-y-2 text-start hover:bg-transparent [&_svg]:size-3.5" onClick={() => onOpen(item)}>
                       <div className="flex items-center justify-between gap-2">
                         <KindBadge kind={item.kind} />
                         <span className="font-mono text-[11px] text-muted-foreground" dir="ltr">{item.booking.number}</span>
@@ -375,7 +375,7 @@ function Board({ data, onOpen }: { data: BoardResponse; onOpen: (item: Productio
                       </div>
                       <div className={`flex items-center gap-1 text-xs ${isOverdue(item, data.today) ? "font-bold text-rose-600" : "text-muted-foreground"}`}><CalendarClock className="h-3.5 w-3.5" />التسليم: {item.dueDate ? readableDay(item.dueDate) : "بدون موعد"}</div>
                       {isOverdue(item, data.today) ? <StatusBadge status={item.status} dueDate={item.dueDate} today={data.today} /> : null}
-                    </button>
+                    </Button>
                     {canMove(item) ? (
                       <Select
                         value={item.status}
@@ -409,9 +409,9 @@ function KindCell({ row, kind, today, onOpen }: { row: BookingRow; kind: Product
   const item = row.items.find((entry) => entry.kind === kind);
   if (!item) return <span className="text-muted-foreground">-</span>;
   return (
-    <button type="button" onClick={() => onOpen({ ...item, bookingId: row.booking.id, booking: row.booking })} aria-label={`${PRODUCTION_KIND_LABELS[kind]}: ${PRODUCTION_STATUS_LABELS[item.status]}`}>
+    <Button type="button" variant="ghost" size="flush" className="h-auto rounded-md font-normal max-md:min-h-0 [&_svg]:size-3" onClick={() => onOpen({ ...item, bookingId: row.booking.id, booking: row.booking })} aria-label={`${PRODUCTION_KIND_LABELS[kind]}: ${PRODUCTION_STATUS_LABELS[item.status]}`}>
       <StatusBadge status={item.status} dueDate={item.dueDate} today={today} stacked />
-    </button>
+    </Button>
   );
 }
 

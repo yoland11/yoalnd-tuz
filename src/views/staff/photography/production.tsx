@@ -108,7 +108,7 @@ export function ProductionWorkPage() {
             const overdue = data ? isOverdue(item, data.today) : false;
             return (
               <article key={item.id} className={`space-y-2 rounded-xl border bg-card p-3 ${overdue ? "border-rose-300 dark:border-rose-900" : ""}`}>
-                <button type="button" className="block w-full space-y-1 text-start" onClick={() => setSelected(item)}>
+                <Button type="button" variant="ghost" size="flush" className="h-auto whitespace-normal font-normal leading-normal max-md:min-h-0 block w-full space-y-1 text-start hover:bg-transparent [&_svg]:size-3.5" onClick={() => setSelected(item)}>
                   <div className="flex items-center justify-between gap-2">
                     <KindBadge kind={item.kind} />
                     <StatusBadge status={item.status} dueDate={item.dueDate} today={data!.today} />
@@ -116,7 +116,7 @@ export function ProductionWorkPage() {
                   <div className="font-bold">{item.booking.customerName || "زبون"}</div>
                   <div className="text-xs text-muted-foreground"><span className="font-mono" dir="ltr">{item.booking.number}</span> · {item.booking.eventType || "تصوير"} · {readableDay(item.booking.eventDate)}</div>
                   <div className={`text-xs ${overdue ? "font-bold text-rose-600" : "text-muted-foreground"}`}>التسليم: {item.dueDate ? readableDay(item.dueDate) : "بدون موعد"}</div>
-                </button>
+                </Button>
                 {moves.length ? (
                   <div className="flex flex-wrap gap-2">
                     {moves.map((to: ProductionStatus) => (

@@ -32,7 +32,8 @@ assert.match(cart, /import \{ IconButton \}/, "store cart quantity and remove ac
 const productDetail = read("src/views/store/id.tsx");
 assert.match(productDetail, /import \{ IconButton \}/, "store product icon actions must use IconButton");
 const studentWizard = read("src/components/graduation-student-wizard.tsx");
-assert.match(studentWizard, /variant=\{\s*form\.sashType === type\.key \? "selected"/, "graduation sash selection must expose a selected state");
+// The selected sash follows the group policy (displayedSashType) since group sash choices were limited.
+assert.match(studentWizard, /variant=\{\s*(?:form\.sashType|displayedSashType) === type\.key \? "selected"/, "graduation sash selection must expose a selected state");
 const groupBooking = read("src/views/graduation-groups.tsx");
 assert.match(groupBooking, /variant=\{selected \? "selected" : "outline"\}/, "optional booking services must expose a selected state");
 const bookingCenter = read("src/views/admin/booking-center.tsx");

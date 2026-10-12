@@ -203,12 +203,12 @@ export function BatchesHome() {
       <section className="space-y-3">
         <h3 className="flex items-center gap-2 font-bold"><Layers3 className={`h-5 w-5 ${BRAND.text}`} />اختر وجبة التخرج</h3>
         {data.batches.length ? <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{data.batches.map((batch) => (
-          <button key={batch.key} type="button" onClick={() => navigate(batchHref(batch.key))} className={`${BRAND.card} p-4 text-right transition hover:-translate-y-0.5 hover:border-rose-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7b1e3a] ${batch.key === UNASSIGNED_BATCH ? "border-amber-200 bg-amber-50/40" : ""}`}>
+          <Button key={batch.key} type="button" variant="ghost" size="flush" onClick={() => navigate(batchHref(batch.key))} className={`${BRAND.card} h-auto whitespace-normal font-normal leading-normal max-md:min-h-0 block w-full p-4 text-right [&_svg]:size-5 transition hover:-translate-y-0.5 hover:border-rose-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7b1e3a] ${batch.key === UNASSIGNED_BATCH ? "border-amber-200 bg-amber-50/40" : ""}`}>
             <div className="flex items-center justify-between gap-2"><b className="text-lg">{batch.label}</b><GraduationCap className={`h-5 w-5 ${BRAND.text}`} /></div>
             <p className="mt-1 text-xs text-muted-foreground">{batch.groups} مجموعات · {batch.stats.students} طالب{batch.universities ? ` · ${batch.universities} جامعات` : ""}</p>
             <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]"><span>العقود<b className="block text-xs tabular-nums">{formatCurrency(batch.stats.total)}</b></span><span>المدفوع<b className="block text-xs tabular-nums text-emerald-700">{formatCurrency(batch.stats.paid)}</b></span><span>المتبقي<b className="block text-xs tabular-nums text-[#7b1e3a]">{formatCurrency(batch.stats.remaining)}</b></span></div>
             <div className="mt-3 space-y-1.5"><Progress label="التجهيز" value={batch.stats.productionProgress} tone="sky" /><Progress label="التسليم" value={batch.stats.deliveryProgress} tone="green" /></div>
-          </button>
+          </Button>
         ))}</div> : <EmptyState text="لا توجد وجبات بعد. أنشئ وجبة جديدة أو أنشئ مجموعة بسنة تخرج." />}
         {unassigned?.groups ? <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">{unassigned.groups} مجموعات لا تحمل سنة تخرج. افتح «بدون وجبة محددة» واربط كل مجموعة بوجبتها بعد التحقق — لا يخمّن النظام الوجبة من اسم المجموعة.</p> : null}
       </section>

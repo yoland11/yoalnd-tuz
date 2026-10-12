@@ -55,15 +55,17 @@ export function ReceiptPrintDialog({ job, onClose }: { job: ReceiptJob | null; o
       });
   };
   const option = (value: ReceiptFormat, label: string, hint: string, Icon: typeof Receipt) => (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="flush"
       onClick={() => print(value)}
-      className={`flex flex-1 flex-col items-center gap-2 rounded-2xl border-2 p-4 text-center transition hover:border-[#7b1e3a] hover:bg-rose-50 dark:hover:bg-slate-800 ${format === value ? "border-[#7b1e3a] bg-rose-50/60 dark:bg-slate-800" : "border-rose-100 dark:border-slate-700"}`}
+      className={`h-auto whitespace-normal font-normal leading-normal max-md:min-h-0 [&_svg]:size-7 flex flex-1 flex-col items-center gap-2 rounded-2xl border-2 p-4 text-center transition hover:border-[#7b1e3a] hover:bg-rose-50 dark:hover:bg-slate-800 ${format === value ? "border-[#7b1e3a] bg-rose-50/60 dark:bg-slate-800" : "border-rose-100 dark:border-slate-700"}`}
     >
       <Icon className="h-7 w-7 text-[#7b1e3a]" />
       <span className="font-bold">{label}</span>
       <span className="text-xs text-muted-foreground">{hint}</span>
-    </button>
+    </Button>
   );
   return (
     <Dialog open={Boolean(job)} onOpenChange={(open) => !open && onClose()}>
