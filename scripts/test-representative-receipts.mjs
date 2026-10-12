@@ -28,4 +28,8 @@ assert.match(admin, /studentReceiptElement\(receiptInput\(receipt, format\)\)/, 
 assert.ok(!/studentReceiptMarkup|thermalReceiptCss\("80mm"\)/.test(admin), "the old admin thermal template is gone");
 assert.match(operations, /FROM graduation_student_payments p[\s\S]{0,200}WHERE p\.graduation_order_id = \$\{saved\.id\}/, "the admin receipt lists the order's posted payments");
 assert.match(print, /export function scopedReceiptCss/, "in-page PDF styles are scoped to the receipt");
+// Real 80mm printers print ~72mm: a fixed 74mm body plus page margins was cut on the left.
+assert.match(print, /@page \{ size: \$\{thermal \? "80mm auto" : "A5 portrait"\}; margin: \$\{thermal \? "0" : "9mm"\}; \}/, "the thermal page has no margin");
+assert.match(print, /\.doc \{ width: 100%;/, "the receipt body is fluid, never a fixed width wider than the printable area");
+assert.match(print, /\.kv \{ display: flex; flex-wrap: wrap;/, "long values wrap instead of running off the paper");
 console.log("representative receipts: all checks passed");

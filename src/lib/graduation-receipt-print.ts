@@ -104,8 +104,13 @@ function rules(format: ReceiptFormat) {
   const thermal = format === "80mm";
   return `
   .doc, .doc * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .doc { width: ${thermal ? "74mm" : "100%"}; margin: 0 auto; background: #fff; color: #111; direction: rtl; text-align: right;
-    font-family: "Cairo", "Tajawal", "Segoe UI", Tahoma, Arial, sans-serif; font-size: ${thermal ? "11.5px" : "12.5px"}; line-height: 1.55; }
+  /* Thermal: fluid width inside a zero-margin page, so the content always fits
+     the printer's real printable area (~72mm on 80mm rolls). */
+  .doc { width: 100%; margin: 0 auto; padding: ${thermal ? "2.5mm" : "0"}; background: #fff; color: #111; direction: rtl; text-align: right;
+    font-family: "Cairo", "Tajawal", "Segoe UI", Tahoma, Arial, sans-serif; font-size: ${thermal ? "12.5px" : "12.5px"}; line-height: 1.5; ${thermal ? "font-weight: 600;" : ""} }
+  ${thermal ? `.doc * { color: #000 !important; }
+  .doc .title { color: #fff !important; }
+  .doc .kv span:first-child { font-weight: 600; }` : ""}
   .num { font-variant-numeric: tabular-nums; direction: ltr; unicode-bidi: isolate; }
   .head { display: flex; align-items: center; gap: ${thermal ? "8px" : "14px"}; ${thermal ? "flex-direction: column; text-align: center;" : `border-bottom: 3px solid ${BURGUNDY}; padding-bottom: 10px;`} }
   .logo { width: ${thermal ? "46px" : "62px"}; height: ${thermal ? "46px" : "62px"}; object-fit: contain; }
@@ -121,9 +126,10 @@ function rules(format: ReceiptFormat) {
   .card h3 { margin: 0 0 4px; font-size: ${thermal ? "11px" : "12px"}; font-weight: 800; ${thermal ? "" : `color: ${BURGUNDY};`} }
   .student-name { font-size: ${thermal ? "15px" : "18px"}; font-weight: 800; margin: 0; }
   .grid { display: grid; grid-template-columns: ${thermal ? "1fr" : "1fr 1fr"}; gap: ${thermal ? "1px 0" : "3px 18px"}; }
-  .kv { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+  /* A value that no longer fits next to its label drops to its own line, never past the edge. */
+  .kv { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 8px; padding: 1px 0; }
   .kv span:first-child { color: #555; white-space: nowrap; }
-  .kv span:last-child { font-weight: 700; text-align: left; }
+  .kv span:last-child { font-weight: 700; text-align: left; margin-right: auto; min-width: 0; overflow-wrap: anywhere; }
   .doc table { width: 100%; border-collapse: collapse; margin-top: 2px; }
   .doc th, .doc td { padding: ${thermal ? "3px 2px" : "5px 6px"}; text-align: right; border-bottom: 1px ${thermal ? "dashed #999" : "solid #eee"}; font-size: ${thermal ? "10.5px" : "11.5px"}; }
   .doc th { font-weight: 800; ${thermal ? "border-bottom: 1px solid #000;" : `background: #f6eef1; color: ${BURGUNDY};`} }
@@ -139,7 +145,7 @@ function rules(format: ReceiptFormat) {
   .verify { display: flex; align-items: center; gap: 10px; margin-top: ${thermal ? "8px" : "12px"}; ${thermal ? "flex-direction: column; text-align: center;" : ""} }
   .verify img { width: ${thermal ? "30mm" : "26mm"}; height: ${thermal ? "30mm" : "26mm"}; }
   .verify .hint { font-size: 10.5px; color: #444; }
-  .barcode svg { width: ${thermal ? "62mm" : "58mm"}; height: 11mm; }
+  .barcode svg { width: ${thermal ? "100%" : "58mm"}; max-width: ${thermal ? "60mm" : "58mm"}; height: 11mm; }
   .barcode .code { font-size: 10.5px; letter-spacing: 1px; text-align: center; }
   .signs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: ${thermal ? "12px" : "20px"}; }
   .signs div { border-top: 1px solid #000; padding-top: 3px; text-align: center; font-size: 10.5px; color: #333; min-height: ${thermal ? "20px" : "34px"}; }
@@ -154,10 +160,10 @@ function rules(format: ReceiptFormat) {
 function css(format: ReceiptFormat) {
   const thermal = format === "80mm";
   return `
-  @page { size: ${thermal ? "80mm auto" : "A5 portrait"}; margin: ${thermal ? "3mm" : "9mm"}; }
+  @page { size: ${thermal ? "80mm auto" : "A5 portrait"}; margin: ${thermal ? "0" : "9mm"}; }
   html, body { margin: 0; padding: 0; background: #fff; }
   ${rules(format)}
-  @media screen { body { background: #eee; padding: 14px; } .doc { padding: ${thermal ? "8px" : "18px"}; box-shadow: 0 2px 12px rgba(0,0,0,.12); } }
+  @media screen { body { background: #eee; padding: 14px; } .doc { ${thermal ? "max-width: 80mm;" : "padding: 18px;"} box-shadow: 0 2px 12px rgba(0,0,0,.12); } }
   `;
 }
 
@@ -263,7 +269,7 @@ export async function studentReceiptElement(input: StudentReceiptInput): Promise
   element.dir = "rtl";
   element.style.width = input.format === "80mm" ? "80mm" : "148mm";
   element.style.background = "#fff";
-  element.style.padding = input.format === "80mm" ? "3mm" : "8mm";
+  element.style.padding = input.format === "80mm" ? "0" : "8mm";
   element.innerHTML = `<style>${scopedReceiptCss(input.format, ".ajn-receipt-pdf")}</style><main class="doc">${await studentReceiptBody(input)}</main>`;
   return element;
 }
