@@ -274,6 +274,11 @@ export async function handleRepresentativePortal(
             id: graduationGroupsTable.id,
             title: graduationGroupsTable.title,
             groupNo: graduationGroupsTable.groupNo,
+            // The representative recorded on the group (admin-only route), so
+            // the page can offer to create their login account.
+            representativeName: graduationGroupsTable.representativeName,
+            representativePhone: graduationGroupsTable.representativePhone,
+            status: graduationGroupsTable.status,
           })
           .from(graduationGroupsTable)
           .orderBy(desc(graduationGroupsTable.createdAt)),

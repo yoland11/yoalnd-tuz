@@ -50,6 +50,7 @@ import {
 import { BatchDashboard, BatchesHome, useBatchesOverview } from "./batches";
 import { GroupWorkspace } from "./workspace";
 import { BRAND, Breadcrumbs, EmptyState, ErrorCard } from "./shared";
+import { RepresentativeAccounts } from "./accounts";
 
 const api = <T,>(path: string, init?: RequestInit) =>
   adminFetch<T>(`/admin/representative${path}`, init);
@@ -534,14 +535,15 @@ function Assignments() {
       <div>
         <h2 className="text-xl font-bold">تعيين ممثلي المجموعات</h2>
         <p className="text-sm text-muted-foreground">
-          اربط حساب موظف واحداً بمجموعة فعّالة واحدة. تُنشأ بيانات الدخول من إدارة الموظفين.
+          كل ممثل يحتاج حساب دخول (اسم مستخدم وكلمة مرور) مربوطاً بمجموعته. أنشئه من القائمة أدناه أو اربط حساباً موجوداً.
         </p>
       </div>
+      <RepresentativeAccounts groups={q.data?.groups ?? []} items={q.data?.items ?? []} />
       <Card className="border-rose-100 dark:border-slate-800">
         <CardContent className="grid gap-3 p-4 sm:grid-cols-3">
           <Select value={staffId} onValueChange={(value) => { setStaffId(value); setResolveAmbiguous(false); }}>
             <SelectTrigger>
-              <SelectValue placeholder="اختر ممثلاً" />
+              <SelectValue placeholder={q.data?.staff?.length ? "اختر حساب ممثل" : "لا توجد حسابات ممثلين — أنشئ حساباً أعلاه"} />
             </SelectTrigger>
             <SelectContent>
               {q.data?.staff?.map((staff: any) => (
