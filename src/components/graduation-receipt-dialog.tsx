@@ -21,8 +21,9 @@ export function savedReceiptFormat(): ReceiptFormat {
 export type ReceiptJob = {
   title: string;
   subtitle: string;
-  amountLabel: string;
-  amount: number;
+  /** Optional: tailor sheets carry no money. */
+  amountLabel?: string;
+  amount?: number;
   /** Fills the already-open print window. */
   render: (popup: Window, format: ReceiptFormat) => Promise<void>;
 };
@@ -71,7 +72,7 @@ export function ReceiptPrintDialog({ job, onClose }: { job: ReceiptJob | null; o
           <DialogTitle className="flex items-center gap-2"><Printer className="h-5 w-5 text-[#7b1e3a]" /> {job?.title}</DialogTitle>
           <DialogDescription>{job?.subtitle}</DialogDescription>
         </DialogHeader>
-        {job ? (
+        {job && job.amount !== undefined ? (
           <div className="rounded-xl border border-rose-100 bg-rose-50/40 p-3 text-sm dark:border-slate-800 dark:bg-slate-900">
             <div className="flex justify-between"><span className="text-muted-foreground">{job.amountLabel}</span><b className="tabular-nums">{formatCurrency(job.amount)}</b></div>
           </div>

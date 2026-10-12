@@ -12,6 +12,9 @@ import {
 } from "@/views/admin/_lib";
 import { MEASUREMENTS as STUDENT_MEASUREMENTS, STUDENT_REFERENCE_PLACEMENTS } from "@/lib/graduation-student-flow";
 import { LiveScanner } from "@/views/staff/live-scanner";
+import { ReceiptPrintDialog, type ReceiptJob } from "@/components/graduation-receipt-dialog";
+import { printTailorSheet, type ReceiptFormat, type TailorSheetInput } from "@/lib/graduation-receipt-print";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 /** All tailor data flows through the assignment-scoped /admin/tailoring API. */
 function tailorApi<T = any>(path: string, init?: RequestInit): Promise<T> {
@@ -302,6 +305,8 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
   const [msg, setMsg] = useState<string | null>(null);
   const [altForm, setAltForm] = useState<any>({ type: "shorten_robe", problem: "", requiredChange: "", expectedDate: "", notes: "" });
   const [notes, setNotes] = useState<any>({ internal: "", admin: "", rep: "", warning: "" });
+  const [sheetJob, setSheetJob] = useState<ReceiptJob | null>(null);
+  const { data: settings } = usePublicSettings();
 
   const load = useCallback(() => {
     setLoading(true); setErr(null);
@@ -381,34 +386,62 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
     if (!w) { setMsg("اسمح بالنوافذ المنبثقة للطباعة"); return; }
     w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 350);
   }
-  const A4_STYLE = `*{font-family:'Segoe UI',system-ui,sans-serif}body{margin:0;padding:32px;color:#111}
-    .head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #C9F24A;padding-bottom:14px}
-    .brand{font-size:26px;font-weight:800}.brand span{color:#7a9b1a}
-    h1{font-size:20px;margin:18px 0 6px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;font-size:14px}
-    .grid div{padding:5px 0;border-bottom:1px dashed #ddd}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}
-    td{border:1px solid #ccc;padding:7px 10px}td:first-child{background:#f6f6f6;font-weight:700;width:45%}
-    .foot{margin-top:24px;display:flex;justify-content:space-between;font-size:13px;color:#444}
-    @media print{@page{size:A4;margin:14mm}}`;
-  function measureRows() {
+  function measureList(): Array<[string, unknown]> {
     const m = order.measurements || {};
-    return [["طول روب", m.robeLength], ["طول وشاح", m.sashLength], ["عرض الوشاح", m.sashWidth], ["خلف الوشاح الأمريكي", m.americanSashBack], ["عرض الكتف", m.shoulder], ["قياس قبعة", m.capSize], ["المقاس المثالي", m.suggestedSize], ["المقاس النهائي", m.standardSize || m.readySize || m.customSize], ["الطول", m.height], ["الوزن", m.weight], ["الصدر", m.chest], ["الخصر", m.waist], ["الكم", m.sleeveLength], ["الرقبة", m.neck]]
-      .map(([k, v]) => `<tr><td>${k}</td><td>${v ?? "—"}</td></tr>`).join("");
+    return [["طول روب", m.robeLength], ["طول وشاح", m.sashLength], ["عرض الوشاح", m.sashWidth], ["خلف الوشاح الأمريكي", m.americanSashBack], ["عرض الكتف", m.shoulder], ["قياس قبعة", m.capSize], ["المقاس المثالي", m.suggestedSize], ["المقاس النهائي", m.standardSize || m.readySize || m.customSize], ["الطول", m.height], ["الوزن", m.weight], ["الصدر", m.chest], ["الخصر", m.waist], ["الكم", m.sleeveLength], ["الرقبة", m.neck]];
   }
-  const infoGrid = () => `<div class="grid">
-    <div><b>رمز الطالب:</b> ${order.studentCode || "—"}</div><div><b>سنة التخرج:</b> ${order.graduationYear || "—"}</div>
-    <div><b>الجامعة:</b> ${order.university || "—"}</div><div><b>الكلية:</b> ${order.college || "—"}</div>
-    <div><b>القسم:</b> ${order.department || "—"}</div><div><b>المجموعة:</b> ${order.groupName || "—"}</div>
-    <div><b>الروب/الموديل:</b> ${[order.robe, order.robeModel].filter(Boolean).join(" — ") || "—"}</div><div><b>الخياط:</b> ${order.tailorName || "—"}</div></div>`;
-
-  async function printA4() {
-    const qr = await getQr(); const m = order.measurements || {};
-    openPrint(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ورقة قياسات</title><style>${A4_STYLE}</style></head><body>
-      <div class="head"><div class="brand">AJN <span>مجموعة علي جان</span><div style="font-size:13px;color:#666;font-weight:400">تجهيزات التخرج — ورقة قياسات الخياط</div></div>
-      ${qr ? `<img src="${qr}" width="110" height="110" alt="QR"/>` : ""}</div>
-      <h1>${order.name || ""}</h1>${infoGrid()}
-      <h1>القياسات</h1><table>${measureRows()}</table>
-      <div class="foot"><span>ملاحظات: ${(m.tailorNotes || order.productionNotes || "—")}</span><span>التاريخ: ${new Date().toLocaleDateString("ar-u-nu-latn")}</span></div>
-      </body></html>`);
+  // Measurements and production sheets: same design as the receipts, 80mm or A5.
+  // Read-only projection of the tailor payload; no prices ever reach this page.
+  function sheetInput(kind: "measurements" | "production", format: ReceiptFormat): TailorSheetInput {
+    const m = order.measurements || {};
+    const colorName = (value: unknown) => (value && !/^#[0-9a-f]{3,8}$/i.test(String(value)) ? String(value) : "");
+    return {
+      format,
+      kind,
+      brand: {
+        logo: logoSrc(settings),
+        company: "مجموعة علي جان نهاد",
+        phone: settings?.phone || "",
+        whatsapp: settings?.whatsapp || "",
+        address: [settings?.address, settings?.city].filter(Boolean).join("، "),
+      },
+      student: {
+        name: order.name || "",
+        studentCode: order.studentCode || "",
+        trackingUrl: order.qrToken ? `${location.origin}/graduation/track/${order.qrToken}` : "",
+      },
+      info: [
+        { label: "المجموعة", value: order.groupName || "" },
+        { label: "سنة التخرج", value: order.graduationYear || "" },
+        { label: "الجامعة", value: order.university || "" },
+        { label: "الكلية", value: order.college || "" },
+        { label: "القسم", value: order.department || "" },
+        { label: "الخياط", value: order.tailorName || "" },
+        { label: "موعد التسليم", value: order.dueDate ? String(order.dueDate).slice(0, 10) : "" },
+      ],
+      garment: [
+        { label: "الروب / الموديل", value: [order.robe, order.robeModel].filter(Boolean).join(" — ") },
+        { label: "الاسم على الوشاح", value: order.sash || "" },
+        { label: "القبعة", value: order.cap || "" },
+        { label: "المقاس النهائي", value: order.finalSize || m.standardSize || m.readySize || m.customSize || m.suggestedSize || "" },
+        { label: "لون الروب", value: colorName(order.colors?.robe) },
+        { label: "لون الوشاح", value: colorName(order.colors?.sash) },
+      ],
+      measurements: measureList().map(([label, value]) => ({ label, value: value == null || value === "" ? "—" : String(value) })),
+      stage: kind === "production" ? PROD_STAGES.find((s) => s.key === order.productionStage)?.label ?? order.productionStage : undefined,
+      alterations: kind === "production"
+        ? (order.alterations || []).map((a: any) => ({ type: alterLabel(a.type), change: a.requiredChange || a.problem || "—" }))
+        : undefined,
+      notes: m.tailorNotes || order.productionNotes || "",
+      warning: kind === "production" ? order.notesTiers?.warning || "" : "",
+    };
+  }
+  function printSheet(kind: "measurements" | "production") {
+    setSheetJob({
+      title: kind === "production" ? "ورقة إنتاج الخياطة" : "ورقة قياسات الخياط",
+      subtitle: `${order.name || ""} · ${order.studentCode || ""}`,
+      render: (popup, format) => printTailorSheet(popup, sheetInput(kind, format)),
+    });
   }
   async function printLabel() {
     const qr = await getQr();
@@ -420,17 +453,6 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
       <div class="lbl">${qr ? `<img src="${qr}" width="90" height="90"/>` : ""}
       <div class="t"><b>${order.name || ""}</b><span>${order.studentCode || ""}</span><span>${order.groupName || ""}</span>
       <span>المقاس: ${(order.measurements?.standardSize || order.measurements?.readySize || order.measurements?.customSize || order.measurements?.suggestedSize || "—")}</span></div></div>
-      </body></html>`);
-  }
-  async function printProductionSheet() {
-    const stageLabel = PROD_STAGES.find((s) => s.key === order.productionStage)?.label ?? order.productionStage;
-    const alts = (order.alterations || []).map((a: any) => `<tr><td>${alterLabel(a.type)}</td><td>${a.requiredChange || a.problem || "—"}</td></tr>`).join("") || `<tr><td colspan="2">لا يوجد</td></tr>`;
-    openPrint(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ورقة إنتاج</title><style>${A4_STYLE}</style></head><body>
-      <div class="head"><div class="brand">AJN <span>مجموعة علي جان</span><div style="font-size:13px;color:#666;font-weight:400">ورقة إنتاج الخياطة</div></div></div>
-      <h1>${order.name || ""} — <span style="color:#7a9b1a">${stageLabel}</span></h1>${infoGrid()}
-      <h1>القياسات</h1><table>${measureRows()}</table>
-      <h1>التعديلات المطلوبة</h1><table>${alts}</table>
-      <div class="foot"><span>تحذيرات: ${(order.notesTiers?.warning || "—")}</span><span>التاريخ: ${new Date().toLocaleDateString("ar-u-nu-latn")}</span></div>
       </body></html>`);
   }
   async function saveNotes() {
@@ -453,12 +475,13 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
 
   return (
     <div className="space-y-4">
+      <ReceiptPrintDialog job={sheetJob} onClose={() => setSheetJob(null)} />
       <div className="flex items-center justify-between">
         <Button variant="ghost" type="button" onClick={() => navigate("/staff/tailors")} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ArrowRight className="h-4 w-4" /> رجوع</Button>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          <Button variant="ghost" type="button" onClick={printA4} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"><Printer className="h-3.5 w-3.5" /> A4</Button>
+          <Button variant="ghost" type="button" onClick={() => printSheet("measurements")} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"><Printer className="h-3.5 w-3.5" /> ورقة القياسات</Button>
           <Button variant="ghost" type="button" onClick={printLabel} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs">ملصق</Button>
-          <Button variant="ghost" type="button" onClick={printProductionSheet} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs">ورقة إنتاج</Button>
+          <Button variant="ghost" type="button" onClick={() => printSheet("production")} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs">ورقة إنتاج</Button>
           {order.groupId ? (
             <Button variant="ghost" type="button" onClick={() => navigate(`/staff/tailors/group/${order.groupId}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"><Table2 className="h-3.5 w-3.5" /> المجموعة</Button>
           ) : null}

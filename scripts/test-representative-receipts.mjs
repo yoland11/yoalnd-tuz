@@ -32,4 +32,12 @@ assert.match(print, /export function scopedReceiptCss/, "in-page PDF styles are 
 assert.match(print, /@page \{ size: \$\{thermal \? "80mm auto" : "A5 portrait"\}; margin: \$\{thermal \? "0" : "9mm"\}; \}/, "the thermal page has no margin");
 assert.match(print, /\.doc \{ width: 100%;/, "the receipt body is fluid, never a fixed width wider than the printable area");
 assert.match(print, /\.kv \{ display: flex; flex-wrap: wrap;/, "long values wrap instead of running off the paper");
+const tailors = readFileSync("src/views/staff/tailors/index.tsx", "utf8");
+assert.match(print, /export async function printTailorSheet/, "tailor measurement and production sheets share the receipt design");
+assert.match(tailors, /<ReceiptPrintDialog job=\{sheetJob\}/, "the tailor portal offers the 80mm / A5 choice");
+assert.match(tailors, /onClick=\{\(\) => printSheet\("measurements"\)\}/);
+assert.match(tailors, /onClick=\{\(\) => printSheet\("production"\)\}/);
+const tailorSheet = print.slice(print.indexOf("export async function printTailorSheet"));
+assert.ok(!/formatCurrency|money\(|المتبقي|المدفوع/.test(tailorSheet), "tailor sheets never print money");
+assert.ok(!/ودفعاتك/.test(tailorSheet), "the workshop sheet does not talk about payments");
 console.log("representative receipts: all checks passed");

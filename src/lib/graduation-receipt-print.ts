@@ -153,6 +153,15 @@ function rules(format: ReceiptFormat) {
   .thanks { font-weight: 800; font-size: ${thermal ? "11.5px" : "12.5px"}; color: #111; }
   .copy { font-size: 9.5px; color: #666; }
   .nowrap { white-space: nowrap; }
+  /* Tailor sheets: measurement cells with large values, read at a glance in the workshop. */
+  .measures { display: grid; grid-template-columns: ${thermal ? "1fr 1fr" : "repeat(4, 1fr)"}; gap: ${thermal ? "4px" : "6px"}; margin-top: 4px; }
+  .m-cell { border: 1px solid ${thermal ? "#000" : "#e7d6dc"}; border-radius: ${thermal ? "4px" : "8px"}; padding: ${thermal ? "3px 4px" : "6px 8px"}; text-align: center; background: #fff; }
+  .m-label { font-size: ${thermal ? "10.5px" : "11px"}; color: #555; }
+  .m-value { font-size: ${thermal ? "17px" : "19px"}; font-weight: 800; line-height: 1.25; }
+  .m-empty .m-value { font-weight: 400; color: #999; }
+  .m-count { font-weight: 600; font-size: 10.5px; color: #555; }
+  .stage { margin: 2px 0 4px; font-size: ${thermal ? "12px" : "13px"}; }
+  .warn { margin: ${thermal ? "6px 0" : "8px 0"}; padding: ${thermal ? "5px 6px" : "8px 12px"}; border: 2px solid #000; border-radius: ${thermal ? "4px" : "8px"}; ${thermal ? "" : "background: #fff7e6;"} }
   `;
 }
 
@@ -232,12 +241,12 @@ function studentCard(student: ReceiptStudent, group: ReceiptGroup, format: Recei
   </section>`;
 }
 
-function verifyBlock(qr: string, barcode: string, code: string) {
+function verifyBlock(qr: string, barcode: string, code: string, hint = "امسح الرمز لمتابعة حالة طلبك ودفعاتك") {
   if (!qr && !barcode) return "";
   return `<section class="verify">
     ${qr ? `<img src="${qr}" alt="QR">` : ""}
     <div>
-      ${qr ? `<div class="hint">امسح الرمز لمتابعة حالة طلبك ودفعاتك</div>` : ""}
+      ${qr ? `<div class="hint">${escapeReceipt(hint)}</div>` : ""}
       ${barcode ? `<div class="barcode">${barcode}<div class="code num">${escapeReceipt(code)}</div></div>` : ""}
     </div>
   </section>`;
@@ -344,4 +353,66 @@ export async function printPaymentReceipt(popup: Window, input: {
       <div class="copy">نسخة الطالب${input.printedBy ? ` · طُبع بواسطة ${escapeReceipt(input.printedBy)}` : ""}</div>
     </footer>`;
   writeDocument(popup, payment.receiptNo || "وصل دفعة", format, body);
+}
+
+// ------------------------------------------------------------------ tailor sheets
+
+export type TailorSheetInput = {
+  format: ReceiptFormat;
+  kind: "measurements" | "production";
+  brand: ReceiptBrand;
+  student: { name: string; studentCode: string; trackingUrl?: string | null };
+  /** Group, university, tailor, due date… (no prices: tailors never see money). */
+  info: ReceiptLine[];
+  garment: ReceiptLine[];
+  measurements: ReceiptLine[];
+  stage?: string;
+  alterations?: Array<{ type: string; change: string }>;
+  notes?: string;
+  warning?: string;
+};
+
+/** «ورقة قياسات الخياط» / «ورقة إنتاج الخياطة» in 80mm thermal or A5, same design as the receipts. */
+export async function printTailorSheet(popup: Window, input: TailorSheetInput) {
+  const { format, brand, student } = input;
+  const [qr, barcode] = await Promise.all([qrDataUrl(student.trackingUrl || ""), Promise.resolve(barcodeSvg(student.studentCode))]);
+  const title = input.kind === "production" ? "ورقة إنتاج الخياطة" : "ورقة قياسات الخياط";
+  const printed = nowText();
+  const meta = `<div>كود الطالب: <b class="num">${escapeReceipt(student.studentCode)}</b></div><div>تاريخ الطباعة: <span class="num">${escapeReceipt(printed)}</span></div>`;
+  const lines = (items: ReceiptLine[]) => items.filter((line) => line.value && line.value !== "—")
+    .map((line) => `<div class="kv"><span>${escapeReceipt(line.label)}</span><span>${escapeReceipt(line.value)}</span></div>`).join("");
+  const filled = input.measurements.filter((line) => line.value && line.value !== "—").length;
+  const cells = input.measurements.map((line) => {
+    const empty = !line.value || line.value === "—";
+    return `<div class="m-cell${empty ? " m-empty" : ""}"><div class="m-label">${escapeReceipt(line.label)}</div><div class="m-value num">${empty ? "—" : escapeReceipt(line.value)}</div></div>`;
+  }).join("");
+  const alterations = input.kind === "production"
+    ? `<section class="card"><h3>التعديلات المطلوبة</h3>${(input.alterations ?? []).length
+      ? `<table><thead><tr><th>النوع</th><th>المطلوب</th></tr></thead><tbody>${(input.alterations ?? []).map((item) => `<tr><td>${escapeReceipt(item.type)}</td><td>${escapeReceipt(item.change)}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty">لا توجد تعديلات</div>`}</section>`
+    : "";
+  const body = `${headerHtml(brand, format, meta)}
+    <div class="title">${title}</div>
+    ${format === "80mm" ? `<div class="docno"><span>كود: <b class="num">${escapeReceipt(student.studentCode)}</b></span><span class="num">${escapeReceipt(printed)}</span></div>` : ""}
+    <section class="card">
+      <h3>بيانات الطالب</h3>
+      <p class="student-name">${escapeReceipt(student.name)}</p>
+      ${input.stage ? `<div class="stage">المرحلة الحالية: <b>${escapeReceipt(input.stage)}</b></div>` : ""}
+      <div class="grid">${lines(input.info)}</div>
+    </section>
+    ${lines(input.garment) ? `<section class="card"><h3>تفاصيل التفصيل</h3><div class="grid">${lines(input.garment)}</div></section>` : ""}
+    <section class="card">
+      <h3>القياسات <span class="m-count">(${filled} من ${input.measurements.length} مدخلة)</span></h3>
+      <div class="measures">${cells}</div>
+    </section>
+    ${alterations}
+    ${input.warning ? `<section class="warn"><b>تنبيه:</b> ${escapeReceipt(input.warning)}</section>` : ""}
+    ${input.notes ? `<section class="card"><h3>ملاحظات</h3><div>${escapeReceipt(input.notes)}</div></section>` : ""}
+    ${verifyBlock(qr, barcode, student.studentCode, "امسح الرمز لفتح ملف الطالب")}
+    <div class="signs"><div>توقيع الخياط</div><div>مراقبة الجودة</div></div>
+    <footer class="foot">
+      <div class="thanks">${escapeReceipt(brand.company)} — قسم الخياطة</div>
+      <div class="copy">ورقة داخلية للورشة · لا تحتوي أسعاراً</div>
+    </footer>`;
+  writeDocument(popup, `${title} — ${student.name}`, format, body);
 }
