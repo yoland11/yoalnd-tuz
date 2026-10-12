@@ -104,6 +104,7 @@ import {
 import { getGraduationProductionMeasurementBlock } from "@/server/graduation-measurements";
 import { hasDuplicateGroupStudentName } from "@/lib/graduation-group-student-identity";
 import { cleanStudentSashName, isLikelySameStudent, isTitleOnlyPrefix, tidySashPrefix } from "@/lib/graduation-sash-name";
+import { decorationPositionImages, GRADUATION_DECORATION_POSITIONS, type GraduationDecorationImages } from "@/lib/graduation-decoration-photos";
 
 export type GraduationAdminUser = {
   id: number;
@@ -1299,6 +1300,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     }
     const lockedFabric = safeJson(locked.fabric);
     const lockedDecoration = safeJson(locked.decoration);
+    const submittedDecorationImages = decorationPositionImages(data.decoration);
     const lockedUniversity = safeJson(locked.universityTemplate);
     const lockedColors = safeJson(locked.colors);
     const lockedPreview = safeJson(locked.previewAssets);
@@ -1319,7 +1321,10 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
           } as any)
         : data.fabric,
       decoration: Object.keys(lockedDecoration).length
-        ? ({ ...lockedDecoration } as any)
+        ? ({ ...lockedDecoration, positionFiles: {
+            ...decorationPositionImages(lockedDecoration as typeof data.decoration),
+            ...submittedDecorationImages,
+          } } as any)
         : data.decoration,
       accessories: Array.isArray(locked.accessories)
         ? locked.accessories.map(String)
@@ -1366,7 +1371,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
         styleKey: String(locked.styleKey || "standard"),
         packageKey: String(locked.packageKey || "") || undefined,
         fabric: typeof lockedFabric.key === "string" ? data.fabric : { key: DEFAULT_GRADUATION_CONFIG.fabrics[0].key },
-        decoration: Object.keys(lockedDecoration).length ? data.decoration : { type: "none", position: "front" },
+        decoration: Object.keys(lockedDecoration).length ? data.decoration : { ...data.decoration, type: "none", position: "front", file: "", fileName: "" },
         accessories: Array.isArray(locked.accessories) ? locked.accessories.map(String) : [],
         customPackage: locked.customPackage && typeof locked.customPackage === "object"
           ? locked.customPackage as typeof data.customPackage
@@ -1675,10 +1680,21 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       },
     };
   }
-  const decoration = { ...data.decoration } as Record<string, any>;
+  const submittedPositionFiles = decorationPositionImages(data.decoration);
+  const storedPositionFiles: GraduationDecorationImages = {};
+  await Promise.all(GRADUATION_DECORATION_POSITIONS.map(async (position) => {
+    const image = submittedPositionFiles[position];
+    if (!image?.file) return;
+    const file = await persistMedia(image.file, "graduation/designs");
+    if (file) storedPositionFiles[position] = { file, fileName: image.fileName };
+  }));
+  const decoration = {
+    ...data.decoration,
+    positionFiles: storedPositionFiles,
+    file: storedPositionFiles[data.decoration.position]?.file || "",
+    fileName: storedPositionFiles[data.decoration.position]?.fileName || "",
+  };
   const orderMeasurements = withGraduationMeasurementStatus(data.measurements);
-  if (decoration.file)
-    decoration.file = await persistMedia(decoration.file, "graduation/designs");
   const qrToken = idempotencyToken ??
     randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
   const saved = await db.transaction(async (tx) => {
@@ -1910,25 +1926,24 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   try {
   if (data.status === "submitted") {
     await createProductionTasks(order, user);
-    if (decoration.file) {
-      await db.insert(entityDocumentsTable).values({
-        entityType: "graduation_order",
+    const designDocuments = GRADUATION_DECORATION_POSITIONS.flatMap((position) => {
+      const image = storedPositionFiles[position];
+      if (!image) return [];
+      const label = { front: "الواجهة الأمامية", back: "الخلف", sleeve: "الكم", sash: "الوشاح" }[position];
+      return [{
+        entityType: "graduation_order" as const,
         entityId: order.id,
-        documentType: "design",
-        title: decoration.fileName
-          ? `تصميم: ${decoration.fileName}`
-          : "تصميم الطباعة أو التطريز",
-        fileUrl: decoration.file,
-        fileName: decoration.fileName || null,
+        documentType: "design" as const,
+        title: `تصميم ${label}: ${image.fileName || "صورة مرجعية"}`,
+        fileUrl: image.file,
+        fileName: image.fileName || null,
         mimeType: null,
-        metadata: {
-          decorationType: decoration.type,
-          position: decoration.position,
-        },
+        metadata: { decorationType: decoration.type, position },
         uploadedBy: user?.id ?? null,
         uploadedByName: user ? user.fullName || user.username : "الزبون",
-      });
-    }
+      }];
+    });
+    if (designDocuments.length) await db.insert(entityDocumentsTable).values(designDocuments);
     await notify({
       type: "graduation_order_new",
       title: "طلب تجهيزات تخرج جديد",

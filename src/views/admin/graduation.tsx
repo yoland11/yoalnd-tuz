@@ -76,6 +76,7 @@ import { formatCurrency } from "@/lib/money";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { processImageFile } from "@/lib/image-tools";
 import { STUDENT_REFERENCE_PLACEMENTS } from "@/lib/graduation-student-flow";
+import { decorationPositionImages, GRADUATION_DECORATION_POSITIONS } from "@/lib/graduation-decoration-photos";
 import {
   GRADUATION_STAGES,
   GRADUATION_STAGE_LABELS,
@@ -849,6 +850,8 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
     ...(draft.qualityChecklist ?? {}),
   };
   const delivery = { ...(order.delivery ?? {}), ...(draft.delivery ?? {}) };
+  const decorationImages = decorationPositionImages(order.decoration && typeof order.decoration === "object"
+    ? order.decoration : { position: "front" });
   function printPickupLabel() {
     if (!order.qrDataUrl) return;
     openQrPrintWindow({
@@ -902,6 +905,24 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
                   ))}
               </div>
             </div>
+            {GRADUATION_DECORATION_POSITIONS.some((position) => decorationImages[position]) ? (
+              <div className="rounded-xl border border-border p-4">
+                <h3 className="font-semibold">صور الطباعة والتطريز حسب الموقع</h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {GRADUATION_DECORATION_POSITIONS.flatMap((position) => {
+                    const image = decorationImages[position];
+                    if (!image) return [];
+                    const label = { front: "الواجهة الأمامية", back: "الخلف", sleeve: "الكم", sash: "الوشاح" }[position];
+                    return [<div key={position} className="rounded-lg border border-border p-3">
+                      <p className="mb-2 text-sm font-medium">{label}</p>
+                      <img src={image.file} alt={`تصميم ${label}`} className="h-44 w-full rounded-lg bg-muted/30 object-contain" />
+                      {/^https?:\/\//i.test(image.file) ? <a href={image.file} target="_blank" rel="noopener noreferrer" className="mt-2 block text-xs text-primary">فتح الصورة بالحجم الكامل</a> : null}
+                      {image.fileName ? <p className="mt-1 truncate text-xs text-muted-foreground" title={image.fileName}>{image.fileName}</p> : null}
+                    </div>];
+                  })}
+                </div>
+              </div>
+            ) : null}
             {(order.previewAssets?.studentReferences?.length || order.previewAssets?.studentReference) && (
               <div className="rounded-xl border border-border bg-[#fcfaf7] p-4">
                 <h3 className="font-semibold">صورة وملاحظة الطالب للتجهيز</h3>

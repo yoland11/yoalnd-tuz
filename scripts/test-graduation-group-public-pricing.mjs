@@ -17,13 +17,14 @@ const lib = load("src/lib/graduation.ts"), flow = load("src/lib/graduation-stude
 const pricing = load("src/lib/graduation-group-pricing.ts"), access = load("src/lib/graduation-group-pricing-access.ts");
 const studentIdentity = load("src/lib/graduation-group-student-identity.ts");
 const sashNames = load("src/lib/graduation-sash-name.ts");
+const decorationPhotos = load("src/lib/graduation-decoration-photos.ts");
 const safety = load("src/server/write-safety.ts"), phone = load("src/lib/phone.ts"), measures = load("src/lib/graduation-measurements.ts");
 const source = readFileSync("src/server/graduation.ts", "utf8"), ast = ts.createSourceFile("graduation.ts", source, ts.ScriptTarget.Latest, true);
 const funcs = new Set(["json", "error", "studentReferenceError", "safeJson", "money", "phoneLast4", "groupMeta", "publicOrder", "createInvoice", "createOrder", "handleGraduationPublic", "createGraduationGroup"]);
 const snippets = ast.statements.filter((node) => ts.isFunctionDeclaration(node) ? funcs.has(node.name?.text)
   : ts.isVariableStatement(node) && node.declarationList.declarations.some((d) => d.name.getText(ast) === "graduationGroupInputSchema"))
   .map((node) => node.getText(ast).replace(/^export /, "")).join("\n");
-const tableNames = ["graduationGroupsTable", "graduationOrdersTable", "graduationOrderItemsTable", "graduationGroupStudentsTable", "graduationReceiptsTable", "qrTokensTable", "salesInvoicesTable", "salesInvoiceItemsTable", "customersTable"];
+const tableNames = ["graduationGroupsTable", "graduationOrdersTable", "graduationOrderItemsTable", "graduationGroupStudentsTable", "graduationReceiptsTable", "qrTokensTable", "salesInvoicesTable", "salesInvoiceItemsTable", "customersTable", "entityDocumentsTable"];
 const tables = Object.fromEntries(tableNames.map((name) => [name, new Proxy({ name }, { get: (obj, key) => key === "name" ? obj.name : String(key) })]));
 const fabricKey = lib.DEFAULT_GRADUATION_CONFIG.fabrics[0].key;
 const policyConfig = { styleKey: "standard", fabric: { key: fabricKey }, sashSelectionMode: "restricted", sashOptions: ["royal", "american"], sashType: "royal", sashPricing: { mode: "by_sash", prices: { royal: 23000, american: 25000 } } };
@@ -55,7 +56,7 @@ function fixture(configuration = policyConfig, { failInvoice = false } = {}) {
     transaction: async (callback) => { const before = structuredClone(state); try { return await callback(db); } catch (cause) { state = before; throw cause; } } };
   const config = structuredClone(lib.DEFAULT_GRADUATION_CONFIG);
   const noop = async () => {};
-  const context = vm.createContext({ ...lib, ...flow, ...pricing, ...access, ...safety, ...phone, ...measures, ...studentIdentity, ...sashNames, ...tables, db, eq, and, or,
+  const context = vm.createContext({ ...lib, ...flow, ...pricing, ...access, ...safety, ...phone, ...measures, ...studentIdentity, ...sashNames, ...decorationPhotos, ...tables, db, eq, and, or,
     asc: (x) => x, desc: (x) => x, isNull: () => () => true, sql: (parts, ...values) => ({ parts, values }),
     z: require("zod/v4").z, createHash, randomUUID, Date, console, process, Object, JSON,
     NextResponse: { json: (body, options) => Response.json(body, options) },
@@ -94,6 +95,20 @@ for (const [sashType, expected] of [["royal", 23000], ["american", 25000]]) {
   assert.equal(test.rows().salesInvoicesTable[0].total, String(expected));
   assert.equal(test.rows().salesInvoiceItemsTable[0].total, String(expected));
 }
+const decorated = fixture();
+const decoratedOrder = await decorated.create({ decoration: {
+  type: "embroidery", position: "back", file: "back-photo", fileName: "back.png",
+  positionFiles: {
+    back: { file: "back-photo", fileName: "back.png" },
+    sash: { file: "sash-photo", fileName: "sash.png" },
+  },
+} });
+if (decoratedOrder.response) throw new Error(JSON.stringify(await decoratedOrder.response.json()));
+assert.equal(decoratedOrder.order.totalAmount, 23000, "extra reference photos must not change group pricing");
+assert.equal(decorated.rows().graduationOrdersTable[0].decoration.positionFiles.back.file, "back-photo");
+assert.equal(decorated.rows().graduationOrdersTable[0].decoration.positionFiles.sash.file, "sash-photo");
+assert.equal(decorated.rows().entityDocumentsTable.length, 2, "the back and sash references are stored separately");
+assert.deepEqual(decorated.rows().entityDocumentsTable.map((document) => document.metadata.position), ["back", "sash"]);
 const fallback = fixture({ ...policyConfig, sashSelectionMode: "per_student", sashType: "standard", sashPricing: { mode: "by_sash", prices: { standard: 18000, side: 19000, royal: 23000, american: 25000 } } });
 assert.equal((await fallback.create({ customText: {} })).order.totalAmount, 18000);
 const sharedPhone = fixture();

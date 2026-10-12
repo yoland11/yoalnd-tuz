@@ -456,6 +456,12 @@ export const graduationOrderInputSchema = z
         position: z.enum(["front", "back", "sleeve", "sash"]).default("front"),
         file: optionalString,
         fileName: optionalString,
+        positionFiles: z.object({
+          front: z.object({ file: z.string().min(1).max(2_000_000), fileName: z.string().max(180) }).strict().optional(),
+          back: z.object({ file: z.string().min(1).max(2_000_000), fileName: z.string().max(180) }).strict().optional(),
+          sleeve: z.object({ file: z.string().min(1).max(2_000_000), fileName: z.string().max(180) }).strict().optional(),
+          sash: z.object({ file: z.string().min(1).max(2_000_000), fileName: z.string().max(180) }).strict().optional(),
+        }).strict().optional(),
       })
       .passthrough()
       .default({ type: "none", position: "front" }),

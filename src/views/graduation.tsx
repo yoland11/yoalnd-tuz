@@ -63,6 +63,12 @@ import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { processImageFile } from "@/lib/image-tools";
+import {
+  decorationPositionImages,
+  selectDecorationPosition,
+  setDecorationPositionImage,
+  type GraduationDecorationPosition,
+} from "@/lib/graduation-decoration-photos";
 import { formatCurrency } from "@/lib/money";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { usePublicSettings } from "@/lib/public-settings";
@@ -245,7 +251,7 @@ const initialForm = {
     embroidery: "#D4B15A",
   },
   fabric: { key: "" },
-  decoration: { type: "none", position: "front", file: "", fileName: "" },
+  decoration: { type: "none", position: "front" as GraduationDecorationPosition, file: "", fileName: "", positionFiles: {} },
   customText: {
     studentName: "",
     university: "",
@@ -688,6 +694,7 @@ function GraduationConfigurator() {
   const [aiConcepts, setAiConcepts] = useState<any[]>([]);
   const [scanImage, setScanImage] = useState("");
   const [tryOnImage, setTryOnImage] = useState("");
+  const [decorationUploading, setDecorationUploading] = useState<GraduationDecorationPosition | null>(null);
 
   // Preserve the confirmed receipt for this browser session. If the browser
   // reloads after the API has created the order, the customer sees success
@@ -812,6 +819,7 @@ function GraduationConfigurator() {
       item.id === (firstRobeItem?.templateId ?? form.customPackage.robeTemplateId),
   );
   const harmony = colorContrast(form.colors.robe, form.colors.sash);
+  const positionImages = decorationPositionImages(form.decoration);
 
   const scan = useMutation({
     mutationFn: () =>
@@ -1013,15 +1021,27 @@ function GraduationConfigurator() {
   async function fileData(
     file: File,
     target: "decoration" | "scan" | "try-on",
+    position?: GraduationDecorationPosition,
   ) {
-    const data = await processImageFile(file, { maxSize: 1800, quality: 0.86 });
-    if (target === "scan") setScanImage(data);
-    else if (target === "try-on") setTryOnImage(data);
-    else
-      setForm((current) => ({
+    if (target === "decoration" && !position) return;
+    if (target === "decoration") setDecorationUploading(position!);
+    try {
+      const data = await processImageFile(file, target === "decoration"
+        ? { maxSize: 1200, maxBytes: 700_000, quality: 0.82 }
+        : { maxSize: 1800, quality: 0.86 });
+      if (target === "decoration" && data.length > 2_000_000)
+        throw new Error("حجم الصورة كبير؛ اختر صورة أصغر لهذا الموقع");
+      if (target === "scan") setScanImage(data);
+      else if (target === "try-on") setTryOnImage(data);
+      else if (position) setForm((current) => ({
         ...current,
-        decoration: { ...current.decoration, file: data, fileName: file.name },
+        decoration: setDecorationPositionImage(current.decoration, position, { file: data, fileName: file.name }),
       }));
+    } catch (cause) {
+      toast({ title: "تعذر تجهيز الصورة", description: cause instanceof Error ? cause.message : "اختر صورة أخرى", variant: "destructive" });
+    } finally {
+      if (target === "decoration") setDecorationUploading(null);
+    }
   }
 
   if (isLoading || !config)
@@ -1590,10 +1610,7 @@ function GraduationConfigurator() {
                                 onClick={() =>
                                   setForm((current) => ({
                                     ...current,
-                                    decoration: {
-                                      ...current.decoration,
-                                      position: key,
-                                    },
+                                    decoration: selectDecorationPosition(current.decoration, key),
                                   }))
                                 }
                               >
@@ -1602,29 +1619,41 @@ function GraduationConfigurator() {
                             ))}
                           </div>
                         </div>
-                        <label className="flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-primary/50 bg-primary/5 p-5 text-center">
-                          <Upload className="h-8 w-8 text-primary" />
-                          <strong className="mt-3">
-                            ارفع الشعار أو التصميم
-                          </strong>
-                          <span className="mt-1 text-xs text-muted-foreground">
-                            PNG أو JPG أو SVG
-                          </span>
-                          {form.decoration.fileName ? (
-                            <span className="mt-3 rounded-full bg-primary px-3 py-1 text-xs text-primary-foreground">
-                              {form.decoration.fileName}
-                            </span>
-                          ) : null}
-                          <input
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                            className="sr-only"
-                            onChange={(event) =>
-                              event.target.files?.[0] &&
-                              fileData(event.target.files[0], "decoration")
-                            }
-                          />
-                        </label>
+                        <div className="space-y-3">
+                          <p className="text-sm text-muted-foreground">لكل موقع صورة مستقلة؛ صورة الخلف تبقى محفوظة حتى إذا رفعت صورة ثانية للوشاح. الموقع المحدد أعلاه هو موقع التنفيذ في السعر.</p>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            {DECORATION_POSITIONS.map(([position, label]) => {
+                              const image = positionImages[position];
+                              return (
+                                <div key={position} className={`rounded-xl border p-3 ${form.decoration.position === position ? "border-primary/60 bg-primary/5" : "border-border"}`}>
+                                  <div className="mb-3 flex items-center justify-between gap-2">
+                                    <strong className="text-sm">صورة {label}</strong>
+                                    {image ? <span className="text-xs text-primary">مرفوعة</span> : null}
+                                  </div>
+                                  {image ? <img src={image.file} alt={`صورة تصميم ${label}`} className="mb-3 h-32 w-full rounded-lg bg-background object-contain" /> : null}
+                                  <label className="flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-primary/40 bg-background p-3 text-center">
+                                    <Upload className="h-5 w-5 text-primary" />
+                                    <span className="mt-2 text-xs font-semibold">{decorationUploading === position ? "جاري تجهيز الصورة…" : image ? `استبدال صورة ${label}` : `رفع صورة ${label}`}</span>
+                                    <span className="mt-1 text-[11px] text-muted-foreground">PNG أو JPG أو SVG</span>
+                                    <input
+                                      type="file"
+                                      accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                                      aria-label={`رفع صورة ${label}`}
+                                      className="sr-only"
+                                      disabled={decorationUploading !== null}
+                                      onChange={(event) => {
+                                        const file = event.target.files?.[0];
+                                        if (file) void fileData(file, "decoration", position);
+                                        event.target.value = "";
+                                      }}
+                                    />
+                                  </label>
+                                  {image ? <div className="mt-2 flex items-center justify-between gap-2"><span className="min-w-0 truncate text-xs text-muted-foreground" title={image.fileName}>{image.fileName}</span><Button type="button" variant="ghost" size="sm" onClick={() => setForm((current) => ({ ...current, decoration: setDecorationPositionImage(current.decoration, position, null) }))}>حذف الصورة</Button></div> : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </>
                     ) : null}
                   </div>
@@ -1898,7 +1927,7 @@ function GraduationConfigurator() {
                 السابق
               </Button>
               {step < 10 ? (
-                <Button onClick={next}>
+                <Button onClick={next} disabled={decorationUploading !== null}>
                   التالي
                   <ArrowLeft className="mr-2 h-4 w-4" />
                 </Button>
