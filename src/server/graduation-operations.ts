@@ -1912,7 +1912,43 @@ async function receiptForOrder(orderId: number, req: NextRequest, user: Graduati
     await audit(user, "graduation_receipt_printed", "graduation_order", orderId, { receiptNo: receipt.receiptNo, reprintCount: receipt.reprintCount + 1 });
   }
   const qrDataUrl = await QRCode.toDataURL(`${req.nextUrl.origin}/graduation/track/${saved.qrToken}`, { width: 320, margin: 1 });
-  return { receipt: { ...receipt, snapshot: receiptSnapshot(saved), qrDataUrl, barcodeValue: saved.barcodeValue, trackingUrl: `/graduation/track/${saved.qrToken}` } };
+  // Read-only extras for the designed receipt: the order's posted payments
+  // (each with its own receipt number), its group and the printed sash name.
+  const paymentRows = (await db.execute(sql`
+    SELECT p.id, p.amount, p.payment_method, p.received_by_name, p.created_at, r.receipt_no
+    FROM graduation_student_payments p
+    LEFT JOIN LATERAL (
+      SELECT receipt_no FROM graduation_receipts WHERE payment_id = p.id ORDER BY id DESC LIMIT 1
+    ) r ON true
+    WHERE p.graduation_order_id = ${saved.id}
+    ORDER BY p.created_at, p.id`)).rows as any[];
+  const group = saved.groupId
+    ? await db.query.graduationGroupsTable.findFirst({
+        where: eq(graduationGroupsTable.id, saved.groupId),
+        columns: { title: true, groupNo: true, graduationYear: true, representativeName: true },
+      })
+    : null;
+  return {
+    receipt: {
+      ...receipt,
+      snapshot: receiptSnapshot(saved),
+      qrDataUrl,
+      barcodeValue: saved.barcodeValue,
+      trackingUrl: `/graduation/track/${saved.qrToken}`,
+      payments: paymentRows.map((row) => ({
+        id: Number(row.id),
+        amount: amount(row.amount),
+        paymentMethod: String(row.payment_method || ""),
+        receivedBy: row.received_by_name || null,
+        createdAt: row.created_at,
+        receiptNo: row.receipt_no || null,
+      })),
+      group: group
+        ? { title: group.title, groupNo: group.groupNo, graduationYear: group.graduationYear || "", representativeName: group.representativeName || "" }
+        : null,
+      sashName: String(record(saved.customText).text || ""),
+    },
+  };
 }
 
 async function groupReceipt(groupId: number, req: NextRequest, user: GraduationAdminUser, markPrinted: boolean) {

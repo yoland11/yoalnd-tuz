@@ -46,6 +46,13 @@ export type ReceiptTotals = { total: number; paid: number; remaining: number };
 
 const BURGUNDY = "#7b1e3a";
 
+const PAYMENT_METHODS: Record<string, string> = { cash: "نقدي", transfer: "تحويل مصرفي", card: "بطاقة", other: "أخرى" };
+
+export function receiptPaymentMethodLabel(method: unknown) {
+  const key = String(method ?? "");
+  return PAYMENT_METHODS[key] || key || "—";
+}
+
 export function escapeReceipt(value: unknown) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] as string);
 }
@@ -92,14 +99,13 @@ function barcodeSvg(value: string) {
   }
 }
 
-function css(format: ReceiptFormat) {
+/** Receipt rules; every selector lives under `.doc` so they can also be scoped inside a page. */
+function rules(format: ReceiptFormat) {
   const thermal = format === "80mm";
   return `
-  @page { size: ${thermal ? "80mm auto" : "A5 portrait"}; margin: ${thermal ? "3mm" : "9mm"}; }
-  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  html, body { margin: 0; padding: 0; background: #fff; color: #111; }
-  body { font-family: "Cairo", "Tajawal", "Segoe UI", Tahoma, Arial, sans-serif; font-size: ${thermal ? "11.5px" : "12.5px"}; line-height: 1.55; }
-  .doc { width: ${thermal ? "74mm" : "100%"}; margin: 0 auto; }
+  .doc, .doc * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .doc { width: ${thermal ? "74mm" : "100%"}; margin: 0 auto; background: #fff; color: #111; direction: rtl; text-align: right;
+    font-family: "Cairo", "Tajawal", "Segoe UI", Tahoma, Arial, sans-serif; font-size: ${thermal ? "11.5px" : "12.5px"}; line-height: 1.55; }
   .num { font-variant-numeric: tabular-nums; direction: ltr; unicode-bidi: isolate; }
   .head { display: flex; align-items: center; gap: ${thermal ? "8px" : "14px"}; ${thermal ? "flex-direction: column; text-align: center;" : `border-bottom: 3px solid ${BURGUNDY}; padding-bottom: 10px;`} }
   .logo { width: ${thermal ? "46px" : "62px"}; height: ${thermal ? "46px" : "62px"}; object-fit: contain; }
@@ -118,10 +124,10 @@ function css(format: ReceiptFormat) {
   .kv { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
   .kv span:first-child { color: #555; white-space: nowrap; }
   .kv span:last-child { font-weight: 700; text-align: left; }
-  table { width: 100%; border-collapse: collapse; margin-top: 2px; }
-  th, td { padding: ${thermal ? "3px 2px" : "5px 6px"}; text-align: right; border-bottom: 1px ${thermal ? "dashed #999" : "solid #eee"}; font-size: ${thermal ? "10.5px" : "11.5px"}; }
-  th { font-weight: 800; ${thermal ? "border-bottom: 1px solid #000;" : `background: #f6eef1; color: ${BURGUNDY};`} }
-  td.amount, th.amount { text-align: left; }
+  .doc table { width: 100%; border-collapse: collapse; margin-top: 2px; }
+  .doc th, .doc td { padding: ${thermal ? "3px 2px" : "5px 6px"}; text-align: right; border-bottom: 1px ${thermal ? "dashed #999" : "solid #eee"}; font-size: ${thermal ? "10.5px" : "11.5px"}; }
+  .doc th { font-weight: 800; ${thermal ? "border-bottom: 1px solid #000;" : `background: #f6eef1; color: ${BURGUNDY};`} }
+  .doc td.amount, .doc th.amount { text-align: left; }
   .empty { text-align: center; color: #666; padding: 6px 0; }
   .totals { margin-top: ${thermal ? "6px" : "10px"}; border-top: 2px solid #000; padding-top: 4px; }
   .totals .kv { font-size: ${thermal ? "12px" : "13px"}; }
@@ -141,8 +147,25 @@ function css(format: ReceiptFormat) {
   .thanks { font-weight: 800; font-size: ${thermal ? "11.5px" : "12.5px"}; color: #111; }
   .copy { font-size: 9.5px; color: #666; }
   .nowrap { white-space: nowrap; }
-  @media screen { body { background: #eee; padding: 14px; } .doc { background: #fff; padding: ${thermal ? "8px" : "18px"}; box-shadow: 0 2px 12px rgba(0,0,0,.12); } }
   `;
+}
+
+/** Full stylesheet of the print window. */
+function css(format: ReceiptFormat) {
+  const thermal = format === "80mm";
+  return `
+  @page { size: ${thermal ? "80mm auto" : "A5 portrait"}; margin: ${thermal ? "3mm" : "9mm"}; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  ${rules(format)}
+  @media screen { body { background: #eee; padding: 14px; } .doc { padding: ${thermal ? "8px" : "18px"}; box-shadow: 0 2px 12px rgba(0,0,0,.12); } }
+  `;
+}
+
+/** The same rules confined to one container (in-page PDF export never restyles the page). */
+export function scopedReceiptCss(format: ReceiptFormat, scope: string) {
+  return rules(format).replace(/(^|\})\s*([^{}]+)\{/g, (_match, close: string, selectors: string) =>
+    `${close}
+  ${selectors.split(",").map((selector) => `${scope} ${selector.trim()}`).join(", ")} {`);
 }
 
 function headerHtml(brand: ReceiptBrand, format: ReceiptFormat, meta: string) {
@@ -215,7 +238,7 @@ function verifyBlock(qr: string, barcode: string, code: string) {
 }
 
 /** «وصل وكشف حساب الطالب»: order details, approved payments and the balance. */
-export async function printStudentReceipt(popup: Window, input: {
+export type StudentReceiptInput = {
   format: ReceiptFormat;
   brand: ReceiptBrand;
   student: ReceiptStudent;
@@ -224,7 +247,28 @@ export async function printStudentReceipt(popup: Window, input: {
   payments: ReceiptPayment[];
   totals: ReceiptTotals;
   printedBy?: string;
-}) {
+};
+
+export async function printStudentReceipt(popup: Window, input: StudentReceiptInput) {
+  writeDocument(popup, `وصل ${input.student.name}`, input.format, await studentReceiptBody(input));
+}
+
+/**
+ * The same receipt as a detached element for PDF export: styles are scoped to
+ * the element, so adding it to the page never restyles the page itself.
+ */
+export async function studentReceiptElement(input: StudentReceiptInput): Promise<HTMLElement> {
+  const element = document.createElement("div");
+  element.className = "ajn-receipt-pdf";
+  element.dir = "rtl";
+  element.style.width = input.format === "80mm" ? "80mm" : "148mm";
+  element.style.background = "#fff";
+  element.style.padding = input.format === "80mm" ? "3mm" : "8mm";
+  element.innerHTML = `<style>${scopedReceiptCss(input.format, ".ajn-receipt-pdf")}</style><main class="doc">${await studentReceiptBody(input)}</main>`;
+  return element;
+}
+
+async function studentReceiptBody(input: StudentReceiptInput) {
   const { format, brand, student, group, totals } = input;
   const [qr, barcode] = await Promise.all([qrDataUrl(student.trackingUrl || ""), Promise.resolve(barcodeSvg(student.studentCode))]);
   const state = stamp(totals);
@@ -255,7 +299,7 @@ export async function printStudentReceipt(popup: Window, input: {
       <div>المبالغ أعلاه معتمدة من الإدارة؛ الدفعات بانتظار الاعتماد لا تظهر في هذا الوصل.</div>
       <div class="copy">نسخة الطالب${input.printedBy ? ` · طُبع بواسطة ${escapeReceipt(input.printedBy)}` : ""}</div>
     </footer>`;
-  writeDocument(popup, `وصل ${student.name}`, format, body);
+  return body;
 }
 
 /** «وصل استلام دفعة» for one approved payment, from the payment's own snapshot. */

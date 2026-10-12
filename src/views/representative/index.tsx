@@ -47,8 +47,8 @@ import { BatchDashboard, BatchesHome, useBatchesOverview } from "./batches";
 import { GroupWorkspace } from "./workspace";
 import { BRAND, Breadcrumbs, EmptyState, ErrorCard, PAYMENT_METHOD_LABELS } from "./shared";
 import { RepresentativeAccounts } from "./accounts";
-import { ReceiptPrintDialog, type ReceiptJob } from "./receipt-dialog";
-import { printPaymentReceipt } from "./receipt-print";
+import { ReceiptPrintDialog, type ReceiptJob } from "@/components/graduation-receipt-dialog";
+import { printPaymentReceipt } from "@/lib/graduation-receipt-print";
 
 const api = <T,>(path: string, init?: RequestInit) =>
   adminFetch<T>(`/admin/representative${path}`, init);

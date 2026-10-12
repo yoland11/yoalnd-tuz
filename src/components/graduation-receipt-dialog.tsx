@@ -5,11 +5,12 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/money";
 import { apiErrorMessage } from "@/views/admin/_lib";
-import { openReceiptWindow, type ReceiptFormat } from "./receipt-print";
+import { openReceiptWindow, type ReceiptFormat } from "@/lib/graduation-receipt-print";
 
 const FORMAT_KEY = "ajn-representative-receipt-format";
 
-function savedFormat(): ReceiptFormat {
+/** The paper size chosen last on this device (80mm by default). */
+export function savedReceiptFormat(): ReceiptFormat {
   try {
     return window.localStorage.getItem(FORMAT_KEY) === "a5" ? "a5" : "80mm";
   } catch {
@@ -29,7 +30,7 @@ export type ReceiptJob = {
 /** Chooses the paper (80mm thermal or A5) and prints; the last choice is remembered on this device. */
 export function ReceiptPrintDialog({ job, onClose }: { job: ReceiptJob | null; onClose: () => void }) {
   const { toast } = useToast();
-  const [format, setFormat] = useState<ReceiptFormat>(savedFormat);
+  const [format, setFormat] = useState<ReceiptFormat>(savedReceiptFormat);
   const print = (chosen: ReceiptFormat) => {
     if (!job) return;
     try {

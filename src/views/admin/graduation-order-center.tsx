@@ -1,6 +1,5 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import JsBarcode from "jsbarcode";
 import {
   AlertTriangle,
   ArrowRight,
@@ -68,11 +67,18 @@ import { canManageGraduationGroupPricing } from "@/lib/graduation-group-pricing-
 import { normalizeGroupStudentName } from "@/lib/graduation-group-student-identity";
 import { importGroupStudentRows } from "@/lib/graduation-group-import";
 import { GraduationSashReview, type SashReview } from "./graduation-sash-review";
+import { ReceiptPrintDialog, savedReceiptFormat, type ReceiptJob } from "@/components/graduation-receipt-dialog";
+import {
+  printStudentReceipt,
+  receiptPaymentMethodLabel,
+  studentReceiptElement,
+  type ReceiptFormat,
+  type StudentReceiptInput,
+} from "@/lib/graduation-receipt-print";
 import { adminFetch, apiErrorMessage, fetchAdminMe } from "./_lib";
 import {
   printWhenImagesReadyScript,
   sheetReportCss,
-  thermalReceiptCss,
 } from "./print-helpers";
 
 type AccessoryItem = {
@@ -202,28 +208,6 @@ function escapeHtml(value: unknown) {
     .replace(/'/g, "&#039;");
 }
 
-function barcodeSvg(value: string) {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  JsBarcode(svg, value, {
-    format: "CODE128",
-    displayValue: true,
-    font: "Cairo, Arial",
-    fontSize: 12,
-    height: 42,
-    margin: 0,
-  });
-  return svg.outerHTML;
-}
-
-function studentReceiptMarkup(receipt: any, settings: any) {
-  const row = receipt.snapshot;
-  return `<main class="receipt"><header class="r-head"><img class="r-logo" src="${escapeHtml(logoSrc(settings))}" alt="AJN"><div class="r-company">مجموعة علي جان نهاد</div><div class="r-sub">وصل تجهيزات تخرج</div><div class="r-sub num">${escapeHtml(receipt.receiptNo)} · ${new Date().toLocaleDateString("ar-IQ-u-nu-latn")}</div></header><hr class="rule">
-    <div class="kv"><span>الطالب</span><span class="v">${escapeHtml(row.studentName)}</span></div><div class="kv"><span>كود الطالب</span><span class="v num">${escapeHtml(row.studentCode)}</span></div><div class="kv"><span>الهاتف</span><span class="v num">${escapeHtml(row.phone || "غير مسجل")}</span></div><div class="kv"><span>الجامعة</span><span class="v">${escapeHtml(row.university || "—")}</span></div><div class="kv"><span>الكلية / القسم</span><span class="v">${escapeHtml([row.college, row.department].filter(Boolean).join(" · ") || "—")}</span></div><hr class="rule dashed">
-    <div class="kv"><span>الروب</span><span class="v">${escapeHtml([row.robeType, row.robeColor].filter(Boolean).join(" · ") || "—")}</span></div><div class="kv"><span>الوشاح</span><span class="v">${escapeHtml([row.sashType, row.sashColor].filter(Boolean).join(" · ") || "—")}</span></div><div class="kv"><span>القبعة</span><span class="v">${escapeHtml(row.capType || "—")}</span></div><div class="kv"><span>المقاس</span><span class="v">${escapeHtml(row.size || "—")}</span></div>
-    <section class="totals"><div class="grand"><span>الإجمالي</span><span class="num">${formatCurrency(row.total)}</span></div><div class="payline"><span>المدفوع</span><span class="num">${formatCurrency(row.paid)}</span></div><div class="payline remain"><span>المتبقي</span><span class="num">${formatCurrency(row.remaining)}</span></div></section>
-    <div class="qr"><img src="${escapeHtml(receipt.qrDataUrl)}" alt="QR"><div class="cap num">${escapeHtml(row.studentCode)}</div></div><div class="center">${barcodeSvg(String(receipt.barcodeValue || row.studentCode))}</div><div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div></main>`;
-}
-
 function downloadCsv(filename: string, rows: unknown[][]) {
   const csv = rows
     .map((row) =>
@@ -327,38 +311,90 @@ function ReceiptActions({ student }: { student: StudentRow }) {
   const { toast } = useToast();
   const { data: settings } = usePublicSettings();
   const [loading, setLoading] = useState(false);
+  const [job, setJob] = useState<ReceiptJob | null>(null);
   async function loadReceipt() {
     return adminFetch<any>(`/admin/graduation/orders/${student.id}/receipt`, { method: "POST" });
   }
-  async function printReceipt() {
-    setLoading(true);
-    try {
-      const data = await loadReceipt();
-      const receipt = data.receipt;
-      const popup = window.open("", "_blank", "width=520,height=760");
-      if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
-      popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${escapeHtml(receipt.receiptNo)}</title><style>${thermalReceiptCss("80mm")}</style></head><body>${studentReceiptMarkup(receipt, settings)}${printWhenImagesReadyScript()}</body></html>`);
-      popup.document.close();
-    } catch (error) {
-      toast({ title: "تعذرت طباعة الوصل", description: apiErrorMessage(error), variant: "destructive" });
-    } finally {
-      setLoading(false);
-    }
+  // Values come exactly from the server's receipt (snapshot + posted payments).
+  function receiptInput(receipt: any, format: ReceiptFormat): StudentReceiptInput {
+    const row = receipt.snapshot || {};
+    const group = receipt.group;
+    return {
+      format,
+      brand: {
+        logo: logoSrc(settings),
+        company: "مجموعة علي جان نهاد",
+        phone: settings?.phone || "",
+        whatsapp: settings?.whatsapp || "",
+        address: [settings?.address, settings?.city].filter(Boolean).join("، "),
+      },
+      student: {
+        name: row.studentName || student.customerName,
+        studentCode: row.studentCode || student.studentCode,
+        phone: row.phone || student.phone,
+        receiptNo: receipt.receiptNo,
+        orderNo: row.orderNo,
+        trackingUrl: receipt.trackingUrl ? new URL(receipt.trackingUrl, window.location.origin).toString() : "",
+      },
+      group: {
+        title: group?.title || "طلب فردي",
+        groupNo: group?.groupNo || "",
+        batchLabel: group?.graduationYear ? `وجبة ${group.graduationYear}` : undefined,
+        university: row.university,
+        college: row.college,
+        department: row.department,
+        representativeName: group?.representativeName || undefined,
+      },
+      details: [
+        // Colour codes (#RRGGBB) mean nothing on paper; named colours are kept.
+        { label: "الروب", value: [row.robeType, row.robeColor].filter((value) => value && !/^#[0-9a-f]{3,8}$/i.test(String(value))).join(" · ") },
+        { label: "الوشاح", value: [row.sashType, row.sashColor].filter((value) => value && !/^#[0-9a-f]{3,8}$/i.test(String(value))).join(" · ") },
+        { label: "القبعة", value: row.capType || "" },
+        { label: "المقاس", value: row.size || "" },
+        { label: "الاسم على الوشاح", value: receipt.sashName || "" },
+      ],
+      payments: (Array.isArray(receipt.payments) ? receipt.payments : []).map((payment: any) => ({
+        date: payment.createdAt ? new Date(payment.createdAt).toLocaleDateString("ar-IQ-u-nu-latn") : "—",
+        receiptNo: payment.receiptNo || "—",
+        method: receiptPaymentMethodLabel(payment.paymentMethod),
+        amount: Number(payment.amount) || 0,
+      })),
+      totals: { total: Number(row.total) || 0, paid: Number(row.paid) || 0, remaining: Number(row.remaining) || 0 },
+    };
+  }
+  function printReceipt() {
+    setJob({
+      title: "وصل وكشف حساب الطالب",
+      subtitle: `${student.customerName} · ${student.studentCode}`,
+      amountLabel: "المتبقي",
+      amount: student.remaining,
+      render: async (popup, format) => {
+        setLoading(true);
+        try {
+          const { receipt } = await loadReceipt();
+          await printStudentReceipt(popup, receiptInput(receipt, format));
+        } finally {
+          setLoading(false);
+        }
+      },
+    });
   }
   async function downloadPdf() {
     setLoading(true);
-    const wrapper = document.createElement("div");
+    let element: HTMLElement | null = null;
     try {
-      const data = await loadReceipt();
-      wrapper.dir = "rtl";
-      wrapper.style.width = "80mm";
-      wrapper.innerHTML = `<style>${thermalReceiptCss("80mm")}</style>${studentReceiptMarkup(data.receipt, settings)}`;
-      document.body.appendChild(wrapper);
-      await downloadElementPdf(wrapper, `${data.receipt.receiptNo}.pdf`, { format: [80, 240], margin: 0, scale: 2 });
+      const { receipt } = await loadReceipt();
+      const format = savedReceiptFormat();
+      element = await studentReceiptElement(receiptInput(receipt, format));
+      document.body.appendChild(element);
+      const heightMm = Math.ceil((element.scrollHeight * 25.4) / 96) + 4;
+      await downloadElementPdf(element, `${receipt.receiptNo}.pdf`, format === "a5"
+        ? { format: "a5", margin: 0, scale: 2, pagebreakMode: ["css", "legacy"] }
+        : { format: [80, Math.max(160, heightMm)], margin: 0, scale: 2 });
     } catch (error) {
       toast({ title: "تعذر تنزيل PDF", description: apiErrorMessage(error), variant: "destructive" });
     } finally {
-      wrapper.remove();
+      element?.remove();
       setLoading(false);
     }
   }
@@ -377,6 +413,7 @@ function ReceiptActions({ student }: { student: StudentRow }) {
       <Button size="icon" variant="ghost" title="إصدار وطباعة وصل الطالب" onClick={printReceipt} disabled={loading}>{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ReceiptText className="h-4 w-4" />}</Button>
       <Button size="icon" variant="ghost" title="تحميل PDF" onClick={downloadPdf} disabled={loading}><FileDown className="h-4 w-4" /></Button>
       <Button size="icon" variant="ghost" title="إرسال واتساب" onClick={sendWhatsApp}><MessageCircle className="h-4 w-4" /></Button>
+      <ReceiptPrintDialog job={job} onClose={() => setJob(null)} />
     </div>
   );
 }

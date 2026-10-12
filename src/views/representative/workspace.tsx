@@ -31,8 +31,8 @@ import {
   type ProductionPhase,
 } from "@/lib/graduation-batches";
 import type { GroupWorkspace as Workspace } from "@/server/representative-workspace";
-import { ReceiptPrintDialog, type ReceiptJob } from "./receipt-dialog";
-import { printPaymentReceipt, printStudentReceipt } from "./receipt-print";
+import { ReceiptPrintDialog, type ReceiptJob } from "@/components/graduation-receipt-dialog";
+import { printPaymentReceipt, printStudentReceipt } from "@/lib/graduation-receipt-print";
 import {
   BRAND, Breadcrumbs, DeliveryBadge, EmptyState, ErrorCard, Metric, PAYMENT_METHOD_LABELS, PaymentBadge, PaymentDialog,
   Progress, ProductionBadge, REQUEST_STATUS_LABELS, StepBadge, downloadCsv, initials,
