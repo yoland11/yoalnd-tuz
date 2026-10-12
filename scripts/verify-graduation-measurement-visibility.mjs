@@ -67,7 +67,17 @@ const compiled = ts.transpileModule(
   readFileSync(resolve(root, "src/lib/graduation-student-flow.ts"), "utf8"),
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
 ).outputText;
-new Function("module", "exports", compiled)(module, module.exports);
+// The flow helpers import the shared sash-name rules; load them the same way.
+const sashModule = { exports: {} };
+new Function("module", "exports", ts.transpileModule(
+  readFileSync(resolve(root, "src/lib/graduation-sash-name.ts"), "utf8"),
+  { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
+).outputText)(sashModule, sashModule.exports);
+const localRequire = (name) => {
+  if (name === "@/lib/graduation-sash-name") return sashModule.exports;
+  throw new Error(`unexpected import ${name}`);
+};
+new Function("require", "module", "exports", compiled)(localRequire, module, module.exports);
 const { newStudent, studentIssue, studentPayload } = module.exports;
 const draft = {
   ...newStudent(), customerName: "طالب تجريبي", phone: "07700000000",

@@ -1,3 +1,5 @@
+import { combineGroupSashName } from "@/lib/graduation-sash-name";
+
 export const STUDENT_STEPS = [
   "بيانات الطالب",
   "إضافات",
@@ -243,8 +245,9 @@ export function withoutStudentReferencePreview(
   );
 }
 
+/** Group title + the student's own name, never printing the title twice. */
 export function combineSashName(prefix: string, studentName: string): string {
-  return [prefix.trim(), studentName.trim()].filter(Boolean).join(" ");
+  return combineGroupSashName(prefix, studentName);
 }
 
 export function resolveGroupSashPolicy(

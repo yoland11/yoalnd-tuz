@@ -39,6 +39,16 @@ import { normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import { SASH_TYPES, resolveGroupSashPolicy } from "@/lib/graduation-student-flow";
 import { hasDuplicateGroupStudentName, normalizeGroupStudentName } from "@/lib/graduation-group-student-identity";
 import {
+  cleanStudentSashName,
+  combineGroupSashName,
+  effectiveGroupTitle,
+  findDuplicateRegistrations,
+  isSashTextEditable,
+  isTitleOnlyPrefix,
+  reviewGroupSashNames,
+  tidySashPrefix,
+} from "@/lib/graduation-sash-name";
+import {
   GroupSashPricingError,
   groupSashPrice,
   normalizeSashType,
@@ -562,6 +572,29 @@ async function groupDetail(groupId: number, user: GraduationAdminUser) {
     totals,
     sizeDistribution,
     duplicates: duplicates.map((row) => ({ id: row.id, studentCode: row.studentCode, name: row.customerName, phone: row.phone })),
+    sashReview: (() => {
+      const prefix = tidySashPrefix(record(record(group.defaultConfiguration).customText).sashNamePrefix);
+      const reviewOrders = rawOrders.map((order) => ({
+        id: order.id,
+        customerName: order.customerName,
+        phone: order.phone,
+        status: order.status,
+        productionStage: order.productionStage,
+        createdAt: order.createdAt,
+        customText: record(order.customText),
+      }));
+      const paidById = new Map(rawOrders.map((order) => [order.id, amount(order.paidAmount)]));
+      return {
+        prefix,
+        title: effectiveGroupTitle(prefix),
+        prefixHasName: Boolean(prefix) && !isTitleOnlyPrefix(prefix),
+        findings: reviewGroupSashNames(prefix, reviewOrders),
+        duplicateRegistrations: findDuplicateRegistrations(reviewOrders).map((cluster) => ({
+          ...cluster,
+          orders: cluster.orders.map((order) => ({ ...order, paid: paidById.get(order.id) ?? 0 })),
+        })),
+      };
+    })(),
     missingData: students.map((row) => ({
       id: row.id,
       studentCode: row.studentCode,
@@ -1282,11 +1315,14 @@ async function patchStudent(orderId: number, raw: unknown, user: GraduationAdmin
             .filter((key) => (data as any)[key] !== undefined)
             .map((key) => [key, (data as any)[key]]),
         ),
+        ...(data.rightText !== undefined ? { sashName: data.rightText } : {}),
       },
       measurements: nextMeasurements,
       customText: {
         ...custom,
         ...(data.customerName !== undefined ? { studentName: data.customerName } : {}),
+        // The right-side text is the printed sash name read by tailoring/printing.
+        ...(data.rightText !== undefined ? { text: data.rightText } : {}),
         ...(data.university !== undefined ? { university: data.university } : {}),
         ...(data.college !== undefined ? { college: data.college } : {}),
         ...(data.department !== undefined ? { department: data.department } : {}),
@@ -1890,6 +1926,104 @@ async function groupReceipt(groupId: number, req: NextRequest, user: GraduationA
   return { receipt: { ...receipt, snapshot, qrDataUrl } };
 }
 
+const sashNamesInput = z.object({
+  confirm: z.literal(true),
+  prefix: z.string().max(40).optional(),
+  items: z
+    .array(z.object({ orderId: z.number().int().positive(), studentName: z.string().trim().max(80) }))
+    .max(500)
+    .default([]),
+});
+
+function structuredFail(message: string, status: number, code?: "VALIDATION_ERROR" | "CONFLICT" | "NOT_FOUND") {
+  const requestId = makeRequestId();
+  return NextResponse.json(createApiErrorPayload({ message, status, code, requestId }), {
+    status,
+    headers: { "x-request-id": requestId },
+  });
+}
+
+/**
+ * Corrects the group title and selected students' printed sash names in one
+ * transaction. Each change is recorded on the order timeline (before → after).
+ * Sashes already printed/embroidered are refused, never silently rewritten.
+ */
+async function applySashNames(groupId: number, raw: unknown, user: GraduationAdminUser) {
+  const parsed = sashNamesInput.safeParse(raw);
+  if (!parsed.success) return { response: structuredFail("راجع التصحيحات وأكّد الحفظ", 400, "VALIDATION_ERROR") };
+  const nextPrefix = parsed.data.prefix === undefined ? undefined : tidySashPrefix(parsed.data.prefix);
+  if (nextPrefix && !isTitleOnlyPrefix(nextPrefix))
+    return { response: structuredFail("الكنية لقب فقط مثل «المهندس» أو «الدكتور» — بدون اسم شخص", 422, "VALIDATION_ERROR") };
+  const items = parsed.data.items;
+  if (nextPrefix === undefined && !items.length) return { response: structuredFail("لا توجد تصحيحات للحفظ", 400, "VALIDATION_ERROR") };
+  if (new Set(items.map((item) => item.orderId)).size !== items.length)
+    return { response: structuredFail("الطالب مكرر في قائمة التصحيح", 400, "VALIDATION_ERROR") };
+
+  const outcome = await db.transaction(async (tx) => {
+    const [group] = await tx.select().from(graduationGroupsTable).where(eq(graduationGroupsTable.id, groupId)).for("update");
+    if (!group) return { response: structuredFail("المجموعة غير موجودة", 404, "NOT_FOUND") };
+    const configuration = record(group.defaultConfiguration);
+    const customText = record(configuration.customText);
+    const currentPrefix = tidySashPrefix(customText.sashNamePrefix);
+    const title = nextPrefix ?? currentPrefix;
+    if (title && !isTitleOnlyPrefix(title))
+      return { response: structuredFail("صحّح كنية الدفعة أولاً (لقب فقط بدون اسم) ثم طبّق تصحيح الأسماء", 409, "CONFLICT") };
+    if (nextPrefix !== undefined && nextPrefix !== currentPrefix) {
+      await tx.update(graduationGroupsTable).set({
+        defaultConfiguration: { ...configuration, customText: { ...customText, sashNamePrefix: nextPrefix } } as any,
+        updatedAt: new Date(),
+      }).where(eq(graduationGroupsTable.id, groupId));
+      await tx.insert(entityTimelineTable).values({
+        entityType: "graduation_group", entityId: groupId, type: "group_sash_name_prefix_updated",
+        title: nextPrefix ? "صحّحت الإدارة كنية الوشاح" : "أزالت الإدارة كنية الوشاح",
+        actorId: user.id, actorName: user.fullName || user.username,
+        metadata: { before: currentPrefix, after: nextPrefix },
+      });
+    }
+    const orders = items.length
+      ? await tx.select().from(graduationOrdersTable)
+          .where(and(eq(graduationOrdersTable.groupId, groupId), inArray(graduationOrdersTable.id, items.map((item) => item.orderId))))
+          .for("update")
+      : [];
+    const byId = new Map(orders.map((order) => [order.id, order]));
+    const problems: string[] = [];
+    const plan = items.map((item) => {
+      const order = byId.get(item.orderId);
+      const name = cleanStudentSashName(item.studentName, title);
+      if (!order || order.archivedAt || order.status === "cancelled") problems.push(`#${item.orderId}: الطالب غير موجود في المجموعة`);
+      else if (!isSashTextEditable(order.productionStage)) problems.push(`${order.customerName}: بدأت طباعة/تطريز الوشاح`);
+      else if (!name) problems.push(`${order.customerName}: اكتب اسم الطالب على الوشاح`);
+      return { order, text: combineGroupSashName(title, name) };
+    });
+    if (problems.length)
+      return { response: structuredFail(`لم يُحفظ أي تصحيح: ${problems.slice(0, 5).join("، ")}`, 409, "CONFLICT") };
+    let updated = 0;
+    for (const { order, text } of plan) {
+      if (!order) continue;
+      const custom = record(order.customText);
+      const garments = record(order.garmentDetails);
+      const before = String(custom.text ?? "");
+      if (before === text && tidySashPrefix(custom.sashNamePrefix) === title) continue;
+      await tx.update(graduationOrdersTable).set({
+        customText: { ...custom, text, sashNamePrefix: title } as any,
+        garmentDetails: { ...garments, sashName: text, rightText: text } as any,
+        updatedAt: new Date(),
+      }).where(eq(graduationOrdersTable.id, order.id));
+      await tx.insert(entityTimelineTable).values({
+        entityType: "graduation_order", entityId: order.id, type: "sash_name_corrected",
+        title: "تصحيح الاسم على الوشاح",
+        actorId: user.id, actorName: user.fullName || user.username,
+        metadata: { before, after: text, previousPrefix: custom.sashNamePrefix ?? null, prefix: title, groupId },
+      });
+      updated += 1;
+    }
+    return { updated, prefix: title };
+  });
+  if ("response" in outcome) return outcome;
+  await audit(user, "graduation_sash_names_corrected", "graduation_group", groupId, { updated: outcome.updated, prefix: outcome.prefix, orderIds: items.map((item) => item.orderId) });
+  return outcome;
+}
+
 export async function handleAdminGraduationOperations(
   req: NextRequest,
   parts: string[],
@@ -2006,6 +2140,18 @@ export async function handleAdminGraduationOperations(
       await db.update(graduationOrdersTable).set({ status: "cancelled", archivedAt: new Date(), updatedAt: new Date() }).where(eq(graduationOrdersTable.id, order.id));
       await audit(user, "graduation_student_archived", "graduation_order", order.id, { groupId, studentCode: order.studentCode, oldValue: formatStudent(order) });
       return json({ archived: true });
+    }
+    if (action === "sash-names" && method === "POST" && !parts[3]) {
+      const denied = requireOperationPermission(user, "graduation.edit");
+      if (denied) return denied;
+      const raw = await body(req);
+      if (raw?.prefix !== undefined) {
+        const groupDenied = requireOperationPermission(user, "graduation.group.edit");
+        if (groupDenied) return groupDenied;
+      }
+      const result = await applySashNames(groupId, raw, user);
+      if ("response" in result && result.response) return result.response;
+      return json(result);
     }
     if (action === "bulk" && method === "POST") {
       const denied = requireOperationPermission(user, "graduation.group.edit");

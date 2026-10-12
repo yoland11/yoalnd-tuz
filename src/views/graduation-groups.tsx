@@ -47,6 +47,7 @@ import { formatIraqiPhoneInput } from "@/lib/phone";
 import { GraduationRobePreview } from "@/components/graduation-robe-preview";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { SASH_TYPES, combineSashName, resolveGroupSashPolicy } from "@/lib/graduation-student-flow";
+import { isTitleOnlyPrefix } from "@/lib/graduation-sash-name";
 import { DEFAULT_GRADUATION_CONFIG, type GraduationConfig } from "@/lib/graduation";
 import {
   GRADUATION_LAST_STEP,
@@ -1576,6 +1577,9 @@ function GroupColorVotePanel({
 function GroupSashNameManager({ token, group, onRefetch }: { token: string; group: any; onRefetch: () => void }) {
   const { toast } = useToast();
   const currentPrefix = String(group?.defaultConfiguration?.customText?.sashNamePrefix || "");
+  // Locked once anyone has registered: a changing title printed one student's
+  // name on another student's sash.
+  const locked = group?.sashPrefixLocked === true;
   const [prefix, setPrefix] = useState(currentPrefix);
   const [repPhone, setRepPhone] = useState("");
   const savePrefix = useMutation({
@@ -1586,17 +1590,25 @@ function GroupSashNameManager({ token, group, onRefetch }: { token: string; grou
     onError: (error: Error) => toast({ title: "تعذر تثبيت اللقب", description: error.message, variant: "destructive" }),
   });
   return (
-    <details open className="rounded-xl border border-primary/30 bg-primary/[0.03] p-4 sm:p-5">
+    <details className="rounded-xl border border-border bg-card p-4 sm:p-5">
       <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold">
         <LockKeyhole className="h-4 w-4 text-primary" />
-        تثبيت كنية الاسم على الوشاح — لممثل الدفعة
+        إدارة الممثل — كنية الوشاح (ليست لكتابة اسم الطالب)
       </summary>
+      <p className="mt-3 rounded-lg border border-status-warning/40 bg-status-warning/10 px-3 py-2 text-sm">
+        الطالب لا يكتب اسمه هنا. اسمك تكتبه في خطوة «اسمك على الوشاح» أثناء التسجيل.
+      </p>
       <p className="mt-3 text-sm text-muted-foreground">
-        اكتب كنية موحّدة مثل «المهندس». الطالب يكتب اسمه فقط، وتظهر الكنية قبله على الوشاح.
+        الكنية لقب موحّد فقط مثل «المهندس» أو «الدكتور» — بدون أي اسم شخص — وتظهر قبل اسم كل طالب.
       </p>
       <p className="mt-2 text-sm">
         الكنية المعتمدة الآن: <strong>{currentPrefix || "لم تُحدد بعد"}</strong>
       </p>
+      {locked ? (
+        <p className="mt-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          الكنية مقفلة لأن تسجيل الطلبة بدأ. لتعديلها راجع إدارة AJN.
+        </p>
+      ) : <>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <div>
           <Label htmlFor="rep-sash-prefix">الكنية الثابتة لجميع الطلبة</Label>
@@ -1624,14 +1636,20 @@ function GroupSashNameManager({ token, group, onRefetch }: { token: string; grou
       <p className="mt-3 rounded-lg border border-primary/20 bg-card px-3 py-2 text-sm" aria-live="polite">
         معاينة الاسم: <strong>{combineSashName(prefix, "محمد علي")}</strong>
       </p>
+      {prefix.trim() && !isTitleOnlyPrefix(prefix) ? (
+        <p className="mt-2 text-sm text-destructive" role="alert">
+          الكنية لازم تكون لقب فقط مثل «المهندس» — احذف الاسم منها.
+        </p>
+      ) : null}
       <Button
         className="mt-3"
         type="button"
-        disabled={savePrefix.isPending || repPhone.replace(/\D/g, "").length < 10 || prefix.trim() === currentPrefix}
+        disabled={savePrefix.isPending || repPhone.replace(/\D/g, "").length < 10 || prefix.trim() === currentPrefix || Boolean(prefix.trim() && !isTitleOnlyPrefix(prefix))}
         onClick={() => savePrefix.mutate()}
       >
         {savePrefix.isPending ? "جاري الحفظ…" : "حفظ الكنية للدفعة"}
       </Button>
+      </>}
     </details>
   );
 }

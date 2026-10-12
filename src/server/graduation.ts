@@ -103,6 +103,7 @@ import {
 } from "@/server/graduation-enterprise";
 import { getGraduationProductionMeasurementBlock } from "@/server/graduation-measurements";
 import { hasDuplicateGroupStudentName } from "@/lib/graduation-group-student-identity";
+import { cleanStudentSashName, isLikelySameStudent, isTitleOnlyPrefix, tidySashPrefix } from "@/lib/graduation-sash-name";
 
 export type GraduationAdminUser = {
   id: number;
@@ -1275,6 +1276,11 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     const sashPolicy = resolveGroupSashPolicy(locked);
     if (!isGroupSashSelectionAllowed(studentCustomText.sashType, sashPolicy))
       return { response: studentReferenceError("نوع الوشاح تغيّر؛ حدّث صفحة المجموعة واختر أحد الأنواع المعتمدة", 409, makeRequestId()) };
+    // Under a group title the sash must carry the student's own name: a title-only
+    // sash (or one inheriting another person's name) is never accepted.
+    const groupSashPrefix = typeof lockedCustomText.sashNamePrefix === "string" ? lockedCustomText.sashNamePrefix : "";
+    if (groupSashPrefix.trim() && !cleanStudentSashName(typeof studentCustomText.text === "string" ? studentCustomText.text : "", groupSashPrefix))
+      return { response: studentReferenceError("اكتب اسمك على الوشاح (اسمك فقط، والكنية تُضاف تلقائياً)", 400, makeRequestId(), "VALIDATION_ERROR") };
     const personalSash = studentSashOverrides(
       studentCustomText,
       sashPolicy,
@@ -1686,11 +1692,18 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     const existingStudents = await tx.select({
       id: graduationOrdersTable.id,
       customerName: graduationOrdersTable.customerName,
+      phone: graduationOrdersTable.phone,
       status: graduationOrdersTable.status,
       archivedAt: graduationOrdersTable.archivedAt,
     }).from(graduationOrdersTable).where(eq(graduationOrdersTable.groupId, groupId));
     if (hasDuplicateGroupStudentName(data.customerName, existingStudents))
       return { response: studentReferenceError("اسم الطالب مسجل مسبقاً في هذه الدفعة؛ أدخل الاسم الكامل الصحيح", 409, makeRequestId(), "CONFLICT") };
+    // The same student re-registering with a name variant (same phone, same first name).
+    if (isLikelySameStudent(
+      { customerName: data.customerName, phone: normalizedPhone },
+      existingStudents.filter((student) => !student.archivedAt),
+    ))
+      return { response: studentReferenceError("هذا الطالب مسجل مسبقاً بنفس رقم الهاتف في هذه الدفعة؛ للتعديل راجع ممثل الدفعة", 409, makeRequestId(), "CONFLICT") };
   }
   const customer = await ensureCustomer(normalizedPhone, data.customerName, tx);
   if (!customer) return { response: error("تعذر إنشاء ملف الزبون", 500) };
@@ -2994,6 +3007,11 @@ export async function handleGraduationPublic(
       ),
     });
     if (!group) return error("رابط الطلب الجماعي غير صالح أو مغلق", 404);
+    // Only a yes/no: the title is locked once anyone has registered.
+    const registrationStarted = Boolean((await db.execute(sql`
+      SELECT 1 FROM graduation_orders
+      WHERE group_id = ${group.id} AND archived_at IS NULL AND status <> 'cancelled' LIMIT 1
+    `)).rows?.length);
     // Never expose the raw votes map publicly; return an aggregate projection.
     const groupConfig = safeJson(group.defaultConfiguration);
     const voteState = normalizeColorVote(groupConfig.colorVote);
@@ -3017,6 +3035,7 @@ export async function handleGraduationPublic(
         groupNo: group.groupNo,
         representativeName: group.representativeName,
         groupMeta: groupMeta(group),
+        sashPrefixLocked: registrationStarted,
       },
     });
   }
@@ -3024,9 +3043,11 @@ export async function handleGraduationPublic(
     const requestId = makeRequestId();
     const identifier = decodeURIComponent(parts[2]);
     const payload = await requestBody(req);
-    const prefix = String(payload?.prefix ?? "").trim();
+    const prefix = tidySashPrefix(payload?.prefix);
     if (prefix.length > 40 || /[\r\n\x00-\x1f]/.test(prefix))
       return studentReferenceError("اللقب الثابت يجب أن يكون نصاً قصيراً من سطر واحد", 400, requestId);
+    if (prefix && !isTitleOnlyPrefix(prefix))
+      return studentReferenceError("الكنية لقب فقط مثل «المهندس» أو «الدكتور» — بدون اسم شخص. اسم كل طالب يكتبه بنفسه عند التسجيل", 422, requestId, "VALIDATION_ERROR");
     const claimedPhone = normalizeIraqiPhone(String(payload?.repPhone ?? ""));
     const result = await db.transaction(async (tx) => {
       const found = await tx.query.graduationGroupsTable.findFirst({
@@ -3042,6 +3063,15 @@ export async function handleGraduationPublic(
       const locked = await tx.execute(sql`
         SELECT default_configuration AS cfg FROM graduation_groups WHERE id = ${found.id} FOR UPDATE
       `);
+      // Changing the title between registrations printed one student's name on
+      // another's sash. Once anyone has registered, only the administration may
+      // change it (and correct existing sashes) from the group workspace.
+      const started = await tx.execute(sql`
+        SELECT 1 FROM graduation_orders
+        WHERE group_id = ${found.id} AND archived_at IS NULL AND status <> 'cancelled' LIMIT 1
+      `);
+      if (started.rows?.length)
+        return { status: 409, message: "الكنية مقفلة بعد بدء تسجيل الطلبة؛ لتعديلها راجع إدارة AJN" };
       const configuration = safeJson((locked.rows?.[0] as any)?.cfg);
       configuration.customText = { ...safeJson(configuration.customText), sashNamePrefix: prefix };
       await tx.update(graduationGroupsTable)

@@ -16,6 +16,7 @@ const steps = [
   ["Payment-state reconciliation invariant", "pnpm", ["run", "test:payment-state"]],
   ["Payroll movement schema recovery", "pnpm", ["run", "test:payroll-movement-schema"]],
   ["Graduation student sash selection", "pnpm", ["run", "test:graduation-student-flow"]],
+  ["Graduation group sash names and duplicates", "pnpm", ["run", "test:graduation-sash-name"]],
   ["Graduation inventory transaction safety", "pnpm", ["run", "test:graduation-inventory-transaction"]],
   ["Tailor student reference visibility", "pnpm", ["run", "test:tailor-student-references"]],
   ["Graduation invoice number length", "pnpm", ["run", "test:graduation-invoice-number"]],

@@ -16,6 +16,7 @@ function load(path) {
 const lib = load("src/lib/graduation.ts"), flow = load("src/lib/graduation-student-flow.ts");
 const pricing = load("src/lib/graduation-group-pricing.ts"), access = load("src/lib/graduation-group-pricing-access.ts");
 const studentIdentity = load("src/lib/graduation-group-student-identity.ts");
+const sashNames = load("src/lib/graduation-sash-name.ts");
 const safety = load("src/server/write-safety.ts"), phone = load("src/lib/phone.ts"), measures = load("src/lib/graduation-measurements.ts");
 const source = readFileSync("src/server/graduation.ts", "utf8"), ast = ts.createSourceFile("graduation.ts", source, ts.ScriptTarget.Latest, true);
 const funcs = new Set(["json", "error", "studentReferenceError", "safeJson", "money", "phoneLast4", "groupMeta", "publicOrder", "createInvoice", "createOrder", "handleGraduationPublic", "createGraduationGroup"]);
@@ -50,10 +51,11 @@ function fixture(configuration = policyConfig, { failInvoice = false } = {}) {
   }
   const db = { query: Object.fromEntries(tableNames.map((name) => [name, { findFirst: async ({ where }) => state[name].find(where) }])),
     select: (selection) => builder("select", undefined, selection), insert: (table) => builder("insert", table), update: (table) => builder("update", table),
+    execute: async () => ({ rows: [] }),
     transaction: async (callback) => { const before = structuredClone(state); try { return await callback(db); } catch (cause) { state = before; throw cause; } } };
   const config = structuredClone(lib.DEFAULT_GRADUATION_CONFIG);
   const noop = async () => {};
-  const context = vm.createContext({ ...lib, ...flow, ...pricing, ...access, ...safety, ...phone, ...measures, ...studentIdentity, ...tables, db, eq, and, or,
+  const context = vm.createContext({ ...lib, ...flow, ...pricing, ...access, ...safety, ...phone, ...measures, ...studentIdentity, ...sashNames, ...tables, db, eq, and, or,
     asc: (x) => x, desc: (x) => x, isNull: () => () => true, sql: (parts, ...values) => ({ parts, values }),
     z: require("zod/v4").z, createHash, randomUUID, Date, console, process, Object, JSON,
     NextResponse: { json: (body, options) => Response.json(body, options) },

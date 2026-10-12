@@ -10,6 +10,7 @@ import { formatIraqiPhoneInput } from "@/lib/phone";
 import { vocalizeArabicName } from "@/lib/graduation-name";
 import { processImageFile } from "@/lib/image-tools";
 import { GraduationReferenceImagePicker } from "@/components/graduation-reference-image-picker";
+import { cleanStudentSashName } from "@/lib/graduation-sash-name";
 import {
   MEASUREMENTS,
   MEASUREMENT_HELP,
@@ -476,6 +477,12 @@ export function GraduationStudentWizard({
         setError(issue);
         return;
       }
+    }
+    // Under the group title the sash must carry this student's own name.
+    if (sashNamePrefix && !cleanStudentSashName(form.sashName, sashNamePrefix)) {
+      setStep(3);
+      setError("اكتب اسمك على الوشاح — اسمك فقط، والكنية تُضاف تلقائياً");
+      return;
     }
     saving.current = true;
     setBusy(true);
@@ -1045,7 +1052,7 @@ export function GraduationStudentWizard({
                 <div className="grid gap-6 sm:grid-cols-2">
                   <div className="space-y-4">
                     <div>
-                      <Label htmlFor="sash-name">اكتب اسمك</Label>
+                      <Label htmlFor="sash-name">{sashNamePrefix ? "اكتب اسمك (إلزامي)" : "اكتب اسمك"}</Label>
                       {sashNamePrefix && (
                         <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/[0.04] px-3 py-2 text-sm">
                           <span className="text-muted-foreground">الكنية المثبتة من ممثل الدفعة</span>
@@ -1070,9 +1077,15 @@ export function GraduationStudentWizard({
                         }
                       />
                       {sashNamePrefix && (
-                        <p className="mt-2 text-sm" aria-live="polite">
-                          الاسم على الوشاح: <strong>{combineSashName(sashNamePrefix, form.sashName) || sashNamePrefix}</strong>
-                        </p>
+                        <>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            اكتب اسمك فقط بدون «{sashNamePrefix}» — الكنية تُضاف تلقائياً قبل اسمك.
+                          </p>
+                          <p className="mt-2 text-sm" aria-live="polite">
+                            الاسم على الوشاح:{" "}
+                            <strong>{cleanStudentSashName(form.sashName, sashNamePrefix) ? combineSashName(sashNamePrefix, form.sashName) : "اكتب اسمك أولاً"}</strong>
+                          </p>
+                        </>
                       )}
                     </div>
                     {lockedGroupSashColor ? (
