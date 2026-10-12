@@ -43,6 +43,7 @@ export * from "./photography-shoots";
 export * from "./photography-post";
 export * from "./photography-gallery";
 export * from "./photography-integration";
+export * from "./photography-production";
 export * from "./master-cash-box";
 export * from "./customer-receivables";
 export * from "./enterprise";

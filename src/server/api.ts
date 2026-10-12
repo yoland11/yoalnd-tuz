@@ -13,6 +13,8 @@ import {
 import bcrypt from "bcryptjs";
 import { staffPhotoUpdateSchema } from "./staff-photo";
 import { readKoshaEquipment, saveKoshaEquipment, koshaEquipmentCatalog, bookingKoshaEquipment, KoshaEquipmentError } from "./kosha-equipment";
+import { handlePhotographyProduction, productionDeadlineAlerts } from "./photography-production";
+import { PRODUCTION_KIND_LABELS } from "@/lib/photography-production";
 import {
   canAssignStaffRole,
   canAssignStaffRoleTo,
@@ -4546,6 +4548,46 @@ async function runSmartNotificationsSweep() {
     // A photography-specific failure must not abort the rest of the sweep.
     console.warn("[smart-notifications] photography alerts failed", {
       error: err instanceof Error ? err.message : "unknown",
+    });
+  }
+
+  // ── Photography production deadlines ──
+  // Unfinished production items due today/tomorrow or already overdue. Deduped per
+  // item and alert type, so the daily sweep never repeats the same alert.
+  try {
+    for (const alert of await productionDeadlineAlerts()) {
+      const type = alert.overdue
+        ? "photography_production_overdue"
+        : "photography_production_due_soon";
+      const title = alert.overdue ? "عمل إنتاج متأخر" : "موعد تسليم إنتاج قريب";
+      const body = `${PRODUCTION_KIND_LABELS[alert.kind] ?? alert.kind} · ${alert.customerName || "زبون"} · ${alert.number} · التسليم ${alert.dueDate}`;
+      await add({
+        type,
+        title,
+        body,
+        entityType: "photography_production_item",
+        entityId: alert.itemId,
+        href: `/admin/photography-production?booking=${alert.bookingId}`,
+        metadata: { bookingId: alert.bookingId, kind: alert.kind, dueDate: alert.dueDate },
+      });
+      if (alert.assigneeStaffId)
+        await createNotificationOnce({
+          audienceType: "staff",
+          staffId: alert.assigneeStaffId,
+          type,
+          title,
+          body,
+          entityType: "photography_production_item",
+          entityId: alert.itemId,
+          href: "/staff/photography/production",
+          metadata: { bookingId: alert.bookingId, kind: alert.kind, dueDate: alert.dueDate },
+        });
+    }
+  } catch (err) {
+    // A production-specific failure (including the table not yet migrated) must
+    // not abort the rest of the sweep.
+    console.warn("[smart-notifications] photography production alerts failed", {
+      error: err instanceof Error ? err.message.slice(0, 200) : "unknown",
     });
   }
 
@@ -38734,6 +38776,15 @@ async function handleAdmin(
 
   const bookingOperations = await handleBookingOperations(req, parts, section);
   if (bookingOperations) return bookingOperations;
+
+  if (section === "photography-production") {
+    const productionUser = await getAdminUser(req);
+    if (!productionUser) return error("غير مخول", 401);
+    return handlePhotographyProduction(req, parts, productionUser, {
+      notify: createNotification,
+      notifyOnce: createNotificationOnce,
+    });
+  }
 
   const documentScanner = await handleDocumentScanner(req, parts, section);
   if (documentScanner) return documentScanner;

@@ -44,6 +44,7 @@ import {
   Inbox,
   Activity,
   Camera,
+  Clapperboard,
   Trash2,
   QrCode,
   UserCheck,
@@ -754,6 +755,18 @@ export const NAV: NavItem[] = [
     label: "عمليات التصوير",
     icon: Camera,
     perm: "photography",
+  },
+  {
+    href: "/admin/photography-production",
+    label: "مركز إنتاج التصوير",
+    icon: Clapperboard,
+    perm: "photography",
+    anyPerm: [
+      "photography",
+      "photography.assignment.manage",
+      "photography.editing.manage",
+      "photography.reports.view",
+    ],
   },
   {
     href: "/admin/recycle-bin",
