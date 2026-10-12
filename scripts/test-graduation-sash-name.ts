@@ -44,10 +44,18 @@ const orders = [
   { id: 66, customerName: "برزان محمد عبدالله", productionStage: "new", customText: { text: "المهندس برزان المشهداني", sashNamePrefix: "المهندس" } },
   { id: 70, customerName: "مصطفى خليل عجمي", productionStage: "printing", customText: { text: "المهندس مهند عباس المهندس مُصْطَفَى خليل", sashNamePrefix: "المهندس مهند عباس" } },
   { id: 80, customerName: "طالب ملغي", status: "cancelled", productionStage: "new", customText: { text: "المهندس احمد", sashNamePrefix: "المهندس احمد" } },
+  // The representative typed this student's own name as the title just before they registered.
+  { id: 41, customerName: "عمار عصمت حسن", productionStage: "new", customText: { text: "المهندس عمار البدري", sashNamePrefix: "المهندس عمار البدري" } },
+  // Typed «المهندس» himself while the title was empty: already prints correctly.
+  { id: 65, customerName: "صهيب أحمد جبار", productionStage: "new", customText: { text: "المهندس صهيب أَحْمَد الطائي", sashNamePrefix: "" } },
+  { id: 69, customerName: "مهند عباس مكيل", productionStage: "new", customText: { text: "المهندس مهند عباس مهند عَبَّاس مكيل", sashNamePrefix: "المهندس مهند عباس" } },
 ];
 const findings = reviewGroupSashNames("المهندس احمد", orders);
 const byId = new Map(findings.map((finding) => [finding.orderId, finding]));
-assert.deepEqual([...byId.keys()].sort((a, b) => a - b), [39, 45, 48, 70], "correct and cancelled sashes are not flagged");
+assert.deepEqual([...byId.keys()].sort((a, b) => a - b), [39, 45, 48, 69, 70], "correct and cancelled sashes are not flagged");
+assert.ok(!byId.has(41), "a title holding the student's own name already prints the right name");
+assert.deepEqual(byId.get(69)!.issues, ["repeated_name"], "the student's own name printed twice");
+assert.equal(byId.get(69)!.suggestion, "المهندس مهند عَبَّاس مكيل", "the student's own typing is kept once");
 assert.ok(byId.get(48)!.issues.includes("foreign_name"));
 assert.equal(byId.get(48)!.suggestion, "المهندس مهند الأعرجي", "another person's name is removed, the student's own part kept");
 assert.deepEqual(byId.get(39)!.issues.sort(), ["foreign_name", "missing_name"]);
@@ -55,6 +63,7 @@ assert.equal(byId.get(39)!.suggestion, "", "a sash without the student's own nam
 assert.equal(byId.get(39)!.nameHint, "المهندس عبدالرحمن محمد");
 assert.equal(byId.get(45)!.suggestion, "المهندس عَلَاء ناصر السوداني");
 assert.ok(byId.get(45)!.issues.includes("repeated_title"));
+assert.ok(!byId.get(45)!.issues.includes("foreign_name"), "his own name in the title is not another person's name");
 assert.equal(byId.get(70)!.editable, false, "printed sashes are never rewritten");
 assert.equal(byId.get(70)!.suggestion, "المهندس مُصْطَفَى خليل");
 

@@ -41,6 +41,7 @@ export type SashReview = {
 const ISSUE_TONE: Record<SashIssue, string> = {
   foreign_name: "border-destructive/40 bg-destructive/10 text-destructive",
   missing_name: "border-destructive/40 bg-destructive/10 text-destructive",
+  repeated_name: "border-status-warning/40 bg-status-warning/10 text-status-warning",
   repeated_title: "border-status-warning/40 bg-status-warning/10 text-status-warning",
   outdated_title: "border-border bg-muted text-muted-foreground",
 };

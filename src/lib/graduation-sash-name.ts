@@ -115,6 +115,11 @@ export function effectiveGroupTitle(groupPrefix: unknown): string {
   return isTitleOnlyPrefix(title) || !title ? title : leadingTitle(title);
 }
 
+/** A name with its leading title words removed («المهندس علي حسن» → «علي حسن»). */
+function stripTitles(value: unknown): string {
+  return personalWords(value).join(" ");
+}
+
 function personalWords(value: unknown): string[] {
   const list = String(value ?? "").trim().split(/\s+/).filter(Boolean);
   while (list.length > 1 && isTitleWord(list[0])) list.shift();
@@ -131,7 +136,7 @@ export type SashReviewOrder = {
   customText?: Record<string, unknown> | null;
 };
 
-export type SashIssue = "foreign_name" | "missing_name" | "repeated_title" | "outdated_title";
+export type SashIssue = "foreign_name" | "missing_name" | "repeated_name" | "repeated_title" | "outdated_title";
 
 export type SashReviewFinding = {
   orderId: number;
@@ -146,7 +151,8 @@ export type SashReviewFinding = {
 };
 
 export const SASH_ISSUE_LABELS: Record<SashIssue, string> = {
-  foreign_name: "الكنية كانت تحتوي اسماً",
+  foreign_name: "يحتوي اسم شخص آخر",
+  repeated_name: "الاسم مكرر",
   missing_name: "بدون اسم الطالب",
   repeated_title: "الكنية مكررة",
   outdated_title: "كنية قديمة",
@@ -185,21 +191,34 @@ export function reviewGroupSashNames(groupPrefix: unknown, orders: readonly Sash
       if (currentWords.slice(0, prefixWords.length).map(normalizeNameForMatch).join(" ") === prefixWords.join(" "))
         studentPart = currentWords.slice(prefixWords.length).join(" ");
     }
-    const issues: SashIssue[] = [];
-    if (storedPrefix && !isTitleOnlyPrefix(storedPrefix)) issues.push("foreign_name");
+    // A title that held a name: it is the student's own name when the first
+    // personal name matches, otherwise it is another person's name.
+    const prefixNameClean = isTitleOnlyPrefix(storedPrefix) ? "" : stripTitles(storedPrefix);
+    const studentFirst = firstPersonalName(order.customerName);
+    const prefixIsOwn = Boolean(prefixNameClean) && firstPersonalName(prefixNameClean) === studentFirst;
     const cleaned = cleanStudentSashName(studentPart, title || storedPrefix);
-    if (!cleaned) issues.push("missing_name");
+    const issues: SashIssue[] = [];
+    let own = cleaned;
+    if (prefixNameClean && !prefixIsOwn) issues.push("foreign_name");
+    if (prefixIsOwn) {
+      if (!cleaned) own = prefixNameClean;
+      else if (firstPersonalName(cleaned) === studentFirst) issues.push("repeated_name");
+    }
+    if (!own) issues.push("missing_name");
     if (cleaned && normalizeNameForMatch(cleaned) !== normalizeNameForMatch(studentPart)) issues.push("repeated_title");
     if (title && storedPrefix && isTitleOnlyPrefix(storedPrefix) && normalizeNameForMatch(storedPrefix) !== normalizedTitle)
       issues.push("outdated_title");
     if (!issues.length) continue;
+    // Nothing to correct when the printed text already is «title + own name».
+    const suggestion = own ? combineGroupSashName(title, own) : "";
+    if (suggestion && normalizeNameForMatch(suggestion) === normalizeNameForMatch(current)) continue;
     findings.push({
       orderId: order.id,
       customerName: order.customerName,
       current,
       storedPrefix,
-      studentPart: cleaned,
-      suggestion: cleaned ? combineGroupSashName(title, cleaned) : "",
+      studentPart: own,
+      suggestion,
       nameHint: combineGroupSashName(title, personalWords(order.customerName).slice(0, 2).join(" ")),
       issues,
       editable: isSashTextEditable(order.productionStage),
