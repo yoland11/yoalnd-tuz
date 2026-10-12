@@ -95,9 +95,21 @@ export function cleanStudentSashName(name: unknown, prefix: unknown = ""): strin
   return rest.trim();
 }
 
+/**
+ * «title + student's name» with the title printed once. A title the student
+ * typed themselves (e.g. the feminine «المهندسة») replaces the group title.
+ */
 export function combineGroupSashName(prefix: unknown, studentName: unknown): string {
   const title = tidySashPrefix(prefix);
-  return [title, cleanStudentSashName(studentName, title)].filter(Boolean).join(" ");
+  const raw = String(studentName ?? "").trim().replace(/\s+/g, " ");
+  if (!title) return raw;
+  const titleWords = words(normalizeNameForMatch(title));
+  const rest = raw.split(" ").filter(Boolean);
+  if (rest.slice(0, titleWords.length).map(normalizeNameForMatch).join(" ") === titleWords.join(" "))
+    rest.splice(0, titleWords.length);
+  const ownTitles: string[] = [];
+  while (rest.length > 1 && isTitleWord(rest[0])) ownTitles.push(rest.shift()!);
+  return [ownTitles.length ? ownTitles.join(" ") : title, rest.join(" ")].filter(Boolean).join(" ");
 }
 
 /** First personal name (titles skipped) — used to spot the same student twice. */
@@ -198,7 +210,7 @@ export function reviewGroupSashNames(groupPrefix: unknown, orders: readonly Sash
     const prefixIsOwn = Boolean(prefixNameClean) && firstPersonalName(prefixNameClean) === studentFirst;
     const cleaned = cleanStudentSashName(studentPart, title || storedPrefix);
     const issues: SashIssue[] = [];
-    let own = cleaned;
+    let own = cleaned ? studentPart : "";
     if (prefixNameClean && !prefixIsOwn) issues.push("foreign_name");
     if (prefixIsOwn) {
       if (!cleaned) own = prefixNameClean;

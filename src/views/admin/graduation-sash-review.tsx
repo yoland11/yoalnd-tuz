@@ -170,7 +170,7 @@ export function GraduationSashReview({ groupId, review }: { groupId: number; rev
                           ) : null}
                         </div>
                       </td>
-                      <td className="font-semibold">{finding.editable ? (cleaned ? combineGroupSashName(review.title, cleaned) : <span className="text-destructive">اكتب الاسم</span>) : <span className="text-xs text-muted-foreground">بدأت الطباعة/التطريز</span>}</td>
+                      <td className="font-semibold">{finding.editable ? (cleaned ? combineGroupSashName(review.title, value) : <span className="text-destructive">اكتب الاسم</span>) : <span className="text-xs text-muted-foreground">بدأت الطباعة/التطريز</span>}</td>
                       <td>
                         <Button size="sm" variant="outline" disabled={!titleReady || !finding.editable || !cleaned || save.isPending}
                           onClick={() => save.mutate({ items: [{ orderId: finding.orderId, studentName: value }] })}>
@@ -189,7 +189,7 @@ export function GraduationSashReview({ groupId, review }: { groupId: number; rev
       {review.duplicateRegistrations.length ? (
         <div className="space-y-2">
           <h4 className="text-sm font-semibold">طلاب مسجلون أكثر من مرة</h4>
-          <p className="text-xs text-muted-foreground">احتفظ بتسجيل واحد لكل طالب وأرشف الباقي. التسجيل الذي عليه دفعات لا يُؤرشف من هنا.</p>
+          <p className="text-xs text-muted-foreground">احتفظ بتسجيل واحد لكل طالب وأرشف الباقي؛ الأرشفة تلغي فاتورة التسجيل المكرر أيضاً. التسجيل الذي عليه دفعات لا يُؤرشف من هنا.</p>
           <div className="grid gap-2 lg:grid-cols-2">
             {review.duplicateRegistrations.map((cluster) => (
               <div key={cluster.key} className="rounded-lg border border-status-warning/40 bg-status-warning/5 p-3">

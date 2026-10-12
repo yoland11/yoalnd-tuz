@@ -32,6 +32,8 @@ assert.equal(cleanStudentSashName("عَلَاء ناصر", "المهندس"), "�
 assert.equal(cleanStudentSashName("المهندس علي", ""), "المهندس علي", "without a group title nothing is stripped");
 assert.equal(combineGroupSashName("المهندس", "المهندس مصطفى خليل"), "المهندس مصطفى خليل");
 assert.equal(combineGroupSashName("المهندس  ", "  علي   أحمد "), "المهندس علي أحمد");
+assert.equal(combineGroupSashName("المهندس", "المهندسة ربى امين"), "المهندسة ربى امين", "a female student's own title replaces the group title");
+assert.equal(combineGroupSashName("المهندس", "Eng. Haider Ali"), "Eng. Haider Ali", "a title the student typed is printed once");
 assert.equal(combineSashName("المهندس", "علي أحمد"), "المهندس علي أحمد", "the wizard and server share the same rule");
 assert.equal(combineSashName("", "علي أحمد"), "علي أحمد");
 assert.equal(firstPersonalName("المهندس علاء ناصر السوداني"), "علاء");
@@ -96,6 +98,8 @@ assert.match(graduation, /groupSashPrefix\.trim\(\) && !cleanStudentSashName\(/,
 assert.match(graduation, /isLikelySameStudent\(/, "the same student cannot register twice with a name variant");
 assert.match(graduation, /sashPrefixLocked: registrationStarted/);
 const operations = readFileSync("src/server/graduation-operations.ts", "utf8");
+assert.match(operations, /action === "students" && parts\[3\] && method === "DELETE"[\s\S]{0,700}cancelAndArchiveGraduationOrder\(order, user/, "removing a group student cancels its invoice through the approved path");
+assert.match(graduation, /export async function cancelAndArchiveGraduationOrder[\s\S]*updateOrder\(order, \{ status: "cancelled" \}, user\)[\s\S]*archivedAt: now/, "cancel first (invoice, inventory, payment target), then archive");
 assert.match(operations, /action === "sash-names" && method === "POST"[\s\S]{0,120}requireOperationPermission\(user, "graduation\.edit"\)/, "corrections require the graduation edit permission");
 assert.match(operations, /async function applySashNames[\s\S]*db\.transaction[\s\S]*\.for\("update"\)[\s\S]*sash_name_corrected/, "corrections are transactional and audited per order");
 assert.match(operations, /isSashTextEditable\(order\.productionStage\)/, "printed sashes are refused");

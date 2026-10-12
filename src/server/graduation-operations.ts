@@ -63,6 +63,7 @@ import {
   notifyTailorsMeasurementsPending,
   updateOrder,
   type GraduationAdminUser,
+  cancelAndArchiveGraduationOrder,
 } from "@/server/graduation";
 import {
   syncSourcePaymentTarget,
@@ -1993,7 +1994,7 @@ async function applySashNames(groupId: number, raw: unknown, user: GraduationAdm
       if (!order || order.archivedAt || order.status === "cancelled") problems.push(`#${item.orderId}: الطالب غير موجود في المجموعة`);
       else if (!isSashTextEditable(order.productionStage)) problems.push(`${order.customerName}: بدأت طباعة/تطريز الوشاح`);
       else if (!name) problems.push(`${order.customerName}: اكتب اسم الطالب على الوشاح`);
-      return { order, text: combineGroupSashName(title, name) };
+      return { order, text: combineGroupSashName(title, item.studentName) };
     });
     if (problems.length)
       return { response: structuredFail(`لم يُحفظ أي تصحيح: ${problems.slice(0, 5).join("، ")}`, 409, "CONFLICT") };
@@ -2137,7 +2138,15 @@ export async function handleAdminGraduationOperations(
       if (denied) return denied;
       const order = await db.query.graduationOrdersTable.findFirst({ where: and(eq(graduationOrdersTable.id, Number(parts[3])), eq(graduationOrdersTable.groupId, groupId)) });
       if (!order) return fail("سجل الطالب غير موجود", 404);
-      await db.update(graduationOrdersTable).set({ status: "cancelled", archivedAt: new Date(), updatedAt: new Date() }).where(eq(graduationOrdersTable.id, order.id));
+      // Same approved path as individual bookings: the linked invoice is
+      // cancelled too, so an archived student never stays a receivable.
+      const removal = await cancelAndArchiveGraduationOrder(order, user, {
+        timelineType: "group_student_archived",
+        timelineTitle: "تم إلغاء وأرشفة تسجيل الطالب في المجموعة",
+        activity: "graduation_group_student_cancelled",
+        metadata: { groupId },
+      });
+      if (removal.response) return removal.response;
       await audit(user, "graduation_student_archived", "graduation_order", order.id, { groupId, studentCode: order.studentCode, oldValue: formatStudent(order) });
       return json({ archived: true });
     }
