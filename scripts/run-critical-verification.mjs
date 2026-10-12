@@ -33,6 +33,7 @@ const steps = [
   ["Kosha routed instruction persistence", "pnpm", ["run", "test:kosha-instruction-store"]],
   ["Kosha staff detail instruction redaction", "pnpm", ["run", "test:kosha-staff-detail"]],
   ["Photography production center", "pnpm", ["run", "test:photography-production"]],
+  ["SQL array parameter safety", "pnpm", ["run", "test:sql-array-params"]],
   ["Production build", "pnpm", ["run", "build"]],
   ["Git whitespace integrity", "git", ["diff", "--check"]],
 ];

@@ -32060,7 +32060,7 @@ async function custodyPreview(
     join employee_custody_group_assets a on a.group_id=g.id and a.is_active=true
     join products p on p.id=a.product_id left join asset_profiles ap on ap.product_id=p.id
     left join asset_passports pass on pass.product_id=p.id
-    where g.status='active' and g.staff_id = any(${staffIds}) order by s.full_name,g.id,asset_name`);
+    where g.status='active' and g.staff_id in (${sql.join(staffIds.map((id) => sql`${id}`), sql`, `)}) order by s.full_name,g.id,asset_name`);
   return Promise.all(
     (result.rows ?? []).map(async (row: any) => ({
       groupId: Number(row.group_id),
@@ -42495,7 +42495,7 @@ async function handleAdmin(
             return error("اختر أصلاً واحداً على الأقل", 422);
           const targets: any = await db.execute(
             ids
-              ? sql`select product_id from asset_passports where product_id = any(${ids})`
+              ? sql`select product_id from asset_passports where product_id in (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`
               : sql`select product_id from asset_passports where metadata->>'depreciationCategoryId' = ${String(categoryId)}`,
           );
           for (const target of targets.rows ?? []) {
