@@ -43,14 +43,12 @@ import {
 } from "@/views/admin/_lib";
 import { useToast } from "@/hooks/use-toast";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import {
-  printWhenImagesReadyScript,
-  thermalReceiptCss,
-} from "@/views/admin/print-helpers";
 import { BatchDashboard, BatchesHome, useBatchesOverview } from "./batches";
 import { GroupWorkspace } from "./workspace";
-import { BRAND, Breadcrumbs, EmptyState, ErrorCard } from "./shared";
+import { BRAND, Breadcrumbs, EmptyState, ErrorCard, PAYMENT_METHOD_LABELS } from "./shared";
 import { RepresentativeAccounts } from "./accounts";
+import { ReceiptPrintDialog, type ReceiptJob } from "./receipt-dialog";
+import { printPaymentReceipt } from "./receipt-print";
 
 const api = <T,>(path: string, init?: RequestInit) =>
   adminFetch<T>(`/admin/representative${path}`, init);
@@ -78,14 +76,6 @@ function initials(name: string) {
       .map((part) => part[0])
       .join("") || "ط"
   );
-}
-function escapeHtml(value: unknown) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
 function PaymentBadge({ value }: { value: string }) {
   const tone =
@@ -305,6 +295,7 @@ function Payments() {
   const { data: settings } = usePublicSettings();
   const [amount, setAmount] = useState("");
   const [printingId, setPrintingId] = useState<number | null>(null);
+  const [printJob, setPrintJob] = useState<ReceiptJob | null>(null);
   const list = useQuery({
     queryKey: ["representative", "payments"],
     queryFn: () => api<any>("/payments"),
@@ -327,35 +318,51 @@ function Payments() {
   const canPrint = Boolean(
     me.data && hasPerm(me.data, "representative.receipts.print"),
   );
-  async function printReceipt(item: any) {
-    setPrintingId(Number(item.id));
-    try {
-      const { receipt } = await api<any>(`/payments/${item.id}/receipt`);
-      const snapshot = receipt.snapshot || {};
-      const popup = window.open("", "_blank", "width=520,height=760");
-      if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
-      const markup = `<main class="receipt"><header class="r-head"><img class="r-logo" src="${escapeHtml(logoSrc(settings))}" alt="AJN"><div class="r-company">مجموعة علي جان نهاد</div><div class="r-sub">وصل دفعة تجهيزات تخرج</div><div class="r-sub num">${escapeHtml(receipt.receiptNo)}</div></header><hr class="rule">
-        <div class="kv"><span>الطالب</span><span class="v">${escapeHtml(snapshot.studentName || receipt.studentName)}</span></div>
-        <div class="kv"><span>كود الطالب</span><span class="v num">${escapeHtml(snapshot.studentCode || receipt.studentCode)}</span></div>
-        <div class="kv"><span>المجموعة</span><span class="v">${escapeHtml(receipt.groupTitle || "—")}</span></div>
-        <section class="totals"><div class="grand"><span>مبلغ الدفعة</span><span class="num">${escapeHtml(formatCurrency(Number(snapshot.paymentAmount ?? receipt.amount)))}</span></div><div class="payline"><span>طريقة الدفع</span><span>${escapeHtml(snapshot.paymentMethod || receipt.payment_method)}</span></div></section>
-        <div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div></main>`;
-      popup.document.write(
-        `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${escapeHtml(receipt.receiptNo)}</title><style>${thermalReceiptCss("80mm")}</style></head><body>${markup}${printWhenImagesReadyScript()}</body></html>`,
-      );
-      popup.document.close();
-    } catch (error) {
-      toast({
-        title: "تعذرت طباعة الوصل",
-        description: apiErrorMessage(error),
-        variant: "destructive",
-      });
-    } finally {
-      setPrintingId(null);
-    }
+  // The print window opens inside the click; the approved receipt is fetched
+  // afterwards and rendered into it (popup blockers reject later windows).
+  function printReceipt(item: any) {
+    setPrintJob({
+      title: "وصل استلام دفعة",
+      subtitle: `${item.studentName || "طالب"} · ${item.receiptNo || "—"}`,
+      amountLabel: "مبلغ الدفعة",
+      amount: Number(item.amount) || 0,
+      render: async (popup, format) => {
+        setPrintingId(Number(item.id));
+        try {
+          const { receipt } = await api<any>(`/payments/${item.id}/receipt`);
+          const snapshot = receipt.snapshot || {};
+          await printPaymentReceipt(popup, {
+            format,
+            brand: {
+              logo: logoSrc(settings),
+              company: "مجموعة علي جان نهاد",
+              phone: settings?.phone || "",
+              whatsapp: settings?.whatsapp || "",
+              address: [settings?.address, settings?.city].filter(Boolean).join("، "),
+            },
+            student: {
+              name: snapshot.studentName || receipt.studentName,
+              studentCode: snapshot.studentCode || receipt.studentCode || "—",
+            },
+            group: { title: receipt.groupTitle || "—", groupNo: "", representativeName: receipt.representative_name || "" },
+            payment: {
+              date: new Date(receipt.approved_at || receipt.created_at).toLocaleDateString("ar-IQ-u-nu-latn"),
+              receiptNo: receipt.receiptNo,
+              method: snapshot.paymentMethod || PAYMENT_METHOD_LABELS[receipt.payment_method] || receipt.payment_method || "—",
+              amount: Number(snapshot.paymentAmount ?? receipt.amount),
+              receivedBy: receipt.representative_name || null,
+              notes: receipt.notes || null,
+            },
+          });
+        } finally {
+          setPrintingId(null);
+        }
+      },
+    });
   }
   return (
     <div className="space-y-4">
+      <ReceiptPrintDialog job={printJob} onClose={() => setPrintJob(null)} />
       <div>
         <h2 className="text-xl font-bold">سجل المدفوعات</h2>
         <p className="text-sm text-muted-foreground">

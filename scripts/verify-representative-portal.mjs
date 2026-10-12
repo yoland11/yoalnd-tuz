@@ -7,6 +7,7 @@ const server = read("src/server/representative.ts");
 const api = read("src/server/api.ts");
 const app = read("src/App.tsx");
 const ui = read("src/views/representative/index.tsx");
+const receiptDialog = readFileSync("src/views/representative/receipt-dialog.tsx", "utf8");
 const migration = read("lib/db/migrations/0081_representative_portal.sql");
 const operations = read("src/server/graduation-operations.ts");
 const compactUi = ui.replace(/\s+/g, " ");
@@ -30,7 +31,7 @@ const checks = [
   ["receipt is linked to central payment", server.includes("posted_payment_id") && server.includes("graduation_receipts") && ui.includes("طباعة الوصل")],
   ["print action is gated by permission and an existing receipt", compactUi.includes('hasPerm(me.data, "representative.receipts.print")') && compactUi.includes('item.status === "approved" && item.receiptNo')],
   ["receipt printing reuses the read-only server endpoint", ui.includes('`/payments/${item.id}/receipt`') && compactServer.includes('req.method === "GET"') && compactServer.includes("!receipt.receiptNo || !receipt.snapshot")],
-  ["receipt action exposes loading and errors", ui.includes("printingId") && ui.includes("تعذرت طباعة الوصل")],
+  ["receipt action exposes loading and errors", ui.includes("printingId") && (ui.includes("تعذرت طباعة الوصل") || (ui.includes("<ReceiptPrintDialog") && receiptDialog.includes("تعذرت طباعة الوصل")))],
   ["custody confirmation is admin-only", server.includes("resource === \"custody\"") && server.includes("اعتماد تسليم العهدة متاح للإدارة فقط")],
   ["issues have a protected server endpoint", server.includes("resource === \"issues\"") && server.includes("representative.issues.create")],
   ["additive database migration exists", migration.includes("CREATE TABLE IF NOT EXISTS representative_group_assignments") && migration.includes("representative_payment_requests")],

@@ -31,10 +31,12 @@ import {
   type ProductionPhase,
 } from "@/lib/graduation-batches";
 import type { GroupWorkspace as Workspace } from "@/server/representative-workspace";
+import { ReceiptPrintDialog, type ReceiptJob } from "./receipt-dialog";
+import { printPaymentReceipt, printStudentReceipt } from "./receipt-print";
 import {
   BRAND, Breadcrumbs, DeliveryBadge, EmptyState, ErrorCard, Metric, PAYMENT_METHOD_LABELS, PaymentBadge, PaymentDialog,
-  Progress, ProductionBadge, REQUEST_STATUS_LABELS, StepBadge, downloadCsv, escapeHtml, initials, openThermalPrint,
-  optionName, receiptHeaderHtml, repApi, useGraduationConfig, type PaymentTarget,
+  Progress, ProductionBadge, REQUEST_STATUS_LABELS, StepBadge, downloadCsv, initials,
+  optionName, repApi, useGraduationConfig, type PaymentTarget,
 } from "./shared";
 
 type Student = Workspace["students"][number];
@@ -76,6 +78,7 @@ export function GroupWorkspace({ groupId }: { groupId: number }) {
   const [viewing, setViewing] = useState<Enriched | null>(null);
   const [editing, setEditing] = useState<Enriched | null>(null);
   const [adding, setAdding] = useState(false);
+  const [printing, setPrinting] = useState<ReceiptJob | null>(null);
   const { toast } = useToast();
   const { data: settings } = usePublicSettings();
   const logo = logoSrc(settings);
@@ -101,37 +104,83 @@ export function GroupWorkspace({ groupId }: { groupId: number }) {
   const { group, stats, payments, permissions } = workspace.data;
   const posted = payments.posted;
   const requests = payments.requests;
+  const brand = {
+    logo,
+    company: "مجموعة علي جان نهاد",
+    phone: settings?.phone || "",
+    whatsapp: settings?.whatsapp || "",
+    address: [settings?.address, settings?.city].filter(Boolean).join("، "),
+  };
+  const receiptGroup = {
+    title: group.title,
+    groupNo: group.groupNo,
+    batchLabel: group.batchLabel,
+    university: group.university,
+    college: group.college,
+    department: group.department,
+    representativeName: group.representativeName,
+  };
+  const absolute = (path?: string | null) => (path ? new URL(path, window.location.origin).toString() : "");
+  const receiptStudent = (student: Enriched) => ({
+    name: student.name,
+    studentCode: student.studentCode,
+    phone: student.phone,
+    receiptNo: student.receiptNo,
+    orderNo: student.orderNo,
+    trackingUrl: absolute(student.trackingUrl),
+  });
+  const paymentLine = (payment: Posted) => ({
+    date: dateText(payment.createdAt),
+    receiptNo: payment.receiptNo || "—",
+    method: PAYMENT_METHOD_LABELS[payment.paymentMethod] || payment.paymentMethod,
+    amount: Number(record(payment.snapshot).paymentAmount ?? payment.amount),
+  });
+  // Values are shown exactly as the server computed them; nothing is recalculated.
   const printStudentStatement = (student: Enriched) => {
-    try {
-      const rows = posted.filter((payment) => payment.orderId === student.id);
-      const lines = rows.map((payment) => `<div class="payline"><span>${escapeHtml(dateText(payment.createdAt))} · ${escapeHtml(payment.receiptNo || "—")}</span><span class="num">${escapeHtml(formatCurrency(payment.amount))}</span></div>`).join("");
-      openThermalPrint(`كشف ${student.name}`, `<main class="receipt">${receiptHeaderHtml(logo, "كشف حساب طالب — تجهيزات تخرج", student.studentCode)}
-        <div class="kv"><span>الطالب</span><span class="v">${escapeHtml(student.name)}</span></div>
-        <div class="kv"><span>المجموعة</span><span class="v">${escapeHtml(group.title)}</span></div>
-        <div class="kv"><span>الوجبة</span><span class="v">${escapeHtml(group.batchLabel)}</span></div>
-        <hr class="rule"><div class="kv"><span>إجمالي العقد</span><span class="v num">${escapeHtml(formatCurrency(student.total))}</span></div>
-        ${lines || `<div class="center">لا توجد دفعات معتمدة بعد</div>`}
-        <div class="grand"><span>المتبقي</span><span class="num">${escapeHtml(formatCurrency(student.remaining))}</span></div>
-        <div class="kv"><span>المدفوع</span><span class="v num">${escapeHtml(formatCurrency(student.paid))}</span></div>
-        <div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div></main>`);
-    } catch (error) {
-      toast({ title: "تعذرت الطباعة", description: apiErrorMessage(error), variant: "destructive" });
-    }
+    const text = record(student.customText);
+    setPrinting({
+      title: "وصل وكشف حساب الطالب",
+      subtitle: `${student.name} · ${student.studentCode}`,
+      amountLabel: "المتبقي",
+      amount: student.remaining,
+      render: (popup, format) => printStudentReceipt(popup, {
+        format,
+        brand,
+        student: receiptStudent(student),
+        group: receiptGroup,
+        details: [
+          { label: "الباقة", value: optionName(config.data?.packages, student.packageKey) },
+          { label: "نوع الروب", value: optionName(config.data?.styles, student.styleKey) },
+          { label: "القماش", value: record(student.fabric).name || optionName(config.data?.fabrics, record(student.fabric).key) },
+          { label: "نوع الوشاح", value: SASH_TYPES.find((type) => type.key === text.sashType)?.label || "" },
+          { label: "الاسم على الوشاح", value: String(text.text || "") },
+          { label: "الإضافات", value: student.accessories.map((key: string) => optionName(config.data?.accessories, key)).join("، ") },
+        ],
+        payments: posted.filter((payment) => payment.orderId === student.id).map(paymentLine),
+        totals: { total: student.total, paid: student.paid, remaining: student.remaining },
+      }),
+    });
   };
   const printPostedReceipt = (payment: Posted) => {
-    try {
-      const snapshot = record(payment.snapshot);
-      openThermalPrint(payment.receiptNo || "وصل", `<main class="receipt">${receiptHeaderHtml(logo, "وصل دفعة تجهيزات تخرج", payment.receiptNo)}
-        <div class="kv"><span>الطالب</span><span class="v">${escapeHtml(snapshot.studentName || payment.studentName)}</span></div>
-        <div class="kv"><span>كود الطالب</span><span class="v num">${escapeHtml(snapshot.studentCode || payment.studentCode || "—")}</span></div>
-        <div class="kv"><span>المجموعة</span><span class="v">${escapeHtml(group.title)}</span></div>
-        <div class="kv"><span>التاريخ</span><span class="v num">${escapeHtml(dateText(payment.createdAt))}</span></div>
-        <section class="totals"><div class="grand"><span>مبلغ الدفعة</span><span class="num">${escapeHtml(formatCurrency(Number(snapshot.paymentAmount ?? payment.amount)))}</span></div>
-        <div class="payline"><span>طريقة الدفع</span><span>${escapeHtml(PAYMENT_METHOD_LABELS[payment.paymentMethod] || payment.paymentMethod)}</span></div></section>
-        <div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div></main>`);
-    } catch (error) {
-      toast({ title: "تعذرت طباعة الوصل", description: apiErrorMessage(error), variant: "destructive" });
-    }
+    const snapshot = record(payment.snapshot);
+    const student = students.find((item) => item.id === payment.orderId);
+    const line = paymentLine(payment);
+    setPrinting({
+      title: "وصل استلام دفعة",
+      subtitle: `${snapshot.studentName || payment.studentName} · ${payment.receiptNo || "—"}`,
+      amountLabel: "مبلغ الدفعة",
+      amount: line.amount,
+      render: (popup, format) => printPaymentReceipt(popup, {
+        format,
+        brand,
+        student: student
+          ? receiptStudent(student)
+          : { name: snapshot.studentName || payment.studentName, studentCode: snapshot.studentCode || payment.studentCode || "—" },
+        group: receiptGroup,
+        payment: { ...line, receivedBy: payment.receivedBy, notes: payment.notes },
+        totals: student ? { total: student.total, paid: student.paid, remaining: student.remaining } : null,
+      }),
+    });
   };
   const target = (student: Enriched): PaymentTarget => ({ id: student.id, name: student.name, studentCode: student.studentCode, total: student.total, paid: student.paid, remaining: student.remaining });
   const studentActions = {
@@ -181,6 +230,7 @@ export function GroupWorkspace({ groupId }: { groupId: number }) {
       <StudentDetails student={viewing} posted={posted} requests={requests} config={config.data} onClose={() => setViewing(null)} />
       <EditStudentDialog groupId={group.id} student={editing} onClose={() => setEditing(null)} />
       <AddStudentDialog open={adding} joinUrl={group.joinUrl} status={group.status} onClose={() => setAdding(false)} />
+      <ReceiptPrintDialog job={printing} onClose={() => setPrinting(null)} />
     </div>
   );
 }

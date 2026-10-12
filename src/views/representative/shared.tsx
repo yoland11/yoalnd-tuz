@@ -11,7 +11,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { adminFetch, apiErrorMessage, formatCurrency } from "@/views/admin/_lib";
 import { useToast } from "@/hooks/use-toast";
-import { printWhenImagesReadyScript, thermalReceiptCss } from "@/views/admin/print-helpers";
 import {
   DELIVERY_PHASE_LABELS,
   PAYMENT_PHASE_LABELS,
@@ -188,18 +187,6 @@ export function PaymentDialog({ student, onClose }: { student: PaymentTarget | n
       </DialogContent>
     </Dialog>
   );
-}
-
-/** Opens an 80mm thermal print window. Throws when the browser blocks the popup. */
-export function openThermalPrint(title: string, bodyHtml: string) {
-  const popup = window.open("", "_blank", "width=520,height=760");
-  if (!popup) throw new Error("تعذر فتح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة");
-  popup.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${thermalReceiptCss("80mm")}</style></head><body>${bodyHtml}${printWhenImagesReadyScript()}</body></html>`);
-  popup.document.close();
-}
-
-export function receiptHeaderHtml(logo: string, subtitle: string, number?: string | null) {
-  return `<header class="r-head">${logo ? `<img class="r-logo" src="${escapeHtml(logo)}" alt="AJN">` : ""}<div class="r-company">مجموعة علي جان نهاد</div><div class="r-sub">${escapeHtml(subtitle)}</div>${number ? `<div class="r-sub num">${escapeHtml(number)}</div>` : ""}</header><hr class="rule">`;
 }
 
 export function downloadCsv(filename: string, header: string[], lines: Array<Array<unknown>>) {
