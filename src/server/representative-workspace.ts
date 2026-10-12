@@ -74,7 +74,7 @@ async function visibleGroupsWithStats(scope: RepresentativeScope) {
         SELECT o.group_id, o.status, o.production_stage, o.total_amount, o.paid_amount, o.remaining_amount,
           o.delivery, o.delivered_at
         FROM graduation_orders o
-        WHERE o.archived_at IS NULL AND o.group_id = ANY(${ids}::int[])`))
+        WHERE o.archived_at IS NULL AND o.group_id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`))
     : [];
   const byGroup = new Map<number, Row[]>();
   for (const student of students) {

@@ -34,12 +34,34 @@ const orders = [
   { id: 91, group_id: 9, customer_name: "علي حسين", status: "submitted", production_stage: "new", total_amount: "250", paid_amount: "0", remaining_amount: "250", delivery: {}, archived_at: null, qr_token: "q91" },
 ];
 
+// Like drizzle: nested fragments and sql.join() are inlined, and a raw array
+// parameter is rejected (drizzle expands it to "($1, $2)", which Postgres
+// cannot use with ANY(...::int[])).
+function fakeSql(parts, ...values) { return { __sql: true, parts: [...parts], values }; }
+fakeSql.join = (items, separator) => ({ __join: true, items, separator });
+function render(query) {
+  let statement = "";
+  const values = [];
+  const walk = (node) => {
+    if (node?.__join) return node.items.forEach((item, index) => { if (index) walk(node.separator); walk(item); });
+    node.parts.forEach((part, index) => {
+      statement += part;
+      if (index >= node.values.length) return;
+      const value = node.values[index];
+      if (value?.__sql || value?.__join) return walk(value);
+      if (Array.isArray(value)) throw new Error(`array bound as a single SQL parameter near: ${part.slice(-40)}`);
+      values.push(value);
+      statement += "?";
+    });
+  };
+  walk(query);
+  return { statement: statement.replace(/\s+/g, " ").trim(), values };
+}
+
 function fixture({ assignments = [8], registry = [{ key: "2029", createdAt: "x", createdBy: 1, createdByName: "admin" }] } = {}) {
   const state = { executed: [], writes: [] };
-  const norm = (query) => query.parts.join("?").replace(/\s+/g, " ").trim();
   const handle = async (query) => {
-    const statement = norm(query);
-    const values = query.values;
+    const { statement, values } = render(query);
     state.executed.push({ statement, values });
     if (/^select 1/i.test(statement)) return { rows: [] };
     if (statement.includes("FROM representative_group_assignments")) return { rows: assignments.map((group_id) => ({ group_id })) };
@@ -52,7 +74,7 @@ function fixture({ assignments = [8], registry = [{ key: "2029", createdAt: "x",
     if (/FROM graduation_groups g ORDER BY/.test(statement)) return { rows: groups };
     if (/FROM graduation_groups g WHERE g\.id = \?/.test(statement)) return { rows: groups.filter((g) => g.id === values[0]) };
     if (/FROM graduation_groups WHERE id = \? FOR UPDATE/.test(statement)) return { rows: groups.filter((g) => g.id === values[0]) };
-    if (/o\.group_id = ANY/.test(statement)) return { rows: orders.filter((o) => values[0].includes(o.group_id)) };
+    if (/o\.group_id IN \(\?/.test(statement)) return { rows: orders.filter((o) => values.includes(o.group_id)) };
     if (/FROM graduation_orders o WHERE o\.group_id = \?/.test(statement)) return { rows: orders.filter((o) => o.group_id === values[0]) };
     if (/FROM graduation_orders WHERE id = \? FOR UPDATE/.test(statement)) return { rows: orders.filter((o) => o.id === values[0]) };
     if (/FROM graduation_orders WHERE group_id = \?/.test(statement)) return { rows: orders.filter((o) => o.group_id === values[0]) };
@@ -69,7 +91,7 @@ function fixture({ assignments = [8], registry = [{ key: "2029", createdAt: "x",
   const tables = Object.fromEntries(["graduationGroupsTable", "graduationOrdersTable", "graduationReceiptsTable", "staffTable", "entityTimelineTable"].map((name) => [name, { name }]));
   const handler = load("src/server/representative.ts", {
     "@workspace/db": { db, ...tables },
-    "drizzle-orm": { sql: (parts, ...values) => ({ parts, values }), and: (...args) => args, desc: (x) => x, eq: (a, b) => [a, b], inArray: (a, b) => [a, b] },
+    "drizzle-orm": { sql: fakeSql, and: (...args) => args, desc: (x) => x, eq: (a, b) => [a, b], inArray: (a, b) => [a, b] },
     "@/server/graduation-group-pricing": { handleGraduationGroupPricing: async () => new Response(null, { status: 204 }) },
     "@/server/graduation-operations": { receivePayment: async () => { throw new Error("must not be called"); } },
   }).handleRepresentativePortal;
