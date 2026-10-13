@@ -1929,7 +1929,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     const designDocuments = GRADUATION_DECORATION_POSITIONS.flatMap((position) => {
       const image = storedPositionFiles[position];
       if (!image) return [];
-      const label = { front: "الواجهة الأمامية", back: "الخلف", sleeve: "الكم", sash: "الوشاح" }[position];
+      const label = { front: "الواجهة الأمامية", back: "الخلف", sleeve: "الكم", sash: "الوشاح", cap: "القبعة", cap_edge: "طرف القبعة" }[position];
       return [{
         entityType: "graduation_order" as const,
         entityId: order.id,

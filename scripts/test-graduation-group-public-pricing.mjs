@@ -101,14 +101,18 @@ const decoratedOrder = await decorated.create({ decoration: {
   positionFiles: {
     back: { file: "back-photo", fileName: "back.png" },
     sash: { file: "sash-photo", fileName: "sash.png" },
+    cap: { file: "cap-photo", fileName: "cap.png" },
+    cap_edge: { file: "edge-photo", fileName: "edge.png" },
   },
 } });
 if (decoratedOrder.response) throw new Error(JSON.stringify(await decoratedOrder.response.json()));
 assert.equal(decoratedOrder.order.totalAmount, 23000, "extra reference photos must not change group pricing");
 assert.equal(decorated.rows().graduationOrdersTable[0].decoration.positionFiles.back.file, "back-photo");
 assert.equal(decorated.rows().graduationOrdersTable[0].decoration.positionFiles.sash.file, "sash-photo");
-assert.equal(decorated.rows().entityDocumentsTable.length, 2, "the back and sash references are stored separately");
-assert.deepEqual(decorated.rows().entityDocumentsTable.map((document) => document.metadata.position), ["back", "sash"]);
+assert.equal(decorated.rows().graduationOrdersTable[0].decoration.positionFiles.cap.file, "cap-photo");
+assert.equal(decorated.rows().graduationOrdersTable[0].decoration.positionFiles.cap_edge.file, "edge-photo");
+assert.equal(decorated.rows().entityDocumentsTable.length, 4, "the back, sash, cap and cap-edge references are stored separately");
+assert.deepEqual(decorated.rows().entityDocumentsTable.map((document) => document.metadata.position), ["back", "sash", "cap", "cap_edge"]);
 const fallback = fixture({ ...policyConfig, sashSelectionMode: "per_student", sashType: "standard", sashPricing: { mode: "by_sash", prices: { standard: 18000, side: 19000, royal: 23000, american: 25000 } } });
 assert.equal((await fallback.create({ customText: {} })).order.totalAmount, 18000);
 const sharedPhone = fixture();

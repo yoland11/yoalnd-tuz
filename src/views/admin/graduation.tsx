@@ -912,7 +912,7 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
                   {GRADUATION_DECORATION_POSITIONS.flatMap((position) => {
                     const image = decorationImages[position];
                     if (!image) return [];
-                    const label = { front: "الواجهة الأمامية", back: "الخلف", sleeve: "الكم", sash: "الوشاح" }[position];
+                    const label = { front: "الواجهة الأمامية", back: "الخلف", sleeve: "الكم", sash: "الوشاح", cap: "القبعة", cap_edge: "طرف القبعة" }[position];
                     return [<div key={position} className="rounded-lg border border-border p-3">
                       <p className="mb-2 text-sm font-medium">{label}</p>
                       <img src={image.file} alt={`تصميم ${label}`} className="h-44 w-full rounded-lg bg-muted/30 object-contain" />
@@ -3262,7 +3262,8 @@ function PriceGrid({
         {[
           ["front", "الأمام"],
           ["back", "الخلف"],
-          ["sleeve", "الكم"],
+          ["cap", "القبعة"],
+          ["cap_edge", "طرف القبعة"],
           ["sash", "الوشاح"],
         ].map(([key, label]) => (
           <div key={key}>

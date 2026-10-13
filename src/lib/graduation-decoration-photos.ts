@@ -1,4 +1,5 @@
-export const GRADUATION_DECORATION_POSITIONS = ["front", "back", "sleeve", "sash"] as const;
+// The sleeve position remains supported for historical orders, but new orders use cap locations.
+export const GRADUATION_DECORATION_POSITIONS = ["front", "back", "sleeve", "sash", "cap", "cap_edge"] as const;
 
 export type GraduationDecorationPosition = (typeof GRADUATION_DECORATION_POSITIONS)[number];
 export type GraduationDecorationImage = { file: string; fileName: string };

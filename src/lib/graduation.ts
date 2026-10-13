@@ -350,8 +350,8 @@ export const DEFAULT_GRADUATION_CONFIG: GraduationConfig = {
     { key: "system", name: "خط النظام", family: "inherit" },
   ],
   productionDays: 7,
-  printingPrices: { front: 0, back: 0, sleeve: 0, sash: 0 },
-  embroideryPrices: { front: 0, back: 0, sleeve: 0, sash: 0 },
+  printingPrices: { front: 0, back: 0, sleeve: 0, sash: 0, cap: 0, cap_edge: 0 },
+  embroideryPrices: { front: 0, back: 0, sleeve: 0, sash: 0, cap: 0, cap_edge: 0 },
   measurementGuideImages: {},
   aiEnabled: true,
 };
@@ -453,7 +453,7 @@ export const graduationOrderInputSchema = z
     decoration: z
       .object({
         type: z.enum(["printing", "embroidery", "none"]).default("none"),
-        position: z.enum(["front", "back", "sleeve", "sash"]).default("front"),
+        position: z.enum(["front", "back", "sleeve", "sash", "cap", "cap_edge"]).default("front"),
         file: optionalString,
         fileName: optionalString,
         positionFiles: z.object({
@@ -461,6 +461,8 @@ export const graduationOrderInputSchema = z
           back: z.object({ file: z.string().min(1).max(2_000_000), fileName: z.string().max(180) }).strict().optional(),
           sleeve: z.object({ file: z.string().min(1).max(2_000_000), fileName: z.string().max(180) }).strict().optional(),
           sash: z.object({ file: z.string().min(1).max(2_000_000), fileName: z.string().max(180) }).strict().optional(),
+          cap: z.object({ file: z.string().min(1).max(2_000_000), fileName: z.string().max(180) }).strict().optional(),
+          cap_edge: z.object({ file: z.string().min(1).max(2_000_000), fileName: z.string().max(180) }).strict().optional(),
         }).strict().optional(),
       })
       .passthrough()
@@ -615,10 +617,12 @@ export function normalizeGraduationConfig(value: unknown): GraduationConfig {
     printingPrices: {
       ...DEFAULT_GRADUATION_CONFIG.printingPrices,
       ...(raw.printingPrices ?? {}),
+      cap: raw.printingPrices?.cap ?? raw.printingPrices?.sleeve ?? 0,
     },
     embroideryPrices: {
       ...DEFAULT_GRADUATION_CONFIG.embroideryPrices,
       ...(raw.embroideryPrices ?? {}),
+      cap: raw.embroideryPrices?.cap ?? raw.embroideryPrices?.sleeve ?? 0,
     },
     measurementGuideImages: raw.measurementGuideImages ?? {},
     aiEnabled: raw.aiEnabled !== false,

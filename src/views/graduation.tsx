@@ -190,7 +190,8 @@ const MEASUREMENTS = [
 const DECORATION_POSITIONS = [
   ["front", "الواجهة الأمامية"],
   ["back", "الخلف"],
-  ["sleeve", "الكم"],
+  ["cap", "القبعة"],
+  ["cap_edge", "طرف القبعة"],
   ["sash", "الوشاح"],
 ] as const;
 
@@ -1598,7 +1599,7 @@ function GraduationConfigurator() {
                       <>
                         <div>
                           <Label>الموقع</Label>
-                          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
                             {DECORATION_POSITIONS.map(([key, label]) => (
                               <Button
                                 key={key}
