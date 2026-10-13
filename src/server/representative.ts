@@ -142,10 +142,21 @@ async function studentRows(groupIds: number[]) {
   }));
 }
 
+export type RepresentativeNotify = (input: {
+  type: string;
+  title: string;
+  body?: string;
+  entityType?: string | null;
+  entityId?: number | null;
+  href?: string | null;
+  metadata?: Record<string, unknown>;
+}) => Promise<unknown>;
+
 export async function handleRepresentativePortal(
   req: NextRequest,
   parts: string[],
   user: GraduationAdminUser,
+  deps: { notify?: RepresentativeNotify } = {},
 ): Promise<NextResponse | null> {
   const requestId = makeRequestId(req.headers.get("x-request-id"));
   const fail = (message: string, status = 400) => NextResponse.json(
@@ -437,15 +448,54 @@ export async function handleRepresentativePortal(
           actorName: user.fullName || user.username,
           metadata: { requestId: request.id, amount: parsed.data.amount },
         });
-        return { request };
+        return { request, studentName: order.customerName, groupId: group.id, groupTitle: group.title };
       });
       if ("status" in result && typeof result.status === "number")
         return fail(result.message ?? "تعذر تسجيل الدفعة", result.status);
+      // Tell the administration a payment waits for approval. The request is
+      // already saved; a failed notification is logged, never hidden as success
+      // of something else and never undoes the request.
+      if (deps.notify && "request" in result && result.request) {
+        await deps.notify({
+          type: "representative_payment_request",
+          title: "دفعة ممثل بانتظار الاعتماد",
+          body: `${user.fullName || user.username} · ${result.studentName} · ${money(parsed.data.amount).toLocaleString("en-US")} د.ع · ${result.groupTitle}`,
+          entityType: "graduation_order",
+          entityId: Number(result.request.graduation_order_id),
+          href: "/representative/payments",
+          metadata: { requestId: Number(result.request.id), groupId: result.groupId, amount: parsed.data.amount },
+        }).catch((cause) => console.warn("representative payment notification failed", { requestId, ...safeServerError(cause) }));
+      }
       return json({ request: result.request, status: "pending" }, 201);
     } catch (cause) {
       console.error("representative payment request failed", { requestId, actorId: user.id, orderId: parsed.data.orderId, ...safeServerError(cause) });
       return fail("تعذر تسجيل الدفعة؛ حاول مجدداً", 500);
     }
+  }
+  // Administration queue: every pending representative payment, oldest first.
+  // Explicit columns: the receipt photo is fetched separately on demand.
+  if (resource === "payments" && parts[1] === "pending" && parts.length === 2 && req.method === "GET") {
+    if (user.role !== "admin") return fail("اعتماد الدفعات متاح للإدارة فقط", 403);
+    const rows = await db.execute(sql`
+      SELECT p.id, p.group_id, p.graduation_order_id, p.amount, p.payment_method, p.receipt_number, p.occurred_at,
+        p.notes, p.representative_name, p.created_at,
+        (p.receipt_image IS NOT NULL AND p.receipt_image <> '') AS has_receipt_image,
+        o.customer_name AS "studentName", o.student_code AS "studentCode", o.remaining_amount AS "studentRemaining",
+        g.title AS "groupTitle", g.group_no AS "groupNo"
+      FROM representative_payment_requests p
+      JOIN graduation_orders o ON o.id = p.graduation_order_id
+      JOIN graduation_groups g ON g.id = p.group_id
+      WHERE p.status = 'pending'
+      ORDER BY p.created_at ASC`);
+    const items = rows.rows as any[];
+    return json({ items, count: items.length, amount: items.reduce((sum, item) => sum + money(item.amount), 0) });
+  }
+  if (resource === "payments" && parts[1] && parts[2] === "image" && req.method === "GET") {
+    if (user.role !== "admin") return fail("صورة الوصل متاحة للإدارة فقط", 403);
+    const row = (await db.execute(sql`
+      SELECT receipt_image FROM representative_payment_requests WHERE id = ${Number(parts[1])}`)).rows[0] as any;
+    if (!row?.receipt_image) return fail("لا توجد صورة وصل لهذه الدفعة", 404);
+    return json({ image: row.receipt_image });
   }
   if (resource === "payments" && parts.length === 1 && req.method === "GET") {
     const rows = await db.execute(

@@ -134,6 +134,8 @@ function fixture({ assignments = [8], registry = [{ key: "2029", createdAt: "x",
   assert.equal((await call(rep, ["groups", "10", "batch"], "PATCH", { key: "2027", confirm: true })).status, 403);
   assert.equal((await call(rep, ["groups", "8", "batch"], "PATCH", { key: "2027", confirm: true })).status, 403);
   assert.equal(state.writes.length, 0, "rejected operations write nothing");
+  assert.equal((await call(rep, ["payments", "pending"])).status, 403, "the approval queue is administrator-only");
+  assert.equal((await call(rep, ["payments", "71", "image"])).status, 403, "receipt photos are administrator-only");
 }
 
 // --- student edits stay inside the group and keep names unique

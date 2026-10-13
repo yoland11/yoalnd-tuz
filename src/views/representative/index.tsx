@@ -47,6 +47,7 @@ import { BatchDashboard, BatchesHome, useBatchesOverview } from "./batches";
 import { GroupWorkspace } from "./workspace";
 import { BRAND, Breadcrumbs, EmptyState, ErrorCard, PAYMENT_METHOD_LABELS } from "./shared";
 import { RepresentativeAccounts } from "./accounts";
+import { PendingApprovals, PendingPaymentsBanner, usePendingRepPayments } from "./approvals";
 import { ReceiptPrintDialog, type ReceiptJob } from "@/components/graduation-receipt-dialog";
 import { printPaymentReceipt } from "@/lib/graduation-receipt-print";
 
@@ -183,10 +184,12 @@ function Shell({
   const [location, navigate] = useLocation();
   const queryClient = useQueryClient();
   const home = scope.kind === "group" ? `/representative/groups/${scope.group.id}` : "/representative";
+  const pendingPayments = usePendingRepPayments(scope.kind === "admin" && user.role === "admin");
+  const pendingCount = pendingPayments.data?.count ?? 0;
   const nav = [
     { href: home, label: scope.kind === "group" ? "مجموعتي" : "وجبات التخرج", icon: Layers3, active: location === "/representative" || location.startsWith("/representative/batches") || location.startsWith("/representative/groups") },
     { href: scope.kind === "group" ? `${home}?tab=students` : "/representative", label: "الطلاب", icon: Users, active: false, mobileOnly: true },
-    { href: "/representative/payments", label: "المدفوعات والعهدة", short: "المدفوعات", icon: WalletCards, active: location.startsWith("/representative/payments") },
+    { href: "/representative/payments", label: "المدفوعات والعهدة", short: "المدفوعات", icon: WalletCards, active: location.startsWith("/representative/payments"), badge: pendingCount },
     { href: "/representative/reports", label: "التقارير", icon: FileText, active: location.startsWith("/representative/reports") },
     ...(scope.kind === "admin" ? [{ href: "/representative/assignments", label: "تعيين الممثلين", icon: UserRoundCheck, active: location.startsWith("/representative/assignments") }] : []),
   ];
@@ -213,6 +216,7 @@ function Shell({
               <Link key={item.href + item.label} href={item.href} aria-current={item.active ? "page" : undefined}
                 className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm ${item.active ? "bg-[#fbeff2] font-semibold text-[#7b1e3a]" : "text-slate-600 hover:bg-rose-50/60"}`}>
                 <item.icon className="h-4 w-4" />{item.label}
+                {"badge" in item && item.badge ? <span className="grid h-5 min-w-5 place-items-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white" aria-label={`${item.badge} بانتظار الاعتماد`}>{item.badge}</span> : null}
               </Link>
             ))}
           </nav>
@@ -240,13 +244,15 @@ function Shell({
         </div>
       </header>
       <main className="mx-auto max-w-[1440px] px-4 py-5 pb-24 sm:px-6">
+        {!location.startsWith("/representative/payments") ? <PendingPaymentsBanner count={pendingCount} amount={pendingPayments.data?.amount ?? 0} /> : null}
         {children}
       </main>
       <nav aria-label="التنقل السريع" className="fixed inset-x-0 bottom-0 z-30 border-t border-rose-100 bg-white px-3 py-2 shadow-[0_-6px_20px_rgba(123,30,58,.08)] md:hidden dark:border-slate-800 dark:bg-slate-950">
         <div className="mx-auto grid w-full max-w-md grid-cols-4">
           {nav.slice(0, 4).map((item) => (
             <Link key={item.href + item.label} href={item.href}
-              className={`grid place-items-center gap-1 py-1 text-[11px] ${item.active ? "font-semibold text-[#7b1e3a]" : ""}`}>
+              className={`relative grid place-items-center gap-1 py-1 text-[11px] ${item.active ? "font-semibold text-[#7b1e3a]" : ""}`}>
+              {"badge" in item && item.badge ? <span className="absolute -top-0.5 right-[28%] grid h-4 min-w-4 place-items-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-white">{item.badge}</span> : null}
               <item.icon className="h-4 w-4" />
               {"short" in item && item.short ? item.short : item.label}
             </Link>
@@ -369,6 +375,7 @@ function Payments() {
           كل دفعة محفوظة كسجل مستقل.
         </p>
       </div>
+      {me.data?.role === "admin" ? <PendingApprovals /> : null}
       <Card className="border-rose-100 dark:border-slate-800">
         <CardContent className="flex flex-wrap items-end gap-3 p-4">
           <div className="min-w-56 flex-1">
@@ -423,7 +430,7 @@ function Payments() {
                       <TableCell>
                         {formatCurrency(Number(item.amount))}
                       </TableCell>
-                      <TableCell>{item.payment_method}</TableCell>
+                      <TableCell>{PAYMENT_METHOD_LABELS[item.payment_method] || item.payment_method}</TableCell>
                       <TableCell>
                         <PaymentBadge
                           value={

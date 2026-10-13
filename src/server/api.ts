@@ -38886,6 +38886,7 @@ async function handleAdmin(
       req,
       parts.slice(2),
       auth,
+      { notify: (input) => createNotification(input) },
     );
     if (representative) return representative;
   }
