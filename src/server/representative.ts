@@ -61,6 +61,12 @@ function money(value: unknown) {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
 }
+const iqd = (value: unknown) => `${money(value).toLocaleString("en-US")} د.ع`;
+// A request whose approval was interrupted (the function stopped mid-way) is
+// left in 'processing'; after this delay it can be approved again. Approval is
+// idempotent, so the retry links the payment already posted instead of
+// posting it twice.
+const STALE_PROCESSING = sql`now() - interval '15 minutes'`;
 function has(user: GraduationAdminUser, permission: string) {
   return (
     user.role === "admin" ||
@@ -403,7 +409,9 @@ export async function handleRepresentativePortal(
         : rows,
     });
   }
-  if (resource === "payments" && req.method === "POST") {
+  // Only the collection itself: POST /payments/:id/approve|reject are
+  // separate routes below and must never be read as a new payment.
+  if (resource === "payments" && parts.length === 1 && req.method === "POST") {
     if (!has(user, "representative.payments.create"))
       return fail("لا تملك صلاحية تسجيل الدفعات", 403);
     const parsed = paymentInput.safeParse(await readRequestBody(req));
@@ -433,6 +441,21 @@ export async function handleRepresentativePortal(
         if (!group) return { status: 403, message: "غير مخول للوصول إلى هذا الطالب" };
         if (parsed.data.amount > money(order.remainingAmount))
           return { status: 409, message: "المبلغ أكبر من الرصيد المتبقي" };
+        // Requests still waiting for approval count against the balance too, so
+        // one payment entered twice cannot exceed what the student owes. The
+        // order row is locked so two requests for one student are serialized.
+        const [locked] = (await tx.execute(sql`
+          SELECT remaining_amount FROM graduation_orders WHERE id = ${order.id} FOR UPDATE`)).rows as Array<{ remaining_amount?: unknown }>;
+        const [open] = (await tx.execute(sql`
+          SELECT COALESCE(SUM(amount), 0) AS total FROM representative_payment_requests
+          WHERE graduation_order_id = ${order.id} AND status IN ('pending', 'processing')`)).rows as Array<{ total?: unknown }>;
+        const remaining = money(locked?.remaining_amount ?? order.remainingAmount);
+        const openTotal = money(open?.total);
+        if (openTotal > 0 && parsed.data.amount + openTotal > remaining + 0.009)
+          return {
+            status: 409,
+            message: `لهذا الطالب دفعات بانتظار الاعتماد بمبلغ ${iqd(openTotal)}، والمتبقي عليه ${iqd(remaining)}؛ لا يمكن تسجيل ${iqd(parsed.data.amount)} أخرى قبل اعتمادها أو رفضها`,
+          };
         const request = (await tx.execute(sql`
           INSERT INTO representative_payment_requests
             (group_id, graduation_order_id, amount, payment_method, receipt_number, receipt_image,
@@ -480,12 +503,13 @@ export async function handleRepresentativePortal(
       SELECT p.id, p.group_id, p.graduation_order_id, p.amount, p.payment_method, p.receipt_number, p.occurred_at,
         p.notes, p.representative_name, p.created_at,
         (p.receipt_image IS NOT NULL AND p.receipt_image <> '') AS has_receipt_image,
+        p.status, (p.status = 'processing' AND p.updated_at < ${STALE_PROCESSING}) AS "staleProcessing",
         o.customer_name AS "studentName", o.student_code AS "studentCode", o.remaining_amount AS "studentRemaining",
         g.title AS "groupTitle", g.group_no AS "groupNo"
       FROM representative_payment_requests p
       JOIN graduation_orders o ON o.id = p.graduation_order_id
       JOIN graduation_groups g ON g.id = p.group_id
-      WHERE p.status = 'pending'
+      WHERE p.status IN ('pending', 'processing')
       ORDER BY p.created_at ASC`);
     const items = rows.rows as any[];
     return json({ items, count: items.length, amount: items.reduce((sum, item) => sum + money(item.amount), 0) });
@@ -523,53 +547,87 @@ export async function handleRepresentativePortal(
     if (user.role !== "admin")
       return fail("اعتماد الدفعات متاح للإدارة فقط", 403);
     const claimed = await db.execute(
-      sql`UPDATE representative_payment_requests SET status='processing', updated_at=now() WHERE id=${Number(parts[1])} AND status='pending' RETURNING *`,
+      sql`UPDATE representative_payment_requests SET status='processing', updated_at=now() WHERE id=${Number(parts[1])} AND (status='pending' OR (status='processing' AND updated_at < ${STALE_PROCESSING})) RETURNING *`,
     );
     const row = claimed.rows[0] as any;
     if (!row) return fail("طلب الدفعة غير متاح للاعتماد", 409);
-    const order = await db.query.graduationOrdersTable.findFirst({
-      where: eq(graduationOrdersTable.id, row.graduation_order_id),
-    });
-    if (!order) {
-      await db.execute(
-        sql`UPDATE representative_payment_requests SET status='pending', updated_at=now() WHERE id=${row.id}`,
-      );
-      return fail("طلب الطالب غير موجود", 404);
-    }
-    const representative: GraduationAdminUser = {
-      ...user,
-      id: Number(row.representative_id),
-      fullName: String(row.representative_name || user.fullName),
-      username: String(row.representative_name || user.username),
-    };
-    const result = await receivePayment(
-      {
-        amount: money(row.amount),
-        paymentMethod: row.payment_method,
-        notes: row.notes || "",
-        strategy: "selected",
-        selectedStudentIds: [order.id],
-        idempotencyKey: `representative-request-${row.id}`,
-      },
-      representative,
-      undefined,
-      order.id,
+    // Every exit that does not approve hands the request back to the queue.
+    const release = () => db.execute(
+      sql`UPDATE representative_payment_requests SET status='pending', updated_at=now() WHERE id=${row.id} AND status='processing'`,
     );
-    if ("response" in result && result.response) {
+    const idempotencyKey = `representative-request-${row.id}`;
+    let approval: { orderId: number; payment: { id: number; receiptNo?: string | null } };
+    try {
+      const order = await db.query.graduationOrdersTable.findFirst({
+        where: eq(graduationOrdersTable.id, row.graduation_order_id),
+      });
+      if (!order) {
+        await release();
+        return fail("طلب الطالب غير موجود", 404);
+      }
+      // A retry after an approval that posted the payment but was interrupted
+      // before it was recorded links that payment instead of posting it twice.
+      const [posted] = (await db.execute(sql`
+        SELECT p.id, r.receipt_no AS "receiptNo" FROM graduation_student_payments p
+        LEFT JOIN graduation_receipts r ON r.payment_id = p.id
+        WHERE p.payment_batch_id = ${idempotencyKey} ORDER BY p.id LIMIT 1`)).rows as Array<{ id: number; receiptNo: string | null }>;
+      if (posted && !posted.receiptNo) {
+        await release();
+        console.error("representative payment approval found a partial posting", { requestId, paymentRequestId: row.id, paymentId: posted.id });
+        return fail("سُجّلت هذه الدفعة سابقاً بلا وصل؛ راجع حساب الطالب قبل اعتمادها", 409);
+      }
+      if (posted) {
+        approval = { orderId: order.id, payment: posted };
+      } else {
+        // receivePayment caps a single-student payment at the remaining
+        // balance; refuse instead of silently dropping the difference.
+        if (money(row.amount) > money(order.remainingAmount) + 0.009) {
+          await release();
+          return fail(`مبلغ الدفعة ${iqd(row.amount)} أكبر من المتبقي على الطالب ${iqd(order.remainingAmount)}؛ قد تكون مكررة، راجعها أو ارفضها`, 409);
+        }
+        const representative: GraduationAdminUser = {
+          ...user,
+          id: Number(row.representative_id),
+          fullName: String(row.representative_name || user.fullName),
+          username: String(row.representative_name || user.username),
+        };
+        const result = await receivePayment(
+          {
+            amount: money(row.amount),
+            paymentMethod: row.payment_method,
+            notes: row.notes || "",
+            strategy: "selected",
+            selectedStudentIds: [order.id],
+            idempotencyKey,
+          },
+          representative,
+          undefined,
+          order.id,
+        );
+        if ("response" in result && result.response) {
+          await release();
+          return result.response;
+        }
+        const payment = (result as { payments?: Array<{ id: number; receiptNo?: string | null }> }).payments?.[0];
+        if (!payment) throw new Error("receivePayment returned no payment");
+        approval = { orderId: order.id, payment };
+      }
       await db.execute(
-        sql`UPDATE representative_payment_requests SET status='pending', updated_at=now() WHERE id=${row.id}`,
+        sql`UPDATE representative_payment_requests SET status='approved', approved_by=${user.id}, approved_at=now(), posted_payment_id=${approval.payment.id}, updated_at=now() WHERE id=${row.id}`,
       );
-      return result.response;
+    } catch (cause) {
+      console.error("representative payment approval failed", { requestId, actorId: user.id, paymentRequestId: row.id, ...safeServerError(cause) });
+      await release().catch((releaseCause) =>
+        console.error("representative payment approval release failed", { requestId, paymentRequestId: row.id, ...safeServerError(releaseCause) }));
+      return fail("تعذر اعتماد الدفعة؛ حاول مجدداً", 500);
     }
-    const payment = (result as { payments?: any[] }).payments?.[0];
-    await db.execute(
-      sql`UPDATE representative_payment_requests SET status='approved', approved_by=${user.id}, approved_at=now(), posted_payment_id=${payment?.id ?? null}, updated_at=now() WHERE id=${row.id}`,
-    );
-    await timeline(user, order.id, "اعتمدت الإدارة دفعة ممثل الشعبة", {
+    // The payment is approved; a failed timeline entry is logged, not reported
+    // as a failed approval (a retry would find nothing left to approve).
+    await timeline(user, approval.orderId, "اعتمدت الإدارة دفعة ممثل الشعبة", {
       requestId: row.id,
-      paymentId: payment.id,
-    });
-    return json({ payment, receiptNo: payment?.receiptNo, status: "approved" });
+      paymentId: approval.payment.id,
+    }).catch((cause) => console.error("representative payment approval timeline failed", { requestId, paymentRequestId: row.id, ...safeServerError(cause) }));
+    return json({ payment: approval.payment, receiptNo: approval.payment.receiptNo, status: "approved" });
   }
   if (
     resource === "payments" &&
@@ -622,7 +680,8 @@ export async function handleRepresentativePortal(
       return fail("الوصل غير متاح قبل اعتماد الدفعة", 404);
     return json({ receipt });
   }
-  if (resource === "custody" && req.method === "POST") {
+  // Only the collection itself: POST /custody/:id/confirm is a separate route.
+  if (resource === "custody" && parts.length === 1 && req.method === "POST") {
     const data = await readRequestBody(req);
     const value = money(data?.amount);
     if (value <= 0) return fail("أدخل مبلغ التسليم");

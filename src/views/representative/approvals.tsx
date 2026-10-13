@@ -22,6 +22,9 @@ export type PendingRepPayment = {
   representative_name: string;
   created_at: string;
   has_receipt_image: boolean;
+  status: "pending" | "processing";
+  /** An approval was interrupted long enough ago to be retried safely. */
+  staleProcessing: boolean;
   studentName: string;
   studentCode: string;
   studentRemaining: string;
@@ -66,12 +69,21 @@ export function PendingApprovals() {
   const decide = useMutation({
     mutationFn: ({ id, action, note }: { id: number; action: "approve" | "reject"; note?: string }) =>
       repApi(`/payments/${id}/${action}`, { method: "POST", body: JSON.stringify(note ? { note } : {}) }),
-    onSuccess: (_data, variables) => {
-      toast({ title: variables.action === "approve" ? "تم اعتماد الدفعة وإصدار الوصل" : "تم رفض الدفعة" });
-      void qc.invalidateQueries({ queryKey: ["representative"] });
-    },
+    onSuccess: (_data, variables) =>
+      toast({ title: variables.action === "approve" ? "تم اعتماد الدفعة وإصدار الوصل" : "تم رفض الدفعة" }),
     onError: (error) => toast({ title: "تعذر تنفيذ الإجراء", description: apiErrorMessage(error), variant: "destructive" }),
+    // Refresh after failures too: the request may have changed meanwhile.
+    onSettled: () => void qc.invalidateQueries({ queryKey: ["representative"] }),
   });
+  // Oldest first: a later request that pushes one student past the remaining
+  // balance is most likely the same payment entered twice.
+  const exceeding = new Set<number>();
+  const running = new Map<number, number>();
+  for (const item of pending.data?.items ?? []) {
+    const total = (running.get(item.graduation_order_id) ?? 0) + Number(item.amount);
+    running.set(item.graduation_order_id, total);
+    if (total > Number(item.studentRemaining) + 0.009) exceeding.add(item.id);
+  }
   async function showImage(item: PendingRepPayment) {
     setLoadingImage(item.id);
     try {
@@ -118,6 +130,11 @@ export function PendingApprovals() {
                     {" · "}<bdi dir="ltr">{new Date(item.occurred_at || item.created_at).toLocaleDateString("en-GB")}</bdi>
                   </div>
                   <div className="text-[11px] text-muted-foreground">متبقي الطالب حالياً: {formatCurrency(Number(item.studentRemaining))}</div>
+                  {exceeding.has(item.id) ? (
+                    <div className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-rose-600">
+                      <AlertTriangle className="h-3.5 w-3.5" />مع دفعات الطالب المعلّقة تتجاوز المتبقي — قد تكون مكررة
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex flex-wrap gap-1">
                   {item.has_receipt_image ? (
@@ -125,14 +142,22 @@ export function PendingApprovals() {
                       {loadingImage === item.id ? <Loader2 className="ml-1 h-3.5 w-3.5 animate-spin" /> : <ImageIcon className="ml-1 h-3.5 w-3.5" />}صورة الوصل
                     </Button>
                   ) : null}
-                  <Button size="sm" className="h-8 bg-emerald-600 px-2 text-xs text-white hover:bg-emerald-700" disabled={decide.isPending}
-                    onClick={() => { if (window.confirm(`اعتماد دفعة ${item.studentName} بمبلغ ${formatCurrency(Number(item.amount))}؟ ستُضاف إلى رصيد الطالب ويُصدر وصل.`)) decide.mutate({ id: Number(item.id), action: "approve" }); }}>
-                    <Check className="ml-1 h-3.5 w-3.5" />اعتماد
-                  </Button>
-                  <Button size="sm" variant="outline" className="h-8 px-2 text-xs text-destructive" disabled={decide.isPending}
-                    onClick={() => { const note = window.prompt("سبب الرفض")?.trim(); if (note) decide.mutate({ id: Number(item.id), action: "reject", note }); }}>
-                    <X className="ml-1 h-3.5 w-3.5" />رفض
-                  </Button>
+                  {item.status === "processing" && !item.staleProcessing ? (
+                    <span className="inline-flex h-8 items-center gap-1 rounded-md bg-amber-50 px-2 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />قيد الاعتماد
+                    </span>
+                  ) : (
+                    <Button size="sm" className="h-8 bg-emerald-600 px-2 text-xs text-white hover:bg-emerald-700" disabled={decide.isPending}
+                      onClick={() => { if (window.confirm(`اعتماد دفعة ${item.studentName} بمبلغ ${formatCurrency(Number(item.amount))}؟ ستُضاف إلى رصيد الطالب ويُصدر وصل.`)) decide.mutate({ id: Number(item.id), action: "approve" }); }}>
+                      <Check className="ml-1 h-3.5 w-3.5" />{item.status === "processing" ? "إعادة الاعتماد" : "اعتماد"}
+                    </Button>
+                  )}
+                  {item.status === "pending" ? (
+                    <Button size="sm" variant="outline" className="h-8 px-2 text-xs text-destructive" disabled={decide.isPending}
+                      onClick={() => { const note = window.prompt("سبب الرفض")?.trim(); if (note) decide.mutate({ id: Number(item.id), action: "reject", note }); }}>
+                      <X className="ml-1 h-3.5 w-3.5" />رفض
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             ))}

@@ -111,6 +111,11 @@ export function PaymentBadge({ value }: { value: PaymentPhase }) {
   const tone = value === "paid" ? "bg-emerald-50 text-emerald-700 ring-emerald-100" : value === "partial" ? "bg-amber-50 text-amber-700 ring-amber-100" : "bg-rose-50 text-rose-700 ring-rose-100";
   return <span className={`${pill} ${tone}`}>{PAYMENT_PHASE_LABELS[value]}</span>;
 }
+/** Status of a representative's payment request (pending approval, approved, …). */
+export function RequestStatusBadge({ value }: { value: string }) {
+  const tone = value === "approved" ? "bg-emerald-50 text-emerald-700 ring-emerald-100" : value === "pending" || value === "processing" ? "bg-amber-50 text-amber-700 ring-amber-100" : value === "rejected" ? "bg-rose-50 text-rose-700 ring-rose-100" : "bg-slate-100 text-slate-600 ring-slate-200";
+  return <span className={`${pill} ${tone}`}>{REQUEST_STATUS_LABELS[value] || value}</span>;
+}
 export function ProductionBadge({ value }: { value: ProductionPhase }) {
   const tone = value === "delivered" || value === "ready" ? "bg-emerald-50 text-emerald-700 ring-emerald-100" : value === "in_production" ? "bg-violet-50 text-violet-700 ring-violet-100" : value === "cancelled" ? "bg-slate-100 text-slate-600 ring-slate-200" : "bg-sky-50 text-sky-700 ring-sky-100";
   return <span className={`${pill} ${tone}`}>{PRODUCTION_PHASE_LABELS[value]}</span>;

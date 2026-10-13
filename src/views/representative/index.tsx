@@ -45,7 +45,7 @@ import { useToast } from "@/hooks/use-toast";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { BatchDashboard, BatchesHome, useBatchesOverview } from "./batches";
 import { GroupWorkspace } from "./workspace";
-import { BRAND, Breadcrumbs, EmptyState, ErrorCard, PAYMENT_METHOD_LABELS } from "./shared";
+import { BRAND, Breadcrumbs, EmptyState, ErrorCard, PAYMENT_METHOD_LABELS, RequestStatusBadge } from "./shared";
 import { RepresentativeAccounts } from "./accounts";
 import { PendingApprovals, PendingPaymentsBanner, usePendingRepPayments } from "./approvals";
 import { ReceiptPrintDialog, type ReceiptJob } from "@/components/graduation-receipt-dialog";
@@ -56,11 +56,6 @@ const api = <T,>(path: string, init?: RequestInit) =>
 type PortalScope =
   | { kind: "admin"; group: null }
   | { kind: "group"; group: { id: number; title: string; groupNo: string } };
-const paymentLabels: Record<string, string> = {
-  unpaid: "غير مدفوع",
-  partial: "مدفوع جزئياً",
-  paid: "مدفوع بالكامل",
-};
 const useScope = () =>
   useQuery({
     queryKey: ["representative", "scope"],
@@ -76,21 +71,6 @@ function initials(name: string) {
       .slice(0, 2)
       .map((part) => part[0])
       .join("") || "ط"
-  );
-}
-function PaymentBadge({ value }: { value: string }) {
-  const tone =
-    value === "paid"
-      ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
-      : value === "partial"
-        ? "bg-amber-50 text-amber-700 ring-amber-100"
-        : "bg-rose-50 text-rose-600 ring-rose-100";
-  return (
-    <span
-      className={`inline-flex rounded-md px-2 py-1 text-[11px] font-medium ring-1 ${tone}`}
-    >
-      {paymentLabels[value] || value}
-    </span>
   );
 }
 
@@ -418,6 +398,21 @@ function Payments() {
                       <Skeleton className="h-8" />
                     </TableCell>
                   </TableRow>
+                ) : list.isError ? (
+                  <TableRow>
+                    <TableCell colSpan={6}>
+                      <div role="alert" className="flex flex-wrap items-center justify-between gap-2 text-sm text-destructive">
+                        <span>{apiErrorMessage(list.error)}</span>
+                        <Button size="sm" variant="outline" onClick={() => void list.refetch()}>إعادة المحاولة</Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ) : !list.data?.items?.length ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
+                      لا توجد دفعات مسجّلة بعد.
+                    </TableCell>
+                  </TableRow>
                 ) : (
                   list.data?.items?.map((item: any) => (
                     <TableRow key={item.id}>
@@ -432,15 +427,12 @@ function Payments() {
                       </TableCell>
                       <TableCell>{PAYMENT_METHOD_LABELS[item.payment_method] || item.payment_method}</TableCell>
                       <TableCell>
-                        <PaymentBadge
-                          value={
-                            item.status === "approved"
-                              ? "paid"
-                              : item.status === "pending"
-                                ? "partial"
-                                : "unpaid"
-                          }
-                        />
+                        <RequestStatusBadge value={item.status} />
+                        {item.status === "rejected" && item.rejection_note ? (
+                          <small className="mt-1 block max-w-48 text-muted-foreground">
+                            {item.rejection_note}
+                          </small>
+                        ) : null}
                       </TableCell>
                       <TableCell>
                         {new Date(item.created_at).toLocaleDateString("ar-IQ-u-nu-latn")}
