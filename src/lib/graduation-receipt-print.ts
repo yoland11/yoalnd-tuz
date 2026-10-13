@@ -176,6 +176,40 @@ function css(format: ReceiptFormat) {
   `;
 }
 
+/** Workshop roll layout only; student/payment receipts and A5 keep their existing composition. */
+function tailorThermalRules() {
+  return `
+  .doc.tailor-thermal { max-width: 72mm; padding: 1.5mm; font-size: 11px; line-height: 1.3; }
+  .tailor-thermal .head { flex-direction: row; gap: 6px; text-align: right; }
+  .tailor-thermal .logo { width: 30px; height: 30px; }
+  .tailor-thermal .company { font-size: 14px; }
+  .tailor-thermal .tagline, .tailor-thermal .contact { font-size: 8.5px; }
+  .tailor-thermal .title { margin: 4px 0; padding: 3px 4px; font-size: 12px; }
+  .tailor-thermal .docno { margin-bottom: 3px; font-size: 9px; flex-wrap: wrap; }
+  .tailor-thermal .card { margin: 4px 0; padding: 4px; }
+  .tailor-thermal .card h3 { margin-bottom: 3px; font-size: 10.5px; }
+  .tailor-thermal .student-name { font-size: 13px; }
+  .tailor-thermal .kv { font-size: 10.5px; padding: 0; }
+  .tailor-thermal .measures { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+  .tailor-thermal .m-cell { min-width: 0; padding: 3px 2px; break-inside: avoid; }
+  .tailor-thermal .m-label { font-size: 9px; overflow-wrap: anywhere; }
+  .tailor-thermal .m-value { font-size: 15px; overflow-wrap: anywhere; }
+  .tailor-thermal .warn { margin: 4px 0; padding: 3px 4px; }
+  .tailor-thermal .verify { flex-direction: column; gap: 2mm; margin-top: 4px; }
+  .tailor-thermal .verify img { width: 22mm; height: 22mm; }
+  .tailor-thermal .verify > div { width: 100%; min-width: 0; }
+  .tailor-thermal .verify .hint { font-size: 9px; }
+  .tailor-thermal .barcode svg { width: 60mm; max-width: 100%; height: 11mm; }
+  .tailor-thermal .barcode .code { font-size: 8px; letter-spacing: 0; overflow-wrap: anywhere; }
+  .tailor-thermal .signs { margin-top: 7px; gap: 10px; }
+  .tailor-thermal .signs div { font-size: 9px; min-height: 12px; }
+  .tailor-thermal .foot { margin-top: 4px; padding-top: 3px; }
+  .tailor-thermal .thanks { font-size: 10px; }
+  .tailor-thermal .copy { font-size: 8px; }
+  @media print { .doc.tailor-thermal { break-inside: avoid; page-break-inside: avoid; } }
+  `;
+}
+
 /** The same rules confined to one container (in-page PDF export never restyles the page). */
 export function scopedReceiptCss(format: ReceiptFormat, scope: string) {
   return rules(format).replace(/(^|\})\s*([^{}]+)\{/g, (_match, close: string, selectors: string) =>
@@ -197,7 +231,7 @@ function headerHtml(brand: ReceiptBrand, format: ReceiptFormat, meta: string) {
   </header>`;
 }
 
-function printScript() {
+function printScript(tailorThermal = false) {
   return `<script>
     (function () {
       function images() {
@@ -208,20 +242,31 @@ function printScript() {
       }
       var fonts = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
       Promise.all([images(), fonts]).then(function () {
+        ${tailorThermal ? `// CSS "80mm auto" is not a valid variable-length page size in Chromium.
+        // Measure the final roll layout after fonts/images, then reserve one continuous page.
+        var sheet = document.querySelector(".tailor-thermal");
+        var rollPage = document.getElementById("tailor-roll-page");
+        if (sheet && rollPage) {
+          var heightMm = Math.max(50, Math.ceil(sheet.getBoundingClientRect().height * 25.4 / 96) + 2);
+          rollPage.textContent = "@page { size: 80mm " + heightMm + "mm; margin: 0; }";
+        }` : ""}
         setTimeout(function () {
           var desktop = window.ajnDesktop && window.ajnDesktop.print;
-          if (desktop) desktop(); else window.print();
+          if (desktop) desktop(${tailorThermal ? '{ paperSize: "80mm" }' : ""}); else window.print();
         }, 150);
       });
     })();
   </script>`;
 }
 
-function writeDocument(popup: Window, title: string, format: ReceiptFormat, body: string) {
+function writeDocument(popup: Window, title: string, format: ReceiptFormat, body: string, tailorSheet = false) {
+  const tailorThermal = tailorSheet && format === "80mm";
   popup.document.open();
   popup.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${escapeReceipt(title)}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap" rel="stylesheet">
-    <style>${css(format)}</style></head><body><main class="doc">${body}</main>${printScript()}</body></html>`);
+    <style>${css(format)}${tailorThermal ? tailorThermalRules() : ""}</style>
+    ${tailorThermal ? '<style id="tailor-roll-page">@page { size: 80mm 297mm; margin: 0; }</style>' : ""}
+    </head><body><main class="doc${tailorThermal ? " tailor-thermal" : ""}">${body}</main>${printScript(tailorThermal)}</body></html>`);
   popup.document.close();
 }
 
@@ -414,5 +459,5 @@ export async function printTailorSheet(popup: Window, input: TailorSheetInput) {
       <div class="thanks">${escapeReceipt(brand.company)} — قسم الخياطة</div>
       <div class="copy">ورقة داخلية للورشة · لا تحتوي أسعاراً</div>
     </footer>`;
-  writeDocument(popup, `${title} — ${student.name}`, format, body);
+  writeDocument(popup, `${title} — ${student.name}`, format, body, true);
 }
