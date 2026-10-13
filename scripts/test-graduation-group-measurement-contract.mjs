@@ -31,6 +31,8 @@ const measurements = {
 };
 const parsed = context.schema.parse(measurements);
 assert.equal(parsed.sashWidth, 14, "admin updates must validate sash width as a number");
+assert.equal(context.schema.parse({ sleeveLength: 61 }).sleeveLength, 61, "admin updates must accept current sleeve length");
+assert.equal(context.schema.safeParse({ sleeveLength: 200 }).success, false, "out-of-range sleeve length must be rejected");
 assert.equal(context.schema.safeParse({ sashWidth: 200 }).success, false, "out-of-range sash width must be rejected");
 assert.equal(context.schema.safeParse({ robeLength: 300 }).success, false, "out-of-range robe length must be rejected");
 for (const key of Object.keys(measurements))
@@ -50,6 +52,7 @@ const legacy = context.format({
 });
 assert.equal(legacy.size, "48", "legacy size must remain visible");
 assert.equal(legacy.sashWidth, "", "historical students without new fields must load");
+assert.equal(context.format({ id: 3, measurements: { sleeveLength: 61 } }).sleeveLength, 61, "group detail must expose current sleeve length");
 
 const core = readFileSync("src/server/graduation.ts", "utf8");
 const coreAst = ts.createSourceFile("graduation.ts", core, ts.ScriptTarget.Latest, true);

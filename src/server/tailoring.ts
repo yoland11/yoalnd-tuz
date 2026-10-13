@@ -113,7 +113,10 @@ function pendingMeasurementsCondition() {
       or (
         coalesce(nullif(${graduationOrdersTable.measurements}->>'robeLength', ''), '') <> ''
         and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashLength', ''), '') <> ''
-        and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashWidth', ''), '') <> ''
+        and (
+          coalesce(nullif(${graduationOrdersTable.measurements}->>'sleeveLength', ''), '') <> ''
+          or coalesce(nullif(${graduationOrdersTable.measurements}->>'sashWidth', ''), '') <> ''
+        )
         and coalesce(nullif(${graduationOrdersTable.measurements}->>'americanSashBack', ''), '') <> ''
         and coalesce(nullif(${graduationOrdersTable.measurements}->>'shoulder', ''), '') <> ''
         and coalesce(nullif(${graduationOrdersTable.measurements}->>'capSize', ''), '') <> ''

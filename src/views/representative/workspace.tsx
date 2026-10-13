@@ -54,7 +54,7 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   draft: "مسودة", submitted: "مُرسل", confirmed: "مؤكد", in_production: "قيد التنفيذ", ready: "جاهز", delivered: "مُسلّم", completed: "مكتمل", cancelled: "ملغي",
 };
 const MEASURE_COLUMNS: Array<[string, string]> = [
-  ["height", "الطول"], ["shoulder", "الكتف"], ["chest", "الصدر"], ["waist", "الخصر"], ["sleeveLength", "الكم"],
+  ["height", "الطول"], ["shoulder", "الكتف"], ["chest", "الصدر"], ["waist", "الخصر"], ["sleeveLength", "طول ردن"],
   ["robeLength", "طول الروب"], ["sashLength", "طول الوشاح"], ["capSize", "القبعة"],
 ];
 const EQUIPMENT_LABELS: Array<[keyof Enriched["equipment"], string]> = [

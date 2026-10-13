@@ -14,10 +14,10 @@ vm.runInContext(ts.transpileModule(`${fieldsDeclaration.getText(ast)}\nglobalThi
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText, context);
 assert.deepEqual(Array.from(context.fields, (field) => field.key), [
-  "robeLength", "sashLength", "sashWidth", "americanSashBack", "shoulder", "capSize",
+  "robeLength", "sashLength", "sleeveLength", "americanSashBack", "shoulder", "capSize",
 ], "group measurements must match the student and tailor field order");
 assert.deepEqual(Array.from(context.fields, (field) => field.label), [
-  "طول روب", "طول وشاح", "عرض الوشاح", "خلف الوشاح الأمريكي", "عرض كتف", "قياس قبعة",
+  "طول روب", "طول وشاح", "طول ردن", "خلف الوشاح الأمريكي", "عرض كتف", "قياس قبعة",
 ]);
 
 const addStudent = source.slice(source.indexOf("function AddStudentDialog"), source.indexOf("function PaymentDialog"));

@@ -181,7 +181,7 @@ const GRADUATION_THEME_STYLE = {
 const MEASUREMENTS = [
   ["robeLength", "طول روب (سم)"],
   ["sashLength", "طول وشاح (سم)"],
-  ["sashWidth", "عرض الوشاح (سم)"],
+  ["sleeveLength", "طول ردن (سم)"],
   ["americanSashBack", "خلف الوشاح الأمريكي (سم)"],
   ["shoulder", "عرض الكتف (سم)"],
   ["capSize", "قياس قبعة (سم)"],

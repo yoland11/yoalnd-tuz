@@ -1181,7 +1181,7 @@ const GRADUATION_MEASUREMENT_RANGES: Record<string, [number, number, string]> = 
   chest: [40, 220, "محيط الصدر"],
   waist: [35, 220, "محيط الخصر"],
   hip: [35, 240, "محيط الورك"],
-  sleeveLength: [20, 120, "طول الكم"],
+  sleeveLength: [20, 120, "طول ردن"],
   neck: [20, 80, "محيط الرقبة"],
   sashWidth: [3, 100, "عرض الوشاح"],
   americanSashBack: [20, 250, "خلف الوشاح الأمريكي"],
@@ -2694,7 +2694,10 @@ function graduationMeasurementCompleteCondition() {
     or (
       coalesce(nullif(${graduationOrdersTable.measurements}->>'robeLength', ''), '') <> ''
       and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashLength', ''), '') <> ''
-      and coalesce(nullif(${graduationOrdersTable.measurements}->>'sashWidth', ''), '') <> ''
+      and (
+        coalesce(nullif(${graduationOrdersTable.measurements}->>'sleeveLength', ''), '') <> ''
+        or coalesce(nullif(${graduationOrdersTable.measurements}->>'sashWidth', ''), '') <> ''
+      )
       and coalesce(nullif(${graduationOrdersTable.measurements}->>'americanSashBack', ''), '') <> ''
       and coalesce(nullif(${graduationOrdersTable.measurements}->>'shoulder', ''), '') <> ''
       and coalesce(nullif(${graduationOrdersTable.measurements}->>'capSize', ''), '') <> ''

@@ -21,19 +21,20 @@ vm.runInContext(ts.transpileModule(
 ).outputText, context);
 
 const user = { fullName: "خياط", username: "tailor" };
-const measurements = context.build({ robeLength: 145, sleeveLength: 55, neck: 36 }, { sashLength: "110", sashWidth: "18", americanSashBack: "42" }, user);
+const measurements = context.build({ robeLength: 145, sashWidth: 18, neck: 36 }, { sashLength: "110", sleeveLength: "55", americanSashBack: "42" }, user);
 assert.equal(measurements.robeLength, 145, "legacy measurements must survive a partial sash edit");
-assert.equal(measurements.sleeveLength, 55, "hidden sleeve measurement must remain in historical data");
+assert.equal(measurements.sleeveLength, 55, "sleeve length must be stored as a number");
 assert.equal(measurements.neck, 36, "hidden neck measurement must remain in historical data");
 assert.equal(measurements.sashLength, 110, "sash length must be stored as a number");
-assert.equal(measurements.sashWidth, 18, "sash width must be stored as a number");
+assert.equal(measurements.sashWidth, 18, "historical sash width must remain unchanged");
 assert.equal(measurements.americanSashBack, 42, "American sash back must be stored as a number");
 const row = context.row({
   id: 12, studentCode: "ST-12", customerName: "طالب", measurements,
   productionEstimate: {}, updatedAt: new Date("2026-10-11T00:00:00Z"),
 });
 assert.equal(row.sashLength, 110, "group table must expose saved sash length");
-assert.equal(row.sashWidth, 18, "group table must expose saved sash width");
+assert.equal(row.sleeveLength, 55, "group table must expose saved sleeve length");
+assert.equal(row.sashWidth, 18, "group data must retain historical sash width");
 assert.equal(row.americanSashBack, 42, "group table must expose saved American sash back");
 const idealRow = context.row({
   id: 14, studentCode: "ST-14", customerName: "مثالي",
@@ -62,21 +63,22 @@ vm.runInContext(ts.transpileModule(
   `${viewDeclarations.join("\n")}\nglobalThis.fields = NUMERIC_FIELDS; globalThis.current = CURRENT_MEASUREMENT_KEYS; globalThis.guide = MEASUREMENT_GUIDE; globalThis.columns = EDIT_COLS; globalThis.csv = CSV_HEAD; globalThis.excel = EXCEL_COLUMNS;`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
 ).outputText, viewContext);
-for (const [key, label] of [["sashLength", "طول وشاح (سم)"], ["sashWidth", "عرض الوشاح (سم)"], ["americanSashBack", "خلف الوشاح الأمريكي (سم)"]]) {
+for (const [key, label] of [["sashLength", "طول وشاح (سم)"], ["sleeveLength", "طول ردن (سم)"], ["americanSashBack", "خلف الوشاح الأمريكي (سم)"]]) {
   assert.equal(viewContext.fields.find((field) => field.key === key)?.label, label, `${key} must be editable on order details`);
   assert.equal(viewContext.columns.find((column) => column.key === key)?.label, label, `${key} must be editable in group table`);
   assert.ok(viewContext.csv.includes(key), `${key} must be exported to CSV`);
   assert.ok(viewContext.excel.includes(key), `${key} must be exported to Excel`);
 }
-for (const key of ["sleeveLength", "neck"]) {
+for (const key of ["sashWidth", "neck"]) {
   assert.ok(!viewContext.fields.some((field) => field.key === key), `${key} must not be editable in the order form`);
   assert.ok(!viewContext.columns.some((column) => column.key === key), `${key} must not be editable in the group table`);
   assert.ok(!viewContext.csv.includes(key) && !viewContext.excel.includes(key), `${key} must not appear in new group exports`);
 }
 const sheetMapping = viewSource.split("function measureList()")[1]?.split("// Measurements and production sheets")[0];
 assert.ok(sheetMapping, "tailor print measurement mapping exists");
-assert.doesNotMatch(sheetMapping, /sleeveLength|\bneck\b|"الكم"|"الرقبة"/, "both tailor sheets omit sleeve and neck measurements");
-assert.deepEqual(Array.from(viewContext.current), ["robeLength", "sashLength", "sashWidth", "americanSashBack", "shoulder", "capSize"], "tailor must present the same six core measurements in the same order");
+assert.match(sheetMapping, /"طول ردن", m\.sleeveLength/, "tailor print shows the current sleeve length");
+assert.doesNotMatch(sheetMapping, /sashWidth|\bneck\b|"عرض الوشاح"|"الرقبة"/, "tailor print omits hidden legacy fields");
+assert.deepEqual(Array.from(viewContext.current), ["robeLength", "sashLength", "sleeveLength", "americanSashBack", "shoulder", "capSize"], "tailor must present the same six core measurements in the same order");
 for (const key of viewContext.current) {
   assert.ok(viewContext.guide[key]?.length > 12, `${key} needs an explanatory how-to-measure hint`);
 }

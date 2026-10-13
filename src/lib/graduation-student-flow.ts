@@ -91,7 +91,7 @@ export const SASH_FONTS = [
 export const MEASUREMENTS: [string, string, number, number][] = [
   ["robeLength", "طول روب (سم)", 80, 250],
   ["sashLength", "طول وشاح (سم)", 30, 250],
-  ["sashWidth", "عرض الوشاح (سم)", 3, 100],
+  ["sleeveLength", "طول ردن (سم)", 20, 120],
   ["americanSashBack", "خلف الوشاح الأمريكي (سم)", 20, 250],
   ["shoulder", "عرض الكتف (سم)", 20, 100],
   ["capSize", "قياس قبعة (سم)", 30, 80],
@@ -99,7 +99,7 @@ export const MEASUREMENTS: [string, string, number, number][] = [
 export const MEASUREMENT_HELP: Record<string, string> = {
   robeLength: "قِس من أعلى الكتف إلى نهاية الروب المطلوبة.",
   sashLength: "قِس طول الوشاح المطلوب من الكتف حتى نهايته.",
-  sashWidth: "قِس عرض الوشاح من الحافة إلى الحافة.",
+  sleeveLength: "قِس من أعلى الكتف إلى نهاية الردن عند الرسغ والذراع مرتخية.",
   americanSashBack: "قِس الجزء الخلفي للوشاح الأمريكي من أعلى الكتف إلى نهايته.",
   shoulder: "من نهاية عظمة الكتف إلى الكتف الثاني، مستقيماً على الظهر.",
   capSize: "قِس محيط الرأس من فوق الحاجبين وحول أوسع نقطة في الخلف.",
@@ -358,7 +358,7 @@ export function studentPayload(
       : {}),
     measurements: {
       ...Object.fromEntries(
-        ["height", "weight", "chest", "waist", "hip", "sleeveLength", "neck"]
+        ["height", "weight", "chest", "waist", "hip", "sashWidth", "neck"]
           .filter((key) => student.measurements[key]?.trim())
           .map((key) => [key, Number(student.measurements[key])]),
       ),

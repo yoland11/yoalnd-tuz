@@ -9,10 +9,15 @@ export const GRADUATION_CORE_MEASUREMENT_KEYS = [
 export const GRADUATION_DETAILED_MEASUREMENT_KEYS = [
   "robeLength",
   "sashLength",
-  "sashWidth",
+  "sleeveLength",
   "americanSashBack",
   "shoulder",
   "capSize",
+] as const;
+
+// Keep older detailed orders valid without reinterpreting their sash width as sleeve length.
+const LEGACY_DETAILED_MEASUREMENT_KEYS = [
+  "robeLength", "sashLength", "sashWidth", "americanSashBack", "shoulder", "capSize",
 ] as const;
 
 export type GraduationMeasurementStatus =
@@ -57,11 +62,15 @@ export function getGraduationMeasurementStatus(
   const detailedFilled = GRADUATION_DETAILED_MEASUREMENT_KEYS.filter((key) =>
     hasValue(measurements[key]),
   ).length;
+  const legacyDetailedFilled = LEGACY_DETAILED_MEASUREMENT_KEYS.filter((key) =>
+    hasValue(measurements[key]),
+  ).length;
   if (
     legacyFilled === GRADUATION_CORE_MEASUREMENT_KEYS.length ||
-    detailedFilled === GRADUATION_DETAILED_MEASUREMENT_KEYS.length
+    detailedFilled === GRADUATION_DETAILED_MEASUREMENT_KEYS.length ||
+    legacyDetailedFilled === LEGACY_DETAILED_MEASUREMENT_KEYS.length
   ) return "complete";
-  if (legacyFilled === 0 && detailedFilled === 0) return "not_started";
+  if (legacyFilled === 0 && detailedFilled === 0 && legacyDetailedFilled === 0) return "not_started";
   return "partial";
 }
 

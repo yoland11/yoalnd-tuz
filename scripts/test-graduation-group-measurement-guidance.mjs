@@ -5,7 +5,7 @@ const individual = readFileSync("src/views/graduation.tsx", "utf8");
 const group = readFileSync("src/components/graduation-student-wizard.tsx", "utf8");
 const shared = readFileSync("src/lib/graduation-student-flow.ts", "utf8");
 
-for (const key of ["robeLength", "sashLength", "sashWidth", "americanSashBack", "shoulder", "capSize"])
+for (const key of ["robeLength", "sashLength", "sleeveLength", "americanSashBack", "shoulder", "capSize"])
   assert.match(shared, new RegExp(`${key}: ".+"`), `${key} must have one shared measurement instruction`);
 assert.match(individual, /MEASUREMENT_HELP\[key\]/, "individual guidance must use the shared instructions");
 assert.match(group, /MEASUREMENT_HELP\[key\]/, "group guidance must match the individual flow");

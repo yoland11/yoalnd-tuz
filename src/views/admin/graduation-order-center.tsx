@@ -178,7 +178,7 @@ type GroupDetail = {
 const GROUP_MEASUREMENT_FIELDS = [
   { key: "robeLength", label: "طول روب" },
   { key: "sashLength", label: "طول وشاح" },
-  { key: "sashWidth", label: "عرض الوشاح" },
+  { key: "sleeveLength", label: "طول ردن" },
   { key: "americanSashBack", label: "خلف الوشاح الأمريكي" },
   { key: "shoulder", label: "عرض كتف" },
   { key: "capSize", label: "قياس قبعة" },
@@ -296,6 +296,7 @@ const emptyStudent = {
   robeLength: "",
   sashLength: "",
   sashWidth: "",
+  sleeveLength: "",
   americanSashBack: "",
   shoulder: "",
   capSize: "",

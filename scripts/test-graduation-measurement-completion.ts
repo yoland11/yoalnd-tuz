@@ -8,7 +8,7 @@ import {
 const detailed = {
   robeLength: 145,
   sashLength: 110,
-  sashWidth: 18,
+  sleeveLength: 61,
   americanSashBack: 42,
   shoulder: 44,
   capSize: 57,
@@ -24,6 +24,7 @@ assert.equal(
 );
 assert.equal(getGraduationMeasurementStatus(detailed), "complete");
 assert.equal(withGraduationMeasurementStatus(detailed).status, "complete");
+assert.equal(getGraduationMeasurementStatus({ ...detailed, sleeveLength: undefined, sashWidth: 18 }), "complete");
 
 // Historical orders and ready/ideal-size selections must retain their status.
 assert.equal(
