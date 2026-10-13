@@ -39,7 +39,7 @@ try {
           { label: "القبعة", value: "قبعة تخرج" }, { label: "المقاس النهائي", value: "XL" },
           { label: "لون الروب", value: "أسود" }, { label: "لون الوشاح", value: "عنابي" },
         ],
-        measurements: ["طول روب", "طول وشاح", "عرض الوشاح", "خلف الوشاح الأمريكي", "عرض الكتف", "قياس قبعة", "المقاس المثالي", "المقاس النهائي", "الطول", "الوزن", "الصدر", "الخصر", "الكم", "الرقبة"].map((label, i) => ({ label, value: i === 6 ? "XL" : i === 7 ? "—" : String(50 + i) })),
+        measurements: ["طول روب", "طول وشاح", "عرض الوشاح", "خلف الوشاح الأمريكي", "عرض الكتف", "قياس قبعة", "المقاس المثالي", "المقاس النهائي", "الطول", "الوزن", "الصدر", "الخصر"].map((label, i) => ({ label, value: i === 6 ? "XL" : i === 7 ? "—" : String(50 + i) })),
         stage: "جاري التفصيل",
         alterations: [{ type: "تقصير الروب", change: "تقصير بمقدار 2 سم مع إبقاء الحافة" }, { type: "عرض الكتف", change: "حسب القياس المعتمد" }],
         notes: "يرجى مطابقة القياسات وتثبيت الاسم على الوشاح حسب النموذج المعتمد قبل التسليم.",
@@ -61,6 +61,7 @@ try {
       await page.screenshot({ path: `${output}/${kind}-${format}.png`, fullPage: true });
       assert.equal(metrics.overflow, false, `${kind}/${format}: text must stay within paper width`);
       assert.ok(metrics.text.includes("خلف الوشاح الأمريكي") && metrics.text.includes("المقاس المثالي") && metrics.text.includes("يرجى مطابقة"), "measurements and notes remain visible");
+      assert.ok(!metrics.text.includes("الكم") && !metrics.text.includes("الرقبة"), "removed measurements stay off both tailor sheets");
       if (format === "80mm") {
         assert.equal(pages, 1, `${kind}: 80mm tailor sheet must print as one receipt (height ${metrics.heightMm.toFixed(1)}mm)`);
         assert.ok(metrics.widthMm <= 72.1, "80mm content respects the printable width");

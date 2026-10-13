@@ -21,8 +21,10 @@ vm.runInContext(ts.transpileModule(
 ).outputText, context);
 
 const user = { fullName: "خياط", username: "tailor" };
-const measurements = context.build({ robeLength: 145 }, { sashLength: "110", sashWidth: "18", americanSashBack: "42" }, user);
+const measurements = context.build({ robeLength: 145, sleeveLength: 55, neck: 36 }, { sashLength: "110", sashWidth: "18", americanSashBack: "42" }, user);
 assert.equal(measurements.robeLength, 145, "legacy measurements must survive a partial sash edit");
+assert.equal(measurements.sleeveLength, 55, "hidden sleeve measurement must remain in historical data");
+assert.equal(measurements.neck, 36, "hidden neck measurement must remain in historical data");
 assert.equal(measurements.sashLength, 110, "sash length must be stored as a number");
 assert.equal(measurements.sashWidth, 18, "sash width must be stored as a number");
 assert.equal(measurements.americanSashBack, 42, "American sash back must be stored as a number");
@@ -66,6 +68,14 @@ for (const [key, label] of [["sashLength", "طول وشاح (سم)"], ["sashWidt
   assert.ok(viewContext.csv.includes(key), `${key} must be exported to CSV`);
   assert.ok(viewContext.excel.includes(key), `${key} must be exported to Excel`);
 }
+for (const key of ["sleeveLength", "neck"]) {
+  assert.ok(!viewContext.fields.some((field) => field.key === key), `${key} must not be editable in the order form`);
+  assert.ok(!viewContext.columns.some((column) => column.key === key), `${key} must not be editable in the group table`);
+  assert.ok(!viewContext.csv.includes(key) && !viewContext.excel.includes(key), `${key} must not appear in new group exports`);
+}
+const sheetMapping = viewSource.split("function measureList()")[1]?.split("// Measurements and production sheets")[0];
+assert.ok(sheetMapping, "tailor print measurement mapping exists");
+assert.doesNotMatch(sheetMapping, /sleeveLength|\bneck\b|"الكم"|"الرقبة"/, "both tailor sheets omit sleeve and neck measurements");
 assert.deepEqual(Array.from(viewContext.current), ["robeLength", "sashLength", "sashWidth", "americanSashBack", "shoulder", "capSize"], "tailor must present the same six core measurements in the same order");
 for (const key of viewContext.current) {
   assert.ok(viewContext.guide[key]?.length > 12, `${key} needs an explanatory how-to-measure hint`);
