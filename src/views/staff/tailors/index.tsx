@@ -378,7 +378,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
     } catch (e: any) { setMsg(e?.message ?? "تعذر تنفيذ القرار"); }
   }
   async function getQr() {
-    try { const QR: any = await import("qrcode"); return await QR.toDataURL(`${location.origin}/graduation/track/${order.qrToken}`, { margin: 1, width: 150 }); }
+    try { const QR: any = await import("qrcode"); return await QR.toDataURL(`${location.origin}/graduation/track/${order.qrToken}`, { margin: 1, width: 240 }); }
     catch { return ""; }
   }
   function openPrint(html: string) {
@@ -443,16 +443,28 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
       render: (popup, format) => printTailorSheet(popup, sheetInput(kind, format)),
     });
   }
+  // 50×30 mm sticker printed on the 80 mm receipt roll. No @page size: the
+  // driver's paper defines the page (a smaller CSS page is centred on it), so
+  // the sticker sits at the top, centred in the ~72 mm printable width.
   async function printLabel() {
     const qr = await getQr();
+    const esc = (value: unknown) => String(value ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+    const size = order.measurements?.standardSize || order.measurements?.readySize || order.measurements?.customSize || order.measurements?.suggestedSize || "—";
     openPrint(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ملصق</title>
-      <style>*{font-family:'Segoe UI',system-ui,sans-serif}body{margin:0;padding:0}
-      .lbl{width:70mm;height:40mm;padding:6mm;box-sizing:border-box;display:flex;gap:6mm;align-items:center}
-      .t b{font-size:15px;display:block}.t span{font-size:12px;color:#444;display:block}
-      @media print{@page{size:70mm 40mm;margin:0}}</style></head><body>
-      <div class="lbl">${qr ? `<img src="${qr}" width="90" height="90"/>` : ""}
-      <div class="t"><b>${order.name || ""}</b><span>${order.studentCode || ""}</span><span>${order.groupName || ""}</span>
-      <span>المقاس: ${(order.measurements?.standardSize || order.measurements?.readySize || order.measurements?.customSize || order.measurements?.suggestedSize || "—")}</span></div></div>
+      <style>*{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',Tahoma,Arial,sans-serif;color:#000;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      @page{margin:0}
+      html,body{background:#fff}
+      .lbl{width:50mm;height:30mm;margin:0 auto;padding:1.5mm;display:flex;align-items:center;gap:1.8mm;overflow:hidden;border:0.3mm solid #000;border-radius:1.5mm}
+      .lbl img{width:21mm;height:21mm;flex:none;image-rendering:pixelated}
+      .t{flex:1;min-width:0;line-height:1.25}
+      .t b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:10.5px;font-weight:800}
+      .t .code{display:block;direction:ltr;text-align:right;font-size:7.5px;font-weight:600;margin-top:.6mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .t .grp{display:block;font-size:8px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .t .sz{display:inline-block;margin-top:.8mm;font-size:10px;font-weight:800;border:0.3mm solid #000;border-radius:1mm;padding:0 1.2mm}
+      @media screen{body{padding:12px;background:#eee}.lbl{background:#fff}}</style></head><body>
+      <div class="lbl">${qr ? `<img src="${qr}" alt=""/>` : ""}
+      <div class="t"><b>${esc(order.name)}</b><span class="code">${esc(order.studentCode)}</span><span class="grp">${esc(order.groupName)}</span>
+      <span class="sz">المقاس: ${esc(size)}</span></div></div>
       </body></html>`);
   }
   async function saveNotes() {
