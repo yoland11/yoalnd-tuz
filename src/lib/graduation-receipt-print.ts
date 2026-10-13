@@ -206,7 +206,15 @@ function tailorThermalRules() {
   .tailor-thermal .foot { margin-top: 4px; padding-top: 3px; }
   .tailor-thermal .thanks { font-size: 10px; }
   .tailor-thermal .copy { font-size: 8px; }
-  @media print { .doc.tailor-thermal { break-inside: avoid; page-break-inside: avoid; } }
+  /* No @page size: the printer driver's paper defines the page and the sheet
+     starts at its top. Chromium centres a CSS page smaller than the paper
+     (blank strip before and after it; ~1.5 m on a 3276 mm roll) and shrinks a
+     larger one. When a sheet is longer than a fixed driver page it continues
+     on the next one between sections, never through a line. */
+  .tailor-thermal .head, .tailor-thermal .title, .tailor-thermal .docno, .tailor-thermal .card,
+  .tailor-thermal .warn, .tailor-thermal .verify, .tailor-thermal .signs, .tailor-thermal .foot,
+  .tailor-thermal .kv, .tailor-thermal tr { break-inside: avoid; page-break-inside: avoid; }
+  .tailor-thermal .card h3 { break-after: avoid; page-break-after: avoid; }
   `;
 }
 
@@ -242,14 +250,6 @@ function printScript(tailorThermal = false) {
       }
       var fonts = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
       Promise.all([images(), fonts]).then(function () {
-        ${tailorThermal ? `// CSS "80mm auto" is not a valid variable-length page size in Chromium.
-        // Measure the final roll layout after fonts/images, then reserve one continuous page.
-        var sheet = document.querySelector(".tailor-thermal");
-        var rollPage = document.getElementById("tailor-roll-page");
-        if (sheet && rollPage) {
-          var heightMm = Math.max(50, Math.ceil(sheet.getBoundingClientRect().height * 25.4 / 96) + 2);
-          rollPage.textContent = "@page { size: 80mm " + heightMm + "mm; margin: 0; }";
-        }` : ""}
         setTimeout(function () {
           var desktop = window.ajnDesktop && window.ajnDesktop.print;
           if (desktop) desktop(${tailorThermal ? '{ paperSize: "80mm" }' : ""}); else window.print();
@@ -265,7 +265,6 @@ function writeDocument(popup: Window, title: string, format: ReceiptFormat, body
   popup.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${escapeReceipt(title)}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;800&display=swap" rel="stylesheet">
     <style>${css(format)}${tailorThermal ? tailorThermalRules() : ""}</style>
-    ${tailorThermal ? '<style id="tailor-roll-page">@page { size: 80mm 297mm; margin: 0; }</style>' : ""}
     </head><body><main class="doc${tailorThermal ? " tailor-thermal" : ""}">${body}</main>${printScript(tailorThermal)}</body></html>`);
   popup.document.close();
 }

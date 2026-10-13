@@ -35,6 +35,7 @@ const steps = [
   ["Photography production center", "pnpm", ["run", "test:photography-production"]],
   ["SQL array parameter safety", "pnpm", ["run", "test:sql-array-params"]],
   ["Representative payment approval routes", "pnpm", ["run", "test:representative-payment-approval"]],
+  ["Tailor 80mm sheet page sizing", "pnpm", ["run", "test:tailor-thermal-page"]],
   ["Production build", "pnpm", ["run", "build"]],
   ["Git whitespace integrity", "git", ["diff", "--check"]],
 ];

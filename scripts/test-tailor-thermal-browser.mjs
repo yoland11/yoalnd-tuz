@@ -55,7 +55,8 @@ try {
         const barcode = doc.querySelector(".barcode svg");
         return { heightMm: doc.getBoundingClientRect().height * 25.4 / 96, widthMm: doc.getBoundingClientRect().width * 25.4 / 96, barcodeWidthMm: barcode?.getBoundingClientRect().width * 25.4 / 96, overflow: doc.scrollWidth > doc.clientWidth + 1, text: doc.innerText };
       });
-      const pdf = await page.pdf({ ...(format === "80mm" ? { width: "80mm", height: "297mm" } : { format: "A5" }), preferCSSPageSize: true, printBackground: true, margin: { top: 0, bottom: 0, left: 0, right: 0 } });
+      // 80mm: printed on the XP-80C driver's own page (72.1 × 297 mm), as a physical printer does.
+      const pdf = await page.pdf({ ...(format === "80mm" ? { width: "72.1mm", height: "297mm" } : { format: "A5" }), preferCSSPageSize: format !== "80mm", printBackground: true, margin: { top: 0, bottom: 0, left: 0, right: 0 } });
       const pages = (pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) || []).length;
       writeFileSync(`${output}/${kind}-${format}.pdf`, pdf);
       await page.screenshot({ path: `${output}/${kind}-${format}.png`, fullPage: true });
@@ -67,6 +68,9 @@ try {
         assert.ok(metrics.widthMm <= 72.1, "80mm content respects the printable width");
         assert.ok(metrics.barcodeWidthMm >= 59.9, "CODE128 retains the full 60mm scan width");
         assert.ok(metrics.heightMm < 285, "a normal full tailor sheet also fits a 297mm driver page");
+        const pageSizes = await page.evaluate(() => [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules])
+          .filter((rule) => rule instanceof CSSPageRule).map((rule) => rule.style.getPropertyValue("size")));
+        assert.ok(pageSizes.every((size) => !size), "no CSS page size: Chromium centres a smaller CSS page on the driver's paper (blank before the sheet) and shrinks a larger one");
       }
       console.log(`PASS ${kind}/${format}: ${pages} page(s), ${metrics.widthMm.toFixed(1)} × ${metrics.heightMm.toFixed(1)}mm`);
       if (kind === "production" && format === "80mm") {
@@ -74,14 +78,17 @@ try {
         await page.setContent(html.replace("يرجى مطابقة القياسات وتثبيت الاسم على الوشاح حسب النموذج المعتمد قبل التسليم.", longNotes)
           .replace("<head>", '<head><script>window.printRequested=false;window.print=function(){window.printRequested=true;};</script>'));
         await page.waitForFunction(() => window.printRequested === true);
-        const longPdf = await page.pdf({ width: "80mm", height: "297mm", preferCSSPageSize: true, margin: { top: 0, bottom: 0, left: 0, right: 0 } });
+        const zero = { top: 0, bottom: 0, left: 0, right: 0 };
+        const longPdf = await page.pdf({ width: "72.1mm", height: "3276mm", preferCSSPageSize: false, margin: zero });
         const longPages = (longPdf.toString("latin1").match(/\/Type\s*\/Page\b/g) || []).length;
-        assert.equal(longPages, 1, "long notes use one continuous custom-height roll page");
-        const layout = await page.evaluate(() => ({ height: document.querySelector(".doc").getBoundingClientRect().height * 25.4 / 96, page: document.getElementById("tailor-roll-page")?.textContent }));
-        assert.ok(layout.height > 297, "stress fixture must exceed the driver default height");
-        assert.match(layout.page, new RegExp(`80mm ${Math.ceil(layout.height) + 2}mm`), "the page height is measured after layout, with rounding clearance");
+        assert.equal(longPages, 1, "on the 80(72.1) x 3276 mm roll a long sheet prints as one continuous receipt");
+        const fixedPdf = await page.pdf({ width: "72.1mm", height: "297mm", preferCSSPageSize: false, margin: zero });
+        const fixedPages = (fixedPdf.toString("latin1").match(/\/Type\s*\/Page\b/g) || []).length;
+        const height = await page.evaluate(() => document.querySelector(".doc").getBoundingClientRect().height * 25.4 / 96);
+        assert.ok(height > 297, "stress fixture must exceed the driver default height");
+        assert.ok(fixedPages > 1, "on a fixed 297 mm driver page a longer sheet continues on the next page instead of shrinking");
         writeFileSync(`${output}/production-long-notes-80mm.pdf`, longPdf);
-        console.log(`PASS long notes/80mm: ${longPages} continuous page, ${layout.height.toFixed(1)}mm`);
+        console.log(`PASS long notes/80mm: ${longPages} continuous roll page, ${fixedPages} pages of 297mm, ${height.toFixed(1)}mm`);
       }
       await page.close();
     }
