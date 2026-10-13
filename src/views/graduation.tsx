@@ -1,5 +1,6 @@
 import { vocalizeArabicName } from "@/lib/graduation-name";
 import { GraduationStudentSummary, GraduationStudentWizard } from "@/components/graduation-student-wizard";
+import { GraduationStudentSelfEdit } from "@/components/graduation-student-self-edit";
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -2328,6 +2329,7 @@ export function GraduationTracking() {
         <h2 className="mb-4 font-bold">بيانات الطالب والاختيارات المحفوظة</h2>
         <GraduationStudentSummary order={order} />
       </section>
+      <GraduationStudentSelfEdit token={token} productionStage={order.productionStage} />
       <section className="rounded-xl border border-border bg-card p-5">
         <h2 className="font-bold">تقدم الإنتاج</h2>
         <Progress

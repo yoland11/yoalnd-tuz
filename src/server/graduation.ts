@@ -105,6 +105,7 @@ import { getGraduationProductionMeasurementBlock } from "@/server/graduation-mea
 import { hasDuplicateGroupStudentName } from "@/lib/graduation-group-student-identity";
 import { cleanStudentSashName, isLikelySameStudent, isTitleOnlyPrefix, tidySashPrefix } from "@/lib/graduation-sash-name";
 import { decorationPositionImages, GRADUATION_DECORATION_POSITIONS, type GraduationDecorationImages } from "@/lib/graduation-decoration-photos";
+import { handleStudentSelfEdit, StudentEditImageError } from "@/server/graduation-student-edit";
 
 export type GraduationAdminUser = {
   id: number;
@@ -491,6 +492,27 @@ async function persistMedia(value: unknown, folder: string) {
   );
   if (!response.ok) throw new Error("تعذر رفع ملف تصميم التخرج");
   return `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`;
+}
+
+/** A photo the student replaces from the tracking link: same checks and storage as registration. */
+async function persistStudentEditImage(dataUrl: string) {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed || !GRADUATION_IMAGE_MIMES.has(parsed.mime) || parsed.bytes.byteLength > GRADUATION_IMAGE_BYTES)
+    throw new StudentEditImageError("الصورة غير صالحة أو حجمها كبير", 400);
+  let url = "";
+  try {
+    url = String(await persistMedia(dataUrl, "graduation/student-references") ?? "");
+  } catch (cause) {
+    console.error("graduation student edit photo upload failed", safeServerError(cause));
+    throw new StudentEditImageError("تعذر رفع الصورة، حاول مرة أخرى", 503);
+  }
+  if (!url || url.startsWith("data:")) throw new StudentEditImageError("خدمة رفع الصور غير متاحة حالياً", 503);
+  return url;
+}
+
+/** The tracking link can be shared, so it never carries the phone (whose last digits open self-edit). */
+function trackOrder(row: any) {
+  return { ...publicOrder(row), phone: null, phone2: null };
 }
 
 function canManageGraduationMedia(user: GraduationAdminUser) {
@@ -2885,6 +2907,12 @@ export async function handleGraduationPublic(
     }
     return json({ ...result, ...(warning ? { warning } : {}) }, 201);
   }
+  // Student self-edit from the tracking link (link + last 4 digits of the phone).
+  if (resource === "track" && parts[2] && parts[3] === "edit" && parts.length <= 5)
+    return handleStudentSelfEdit(req, parts[2], parts[4], {
+      persistImage: persistStudentEditImage,
+      notify,
+    });
   if (method === "GET" && resource === "track" && parts[2]) {
     const order = await db.query.graduationOrdersTable.findFirst({
       where: eq(graduationOrdersTable.qrToken, parts[2]),
@@ -2917,7 +2945,7 @@ export async function handleGraduationPublic(
       { width: 300, margin: 1 },
     );
     return json({
-      order: publicOrder(order),
+      order: trackOrder(order),
       timeline: timeline.map((row) => ({
         type: row.type,
         title: row.title,
@@ -3003,7 +3031,7 @@ export async function handleGraduationPublic(
         previewVersion: latestPreview?.version ?? null,
       },
     );
-    return json({ order: publicOrder(saved) });
+    return json({ order: trackOrder(saved) });
   }
   if (method === "POST" && resource === "groups" && !parts[2]) {
     const result = await createGraduationGroup(

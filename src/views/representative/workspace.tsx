@@ -18,6 +18,7 @@ import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { GRADUATION_STAGE_LABELS } from "@/lib/graduation";
 import { SASH_FONTS, SASH_TYPES } from "@/lib/graduation-student-flow";
+import { studentEditPolicy } from "@/lib/graduation-student-edit";
 import {
   DELIVERY_PHASE_LABELS,
   PAYMENT_PHASE_LABELS,
@@ -280,7 +281,48 @@ function OverviewTab({ workspace, students }: { workspace: Workspace; students: 
           }}
         /></div>
       </details>
+      <StudentEditPolicyCard key={`${group.id}-${JSON.stringify(studentEditPolicy(group.defaultConfiguration))}`} groupId={group.id} configuration={group.defaultConfiguration || {}} />
     </div>
+  );
+}
+
+/** Whether students edit their own details from the tracking link, and until which day. */
+function StudentEditPolicyCard({ groupId, configuration }: { groupId: number; configuration: Record<string, unknown> }) {
+  const client = useQueryClient();
+  const { toast } = useToast();
+  const saved = studentEditPolicy(configuration);
+  const [enabled, setEnabled] = useState(saved.enabled);
+  const [until, setUntil] = useState(saved.until ?? "");
+  const save = useMutation({
+    mutationFn: () => repApi(`/groups/${groupId}/student-edit`, { method: "PATCH", body: JSON.stringify({ enabled, until: until || null }) }),
+    onSuccess: () => {
+      toast({ title: enabled ? "تعديل الطلاب لبياناتهم مفتوح" : "تم إغلاق تعديل الطلاب لبياناتهم" });
+      void client.invalidateQueries({ queryKey: ["representative"] });
+    },
+    onError: (error) => toast({ title: "تعذر حفظ الإعداد", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  const unchanged = enabled === saved.enabled && (until || null) === saved.until;
+  return (
+    <details className={`${BRAND.card} p-4`}>
+      <summary className="cursor-pointer text-sm font-semibold">تعديل الطلاب لبياناتهم · {saved.enabled ? (saved.until ? `مفتوح حتى ${saved.until}` : "مفتوح") : "مغلق"}</summary>
+      <div className="mt-4 space-y-3 text-sm">
+        <p className="text-muted-foreground">يعدّل الطالب اسمه وقياساته والاسم على الوشاح والألوان والصور من رابط المتابعة بعد إدخال آخر 4 أرقام من هاتفه. يتوقف التعديل تلقائياً عند بدء قص القماش، وكل تعديل يُسجَّل ويصل للإدارة.</p>
+        <div className="flex gap-2" role="group" aria-label="حالة تعديل الطلاب">
+          <Button type="button" size="sm" variant={enabled ? "default" : "outline"} aria-pressed={enabled} onClick={() => setEnabled(true)}>مفتوح</Button>
+          <Button type="button" size="sm" variant={!enabled ? "default" : "outline"} aria-pressed={!enabled} onClick={() => setEnabled(false)}>مغلق</Button>
+        </div>
+        {enabled ? (
+          <div>
+            <Label htmlFor={`student-edit-until-${groupId}`}>آخر يوم للتعديل (اختياري)</Label>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <Input id={`student-edit-until-${groupId}`} type="date" dir="ltr" className="w-44" value={until} onChange={(event) => setUntil(event.target.value)} />
+              {until ? <Button type="button" size="sm" variant="ghost" onClick={() => setUntil("")}>بدون تاريخ</Button> : null}
+            </div>
+          </div>
+        ) : null}
+        <Button type="button" className={BRAND.button} disabled={unchanged || save.isPending} onClick={() => save.mutate()}>حفظ</Button>
+      </div>
+    </details>
   );
 }
 

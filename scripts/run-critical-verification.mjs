@@ -36,6 +36,7 @@ const steps = [
   ["SQL array parameter safety", "pnpm", ["run", "test:sql-array-params"]],
   ["Representative payment approval routes", "pnpm", ["run", "test:representative-payment-approval"]],
   ["Tailor 80mm sheet page sizing", "pnpm", ["run", "test:tailor-thermal-page"]],
+  ["Graduation student self-edit", "pnpm", ["run", "test:graduation-student-edit"]],
   ["Production build", "pnpm", ["run", "build"]],
   ["Git whitespace integrity", "git", ["diff", "--check"]],
 ];

@@ -191,6 +191,45 @@ export async function handleRepresentativePortal(
   }
   // Academic batches and per-group workspaces (read + non-financial edits),
   // scoped with the same resolved representative scope.
+  // Whether students of a group may edit their own details from the tracking
+  // link, and until which day (production start always closes it).
+  if (resource === "groups" && parts[1] && parts[2] === "student-edit" && !parts[3] && req.method === "PATCH") {
+    const groupId = Number(parts[1]);
+    if (!Number.isInteger(groupId) || groupId <= 0) return fail("رقم المجموعة غير صحيح", 400);
+    if (!canAccessRepresentativeGroup(scope, groupId)) return fail("غير مخول للوصول إلى هذه المجموعة", 403);
+    const parsed = z.object({
+      enabled: z.boolean(),
+      until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+    }).safeParse(await readRequestBody(req));
+    if (!parsed.success) return fail("تحقق من إعداد تعديل الطلاب", 400);
+    const policy = { enabled: parsed.data.enabled, until: parsed.data.until ?? null };
+    try {
+      const saved = await db.transaction(async (tx) => {
+        const updated = await tx.execute(sql`
+          UPDATE graduation_groups
+          SET default_configuration = jsonb_set(COALESCE(default_configuration, '{}'::jsonb), '{studentEdit}', ${JSON.stringify(policy)}::jsonb),
+            updated_at = now()
+          WHERE id = ${groupId} RETURNING id`);
+        if (!updated.rows[0]) return null;
+        await tx.insert(entityTimelineTable).values({
+          entityType: "graduation_group",
+          entityId: groupId,
+          type: "student_edit_policy",
+          title: policy.enabled ? "فُتح تعديل الطلاب لبياناتهم" : "أُغلق تعديل الطلاب لبياناتهم",
+          body: policy.enabled && policy.until ? `حتى ${policy.until}` : null,
+          actorId: user.id,
+          actorName: user.fullName || user.username,
+          metadata: policy,
+        });
+        return policy;
+      });
+      if (!saved) return fail("المجموعة غير موجودة", 404);
+      return json({ studentEdit: saved });
+    } catch (cause) {
+      console.error("graduation group student-edit policy failed", { requestId, actorId: user.id, groupId, ...safeServerError(cause) });
+      return fail("تعذر حفظ إعداد تعديل الطلاب؛ حاول مجدداً", 500);
+    }
+  }
   const workspace = await handleRepresentativeWorkspace(req, parts, user, scope, fail, requestId);
   if (workspace) return workspace;
   if (resource === "scope" && req.method === "GET") {
