@@ -4,7 +4,7 @@ import { Link, Route, Switch, useLocation } from "wouter";
 import {
   ArrowRight, Camera, CheckCircle2, ClipboardList, Copy, Download, Filter,
   Loader2, LogOut, Pause, Play, Plus, Printer, QrCode, Ruler, Save, Scissors,
-  Search, Send, ShieldCheck, Table2, Upload, User, Users, Wrench, X, XCircle,
+  Search, Send, ShieldCheck, Table2, Tag, Tags, Upload, User, Users, Wrench, X, XCircle,
 } from "lucide-react";
 import {
   fetchAdminMe, hasPerm, isSessionDecision, loginAdmin, logoutAdmin,
@@ -15,6 +15,7 @@ import { LiveScanner } from "@/views/staff/live-scanner";
 import { ReceiptPrintDialog, type ReceiptJob } from "@/components/graduation-receipt-dialog";
 import { printTailorSheet, type ReceiptFormat, type TailorSheetInput } from "@/lib/graduation-receipt-print";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { stickerDocument, stickerQr, stickerSize } from "@/lib/tailor-sticker";
 
 /** All tailor data flows through the assignment-scoped /admin/tailoring API. */
 function tailorApi<T = any>(path: string, init?: RequestInit): Promise<T> {
@@ -377,10 +378,6 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
       setReviewNote(""); load();
     } catch (e: any) { setMsg(e?.message ?? "تعذر تنفيذ القرار"); }
   }
-  async function getQr() {
-    try { const QR: any = await import("qrcode"); return await QR.toDataURL(`${location.origin}/graduation/track/${order.qrToken}`, { margin: 1, width: 240 }); }
-    catch { return ""; }
-  }
   function openPrint(html: string) {
     const w = window.open("", "_blank", "width=820,height=1040");
     if (!w) { setMsg("اسمح بالنوافذ المنبثقة للطباعة"); return; }
@@ -443,29 +440,10 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
       render: (popup, format) => printTailorSheet(popup, sheetInput(kind, format)),
     });
   }
-  // 50×30 mm sticker printed on the 80 mm receipt roll. No @page size: the
-  // driver's paper defines the page (a smaller CSS page is centred on it), so
-  // the sticker sits at the top, centred in the ~72 mm printable width.
+  // 50×30 mm sticker on the 80 mm receipt roll (shared with the group page).
   async function printLabel() {
-    const qr = await getQr();
-    const esc = (value: unknown) => String(value ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
-    const size = order.measurements?.standardSize || order.measurements?.readySize || order.measurements?.customSize || order.measurements?.suggestedSize || "—";
-    openPrint(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ملصق</title>
-      <style>*{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',Tahoma,Arial,sans-serif;color:#000;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-      @page{margin:0}
-      html,body{background:#fff}
-      .lbl{width:50mm;height:30mm;margin:0 auto;padding:1.5mm;display:flex;align-items:center;gap:1.8mm;overflow:hidden;border:0.3mm solid #000;border-radius:1.5mm}
-      .lbl img{width:21mm;height:21mm;flex:none;image-rendering:pixelated}
-      .t{flex:1;min-width:0;line-height:1.25}
-      .t b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:10.5px;font-weight:800}
-      .t .code{display:block;direction:ltr;text-align:right;font-size:7.5px;font-weight:600;margin-top:.6mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .t .grp{display:block;font-size:8px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .t .sz{display:inline-block;margin-top:.8mm;font-size:10px;font-weight:800;border:0.3mm solid #000;border-radius:1mm;padding:0 1.2mm}
-      @media screen{body{padding:12px;background:#eee}.lbl{background:#fff}}</style></head><body>
-      <div class="lbl">${qr ? `<img src="${qr}" alt=""/>` : ""}
-      <div class="t"><b>${esc(order.name)}</b><span class="code">${esc(order.studentCode)}</span><span class="grp">${esc(order.groupName)}</span>
-      <span class="sz">المقاس: ${esc(size)}</span></div></div>
-      </body></html>`);
+    const qr = await stickerQr(order.qrToken);
+    openPrint(stickerDocument([{ name: order.name || "", studentCode: order.studentCode || "", groupName: order.groupName || "", size: stickerSize(order.measurements), qr }]));
   }
   async function saveNotes() {
     try { const r = await tailorApi(`/order/${id}/notes`, { method: "POST", body: JSON.stringify({ notes }) }); setOrder((o: any) => ({ ...o, notesTiers: r.notesTiers })); setMsg("حُفظت الملاحظات"); }
@@ -850,6 +828,21 @@ function GroupPage({ id }: { id: string }) {
     setMsg("نُسخت قياسات أول صف محدد إلى البقية (اضغط حفظ)");
   }
 
+  // Stickers for the selected students or the whole group, in table order. The
+  // window opens inside the click (popup blockers) and is filled once QR codes are ready.
+  async function printStickers(list: any[]) {
+    if (!list.length) { setMsg("حدّد طلاباً أولاً"); return; }
+    const w = window.open("", "_blank", "width=420,height=900");
+    if (!w) { setMsg("اسمح بالنوافذ المنبثقة للطباعة"); return; }
+    w.document.write(`<p dir="rtl" style="font-family:Tahoma,sans-serif;padding:16px">جاري تجهيز الملصقات (${list.length})…</p>`);
+    const qrs = await Promise.all(list.map((r) => stickerQr(r.qrToken)));
+    w.document.open();
+    w.document.write(stickerDocument(list.map((r, i) => ({
+      name: r.name || "", studentCode: r.studentCode || "", groupName: group?.title || "", size: r.finalSize || r.suggestedSize || "—", qr: qrs[i],
+    })), `ملصقات ${group?.title || ""}`));
+    w.document.close(); w.focus(); setTimeout(() => w.print(), 400);
+    setMsg(`تم تجهيز الملصقات للطباعة (${list.length})`);
+  }
   function printGroup() {
     const head = ["رمز الطالب", "الاسم", "الطول", "الوزن", "الكتف", "طول الروب", "القبعة", "طول وشاح", "طول ردن", "خلف الوشاح الأمريكي", "المقاس المثالي", "المقاس النهائي", "الحالة"];
     const rowsHtml = rows.map((r) => `<tr><td>${r.studentCode || ""}</td><td>${r.name || ""}</td><td>${r.height || ""}</td><td>${r.weight || ""}</td><td>${r.shoulder || ""}</td><td>${r.robeLength || ""}</td><td>${r.capSize || ""}</td><td>${r.sashLength ?? ""}</td><td>${r.sleeveLength ?? ""}</td><td>${r.americanSashBack ?? ""}</td><td>${r.suggestedSize || ""}</td><td>${r.finalSize || ""}</td><td>${STATUS_LABEL[r.measurementStatus] || r.measurementStatus}</td></tr>`).join("");
@@ -969,6 +962,9 @@ function GroupPage({ id }: { id: string }) {
         <label className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Upload className="h-3.5 w-3.5" /> استيراد Excel<input type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden onChange={(e) => e.target.files?.[0] && void importWorkbook(e.target.files[0])} /></label>
         <Button variant="ghost" type="button" onClick={() => void exportWorkbook()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Download className="h-3.5 w-3.5" /> تصدير Excel</Button>
         <Button variant="ghost" type="button" onClick={printGroup} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Printer className="h-3.5 w-3.5" /> طباعة</Button>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <Button variant="ghost" type="button" disabled={!sel.size} onClick={() => void printStickers(rows.filter((r) => sel.has(r.id)))} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 disabled:opacity-50"><Tag className="h-3.5 w-3.5" /> ملصقات المحدد ({sel.size})</Button>
+        <Button variant="ghost" type="button" disabled={!rows.length} onClick={() => void printStickers(rows)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 disabled:opacity-50"><Tags className="h-3.5 w-3.5" /> ملصقات الكل ({rows.length})</Button>
       </div>
       {msg && <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}
       <p className="text-xs text-muted-foreground">الحقول الستة هي قياسات الطلب الحالي. المقاس المثالي للمرجع، والمقاس النهائي يحدده الخياط. يمكن عرض القياسات القديمة عند الحاجة.</p>

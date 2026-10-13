@@ -43,11 +43,22 @@ for (const kind of ["measurements", "production"]) {
 const a5 = await sheet("a5");
 assert.match(a5, /@page \{ size: A5 portrait; margin: 9mm; \}/, "A5 keeps its page size");
 assert.ok(!a5.includes("tailor-thermal"), "A5 keeps its own layout");
-// The 50×30 mm sticker on the same 80 mm roll: no fixed page either, so it prints at the top.
+// 50×30 mm stickers on the same 80 mm roll (one student or a whole group).
+const stickerJs = ts.transpileModule(readFileSync("src/lib/tailor-sticker.ts", "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const sticker = { exports: {} };
+new Function("require", "module", "exports", stickerJs)(require, sticker, sticker.exports);
+const items = ["أحمد", "زينب <b>", "علي"].map((name, i) => ({ name, studentCode: `AJN-${i}`, groupName: "النسور", size: "XL", qr: "data:image/png;base64,AAAA" }));
+const doc = sticker.exports.stickerDocument(items, "ملصقات");
+assert.equal((doc.match(/<div class="lbl">/g) || []).length, 3, "one sticker per student");
+assert.ok(!/@page\s*\{[^}]*size/.test(doc), "stickers declare no page size (a smaller CSS page is centred on the roll)");
+assert.match(doc, /\.lbl\{width:50mm;height:30mm;margin:0 auto 2\.5mm;[^}]*break-inside:avoid/, "50×30 mm, centred, never split across pages");
+assert.ok(doc.includes("زينب &lt;b&gt;") && !doc.includes("زينب <b>"), "student data is escaped");
+assert.equal(sticker.exports.stickerSize({ readySize: "L", suggestedSize: "M" }), "L");
 const tailorPage = readFileSync("src/views/staff/tailors/index.tsx", "utf8");
-const label = tailorPage.slice(tailorPage.indexOf("async function printLabel()"), tailorPage.indexOf("async function saveNotes()"));
-assert.ok(label.length > 100, "sticker print found");
-assert.ok(!/@page\s*\{[^}]*size/.test(label), "the sticker declares no page size (a smaller CSS page is centred on the roll)");
-assert.match(label, /\.lbl\{width:50mm;height:30mm;margin:0 auto;/, "50×30 mm sticker centred in the printable width");
-assert.match(label, /esc\(order\.name\)/, "student data is escaped in the print window");
+assert.match(tailorPage, /async function printLabel\(\) \{\s*const qr = await stickerQr\(order\.qrToken\);\s*openPrint\(stickerDocument\(\[/, "the order page prints the shared sticker");
+assert.match(tailorPage, /printStickers\(rows\.filter\(\(r\) => sel\.has\(r\.id\)\)\)/, "group page: stickers for the selected students");
+assert.match(tailorPage, /printStickers\(rows\)\}/, "group page: stickers for the whole group");
+assert.match(readFileSync("src/server/tailoring.ts", "utf8"), /function serializeGroupRow[\s\S]{0,300}qrToken: order\.qrToken,/, "group rows carry the tracking token for the sticker QR");
 console.log("Tailor 80mm sheet page sizing checks passed.");

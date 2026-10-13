@@ -347,6 +347,7 @@ function serializeGroupRow(order: OrderRow) {
     id: order.id,
     studentCode: order.studentCode,
     name: order.customerName,
+    qrToken: order.qrToken,
     height: num("height"), weight: num("weight"), shoulder: num("shoulder"),
     sleeveLength: num("sleeveLength"), robeLength: num("robeLength"), capSize: num("capSize"),
     sashLength: num("sashLength"), sashWidth: num("sashWidth"), americanSashBack: num("americanSashBack"),
