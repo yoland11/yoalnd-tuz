@@ -11,11 +11,11 @@ assert.match(
 );
 assert.match(
   preflight,
-  /const shouldBootstrapAdminSchemas\s*=\s*root === "admin"\s*&&\s*!isAdminAuth\s*&&\s*!isInvoiceRegisterRequest\s*&&\s*!isBookingCenterReadRequest/,
+  /const shouldBootstrapAdminSchemas\s*=\s*root === "admin"\s*&&\s*!isAdminAuth\s*&&\s*!isInvoiceRegisterRequest\s*&&\s*!isBookingCenterReadRequest\s*&&\s*!isCalendarReadRequest/,
   "Booking-center reads must not trigger the broad admin schema bootstrap",
 );
 assert.equal(
-  (preflight.match(/root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest/g) ?? []).length,
+  (preflight.match(/root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest && !isCalendarReadRequest/g) ?? []).length,
   2,
   "Booking-center reads must skip both unrelated staff and product schema probes",
 );

@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CalendarDays, Clock, ExternalLink, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch } from "./_lib";
+import { AjNApiError, adminFetch, apiErrorMessage } from "./_lib";
 import { EmptyState } from "./_layout";
 
 type CalendarEvent = {
@@ -108,7 +108,7 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
     return params.toString();
   }, [from, serviceId, status, to]);
 
-  const { data, isLoading } = useQuery<{ events: CalendarEvent[]; services: Service[] }>({
+  const { data, isLoading, isError, error, refetch } = useQuery<{ events: CalendarEvent[]; services: Service[] }>({
     queryKey: ["admin", "calendar", queryString],
     queryFn: () => adminFetch(`/admin/calendar?${queryString}`),
     staleTime: 30_000,
@@ -176,6 +176,14 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
 
       {isLoading ? (
         <div className="space-y-3">{[1, 2, 3].map((item) => <Skeleton key={item} className="h-28 rounded-xl" />)}</div>
+      ) : isError ? (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-6 text-center" role="alert">
+          <AlertTriangle className="mx-auto mb-3 h-8 w-8 text-destructive" />
+          <h2 className="font-semibold text-foreground">تعذر تحميل تقويم الحجوزات</h2>
+          <p className="mt-2 text-sm text-muted-foreground">{apiErrorMessage(error, "تعذر الاتصال بسجل الحجوزات")}</p>
+          {error instanceof AjNApiError && error.requestId ? <p className="mt-1 text-xs text-muted-foreground" dir="ltr">{error.requestId}</p> : null}
+          <Button type="button" variant="outline" className="mt-4" onClick={() => void refetch()}>إعادة المحاولة</Button>
+        </div>
       ) : grouped.length === 0 ? (
         <EmptyState message="لا توجد حجوزات ضمن الفترة" />
       ) : (

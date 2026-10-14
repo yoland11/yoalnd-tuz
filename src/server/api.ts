@@ -74433,12 +74433,16 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   // admin schema probes must not block this route on a cold server instance.
   const isBookingCenterReadRequest =
     root === "admin" && parts[1] === "booking-center" && req.method === "GET";
+  // Calendar GET reads existing bookings. Payment backfills and unrelated admin
+  // schema probes must not run as a side effect of opening the calendar.
+  const isCalendarReadRequest =
+    root === "admin" && parts[1] === "calendar" && req.method === "GET";
   const isHealthCheck =
     req.method === "GET" && (!root || root === "healthz");
   const exposeAuthDiagnostics =
     isAdminAuth && req.headers.get("x-ajn-auth-diagnostics") === "1";
   const shouldBootstrapAdminSchemas =
-    root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest && !isBookingCenterReadRequest;
+    root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest && !isBookingCenterReadRequest && !isCalendarReadRequest;
 
   try {
     assertProductionEnvironment();
@@ -74540,10 +74544,10 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
               ensurePerformanceIndexes(),
             ])
           : undefined,
-        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest
+        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest && !isCalendarReadRequest
           ? ensureStaffActivityColumn()
           : undefined,
-        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest
+        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest && !isCalendarReadRequest
           ? ensureAdminProductsColumns()
           : undefined,
         root === "products" || shouldBootstrapAdminSchemas
