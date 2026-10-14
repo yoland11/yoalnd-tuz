@@ -74429,12 +74429,16 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   const isInvoiceRegisterRequest =
     root === "admin" &&
     (parts[1] === "sales-invoices" || parts[1] === "purchase-invoices");
+  // Listing bookings is read-only. Financial account seeding and unrelated
+  // admin schema probes must not block this route on a cold server instance.
+  const isBookingCenterReadRequest =
+    root === "admin" && parts[1] === "booking-center" && req.method === "GET";
   const isHealthCheck =
     req.method === "GET" && (!root || root === "healthz");
   const exposeAuthDiagnostics =
     isAdminAuth && req.headers.get("x-ajn-auth-diagnostics") === "1";
   const shouldBootstrapAdminSchemas =
-    root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest;
+    root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest && !isBookingCenterReadRequest;
 
   try {
     assertProductionEnvironment();
@@ -74536,10 +74540,10 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
               ensurePerformanceIndexes(),
             ])
           : undefined,
-        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth
+        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest
           ? ensureStaffActivityColumn()
           : undefined,
-        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth
+        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest
           ? ensureAdminProductsColumns()
           : undefined,
         root === "products" || shouldBootstrapAdminSchemas

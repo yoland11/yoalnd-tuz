@@ -23,6 +23,7 @@ const steps = [
   ["Graduation group per-sash pricing", "pnpm", ["run", "test:graduation-group-pricing"]],
   ["Graduation group confirmation navigation", "pnpm", ["run", "test:graduation-group-step-flow"]],
   ["Calendar event target", "pnpm", ["run", "test:calendar-event-target"]],
+  ["Booking center read preflight", "pnpm", ["run", "test:booking-center-read"]],
   ["Preparation A4 and 80mm printing", "pnpm", ["run", "test:preparation-print"]],
   ["Kosha preparation booking cards", "pnpm", ["run", "test:preparation-cards"]],
   ["Kosha equipment and decimal inventory", "pnpm", ["run", "test:kosha-equipment"]],
