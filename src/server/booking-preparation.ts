@@ -323,6 +323,53 @@ export type PreparationCard = {
   rollup: PreparationRollup;
 };
 
+export type BookingCenterPreparationRow = {
+  source: PreparationSource | "store" | "graduation" | "photography" | "rental";
+  id: number;
+  number: string;
+  customerName: string;
+  eventDate: string | null;
+  hall: string | null;
+  departments: string[];
+  detailHref: string;
+  status: string | null;
+};
+
+export type PreparationCenterCard = Omit<PreparationCard, "source"> & {
+  source: BookingCenterPreparationRow["source"];
+  detailHref: string;
+  bookingStatus: string | null;
+  supportsPreparation: boolean;
+};
+
+const emptyRollup = (): PreparationRollup => ({
+  total: 0, ready: 0, preparing: 0, shortage: 0, needsPurchase: 0, completed: 0, progress: 0,
+});
+
+/** Show precisely the Booking Center catalogue; attach existing preparation state where supported. */
+export function mergeBookingCenterPreparationCards(
+  bookings: BookingCenterPreparationRow[],
+  preparationCards: PreparationCard[],
+): PreparationCenterCard[] {
+  const preparationByKey = new Map(preparationCards.map((card) => [`${card.source}:${card.id}`, card]));
+  return bookings.map((booking) => {
+    const preparation = preparationByKey.get(`${booking.source}:${booking.id}`);
+    return {
+      source: booking.source,
+      id: booking.id,
+      number: booking.number,
+      customerName: booking.customerName,
+      eventDate: booking.eventDate || null,
+      location: booking.hall || null,
+      departments: booking.departments,
+      rollup: preparation?.rollup ?? emptyRollup(),
+      detailHref: booking.detailHref,
+      bookingStatus: booking.status,
+      supportsPreparation: booking.source === "service" || booking.source === "kosha",
+    };
+  });
+}
+
 /**
  * Lightweight per-booking rollup for the main page cards, computed in batch
  * reads (all live reservations + the bookings) so availability stays real without

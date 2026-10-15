@@ -346,6 +346,8 @@ import {
 import {
   getBookingPreparationSummary,
   listPreparationCards,
+  mergeBookingCenterPreparationCards,
+  type BookingCenterPreparationRow,
   type PreparationSource,
 } from "@/server/booking-preparation";
 import {
@@ -34576,7 +34578,11 @@ async function handlePreparation(
   if (section !== "preparation" || req.method !== "GET") return null;
   const auth = await requireAnyPermission(req, ["preparation_view", "bookings", "orders", "koshas", "booking_operations_view"]);
   if (isResponse(auth)) return auth;
-  const cards = await listPreparationCards();
+  const [bookingCenter, preparationCards] = await Promise.all([
+    listCentralBookingCenterRows(500),
+    listPreparationCards(),
+  ]);
+  const cards = mergeBookingCenterPreparationCards(bookingCenter.rows as BookingCenterPreparationRow[], preparationCards);
   const summary = {
     bookings: cards.length,
     totalItems: cards.reduce((sum, card) => sum + card.rollup.total, 0),
@@ -34694,7 +34700,11 @@ async function handleCentralBookingCenter(
   // silently drop older debts — so they lift the cap and say if one is hit.
   const reportScope = req.nextUrl.searchParams.get("scope") === "report";
   const rowCap = reportScope ? 20_000 : 500;
+  const { rows, truncated } = await listCentralBookingCenterRows(rowCap);
+  return reportScope ? json({ rows, truncated }) : json(rows);
+}
 
+async function listCentralBookingCenterRows(rowCap: number) {
   const [
     serviceOrders,
     services,
@@ -34940,12 +34950,9 @@ async function handleCentralBookingCenter(
         detailHref: `/admin/orders?order=${order.id}`,
       })),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  if (reportScope) {
-    const truncated = [serviceOrders, koshas, storeOrders, graduationOrders, photographyOrders, rentals]
-      .some((list) => list.length >= rowCap);
-    return json({ rows, truncated });
-  }
-  return json(rows);
+  const truncated = [serviceOrders, koshas, storeOrders, graduationOrders, photographyOrders, rentals]
+    .some((list) => list.length >= rowCap);
+  return { rows, truncated };
 }
 
 let soundCenterIndexesPromise: Promise<void> | null = null;

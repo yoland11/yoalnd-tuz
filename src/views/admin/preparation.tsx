@@ -16,7 +16,11 @@ import { EmptyState } from "./_layout";
 import { EmployeeSelect } from "@/components/employee-select";
 
 type Rollup = { total: number; ready: number; preparing: number; shortage: number; needsPurchase: number; completed: number; progress: number };
-type PrepCard = { source: "service" | "kosha"; id: number; number: string; customerName: string; eventDate: string | null; location: string | null; departments: string[]; rollup: Rollup };
+type PrepCard = {
+  source: "service" | "kosha" | "store" | "graduation" | "photography" | "rental";
+  id: number; number: string; customerName: string; eventDate: string | null; location: string | null;
+  departments: string[]; rollup: Rollup; detailHref: string; bookingStatus: string | null; supportsPreparation: boolean;
+};
 type PrepList = { cards: PrepCard[]; summary: { bookings: number; totalItems: number; ready: number; preparing: number; shortage: number; needsPurchase: number; completed: number } };
 type PrepItem = {
   key: string; kind: "product" | "asset" | "manual"; productId: number | null; name: string; sku: string | null; department: string;
@@ -27,7 +31,7 @@ type PrepItem = {
 type PrepDetail = { source: string; id: number; items: PrepItem[]; rollup: Rollup };
 
 const DEPT: Record<string, string> = {
-  kosha: "الكوشات", lighting: "الإضاءة", sound: "الصوتيات", photography: "التصوير", flowers: "الزهور",
+  kosha: "الكوشات", lighting: "الإضاءة", sound: "الصوتيات", photography: "التصوير", flowers: "الزهور", rental: "الإيجار",
   gifts: "الهدايا والتوزيعات", graduation: "تجهيزات التخرج", invitations: "الدعوات", transport: "النقل", equipment: "المعدات", other: "أخرى",
 };
 const deptLabel = (value: string) => DEPT[value] ?? value;
@@ -391,13 +395,20 @@ export default function PreparationPage() {
 
       {query.isLoading ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-40 w-full rounded-2xl" />)}</div>
+      ) : query.isError ? (
+        <div role="alert" className="rounded-2xl border border-destructive/30 bg-destructive/5 p-5 text-sm text-destructive">
+          <p>تعذّر تحميل قائمة التجهيز: {apiErrorMessage(query.error, "خطأ في الاتصال")}</p>
+          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => void query.refetch()}>إعادة المحاولة</Button>
+        </div>
       ) : !filtered.length ? (
         <EmptyState message="لا توجد حجوزات مطابقة للتجهيز" />
       ) : (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {filtered.map((card) => {
             const cardKey = `${card.source}-${card.id}`;
-            const status = cardStatus(card.rollup);
+            const status = card.bookingStatus === "cancelled" || card.bookingStatus === "canceled"
+              ? { label: "ملغي", tone: "muted" as const }
+              : card.supportsPreparation ? cardStatus(card.rollup) : { label: "في مركز الحجوزات", tone: "muted" as const };
             const done = card.rollup.ready + card.rollup.completed;
             return (
               <article key={cardKey} className="flex flex-col overflow-hidden rounded-2xl border border-border/40 bg-card">
@@ -411,20 +422,20 @@ export default function PreparationPage() {
                     <span style={{ display: "inline-block", borderRadius: 999, padding: "3px 12px", fontSize: 12, fontWeight: 700, color: "#fff", background: toneColor[status.tone] }}>{status.label}</span>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-1">{card.departments.map((d) => <span key={d} className="rounded-full bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">{deptLabel(d)}</span>)}</div>
-                  <div className="mt-3">
+                  {card.supportsPreparation ? <div className="mt-3">
                     <div className="h-2.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full transition-[width]" style={{ width: `${card.rollup.progress}%`, background: toneColor[status.tone] }} /></div>
                     <p className="mt-1 text-xs text-muted-foreground">{done} من {card.rollup.total} عنصر جاهز · {card.rollup.progress}%</p>
-                  </div>
+                  </div> : <p className="mt-3 text-xs text-muted-foreground">تفاصيل هذا النوع تُدار من صفحة الحجز.</p>}
                 </div>
                 <div className="mt-auto space-y-2 border-t border-border/30 p-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Button size="sm" variant="outline" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><ChevronDown className={`h-3.5 w-3.5 transition ${expanded === cardKey ? "rotate-180" : ""}`} /> عرض التجهيز</Button>
-                    <Button size="sm" variant="ghost" asChild><Link href={`/admin/bookings/${card.source}/${card.id}`}>فتح الحجز</Link></Button>
-                    <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><UserRound className="h-3.5 w-3.5" /> تعيين موظف</Button>
+                    {card.supportsPreparation ? <Button size="sm" variant="outline" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><ChevronDown className={`h-3.5 w-3.5 transition ${expanded === cardKey ? "rotate-180" : ""}`} /> عرض التجهيز</Button> : null}
+                    <Button size="sm" variant="ghost" asChild><Link href={card.detailHref}>فتح الحجز</Link></Button>
+                    {card.supportsPreparation ? <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setExpanded(expanded === cardKey ? null : cardKey)}><UserRound className="h-3.5 w-3.5" /> تعيين موظف</Button> : null}
                   </div>
-                  <PreparationPrintActions busy={printingId === cardKey} onPrint={(format) => void printCard(card, format)} />
+                  {card.supportsPreparation ? <PreparationPrintActions busy={printingId === cardKey} onPrint={(format) => void printCard(card, format)} /> : null}
                 </div>
-                {expanded === cardKey ? <PreparationDetail card={card} /> : null}
+                {card.supportsPreparation && expanded === cardKey ? <PreparationDetail card={card} /> : null}
               </article>
             );
           })}
