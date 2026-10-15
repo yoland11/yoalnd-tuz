@@ -31,7 +31,7 @@ type PrepItem = {
 type PrepDetail = { source: string; id: number; items: PrepItem[]; rollup: Rollup };
 
 const DEPT: Record<string, string> = {
-  kosha: "الكوشات", lighting: "الإضاءة", sound: "الصوتيات", photography: "التصوير", flowers: "الزهور", rental: "الإيجار",
+  kosha: "الكوشات", lighting: "الإضاءة", sound: "الصوتيات", photography: "التصوير", flowers: "الزهور", rental: "الإيجار", decorations: "الديكور", transportation: "النقل",
   gifts: "الهدايا والتوزيعات", graduation: "تجهيزات التخرج", invitations: "الدعوات", transport: "النقل", equipment: "المعدات", other: "أخرى",
 };
 const deptLabel = (value: string) => DEPT[value] ?? value;
