@@ -229,6 +229,24 @@ export async function getBookingPreparationSummary(
   // Linked assets (equipment) become preparation items too — availability is the
   // asset itself; status follows its lifecycle stage.
   const assets = Array.isArray(ops.assets) ? ops.assets : [];
+  // Booking asset lines store only the product id; show the real asset name and
+  // its AJN code (the same code printed on the asset QR label).
+  const assetIds = [
+    ...new Set(
+      assets
+        .map((asset: any) => Number(asset?.productId))
+        .filter((value: number) => Number.isSafeInteger(value) && value > 0),
+    ),
+  ] as number[];
+  const assetNames = new Map<number, string>();
+  if (assetIds.length) {
+    const nameRows = (
+      await executor.execute(
+        sql`SELECT id, coalesce(nullif(name_ar, ''), name) AS name FROM products WHERE id IN (${sql.join(assetIds.map((value) => sql`${value}`), sql`, `)})`,
+      )
+    ).rows as any[];
+    for (const row of nameRows) if (row?.name) assetNames.set(Number(row.id), String(row.name));
+  }
   for (const asset of assets) {
     const productId = asset?.productId != null ? Number(asset.productId) : null;
     const key = `asset:${productId ?? asset?.id ?? Math.random().toString(36).slice(2)}`;
@@ -249,8 +267,16 @@ export async function getBookingPreparationSummary(
       reservationId: null,
       kind: "asset",
       productId,
-      name: String(asset?.name ?? asset?.productName ?? (productId ? `أصل #${productId}` : "أصل")),
-      sku: asset?.assetCode ? String(asset.assetCode) : null,
+      name: String(
+        asset?.name ??
+          asset?.productName ??
+          (productId ? (assetNames.get(productId) ?? `أصل #${productId}`) : "أصل"),
+      ),
+      sku: asset?.assetCode
+        ? String(asset.assetCode)
+        : productId
+          ? `AJN-A${String(productId).padStart(6, "0")}`
+          : null,
       department: "equipment",
       required: Math.max(1, num(asset?.quantity ?? 1)),
       totalStock: 1,

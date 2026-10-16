@@ -312,6 +312,7 @@ export default function PreparationPage() {
           items: items.map((item) => ({
             department: deptLabel(item.department),
             name: item.name,
+            code: item.sku,
             required: item.required,
             available: item.manual ? null : item.available,
             status: STATUS_META[item.status]?.label ?? item.status,
@@ -323,7 +324,7 @@ export default function PreparationPage() {
       }
       const columns: ReportColumn<PrepItem>[] = [
         { key: "department", header: "القسم", width: 12, priority: "high", value: (r) => deptLabel(r.department) },
-        { key: "name", header: "العنصر", width: 20, priority: "high" },
+        { key: "name", header: "العنصر", width: 20, priority: "high", value: (r) => (r.sku ? `${r.name} — ${r.sku}` : r.name) },
         { key: "required", header: "الكمية", width: 8, kind: "number", align: "center", priority: "high" },
         { key: "available", header: "المتاح", width: 8, kind: "number", align: "center", priority: "medium" },
         { key: "status", header: "الحالة", width: 12, align: "center", priority: "high", value: (r) => STATUS_META[r.status]?.label ?? r.status },

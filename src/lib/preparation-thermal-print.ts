@@ -1,6 +1,8 @@
 export type PreparationThermalItem = {
   department: string;
   name: string;
+  /** Item / asset code (e.g. AJN-A000220), printed under the name. */
+  code?: string | null;
   required: number;
   available: number | null;
   status: string;
@@ -26,6 +28,7 @@ export function buildPreparationThermalHtml(input: PreparationThermalInput): str
     ? input.items.map((item, index) => `
       <section class="item">
         <div class="item-head"><span class="item-index">${index + 1}</span><b>${escapeHtml(item.name)}</b></div>
+        ${item.code ? `<div class="item-code code">${escapeHtml(item.code)}</div>` : ""}
         <div class="department">${escapeHtml(item.department)}</div>
         <div class="row"><span>الكمية المطلوبة</span><b class="num">${escapeHtml(item.required)}</b></div>
         ${item.available === null ? "" : `<div class="row"><span>المتاح</span><b class="num">${escapeHtml(item.available)}</b></div>`}
@@ -54,6 +57,7 @@ export function buildPreparationThermalHtml(input: PreparationThermalInput): str
     .code { text-align: right; word-break: break-all; }
     .item { border-top: 1px dashed #777; padding: 2mm 0; break-inside: avoid; page-break-inside: avoid; }
     .item-head { display: flex; align-items: flex-start; gap: 2mm; font-size: 12px; }
+    .item-code { font-size: 10px; margin-top: 0.5mm; }
     .item-index { flex: 0 0 auto; font-weight: 800; }
     .item-head b { min-width: 0; overflow-wrap: anywhere; }
     .department { color: #444; font-size: 10px; margin: 0 0 1mm; }
