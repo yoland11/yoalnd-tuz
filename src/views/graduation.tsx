@@ -912,6 +912,8 @@ function GraduationConfigurator() {
     )
       return "أضف روباً واحداً على الأقل إلى الباقة";
     if (step === 3 && !form.fabric.key) return "اختر نوع القماش";
+    if (step === 5 && form.customerName.trim().length < 2) return "أدخل اسم الطالب الكامل";
+    if (step === 5 && form.phone.replace(/\D/g, "").length < 10) return "أدخل رقم هاتف صحيحاً";
     if (
       step === 10 &&
       (!form.customerName.trim() || form.phone.replace(/\D/g, "").length < 10)
@@ -1663,9 +1665,64 @@ function GraduationConfigurator() {
 
                 {step === 5 ? (
                   <div className="space-y-5">
+                    <div>
+                      <h3 className="font-bold text-foreground">بيانات الطالب</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        تُكتب هنا مرة وحدة، وتنتقل تلقائياً إلى تأكيد الطلب.
+                      </p>
+                    </div>
                     <div className="grid gap-4 sm:grid-cols-2">
+                      <div>
+                        <Label htmlFor="graduation-student-name">الاسم الكامل *</Label>
+                        <Input
+                          id="graduation-student-name"
+                          className="mt-2"
+                          maxLength={160}
+                          autoComplete="name"
+                          value={form.customerName}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            // One name: the order's customer name and the
+                            // student name used by the design stay together.
+                            setForm((current) => ({
+                              ...current,
+                              customerName: value,
+                              customText: { ...current.customText, studentName: value },
+                            }));
+                          }}
+                        />
+                        {(() => {
+                          const suggestion = vocalizeArabicName(form.customerName);
+                          return suggestion && suggestion !== form.customText.studentName ? (
+                            <Button variant="ghost"
+                              type="button"
+                              onClick={() => setForm((current) => ({ ...current, customText: { ...current.customText, studentName: suggestion } }))}
+                              className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs text-primary transition-colors hover:bg-primary/10"
+                              title="يطبّق حركات التشكيل على الاسم ليطلع التطريز صحيحاً"
+                            >
+                              <span>اقتراح بالتشكيل للتطريز:</span>
+                              <b className="font-semibold">{suggestion}</b>
+                              <span className="text-muted-foreground">— تطبيق</span>
+                            </Button>
+                          ) : null;
+                        })()}
+                      </div>
+                      <div>
+                        <Label htmlFor="graduation-student-phone">رقم الهاتف *</Label>
+                        <Input
+                          id="graduation-student-phone"
+                          className="mt-2"
+                          dir="ltr"
+                          inputMode="tel"
+                          autoComplete="tel"
+                          maxLength={30}
+                          value={form.phone}
+                          onChange={(event) =>
+                            setForm((current) => ({ ...current, phone: formatIraqiPhoneInput(event.target.value) }))
+                          }
+                        />
+                      </div>
                       {[
-                        ["studentName", "اسم الطالب"],
                         ["university", "الجامعة"],
                         ["college", "الكلية"],
                         ["department", "القسم"],
@@ -1686,21 +1743,6 @@ function GraduationConfigurator() {
                               }))
                             }
                           />
-                          {key === "studentName" && (() => {
-                            const suggestion = vocalizeArabicName(form.customText.studentName);
-                            return suggestion && suggestion !== form.customText.studentName ? (
-                              <Button variant="ghost"
-                                type="button"
-                                onClick={() => setForm((current) => ({ ...current, customText: { ...current.customText, studentName: suggestion } }))}
-                                className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs text-primary transition-colors hover:bg-primary/10"
-                                title="يطبّق حركات التشكيل على الاسم ليطلع التطريز صحيحاً"
-                              >
-                                <span>اقتراح بالتشكيل:</span>
-                                <b className="font-semibold">{suggestion}</b>
-                                <span className="text-muted-foreground">— تطبيق</span>
-                              </Button>
-                            ) : null;
-                          })()}
                         </div>
                       ))}
                     </div>

@@ -288,7 +288,7 @@ export function GraduationStudentWizard({
     ...newStudent(),
     ...(scope === "individual"
       ? {
-          customerName: base.customerName || "",
+          customerName: base.customerName || base.customText?.studentName || "",
           phone: base.phone || "",
           notes: base.notes || "",
           department: base.customText?.department || "",
@@ -317,6 +317,9 @@ export function GraduationStudentWizard({
   const [error, setError] = useState("");
   const [priceStale, setPriceStale] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  // Individual orders collect the student's details once (the customization
+  // step); this step only confirms them, with an explicit way to correct them.
+  const [editIdentity, setEditIdentity] = useState(false);
   const [attempt, setAttempt] = useState<{ key: string; body: string } | null>(
     null,
   );
@@ -693,7 +696,41 @@ export function GraduationStudentWizard({
             disabled={busy || !hydrated || Boolean(attempt)}
             className="min-w-0 space-y-5"
           >
-            {step === 0 && (
+            {step === 0 && scope === "individual" && !editIdentity && !error && studentIssue(submissionForm, 0) === undefined ? (
+              <>
+                <div className="rounded-xl border border-[#e8c7a7] bg-[#fff8ef] p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <p className="text-sm font-semibold">بيانات الطالب المسجلة</p>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setEditIdentity(true)}>
+                      تعديل
+                    </Button>
+                  </div>
+                  <dl className="mt-3 grid gap-x-4 gap-y-2 text-sm sm:grid-cols-2">
+                    {[
+                      ["الاسم", form.customerName],
+                      ["رقم الهاتف", form.phone],
+                      ["الجامعة", base.customText?.university],
+                      ["الكلية", base.customText?.college],
+                      ["القسم", form.department],
+                      ["سنة التخرج", base.customText?.graduationYear],
+                    ]
+                      .filter(([, value]) => String(value ?? "").trim())
+                      .map(([label, value]) => (
+                        <div key={label} className="flex flex-wrap justify-between gap-2 border-b border-[#f0dcc8] pb-1.5">
+                          <dt className="text-muted-foreground">{label}</dt>
+                          <dd className="break-words font-medium" dir={label === "رقم الهاتف" ? "ltr" : undefined}>{String(value)}</dd>
+                        </div>
+                      ))}
+                  </dl>
+                </div>
+                <Label htmlFor="student-notes">ملاحظات الطلب</Label>
+                <Textarea
+                  id="student-notes"
+                  value={form.notes}
+                  onChange={(event) => change({ notes: event.target.value })}
+                />
+              </>
+            ) : step === 0 && (
               <>
                 <div className="space-y-4">
                   {(
