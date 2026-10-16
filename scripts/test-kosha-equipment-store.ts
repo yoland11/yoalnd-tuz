@@ -26,6 +26,8 @@ type State = {
   conflict: number;
   failAudit: boolean;
   missingColumn: boolean;
+  quantityTracked: boolean;
+  otherQuantityHold: number;
 };
 function fixture() {
   let state: State = {
@@ -52,6 +54,8 @@ function fixture() {
     conflict: 0,
     failAudit: false,
     missingColumn: false,
+    quantityTracked: false,
+    otherQuantityHold: 0,
   };
   const database: any = {
     transaction: async (fn: any) => {
@@ -66,6 +70,24 @@ function fixture() {
           if (q.includes("information_schema.columns"))
             return rows(draft.missingColumn ? [] : [{ exists: 1 }]);
           if (q.includes("pg_advisory_xact_lock")) return rows([]);
+          // Quantity-asset tracking (migration 0124): none of these products use it.
+          if (q.includes("information_schema.tables"))
+            return rows([{ ready: true }]);
+          if (q.includes("from asset_quantity_profiles"))
+            return rows(
+              draft.quantityTracked
+                ? [{ product_id: 10, unit_of_measure: "قطعة", quantity_checked_out: 0, quantity_damaged: 0, quantity_maintenance: 0, quantity_missing: 0 }]
+                : [],
+            );
+          if (q.includes("from kosha_bookings b cross join lateral jsonb_array_elements"))
+            return rows([
+              ...(draft.otherQuantityHold
+                ? [{ source: "kosha_booking", booking_id: 8, day: "2026-10-20", status: "confirmed", customer_name: "حجز آخر", line: { productId: 10, trackingMode: "quantity", quantity: draft.otherQuantityHold, reservedQty: draft.otherQuantityHold, stage: "reserved" } }]
+                : []),
+              ...draft.details.bookingOperations.assets.map((line: any) => ({ source: "kosha_booking", booking_id: 7, day: "2026-10-20", status: "new", customer_name: "علي", line })),
+            ]);
+          if (q.includes("from stock_reservations where product_id = "))
+            return rows([{ quantity: 0 }]);
           if (q.startsWith("select id,item_type from products"))
             return rows([{ id: p[0], item_type: "product" }]);
           if (q.includes("and shared=false")) return rows([]);
@@ -372,9 +394,30 @@ async function run() {
   assert.deepEqual(routed.read().details.koshaPortalTimeline, [
     { id: "existing-event" },
   ]);
+  // Quantity-based asset: overlapping bookings share the master quantity.
+  const columns = { ...equipment, quantity: 20, notes: "عمود ملكي" };
+  const shared = fixture();
+  shared.edit({ quantityTracked: true, stock: 100, otherQuantityHold: 85, conflict: 1 });
+  await saveKoshaEquipment(1, [columns], 1, shared.database);
+  await assert.rejects(
+    () => bookingKoshaEquipment({ source: "kosha", id: 7 }, "confirm", [columns], who, shared.database),
+    /المتاح 15 قطعة، والمطلوب 20 قطعة/,
+  );
+  assert.equal(shared.read().details.bookingOperations.assets.length, 0);
+  shared.edit({ otherQuantityHold: 30 });
+  const sharedPreview = await bookingKoshaEquipment({ source: "kosha", id: 7 }, "preview", undefined, who, shared.database);
+  assert.equal(sharedPreview.items[0].available, 70, "100 usable − 30 held by the other booking");
+  const sharedImport = await bookingKoshaEquipment({ source: "kosha", id: 7 }, "confirm", [columns], who, shared.database);
+  assert.equal(sharedImport.imported, 1, "a same-day booking holding part of the quantity no longer blocks the asset");
+  const imported = shared.read().details.bookingOperations.assets[0];
+  assert.deepEqual([imported.trackingMode, imported.quantity, imported.reservedQty, imported.checkedOutQty], ["quantity", 20, 20, 0]);
+  assert.equal(shared.read().stock, 100, "template import never deducts warehouse stock");
+  const sharedRetry = await bookingKoshaEquipment({ source: "kosha", id: 7 }, "confirm", [columns], who, shared.database);
+  assert.equal(sharedRetry.imported, 0, "retry cannot add a second line for the same asset");
   console.log(
     "PASS real Koshah template/import service: no inventory deduction, financial preservation, duplicate retry, shortages, atomic audit rollback and consumable separation",
   );
+  console.log("PASS Koshah template import for quantity assets: shared quantity, date-aware shortage, single booking line");
 }
 run().catch((e) => {
   console.error(e);

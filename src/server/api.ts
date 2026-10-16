@@ -13,6 +13,28 @@ import {
 import bcrypt from "bcryptjs";
 import { staffPhotoUpdateSchema } from "./staff-photo";
 import { readKoshaEquipment, saveKoshaEquipment, koshaEquipmentCatalog, bookingKoshaEquipment, KoshaEquipmentError } from "./kosha-equipment";
+import {
+  QuantityAssetError,
+  adjustQuantityAsset,
+  bookingDay,
+  bucketsOf,
+  configureQuantityTracking,
+  executeQuantityBookingAction,
+  quantityAssetSummary,
+  quantityAvailability,
+  quantityLineHold,
+  quantityLineSummary,
+  quantityListFigures,
+  quantityMovements,
+  quantityAssetsSchemaReady,
+  quantityProfilesFor,
+} from "./quantity-assets";
+import {
+  QUANTITY_ADJUSTMENT_KINDS,
+  TOTAL_CHANGING_ADJUSTMENTS,
+  quantityMovementLabel,
+  totalQuantity,
+} from "@/lib/quantity-assets";
 import { handlePhotographyProduction, productionDeadlineAlerts } from "./photography-production";
 import { PRODUCTION_KIND_LABELS } from "@/lib/photography-production";
 import {
@@ -14457,6 +14479,18 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       where: eq(productsTable.id, id),
     })) as any;
     if (!existing) return error("المنتج غير موجود", 404);
+    // A quantity asset's warehouse balance is changed only by quantity movements
+    // (checkout, return, adjustment, purchase), never by overwriting the stock field.
+    if (
+      data.stock !== undefined &&
+      Number(data.stock) !== Number(existing.stock ?? 0) &&
+      existing.isAsset === true &&
+      (await quantityProfilesFor(db, [id])).has(id)
+    )
+      return error(
+        "كمية الأصل متعدد الكمية لا تُعدّل من بطاقة المنتج؛ استخدم «تعديل كمية الأصل» حتى تبقى الحركات مسجلة",
+        409,
+      );
     const itemSettings = normalizeProductItemSettings(data, existing);
     if (!itemSettings.ok) return error(itemSettings.message, 422);
     const nextIsRental = data.isRental ?? existing.isRental;
@@ -24488,6 +24522,13 @@ async function handleEnterpriseAdmin(
         db.query.staffTable.findFirst({ where: eq(staffTable.id, staffId) }),
       ]);
       if (!product || !staff) return error("الموظف أو القطعة غير موجودة", 404);
+      // Custody rows are per piece; a quantity asset leaves through the booking
+      // quantity checkout so its warehouse balance and counters stay exact.
+      if ((await quantityProfilesFor(db, [productId])).has(productId))
+        return error(
+          "هذا أصل متعدد الكمية؛ أخرجه من «أصول الحجز» أو شاشة المسح بإدخال الكمية",
+          409,
+        );
 
       // Emergency Lock enforcement — a locked / retired asset cannot be checked out until a manager unlocks it.
       await ensureAdminExtensionsTables();
@@ -30956,8 +30997,47 @@ const BookingAssetActionSchema = z.object({
   photoUrls: z.array(z.string().trim().max(2000)).max(20).default([]),
   managerApproval: z.boolean().default(false),
   scannedCode: z.string().trim().max(300).optional(),
+  // Quantity-based assets only (ignored for individual assets).
+  requestId: z.string().trim().min(8).max(80).optional(),
+  goodQuantity: z.coerce.number().int().min(0).max(100000).optional(),
+  damagedQuantity: z.coerce.number().int().min(0).max(100000).optional(),
+  missingQuantity: z.coerce.number().int().min(0).max(100000).optional(),
+  warehouseId: z.coerce.number().int().positive().optional(),
+  vehicle: z.string().trim().max(120).optional(),
+  note: z.string().trim().max(1000).optional(),
   confirmation: z.literal(true),
 });
+
+/** Structured AJN error for quantity-asset rules, thrown inside a transaction so it rolls back. */
+function quantityAssetErrorResponse(cause: QuantityAssetError) {
+  const requestId = makeRequestId();
+  return json(
+    {
+      ...createApiErrorPayload({ message: cause.message, status: cause.status, requestId }),
+      ...cause.extra,
+    },
+    cause.status,
+    { "x-request-id": requestId },
+  );
+}
+
+async function withQuantityAssetErrors(work: () => Promise<NextResponse>) {
+  try {
+    return await work();
+  } catch (cause) {
+    if (cause instanceof QuantityAssetError) return quantityAssetErrorResponse(cause);
+    throw cause;
+  }
+}
+
+/** True when a booking asset action declares damaged or missing units. */
+function bookingAssetActionReportsProblem(input: z.infer<typeof BookingAssetActionSchema>) {
+  return (
+    input.problem !== "none" ||
+    Number(input.damagedQuantity ?? 0) > 0 ||
+    Number(input.missingQuantity ?? 0) > 0
+  );
+}
 
 const PENALTY_DAMAGE_TYPES = ["break", "loss", "damage", "shortage", "not_returned", "other"] as const;
 const PENALTY_ITEM_CONDITIONS = ["broken", "damaged", "lost", "shortage", "unusable"] as const;
@@ -31437,11 +31517,50 @@ async function bookingOperationAssets(reference: BookingOperationsReference) {
   const custodyStaffMap = new Map(
     custodyStaff.map((row) => [row.id, row.fullName || row.username || `#${row.id}`]),
   );
+  // Quantity-based assets: per-line counters plus date-aware availability for
+  // this booking's day (other bookings' holds only, so the figure is the most
+  // this booking can hold in total).
+  const quantityProfiles = await quantityProfilesFor(db, ids);
+  const quantityDetails = new Map<number, Record<string, unknown>>();
+  for (const [productId, quantityProfile] of quantityProfiles) {
+    const product: any = productMap.get(productId);
+    const buckets = bucketsOf(quantityProfile, product?.stock);
+    const { availability } = await quantityAvailability(db, {
+      productId,
+      day: bookingDay(reference.eventDate),
+      exclude: { source: reference.entityType, bookingId: reference.id },
+      buckets,
+    });
+    const raw = linked.find((item) => item.productId === productId);
+    const summary = quantityLineSummary(raw);
+    const hold = quantityLineHold(raw, String(reference.row?.status ?? ""));
+    quantityDetails.set(productId, {
+      trackingMode: "quantity",
+      unit: quantityProfile.unit,
+      totalQuantity: totalQuantity(buckets),
+      inWarehouse: buckets.inWarehouse,
+      quantity: summary.required,
+      reserved: summary.reserved,
+      prepared: summary.prepared,
+      checkedOutTotal: summary.checkedOut,
+      out: summary.outstanding,
+      outstanding: summary.outstanding,
+      returned: summary.returned,
+      returnedGood: summary.returnedGood,
+      damaged: summary.damaged,
+      missing: summary.missing,
+      available: availability.available,
+      availableAfterBooking: Math.max(0, availability.available - hold),
+      stage: summary.stage,
+    });
+  }
   return linked.map((item) => {
     const product: any = productMap.get(item.productId);
     const profile: any = profileMap.get(item.productId);
     const passport: any = passportMap.get(item.productId);
-    const issued: any = custodyMap.get(item.productId);
+    const issued: any = quantityDetails.has(item.productId)
+      ? null
+      : custodyMap.get(item.productId);
     const metadata = (passport?.metadata ?? {}) as Record<string, any>;
     const quantity = Math.max(1, Number(item.quantity ?? 1));
     const out = issued ? Number(issued.quantity ?? quantity) : 0;
@@ -31517,6 +31636,8 @@ async function bookingOperationAssets(reference: BookingOperationsReference) {
         item.returnedAt ??
         reservationMap.get(item.productId)?.returned_at ??
         (issued?.returnedAt ? String(issued.returnedAt) : null),
+      trackingMode: "individual",
+      ...(quantityDetails.get(item.productId) ?? {}),
     };
   });
 }
@@ -31606,7 +31727,7 @@ async function executeLockedBookingAssetAction(
   auth: AdminUser,
   reference: BookingOperationsReference,
   input: z.infer<typeof BookingAssetActionSchema>,
-  db: Pick<typeof import("@workspace/db").db,"query"|"insert"|"update">,
+  db: Pick<typeof import("@workspace/db").db,"query"|"insert"|"update"|"execute">,
   isSound: boolean,
 ) {
   // Validate before any transactional writes (a returned HTTP error is not a rollback).
@@ -31623,6 +31744,41 @@ async function executeLockedBookingAssetAction(
     isSound
   ) {
     await stampBookingSoundDepartment(reference,db);
+  }
+  // Quantity-based assets keep counters per booking line; the individual
+  // lifecycle below (one custody row, same-day conflict) stays unchanged.
+  if ((await quantityProfilesFor(db, [input.productId])).has(input.productId)) {
+    const result = await executeQuantityBookingAction(db, {
+      reference: {
+        source: reference.source,
+        entityType: reference.entityType,
+        id: reference.id,
+        eventDate: reference.eventDate,
+        status: String(reference.row?.status ?? ""),
+        customerName: reference.customerName,
+        operations: reference.operations,
+        details: reference.details,
+      },
+      action: input,
+      actor: actor(auth),
+      saveOperations: (operations) => saveBookingOperations(reference, operations, db),
+    });
+    void logAdminActivity(req, `booking_quantity_asset_${input.mode}`, reference.entityType, reference.id, {
+      productId: input.productId,
+      quantity: input.quantity,
+      line: (result as any).line ?? null,
+      replayed: result.replayed,
+    });
+    if (!result.replayed && ((result as any).damaged > 0 || (result as any).missing > 0))
+      void createNotification({
+        type: (result as any).missing > 0 ? "asset_lost" : "asset_damage",
+        title: (result as any).missing > 0 ? "تسجيل نقص في أصل متعدد الكمية" : "تسجيل تلف في أصل متعدد الكمية",
+        body: `${result.name} · تالف ${(result as any).damaged} · مفقود ${(result as any).missing} · حجز #${reference.id}`,
+        entityType: "product",
+        entityId: input.productId,
+        href: `/admin/assets/new?edit=${input.productId}`,
+      });
+    return json(result);
   }
   const assets = Array.isArray(reference.operations.assets)
     ? [...reference.operations.assets]
@@ -32226,6 +32382,11 @@ async function handleCustodyGroups(
     if (!productId) return error("الأصل مطلوب", 422);
     if (group.status !== "active")
       return error("فعّل مجموعة العهدة قبل إضافة أصول إليها", 409);
+    if ((await quantityProfilesFor(db, [productId])).has(productId))
+      return error(
+        "مجموعات العهدة تتبع القطع الفردية؛ الأصل متعدد الكمية يُخرج بالكمية من الحجز",
+        409,
+      );
     const product = await db.query.productsTable.findFirst({
       where: eq(productsTable.id, productId),
     });
@@ -32556,18 +32717,39 @@ async function handleBookingOperations(
         })
       : [];
     const profileMap = new Map(profiles.map((row) => [row.productId, row]));
+    const catalogQuantity = await quantityProfilesFor(
+      db,
+      products.map((row) => row.id),
+    );
     const data = await Promise.all(
-      products.map(async (product: any) => ({
-        id: product.id,
-        name: product.nameAr || product.name,
-        barcode: product.barcode ?? null,
-        price: Number(product.price ?? 0),
-        category: product.category ?? null,
-        isRental: Boolean(product.isRental),
-        isAsset: Boolean(profileMap.get(product.id) || product.isRental),
-        profileStatus: profileMap.get(product.id)?.status ?? null,
-        ...(await getProductStockSummary(product)),
-      })),
+      products.map(async (product: any) => {
+        const quantityProfile = catalogQuantity.get(product.id);
+        const quantity = quantityProfile
+          ? (
+              await quantityAvailability(db, {
+                productId: product.id,
+                day: bookingDay(reference.eventDate),
+                exclude: { source: reference.entityType, bookingId: reference.id },
+                buckets: bucketsOf(quantityProfile, product.stock),
+              })
+            ).availability
+          : null;
+        return {
+          id: product.id,
+          name: product.nameAr || product.name,
+          barcode: product.barcode ?? null,
+          price: Number(product.price ?? 0),
+          category: product.category ?? null,
+          isRental: Boolean(product.isRental),
+          isAsset: Boolean(profileMap.get(product.id) || product.isRental),
+          profileStatus: profileMap.get(product.id)?.status ?? null,
+          ...(await getProductStockSummary(product)),
+          trackingMode: quantityProfile ? "quantity" : "individual",
+          unitOfMeasure: quantityProfile?.unit ?? null,
+          // Date-aware for this booking's day; replaces the plain stock figure.
+          ...(quantity ? { available: quantity.available, reserved: quantity.committed } : {}),
+        };
+      }),
     );
     return json({ data });
   }
@@ -33230,13 +33412,13 @@ async function handleBookingOperations(
       if (!can(assetPermission))
         return error("ليس لديك صلاحية تنفيذ إجراء الأصل", 403);
       if (
-        ["damaged", "missing"].includes(input.problem) &&
+        bookingAssetActionReportsProblem(input) &&
         !can("asset_damage_record")
       )
         return error("ليس لديك صلاحية تسجيل التلف أو النقص", 403);
       if (input.managerApproval && !can("asset_damage_approve"))
         return error("ليس لديك صلاحية اعتماد التلف أو النقص", 403);
-      return executeBookingAssetAction(req, auth, reference, input);
+      return withQuantityAssetErrors(() => executeBookingAssetAction(req, auth, reference, input));
     }
   }
 
@@ -36035,6 +36217,7 @@ async function assetSaleContext(productId: number) {
     inCustodyGroup: groupAssignment.length > 0,
     reservedInBooking: Boolean(reservation),
     linkedToActiveBooking: Boolean((activeLink as any).rows?.length),
+    quantityTracked: (await quantityProfilesFor(db, [productId])).has(productId),
   });
   const collectionAccounts = accounts.filter(
     (account) =>
@@ -42715,6 +42898,123 @@ async function handleAdmin(
     // Full edit payload for the shared Add Asset screen. Keep product, depreciation
     // profile, passport, and existing documents together so the edit workflow does
     // not need a second, reduced depreciation-only form.
+    // Quantity-based assets: one master asset with many identical units.
+    if (parts[2] === "quantity") {
+      // Lets the asset form refuse a quantity asset before creating any record
+      // when migration 0124 has not been applied yet.
+      if (method === "GET" && parts[3] === "status")
+        return json({ ready: await quantityAssetsSchemaReady(db) });
+      const productId = optionalPositiveId(parts[3]);
+      if (!productId) return error("معرّف الأصل غير صحيح", 400);
+      const quantityAction = parts[4] ?? "";
+      const managerRole = ["admin", "manager", "main_admin", "super_admin", "main_manager"].includes(
+        String(auth.role ?? "").toLowerCase(),
+      );
+      const may = (permission: Permission) => managerRole || hasPermission(auth, permission);
+      const quantityActor = actor(auth);
+      if (method === "GET" && !quantityAction) {
+        const day = req.nextUrl.searchParams.get("day");
+        const summary = await quantityAssetSummary(db, productId, day);
+        if (!summary) return error("هذا الأصل غير مُعرّف كأصل متعدد الكمية", 404);
+        return json(summary);
+      }
+      if (method === "GET" && quantityAction === "movements") {
+        return json({ data: await quantityMovements(db, productId) });
+      }
+      if (method === "POST" && quantityAction === "tracking") {
+        const parsed = z
+          .object({
+            trackingMode: z.enum(["individual", "quantity"]),
+            unitOfMeasure: z.string().trim().max(40).nullable().optional(),
+            confirmConversion: z.boolean().default(false),
+          })
+          .safeParse(await body(req));
+        if (!parsed.success) return validationError("assets.quantity.tracking", parsed);
+        return withQuantityAssetErrors(async () => {
+          const result = await db.transaction((tx) =>
+            configureQuantityTracking(tx, {
+              productId,
+              trackingMode: parsed.data.trackingMode,
+              unitOfMeasure: parsed.data.unitOfMeasure,
+              confirmConversion: parsed.data.confirmConversion,
+              isManager: managerRole,
+              actor: quantityActor,
+            }),
+          );
+          if (result.changed)
+            void logAdminActivity(req, "asset_tracking_mode_changed", "product", productId, {
+              trackingMode: result.trackingMode,
+              unit: result.unit,
+              confirmConversion: parsed.data.confirmConversion,
+            });
+          revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+          return json(result);
+        });
+      }
+      if (method === "POST" && quantityAction === "adjust") {
+        const parsed = z
+          .object({
+            kind: z.enum(QUANTITY_ADJUSTMENT_KINDS),
+            quantity: z.coerce.number().int().min(0).max(1_000_000).default(0),
+            countedQuantity: z.coerce.number().int().min(0).max(1_000_000).nullable().optional(),
+            writeOffFrom: z.enum(["damaged", "missing", "maintenance"]).optional(),
+            unitCost: z.coerce.number().min(0).max(1_000_000_000).nullable().optional(),
+            reason: z.string().trim().min(3, "اكتب سبب التعديل").max(1000),
+            relatedType: z.string().trim().max(40).nullable().optional(),
+            relatedId: z.coerce.number().int().positive().nullable().optional(),
+            requestId: z.string().trim().min(8).max(80),
+          })
+          .safeParse(await body(req));
+        if (!parsed.success) return validationError("assets.quantity.adjust", parsed);
+        const input = parsed.data;
+        if (TOTAL_CHANGING_ADJUSTMENTS.includes(input.kind) && !managerRole)
+          return error("إضافة الكمية أو تخفيضها أو تصحيح الجرد أو الشطب متاح للمدير فقط", 403);
+        if (["damage", "send_maintenance", "repaired"].includes(input.kind) && !may("asset_damage_record"))
+          return error("ليس لديك صلاحية تسجيل التلف أو الصيانة", 403);
+        if (["loss", "found"].includes(input.kind) && !may("asset_damage_approve"))
+          return error("تسجيل الفقدان أو العثور على المفقود يتطلب صلاحية اعتماد التلف والنقص", 403);
+        return withQuantityAssetErrors(async () => {
+          const result = await db.transaction((tx) =>
+            adjustQuantityAsset(tx, {
+              productId,
+              kind: input.kind,
+              quantity: input.quantity,
+              countedQuantity: input.countedQuantity ?? null,
+              writeOffFrom: input.writeOffFrom,
+              unitCost: input.unitCost ?? null,
+              reason: input.reason,
+              relatedType: input.relatedType ?? null,
+              relatedId: input.relatedId ?? null,
+              requestId: input.requestId,
+              actor: quantityActor,
+            }),
+          );
+          if (!result.replayed) {
+            void logAdminActivity(req, `asset_quantity_${input.kind}`, "product", productId, {
+              kind: input.kind,
+              quantity: input.quantity,
+              countedQuantity: input.countedQuantity ?? null,
+              reason: input.reason,
+              totalBefore: (result as any).totalBefore,
+              totalAfter: (result as any).totalAfter,
+            });
+            if (["damage", "loss", "write_off"].includes(input.kind))
+              void createNotification({
+                type: `asset_quantity_${input.kind}`,
+                title: (result as any).label ?? "تعديل كمية أصل",
+                body: `${input.quantity || input.countedQuantity || 0} · ${input.reason}`,
+                entityType: "product",
+                entityId: productId,
+                href: `/admin/assets/new?edit=${productId}`,
+              });
+          }
+          revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+          return json(result);
+        });
+      }
+      return error("إجراء الكمية غير مدعوم", 405);
+    }
+
     if (parts[2] === "edit" && method === "GET") {
       await ensureAssetCategoriesTables();
       const productId = int(parts[3]);
@@ -42755,6 +43055,7 @@ async function handleAdmin(
         ]);
       if (!product || !product.isAsset) return error("الأصل غير موجود", 404);
       const metadata = assetMetadataObject(passport?.metadata);
+      const quantity = await quantityAssetSummary(db, productId);
       const qr = qrRecord
         ? {
             token: qrRecord.token,
@@ -42790,6 +43091,8 @@ async function handleAdmin(
           documentType: document.documentType,
         })),
         qr,
+        trackingMode: quantity ? "quantity" : "individual",
+        quantity,
       });
     }
 
@@ -42859,6 +43162,14 @@ async function handleAdmin(
       if (!product) return error("الأصل غير موجود", 404);
       if (!profile && !passport && !product.isRental)
         return error("هذا المنتج غير مسجل كأصل أو منتج إيجار", 404);
+      // One QR for the master record of a quantity asset: the scan returns the
+      // quantity picture so staff enter a quantity instead of scanning each unit.
+      const quantity = await quantityAssetSummary(db, productId);
+      const scanWarehouse = passport?.warehouseId
+        ? await db.query.warehousesTable.findFirst({
+            where: eq(warehousesTable.id, passport.warehouseId),
+          })
+        : null;
       return json({
         productId,
         name: product.nameAr || product.name,
@@ -42871,6 +43182,33 @@ async function handleAdmin(
           passport?.lastLocation ?? passport?.shelfCode ?? "داخل المخزن",
         shelfCode: passport?.shelfCode ?? null,
         custody,
+        trackingMode: quantity ? "quantity" : "individual",
+        imageUrl:
+          (publicMediaList("product", product, product.images) ?? [])[0] ??
+          passport?.imageUrl ??
+          null,
+        warehouseName: scanWarehouse?.name ?? null,
+        quantity: quantity
+          ? {
+              unit: quantity.unit,
+              total: quantity.total,
+              inWarehouse: quantity.inWarehouse,
+              available: quantity.available,
+              reserved: quantity.reserved,
+              checkedOut: quantity.checkedOut,
+              damaged: quantity.damaged,
+              maintenance: quantity.maintenance,
+              missing: quantity.missing,
+              relatedBookings: quantity.bookings.filter(
+                (line) =>
+                  line.outstanding > 0 ||
+                  (!["returned", "inspection", "completed", "released"].includes(line.stage) &&
+                    !["cancelled", "canceled", "deleted", "completed", "delivered", "closed"].includes(
+                      String(line.status ?? "").toLowerCase(),
+                    )),
+              ),
+            }
+          : null,
       });
     }
 
@@ -42947,7 +43285,7 @@ async function handleAdmin(
               productMap.get(resolvedId)?.name ||
               `#${resolvedId}`,
             type: "stock_movement",
-            title: row.reason,
+            title: quantityMovementLabel(row.reason) ?? row.reason,
             body: null,
             quantityChange: Number(row.quantityChange),
             actorName: row.createdByName,
@@ -42990,6 +43328,16 @@ async function handleAdmin(
         where: eq(productsTable.id, productId),
       });
       if (!product) return error("الأصل غير موجود", 404);
+      // A status action applies to the whole record; for a quantity asset it would
+      // mark every unit at once, so unit states go through quantity adjustments.
+      if (
+        action !== "inspection" &&
+        (await quantityProfilesFor(db, [productId])).has(productId)
+      )
+        return error(
+          "هذا أصل متعدد الكمية؛ سجّل التلف أو الفقدان أو الصيانة من «تعديل كمية الأصل» بالكمية المطلوبة",
+          409,
+        );
       const current = await db.query.assetProfilesTable.findFirst({
         where: eq(assetProfilesTable.productId, productId),
       });
@@ -43935,9 +44283,15 @@ async function handleAdmin(
         { entityType: String(row.entity_type ?? "").trim(), entityId },
       ]);
     }
+    // Quantity-based assets: one profile query and one booking scan for the page.
+    const quantityFigures = await quantityListFigures(
+      db,
+      products.map((product) => ({ id: product.id, stock: product.stock, minStock: product.minStock })),
+    );
     const allRows = products.map((product) => {
       const profile = profileByProduct.get(product.id);
       const removedProfile = removedProfileByProduct.get(product.id);
+      const figures = quantityFigures.get(product.id);
       const passport = passportByProduct.get(product.id);
       const metadata = assetMetadataObject(passport?.metadata);
       const custody = custodyByProduct.get(product.id) ?? [];
@@ -44036,6 +44390,17 @@ async function handleAdmin(
           (usageCount > 0 && usageCount % Number(profile?.maintenanceEveryUses ?? 50) === 0),
         updatedAt: profile?.updatedAt ?? passport?.updatedAt ?? product.updatedAt ?? null,
         serviceText,
+        // Individual assets are one unit; quantity assets report their physical states.
+        trackingMode: figures ? ("quantity" as const) : ("individual" as const),
+        unitOfMeasure: figures?.unit ?? null,
+        totalQuantity: figures?.total ?? 1,
+        availableQuantity: figures ? figures.available : status === "available" ? 1 : 0,
+        reservedQuantity: figures ? figures.reserved : status === "reserved" ? 1 : 0,
+        checkedOutQuantity: figures ? figures.checkedOut : status === "in_use" ? 1 : 0,
+        damagedQuantity: figures ? figures.damaged : status === "damaged" ? 1 : 0,
+        maintenanceQuantity: figures ? figures.maintenance : status === "maintenance" ? 1 : 0,
+        missingQuantity: figures ? figures.missing : rawStatus === "lost" ? 1 : 0,
+        lowAvailability: figures?.lowAvailability ?? false,
       };
     });
     const assetMatchesQuickFilter = (row: (typeof allRows)[number]) => {
@@ -44044,8 +44409,11 @@ async function handleAdmin(
         case "available": return row.availabilityStatus === "available";
         case "in_use": return row.availabilityStatus === "in_use";
         case "reserved": return row.availabilityStatus === "reserved";
-        case "maintenance": return row.availabilityStatus === "maintenance" || row.maintenanceDue;
-        case "damaged": return row.availabilityStatus === "damaged";
+        case "maintenance": return row.availabilityStatus === "maintenance" || row.maintenanceDue || row.maintenanceQuantity > 0;
+        case "damaged": return row.availabilityStatus === "damaged" || row.damagedQuantity > 0;
+        case "individual": return row.trackingMode === "individual";
+        case "quantity": return row.trackingMode === "quantity";
+        case "low_availability": return row.lowAvailability;
         case "rentals": return row.isRental || row.bookingTypes.includes("rental") || text.includes("إيجار") || text.includes("rental");
         case "koshat": return row.bookingTypes.includes("kosha") || text.includes("كوش") || text.includes("kosha");
         case "photography": return row.bookingTypes.some((type) => type.includes("photography")) || text.includes("تصوير") || text.includes("photography");
@@ -44099,6 +44467,8 @@ async function handleAdmin(
         inUse: allRows.filter((row) => row.availabilityStatus === "in_use").length,
         maintenance: allRows.filter((row) => row.availabilityStatus === "maintenance" || row.maintenanceDue).length,
         damaged: allRows.filter((row) => row.availabilityStatus === "damaged").length,
+        quantityAssets: allRows.filter((row) => row.trackingMode === "quantity").length,
+        lowAvailability: allRows.filter((row) => row.lowAvailability).length,
         currentValue: allRows.reduce((sum, row) => sum + row.currentValue, 0),
         purchaseValue: allRows.reduce((sum, row) => sum + row.purchasePrice, 0),
       },
@@ -67804,12 +68174,19 @@ async function handleStaffPortal(
           : mode === "return"
             ? "return"
             : mode;
+      const quantityLine = current?.trackingMode === "quantity";
       const parsed = BookingAssetActionSchema.safeParse({
         mode: actionMode,
         productId,
         quantity: Math.max(
           1,
-          Number(payload?.quantity ?? current?.quantity ?? 1),
+          Number(
+            payload?.quantity ??
+              (quantityLine && actionMode === "return"
+                ? (current as any)?.outstanding
+                : current?.quantity) ??
+              1,
+          ),
         ),
         problem:
           payload?.problem === "broken"
@@ -67822,11 +68199,17 @@ async function handleStaffPortal(
         managerApproval: payload?.managerApproval === true,
         scannedCode: payload?.code,
         photoUrls: [],
+        requestId: payload?.requestId,
+        goodQuantity: payload?.goodQuantity,
+        damagedQuantity: payload?.damagedQuantity,
+        missingQuantity: payload?.missingQuantity,
         confirmation: true,
       });
       if (!parsed.success)
         return validationError("staff.kosha-bookings.assets", parsed);
-      return executeBookingAssetAction(req, auth, reference, parsed.data);
+      return withQuantityAssetErrors(() =>
+        executeBookingAssetAction(req, auth, reference, parsed.data),
+      );
     }
     return error("المسار غير موجود", 404);
   }

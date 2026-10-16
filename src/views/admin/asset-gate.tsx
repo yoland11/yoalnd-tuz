@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./_layout";
 import { adminFetch, apiErrorMessage, compressImageFile } from "./_lib";
+import { QuantityBookingAssetDialog, type QuantityBookingTarget } from "./quantity-booking-asset-dialog";
 
 type GateMode = "checkout" | "return";
 
@@ -45,6 +46,21 @@ type ScanResult = {
   serialNumber?: string | null;
   status: string;
   location?: string | null;
+  trackingMode?: "individual" | "quantity";
+  imageUrl?: string | null;
+  warehouseName?: string | null;
+  quantity?: {
+    unit: string;
+    total: number;
+    inWarehouse: number;
+    available: number;
+    reserved: number;
+    checkedOut: number;
+    damaged: number;
+    maintenance: number;
+    missing: number;
+    relatedBookings: Array<{ source: string; bookingId: number; day: string | null; customerName: string | null; reserved: number; outstanding: number }>;
+  } | null;
 };
 type CustodyRow = { id: number; productId: number; staffId: number; status: string };
 type StaffRow = { id: number; fullName?: string; username?: string };
@@ -72,6 +88,9 @@ export default function AssetGatePage() {
   const [responsibleId, setResponsibleId] = useState("");
   const [managerApproval, setManagerApproval] = useState(false);
   const [problemPhoto, setProblemPhoto] = useState<string | null>(null);
+  // Quantity-based asset scanned: one QR for the master record, quantity entered by hand.
+  const [quantityScan, setQuantityScan] = useState<{ scan: ScanResult; code: string } | null>(null);
+  const [quantityTarget, setQuantityTarget] = useState<QuantityBookingTarget | null>(null);
 
   const { data: bookings = [], isLoading: bookingsLoading } = useQuery<Booking[]>({
     queryKey: ["admin", "gate-bookings"],
@@ -181,6 +200,11 @@ export default function AssetGatePage() {
     setBusy(true);
     try {
       const res = await adminFetch<ScanResult>(`/admin/assets/scan?code=${encodeURIComponent(code)}`);
+      if (res.trackingMode === "quantity") {
+        setPending(null);
+        setQuantityScan({ scan: res, code });
+        return;
+      }
       // Membership
       if (!requiredIds.has(res.productId)) {
         showFlash("err", `${res.name}: هذا الأصل لا يخص هذا الحجز`);
@@ -342,6 +366,47 @@ export default function AssetGatePage() {
       showFlash("ok", `تم تسجيل ${name} كمفقود`);
     } catch (e) {
       showFlash("err", apiErrorMessage(e, "تعذّر التسجيل"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openQuantityAction() {
+    if (!booking || !quantityScan) return;
+    setBusy(true);
+    try {
+      // Booking-operations owns booking asset lines (reservation, checkout, return).
+      const data = await adminFetch<{ assets: Array<Record<string, any>> }>(`/admin/booking-operations/kosha/${booking.id}/assets`);
+      const row = data.assets.find((item) => Number(item.productId) === quantityScan.scan.productId);
+      setQuantityTarget(
+        row
+          ? {
+              productId: Number(row.productId),
+              name: String(row.name ?? quantityScan.scan.name),
+              unit: row.unit ?? quantityScan.scan.quantity?.unit,
+              available: Number(row.available ?? 0),
+              inWarehouse: Number(row.inWarehouse ?? quantityScan.scan.quantity?.inWarehouse ?? 0),
+              quantity: Number(row.quantity ?? 0),
+              reserved: Number(row.reserved ?? 0),
+              prepared: Number(row.prepared ?? 0),
+              checkedOutTotal: Number(row.checkedOutTotal ?? 0),
+              outstanding: Number(row.outstanding ?? 0),
+              returnedGood: Number(row.returnedGood ?? 0),
+              damaged: Number(row.damaged ?? 0),
+              missing: Number(row.missing ?? 0),
+              stage: row.stage,
+            }
+          : {
+              productId: quantityScan.scan.productId,
+              name: quantityScan.scan.name,
+              unit: quantityScan.scan.quantity?.unit,
+              available: quantityScan.scan.quantity?.available,
+              inWarehouse: quantityScan.scan.quantity?.inWarehouse,
+              quantity: 1,
+            },
+      );
+    } catch (e) {
+      showFlash("err", apiErrorMessage(e, "تعذّر تحميل أصول الحجز"));
     } finally {
       setBusy(false);
     }
@@ -529,6 +594,63 @@ export default function AssetGatePage() {
               </Button>
             </form>
           </div>
+
+          {quantityScan ? (
+            <div className="bg-card rounded-xl border border-primary/40 p-4 space-y-3">
+              <div className="flex items-start gap-3">
+                {quantityScan.scan.imageUrl ? (
+                  <img src={quantityScan.scan.imageUrl} alt="" className="h-16 w-16 shrink-0 rounded-lg border border-border/40 object-cover" />
+                ) : (
+                  <div className="grid h-16 w-16 shrink-0 place-items-center rounded-lg border border-border/40 bg-background"><PackageCheck className="h-6 w-6 text-primary" /></div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="font-bold text-foreground">{quantityScan.scan.name}</p>
+                  <p className="text-xs text-muted-foreground" dir="ltr">{quantityScan.scan.assetCode}</p>
+                  <p className="text-xs text-muted-foreground">أصل متعدد الكمية · المستودع: {quantityScan.scan.warehouseName ?? quantityScan.scan.location ?? "—"}</p>
+                </div>
+                <Button variant="ghost" size="icon" aria-label="إغلاق" onClick={() => setQuantityScan(null)}><X className="h-4 w-4" /></Button>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
+                {[
+                  ["الإجمالي", quantityScan.scan.quantity?.total],
+                  ["المتوفر", quantityScan.scan.quantity?.available],
+                  ["المحجوز", quantityScan.scan.quantity?.reserved],
+                  ["الخارج", quantityScan.scan.quantity?.checkedOut],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-lg border border-border/40 bg-background/60 p-2">
+                    <p className="text-[11px] text-muted-foreground">{label}</p>
+                    <p className="text-lg font-bold tabular-nums">{Number(value ?? 0).toLocaleString("ar-IQ-u-nu-latn")} <span className="text-xs font-normal text-muted-foreground">{quantityScan.scan.quantity?.unit}</span></p>
+                  </div>
+                ))}
+              </div>
+              {quantityScan.scan.quantity?.relatedBookings.length ? (
+                <div className="text-xs text-muted-foreground">
+                  الحجوزات المرتبطة:{" "}
+                  {quantityScan.scan.quantity.relatedBookings.slice(0, 6).map((line) => (
+                    <span key={`${line.source}-${line.bookingId}`} className={`ml-2 inline-block rounded-full border px-2 py-0.5 ${line.bookingId === booking.id ? "border-primary text-primary" : "border-border/50"}`}>
+                      #{line.bookingId}{line.day ? ` · ${line.day}` : ""} · محجوز {line.reserved} · خارج {line.outstanding}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <Button className="w-full gap-2" disabled={busy} onClick={() => void openQuantityAction()}>
+                {mode === "checkout" ? <ArrowUpFromLine className="h-4 w-4" /> : <ArrowDownToLine className="h-4 w-4" />}
+                {mode === "checkout" ? `إدخال كمية الإخراج لحجز #${booking.bookingNo ?? booking.id}` : `إدخال كمية الإرجاع لحجز #${booking.bookingNo ?? booking.id}`}
+              </Button>
+            </div>
+          ) : null}
+          <QuantityBookingAssetDialog
+            endpoint={`/admin/booking-operations/kosha/${booking.id}/assets`}
+            target={quantityTarget}
+            initialMode={mode === "checkout" ? "checkout" : "return"}
+            scannedCode={quantityScan?.code}
+            onClose={() => setQuantityTarget(null)}
+            onDone={() => {
+              showFlash("ok", "تم تسجيل الكمية في الحجز");
+              setQuantityScan(null);
+              void refetchAssets();
+            }}
+          />
 
           {/* Required assets list */}
           <div className="bg-card rounded-xl border border-border/30 p-4">

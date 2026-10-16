@@ -6,6 +6,8 @@ export type AssetSaleEligibilityInput = {
   inCustodyGroup: boolean;
   reservedInBooking: boolean;
   linkedToActiveBooking: boolean;
+  /** Quantity-based master assets are reduced or written off, not sold as one unit. */
+  quantityTracked?: boolean;
 };
 
 const money = (value: unknown) => {
@@ -42,5 +44,6 @@ export function assetSaleEligibility(input: AssetSaleEligibilityInput) {
   if (input.inCustodyGroup) blockers.push("الأصل مخصص ضمن مجموعة عهدة موظف؛ أزل التخصيص قبل البيع.");
   if (input.reservedInBooking) blockers.push("الأصل محجوز أو خارج ضمن حجز نشط؛ يجب إكمال الإرجاع والفحص أولًا.");
   if (input.linkedToActiveBooking) blockers.push("الأصل مرتبط حاليًا بحجز أو طلب قيد التنفيذ.");
+  if (input.quantityTracked) blockers.push("هذا أصل متعدد الكمية؛ بيعه كوحدة واحدة غير مدعوم. استخدم «تخفيض كمية» أو «شطب» من إدارة الكميات.");
   return { allowed: blockers.length === 0, blockers };
 }

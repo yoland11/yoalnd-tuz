@@ -8,6 +8,7 @@ import {
   type KoshaEquipmentLine,
 } from "@/lib/kosha-equipment";
 import { routedKoshaCustomFieldsSql } from "./kosha-instruction-store";
+import { bucketsOf, quantityAvailability, quantityProfilesFor } from "./quantity-assets";
 
 export class KoshaEquipmentError extends Error {
   constructor(
@@ -134,6 +135,9 @@ export async function bookingKoshaEquipment(
       products.set(id, result.rows[0]);
     }
     const day = String(row.event_date ?? "").slice(0, 10);
+    // Quantity-based assets share one master record; overlapping bookings may
+    // each hold part of the quantity instead of blocking the whole asset.
+    const quantityProfiles = await quantityProfilesFor(tx, [...products.keys()]);
     const preview: any[] = [];
     for (const line of lines) {
       let stock = Number(products.get(line.productId)?.stock ?? 0);
@@ -150,6 +154,50 @@ export async function bookingKoshaEquipment(
         );
         if (variants.rows.length)
           throw new KoshaEquipmentError("حدد متغير المادة من قالب الكوشة", 409);
+      }
+      const quantityProfile = line.returnable
+        ? quantityProfiles.get(line.productId)
+        : undefined;
+      if (quantityProfile) {
+        const profile = await tx.execute(
+          sql`select status from asset_profiles where product_id=${line.productId}`,
+        );
+        const blocked = [
+          "maintenance",
+          "lost",
+          "retired",
+          "locked",
+          "sold",
+          "disposed",
+        ].includes(String(profile.rows[0]?.status));
+        const requestedTotal = lines
+          .filter((l) => l.returnable && l.productId === line.productId)
+          .reduce((sum, l) => sum + l.quantity, 0);
+        const { availability } = await quantityAvailability(tx, {
+          productId: line.productId,
+          day: /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null,
+          exclude: { source: sourceType, bookingId: booking.id },
+          buckets: bucketsOf(quantityProfile, products.get(line.productId)?.stock),
+        });
+        const available = blocked ? 0 : availability.available;
+        const info = template.find((l) => equipmentKey(l) === equipmentKey(line));
+        preview.push({
+          ...line,
+          required: line.quantity,
+          available,
+          reserved: availability.committed,
+          missing: Math.max(0, requestedTotal - available),
+          requestedTotal,
+          trackingMode: "quantity",
+          unit: quantityProfile.unit,
+          name: info?.name ?? "",
+          imageUrl: info?.imageUrl ?? null,
+          alreadyImported:
+            ownAssetIds.has(line.productId) ||
+            own.rows.some((r: any) => Number(r.product_id) === line.productId),
+          blocked,
+        });
+        continue;
       }
       const reservedResult = await tx.execute(
         sql`select coalesce(sum(quantity),0) as quantity from stock_reservations where product_id=${line.productId} and status='reserved' and (${line.variantId}::integer is null or variant_id=${line.variantId}) and not(source_type=${sourceType} and source_id=${booking.id})`,
@@ -217,7 +265,13 @@ export async function bookingKoshaEquipment(
     const missing = preview.filter((l) => !l.alreadyImported && l.missing > 0);
     if (missing.length)
       throw new KoshaEquipmentError(
-        `المعدات غير متاحة: ${missing.map((l) => l.name).join("، ")}`,
+        `المعدات غير متاحة: ${missing
+          .map((l) =>
+            l.trackingMode === "quantity"
+              ? `${l.name} (المتاح ${l.available} ${l.unit}، والمطلوب ${l.requestedTotal} ${l.unit})`
+              : l.name,
+          )
+          .join("، ")}`,
         409,
       );
     const meta = { ...(ops.productMeta ?? {}) };
@@ -233,11 +287,24 @@ export async function bookingKoshaEquipment(
             l.productId === line.productId &&
             !l.alreadyImported,
         );
+        const groupQuantity = group.reduce((sum, l) => sum + l.quantity, 0);
         assets.push({
           productId: line.productId,
-          quantity: group.reduce((sum, l) => sum + l.quantity, 0),
+          quantity: groupQuantity,
           stage: "reserved",
           source: "kosha_equipment",
+          ...(line.trackingMode === "quantity"
+            ? {
+                trackingMode: "quantity",
+                unit: line.unit,
+                reservedQty: groupQuantity,
+                preparedQty: 0,
+                checkedOutQty: 0,
+                returnedGoodQty: 0,
+                returnedDamagedQty: 0,
+                missingQty: 0,
+              }
+            : {}),
           equipmentLines: group.map(
             ({ productId, variantId, quantity, unit, notes }) => ({
               productId,

@@ -68,6 +68,8 @@ import {
   recordLabelPrint,
   type LabelData,
 } from "./label-helpers";
+import { QuantityAssetPanel, type QuantitySummary } from "./quantity-asset-panel";
+import { DEFAULT_QUANTITY_UNIT, TRACKING_MODE_LABELS, type TrackingMode } from "@/lib/quantity-assets";
 
 const STATUSES: [string, string][] = [
   ["available", "متاح"],
@@ -116,6 +118,8 @@ type AssetEditPayload = {
   passport: any;
   documents: AssetDocument[];
   qr: { token: string; scanUrl: string; dataUrl: string } | null;
+  trackingMode?: TrackingMode;
+  quantity?: QuantitySummary | null;
 };
 
 type SavedAsset = {
@@ -125,6 +129,9 @@ type SavedAsset = {
   qrDataUrl: string;
   scanUrl: string;
   name: string;
+  /** Set when the asset saved but its tracking mode could not change. */
+  trackingError?: string | null;
+  conversionPending?: boolean;
 };
 
 const EMPTY = {
@@ -155,6 +162,10 @@ const EMPTY = {
   assignedStaffId: "",
   lastLocation: "",
   notes: "",
+  trackingMode: "individual" as TrackingMode,
+  unitOfMeasure: DEFAULT_QUANTITY_UNIT,
+  totalQuantity: "1",
+  unitCost: "",
 };
 
 function num(v: string): number {
@@ -195,6 +206,8 @@ export default function AssetNewPage() {
   const [categoryToDelete, setCategoryToDelete] = useState<AssetCategory | null>(null);
   const [savingCategory, setSavingCategory] = useState(false);
   const [deletingCategory, setDeletingCategory] = useState(false);
+  const [conversionPrompt, setConversionPrompt] = useState<number | null>(null);
+  const [confirmingConversion, setConfirmingConversion] = useState(false);
 
   // Live QR + barcode preview (reuses the label engine; keyed off the serial).
   const [qrPreview, setQrPreview] = useState("");
@@ -293,6 +306,10 @@ export default function AssetNewPage() {
       assignedStaffId: asset.passport?.lastStaffId ? String(asset.passport.lastStaffId) : "",
       lastLocation: asset.passport?.lastLocation ?? "",
       notes: asset.profile?.notes ?? metadata.notes ?? asset.product?.description ?? "",
+      trackingMode: asset.trackingMode === "quantity" ? "quantity" : "individual",
+      unitOfMeasure: asset.quantity?.unit ?? DEFAULT_QUANTITY_UNIT,
+      totalQuantity: String(asset.quantity?.total ?? Math.max(0, Number(asset.product?.stock ?? 1))),
+      unitCost: String(asset.product?.costPrice ?? ""),
     });
     setMainPhoto(mainImage);
     setInvoiceImage(invoiceImage);
@@ -459,10 +476,50 @@ export default function AssetNewPage() {
     return list.slice(0, 40);
   }, [products, accessorySearch]);
 
+  const quantityMode = form.trackingMode === "quantity";
+  const savedTracking: TrackingMode = assetEditQuery.data?.trackingMode === "quantity" ? "quantity" : "individual";
+  const totalQuantityValue = Math.max(0, Math.floor(num(form.totalQuantity)));
+  const quantityTotalValue = totalQuantityValue * num(form.unitCost);
+
   function validate(): string | null {
     if (!form.name.trim() && !form.nameAr.trim()) return "أدخل اسم الأصل (عربي أو إنجليزي)";
-    if (!form.serialNumber.trim()) return "الرقم التسلسلي مطلوب ويجب أن يكون فريداً";
+    // The master record of a quantity asset has one QR; a serial is optional there.
+    if (!quantityMode && !form.serialNumber.trim()) return "الرقم التسلسلي مطلوب ويجب أن يكون فريداً";
+    if (quantityMode && !isEditMode && (!Number.isInteger(num(form.totalQuantity)) || num(form.totalQuantity) < 1))
+      return "أدخل الكمية الإجمالية كعدد صحيح أكبر من صفر";
+    if (quantityMode && num(form.unitCost) < 0) return "تكلفة القطعة لا يمكن أن تكون سالبة";
     return null;
+  }
+
+  async function applyTracking(productId: number, confirmConversion: boolean) {
+    return adminFetch<{ ok: boolean; changed: boolean; trackingMode: TrackingMode; unit: string }>(
+      `/admin/assets/quantity/${productId}/tracking`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          trackingMode: form.trackingMode,
+          unitOfMeasure: form.unitOfMeasure.trim() || DEFAULT_QUANTITY_UNIT,
+          confirmConversion,
+        }),
+      },
+    );
+  }
+
+  async function confirmConversion() {
+    if (!conversionPrompt) return;
+    setConfirmingConversion(true);
+    try {
+      await applyTracking(conversionPrompt, true);
+      await queryClient.invalidateQueries({ queryKey: ["admin", "asset-edit", conversionPrompt] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
+      setLoadedEditId(null);
+      setConversionPrompt(null);
+      toast({ title: "تم تحويل الأصل إلى أصل متعدد الكمية", description: "بقي السجل السابق كما هو. استخدم «إضافة كمية» لإضافة القطع." });
+    } catch (error) {
+      toast({ title: "تعذّر التحويل", description: apiErrorMessage(error), variant: "destructive" });
+    } finally {
+      setConfirmingConversion(false);
+    }
   }
 
   /**
@@ -494,14 +551,20 @@ export default function AssetNewPage() {
     const addStart = imageInputs.length;
     imageInputs.push(...additionalPhotos);
 
+    // Quantity asset: product cost = unit cost; the asset profile keeps the total
+    // acquisition cost (quantity × unit cost) used by valuation and depreciation.
+    const unitCost = num(form.unitCost);
+    const acquisitionCost = quantityMode && !isEditMode ? totalQuantityValue * unitCost : num(form.purchaseCost);
+
     // 1) Product — reuse the same product API for create and edit so media validation stays identical.
+    // The opening quantity goes through the product API's initial stock movement.
     const productPayload = {
       name: form.name.trim() || form.nameAr.trim(),
       nameAr: form.nameAr.trim() || form.name.trim(),
       description: form.notes.trim() || undefined,
-      price: num(form.currentValue) || num(form.purchaseCost),
-      costPrice: num(form.purchaseCost),
-      ...(isEditMode ? {} : { stock: 1, minStock: 0 }),
+      price: quantityMode ? unitCost : num(form.currentValue) || num(form.purchaseCost),
+      costPrice: quantityMode ? unitCost : num(form.purchaseCost),
+      ...(isEditMode ? {} : { stock: quantityMode ? totalQuantityValue : 1, minStock: 0 }),
       isRental: form.isRental,
       isAsset: true,
       pricePerDay: num(form.pricePerDay),
@@ -531,10 +594,10 @@ export default function AssetNewPage() {
         ...(isEditMode && assetEditQuery.data?.profile?.id
           ? { depreciationRecordId: assetEditQuery.data.profile.id }
           : {}),
-        purchasePrice: num(form.purchaseCost),
+        purchasePrice: acquisitionCost,
         purchaseDate: form.purchaseDate || undefined,
         expectedLifeUses: Math.max(1, Math.floor(num(form.usefulLife) || 50)),
-        currentValue: num(form.currentValue) || num(form.purchaseCost),
+        currentValue: num(form.currentValue) || acquisitionCost,
         serialNumber: form.serialNumber.trim(),
         status: STATUS_TO_PROFILE[form.status] ?? form.status,
         notes: form.notes.trim() || undefined,
@@ -584,7 +647,7 @@ export default function AssetNewPage() {
           depreciation: {
             ...existingDepreciation,
             enabled: form.depreciationEnabled,
-            purchaseValue: num(form.purchaseCost),
+            purchaseValue: acquisitionCost,
             salvageValue: num(form.salvageValue),
             usefulLife: Math.max(1, Math.floor(num(form.usefulLife) || 50)),
             method: form.depreciationMethod,
@@ -597,7 +660,24 @@ export default function AssetNewPage() {
       }),
     });
 
-    // 4) Ensure/return scannable QR
+    // 4) Tracking mode — guarded server-side (history, active bookings, custody).
+    let trackingError: string | null = null;
+    let conversionPending = false;
+    const trackingChanged = quantityMode !== (savedTracking === "quantity");
+    const unitChanged =
+      quantityMode &&
+      savedTracking === "quantity" &&
+      (form.unitOfMeasure.trim() || DEFAULT_QUANTITY_UNIT) !== (assetEditQuery.data?.quantity?.unit ?? DEFAULT_QUANTITY_UNIT);
+    if (trackingChanged || unitChanged) {
+      try {
+        await applyTracking(productId, false);
+      } catch (error) {
+        if ((error as any)?.data?.requiresConfirmation) conversionPending = true;
+        else trackingError = apiErrorMessage(error, "تعذّر تغيير طريقة التتبع");
+      }
+    }
+
+    // 5) Ensure/return scannable QR
     let qrDataUrl = isEditMode ? assetEditQuery.data?.qr?.dataUrl ?? "" : "";
     let scanUrl = isEditMode ? assetEditQuery.data?.qr?.scanUrl ?? "" : "";
     if (!isEditMode || mode !== "save") {
@@ -617,6 +697,8 @@ export default function AssetNewPage() {
       qrDataUrl,
       scanUrl,
       name: form.nameAr.trim() || form.name.trim(),
+      trackingError,
+      conversionPending,
     };
   }
 
@@ -626,6 +708,15 @@ export default function AssetNewPage() {
     setSaving(true);
     setNotice(null);
     try {
+      // Never create the product first and discover afterwards that quantity
+      // tracking is unavailable; that would leave an individual asset with N units.
+      if (quantityMode && savedTracking !== "quantity") {
+        const status = await adminFetch<{ ready: boolean }>("/admin/assets/quantity/status");
+        if (!status.ready) {
+          flash("err", "الأصول متعددة الكمية تحتاج تطبيق ترقية قاعدة البيانات أولاً؛ لم يُحفظ أي شيء.");
+          return;
+        }
+      }
       const result = await persist(mode);
       setSaved(result);
       await Promise.all([
@@ -634,6 +725,14 @@ export default function AssetNewPage() {
         queryClient.invalidateQueries({ queryKey: ["admin", "enterprise", "assets"] }),
         queryClient.invalidateQueries({ queryKey: ["admin", "asset-edit", result.productId] }),
       ]);
+      if (result.trackingError || result.conversionPending) {
+        // The asset itself is saved; stay on its edit page so nothing is created twice.
+        if (result.conversionPending) setConversionPrompt(result.productId);
+        else flash("err", `تم حفظ الأصل ${result.assetCode} لكن طريقة التتبع لم تتغير: ${result.trackingError}`);
+        if (!isEditMode) setLocation(`/admin/assets/new?edit=${result.productId}`);
+        else setLoadedEditId(null);
+        return;
+      }
       flash("ok", isEditMode ? `تم تحديث الأصل ${result.assetCode} وبيانات الإهلاك.` : `تم إنشاء الأصل ${result.assetCode} وتوليد الجواز الرقمي والباركود.`);
 
       if (isEditMode) {
@@ -777,6 +876,8 @@ export default function AssetNewPage() {
         </div>
       )}
 
+      {isEditMode && savedTracking === "quantity" ? <QuantityAssetPanel productId={editProductId} /> : null}
+
       <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
         {/* ── Left: form ─────────────────────────────────────────── */}
         <div className="space-y-4">
@@ -902,9 +1003,65 @@ export default function AssetNewPage() {
               <Field label="الموديل">
                 <input className={inputCls} value={form.model} onChange={(e) => set("model", e.target.value)} />
               </Field>
-              <Field label="الرقم التسلسلي (فريد) *">
+              <Field label={quantityMode ? "الرقم التسلسلي (اختياري للأصل متعدد الكمية)" : "الرقم التسلسلي (فريد) *"}>
                 <input className={inputCls} value={form.serialNumber} onChange={(e) => set("serialNumber", e.target.value)} dir="ltr" />
               </Field>
+            </Grid>
+          </Section>
+
+          <Section title="طريقة تتبع الأصل" icon={<Boxes className="w-4 h-4 text-primary" />}>
+            <Grid>
+              <Field label="طريقة تتبع الأصل">
+                <select
+                  className={inputCls}
+                  value={form.trackingMode}
+                  onChange={(e) => set("trackingMode", e.target.value as TrackingMode)}
+                >
+                  <option value="individual">{TRACKING_MODE_LABELS.individual}</option>
+                  <option value="quantity">{TRACKING_MODE_LABELS.quantity}</option>
+                </select>
+                <span className="mt-1 block text-[11px] leading-5">
+                  {quantityMode
+                    ? "سجل واحد يمثل قطعاً متطابقة (مثل 100 عمود) برمز QR واحد؛ الحجز والإخراج والإرجاع بالكمية."
+                    : "قطعة واحدة لها رمز QR ودورة حياة خاصة بها."}
+                </span>
+                {isEditMode && quantityMode !== (savedTracking === "quantity") ? (
+                  <span className="mt-1 block text-[11px] leading-5 text-amber-600 dark:text-amber-400">
+                    يُتحقق عند الحفظ من الحجوزات والعهد والسجل السابق؛ لا يُحوّل أصل مرتبط بحجز أو عهدة نشطة.
+                  </span>
+                ) : null}
+              </Field>
+              {quantityMode ? (
+                <>
+                  <Field label="وحدة القياس">
+                    <input className={inputCls} value={form.unitOfMeasure} maxLength={40} onChange={(e) => set("unitOfMeasure", e.target.value)} placeholder="قطعة" />
+                  </Field>
+                  <Field label="الكمية الإجمالية">
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      inputMode="numeric"
+                      className={inputCls}
+                      value={form.totalQuantity}
+                      disabled={isEditMode}
+                      onChange={(e) => set("totalQuantity", e.target.value)}
+                    />
+                    {isEditMode ? (
+                      <span className="mt-1 block text-[11px] leading-5">تُعدّل من «إدارة الكميات» (إضافة كمية / تعديل جرد) حتى تبقى الحركات مسجلة.</span>
+                    ) : null}
+                  </Field>
+                  <Field label="تكلفة القطعة">
+                    <input type="number" min={0} className={inputCls} value={form.unitCost} onChange={(e) => set("unitCost", e.target.value)} />
+                  </Field>
+                  <Field label="القيمة الإجمالية">
+                    <input className={`${inputCls} font-semibold text-foreground`} readOnly value={formatCurrency(quantityTotalValue)} />
+                    <span className="mt-1 block text-[11px] leading-5">
+                      {form.totalQuantity || 0} × {formatCurrency(num(form.unitCost))}
+                    </span>
+                  </Field>
+                </>
+              ) : null}
             </Grid>
           </Section>
 
@@ -929,9 +1086,23 @@ export default function AssetNewPage() {
               <Field label="تاريخ الشراء">
                 <input type="date" className={inputCls} value={form.purchaseDate} onChange={(e) => set("purchaseDate", e.target.value)} />
               </Field>
-              <Field label="تكلفة الشراء">
-                <input type="number" className={inputCls} value={form.purchaseCost} onChange={(e) => set("purchaseCost", e.target.value)} />
-              </Field>
+              {quantityMode ? (
+                <Field label="تكلفة الاقتناء الإجمالية">
+                  <input
+                    type="number"
+                    className={inputCls}
+                    readOnly
+                    value={isEditMode ? form.purchaseCost : String(quantityTotalValue)}
+                  />
+                  <span className="mt-1 block text-[11px] leading-5">
+                    {isEditMode ? "تتغير مع إضافة الكمية أو شطبها، ولا تُستبدل عند تعديل البيانات." : "الكمية الإجمالية × تكلفة القطعة"}
+                  </span>
+                </Field>
+              ) : (
+                <Field label="تكلفة الشراء">
+                  <input type="number" className={inputCls} value={form.purchaseCost} onChange={(e) => set("purchaseCost", e.target.value)} />
+                </Field>
+              )}
               <Field label="القيمة الحالية">
                 <input type="number" className={inputCls} value={form.currentValue} onChange={(e) => set("currentValue", e.target.value)} />
               </Field>
@@ -967,7 +1138,8 @@ export default function AssetNewPage() {
               </Field>
               <Field label="الحالة">
                 <select className={inputCls} value={form.status} onChange={(e) => set("status", e.target.value)}>
-                  {STATUSES.map(([v, l]) => (
+                  {/* Unit states of a quantity asset live in its quantities, not in the master status. */}
+                  {STATUSES.filter(([v]) => !quantityMode || ["available", "locked", "retired"].includes(v) || v === form.status).map(([v, l]) => (
                     <option key={v} value={v}>
                       {l}
                     </option>
@@ -1307,6 +1479,27 @@ export default function AssetNewPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={conversionPrompt !== null}
+        onOpenChange={(open) => !open && !confirmingConversion && setConversionPrompt(null)}
+      >
+        <AlertDialogContent dir="rtl">
+          <AlertDialogHeader className="text-right">
+            <AlertDialogTitle>تأكيد التحويل إلى أصل متعدد الكمية</AlertDialogTitle>
+            <AlertDialogDescription>
+              لهذا الأصل سجل حركات أو حجوزات سابقة. يبقى السجل السابق كما هو دون تعديل، وتصبح الكمية الحالية في
+              المستودع رصيد الأصل متعدد الكمية. التحويل متاح للمدير فقط.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:space-x-0">
+            <AlertDialogCancel disabled={confirmingConversion}>إلغاء</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmConversion} disabled={confirmingConversion}>
+              {confirmingConversion ? "جارٍ التحويل..." : "تأكيد التحويل"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={Boolean(categoryToDelete)}

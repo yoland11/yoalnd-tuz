@@ -1,4 +1,6 @@
-import { index, pgTable, serial, text, integer, timestamp, varchar, jsonb, numeric, uniqueIndex, boolean } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { check, index, pgTable, serial, text, integer, timestamp, varchar, jsonb, numeric, uniqueIndex, boolean } from "drizzle-orm/pg-core";
+import { productsTable } from "./products";
 import { staffTable } from "./staff";
 import { customersTable } from "./customers";
 
@@ -229,6 +231,33 @@ export const assetProfilesTable = pgTable("asset_profiles", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+/**
+ * Quantity-based asset tracking (one master asset = many identical units).
+ * Warehouse units remain in products.stock + stock_movements; this row only holds
+ * the tracking mode and the physical states that are outside the warehouse.
+ * Assets without a row keep the original individual lifecycle.
+ */
+export const assetQuantityProfilesTable = pgTable("asset_quantity_profiles", {
+  id: serial("id").primaryKey(),
+  productId: integer("product_id").notNull().references(() => productsTable.id),
+  trackingMode: varchar("tracking_mode", { length: 20 }).notNull().default("quantity"),
+  unitOfMeasure: varchar("unit_of_measure", { length: 40 }).notNull().default("قطعة"),
+  quantityCheckedOut: integer("quantity_checked_out").notNull().default(0),
+  quantityDamaged: integer("quantity_damaged").notNull().default(0),
+  quantityMaintenance: integer("quantity_maintenance").notNull().default(0),
+  quantityMissing: integer("quantity_missing").notNull().default(0),
+  configuredBy: integer("configured_by").references(() => staffTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  productUnique: uniqueIndex("asset_quantity_profiles_product_idx").on(table.productId),
+  modeCheck: check("asset_quantity_profiles_mode_check", sql`${table.trackingMode} IN ('individual', 'quantity')`),
+  nonNegativeCheck: check(
+    "asset_quantity_profiles_non_negative_check",
+    sql`${table.quantityCheckedOut} >= 0 AND ${table.quantityDamaged} >= 0 AND ${table.quantityMaintenance} >= 0 AND ${table.quantityMissing} >= 0`,
+  ),
+}));
 
 export const disasterRecoverySnapshotsTable = pgTable("disaster_recovery_snapshots", {
   id: serial("id").primaryKey(),

@@ -45,6 +45,7 @@
     "test:sound-center": "node ./scripts/verify-sound-center.mjs",
     "test:sound-reservations": "node ./scripts/test-unified-sound-reservations.mjs",
     "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs",
+    "test:quantity-assets": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-quantity-assets.ts && node ./scripts/test-quantity-assets-wiring.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-quantity-assets-ui.tsx",
     "test:kosha-equipment": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-kosha-equipment.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-kosha-equipment-store.ts && node ./scripts/test-variant-stock-decimals.cjs && node ./scripts/test-booking-asset-transaction.cjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-kosha-equipment-ui.tsx",
     "test:kosha-finance-schema": "node ./scripts/test-kosha-finance-schema.mjs",
     "test:kosha-finance-logic": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-kosha-finance-logic.ts",

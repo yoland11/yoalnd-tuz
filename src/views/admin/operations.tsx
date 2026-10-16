@@ -149,6 +149,16 @@ type AssetRow = {
   status: string;
   depreciationPaused?: boolean;
   maintenanceDue: boolean;
+  trackingMode?: "individual" | "quantity";
+  unitOfMeasure?: string | null;
+  totalQuantity?: number;
+  availableQuantity?: number;
+  reservedQuantity?: number;
+  checkedOutQuantity?: number;
+  damagedQuantity?: number;
+  maintenanceQuantity?: number;
+  missingQuantity?: number;
+  lowAvailability?: boolean;
 };
 
 type AssetSearchResponse = {
@@ -160,6 +170,8 @@ type AssetSearchResponse = {
     inUse: number;
     maintenance: number;
     damaged: number;
+    quantityAssets?: number;
+    lowAvailability?: number;
     currentValue: number;
     purchaseValue: number;
   };
@@ -749,6 +761,9 @@ const ASSET_QUICK_FILTERS = [
   ["reserved", "محجوز"],
   ["maintenance", "صيانة"],
   ["damaged", "متضرر"],
+  ["individual", "أصول فردية"],
+  ["quantity", "متعددة الكمية"],
+  ["low_availability", "توفر منخفض"],
   ["rentals", "الإيجارات"],
   ["koshat", "الكوشات"],
   ["photography", "التصوير"],
@@ -852,6 +867,7 @@ export function AssetsPage() {
         { key: "responsibleName", header: "المسؤول / الموقع", width: 15, priority: "medium", value: (row) => [row.responsibleName, [row.warehouseName, row.storageLocation].filter(Boolean).join(" · ")].filter(Boolean).join(" — ") || "—" },
         { key: "purchasePrice", header: "سعر الشراء", width: 10, kind: "money", priority: "high" },
         { key: "usage", header: "الاستخدام / العمر", width: 9, kind: "number", align: "center", priority: "low", value: (row) => `${row.usageCount} / ${row.expectedLifeUses}` },
+        { key: "quantity", header: "الكمية (متاح / خارج)", width: 10, align: "center", priority: "medium", value: (row) => row.trackingMode === "quantity" ? `${row.totalQuantity ?? 0} (${row.availableQuantity ?? 0} / ${row.checkedOutQuantity ?? 0})` : "1" },
         { key: "currentValue", header: "القيمة المتبقية", width: 10, kind: "money", priority: "high" },
         { key: "status", header: "الحالة", width: 9, align: "center", priority: "high", value: statusText },
       ];
@@ -1105,7 +1121,7 @@ export function AssetsPage() {
       {isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد أصول مطابقة للبحث" /> : (
         <div className="overflow-hidden rounded-xl border border-border/30 bg-card">
           <div className="overflow-x-auto">
-            <table className="min-w-[1100px] w-full text-sm">
+            <table className="min-w-[1240px] w-full text-sm">
               <thead className="bg-background/50 text-muted-foreground">
                 <tr>
                   <th className="w-10 p-3"><input type="checkbox" aria-label="تحديد كل الأصول الظاهرة" checked={rows.length > 0 && rows.every((row) => selectedAssetIds.includes(row.productId))} onChange={(event) => setSelectedAssetIds(event.target.checked ? [...new Set([...selectedAssetIds, ...rows.map((row) => row.productId)])] : selectedAssetIds.filter((id) => !rows.some((row) => row.productId === id)))} /></th>
@@ -1114,6 +1130,7 @@ export function AssetsPage() {
                   <th className="p-3 text-right">الفئة / العلامة</th>
                   <th className="p-3 text-right">المسؤول والموقع</th>
                   <th className="p-3 text-right">الحجز</th>
+                  <th className="p-3 text-right">التتبع والكمية</th>
                   <th className="p-3 text-right">سعر الشراء</th>
                   <th className="p-3 text-right">الاستخدام / العمر الافتراضي</th>
                   <th className="p-3 text-right">القيمة المتبقية</th>
@@ -1133,6 +1150,23 @@ export function AssetsPage() {
                     <td className="p-3 text-xs text-muted-foreground"><div>{highlightAssetMatch(row.category, deferredSearch)}</div><div className="mt-1">{highlightAssetMatch([row.brand, row.model].filter(Boolean).join(" · ") || "—", deferredSearch)}</div></td>
                     <td className="p-3 text-xs text-muted-foreground"><div>{highlightAssetMatch(row.responsibleName, deferredSearch)}</div><div className="mt-1">{highlightAssetMatch([row.warehouseName, row.storageLocation].filter(Boolean).join(" · ") || "—", deferredSearch)}</div></td>
                     <td className="p-3 text-xs text-muted-foreground">{highlightAssetMatch(row.bookingNumber, deferredSearch)}</td>
+                    <td className="p-3 text-xs">
+                      {row.trackingMode === "quantity" ? (
+                        <div className="space-y-0.5">
+                          <span className="inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">متعدد الكمية</span>
+                          <div className="tabular-nums text-foreground">الإجمالي: {(row.totalQuantity ?? 0).toLocaleString("ar-IQ-u-nu-latn")} {row.unitOfMeasure ?? ""}</div>
+                          <div className={`tabular-nums ${row.lowAvailability ? "text-status-warning" : "text-muted-foreground"}`}>المتاح: {(row.availableQuantity ?? 0).toLocaleString("ar-IQ-u-nu-latn")} · الخارج: {(row.checkedOutQuantity ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</div>
+                          {(row.damagedQuantity ?? 0) + (row.maintenanceQuantity ?? 0) + (row.missingQuantity ?? 0) > 0 ? (
+                            <div className="tabular-nums text-status-danger">تالف {row.damagedQuantity ?? 0} · صيانة {row.maintenanceQuantity ?? 0} · مفقود {row.missingQuantity ?? 0}</div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="space-y-0.5 text-muted-foreground">
+                          <span className="inline-flex rounded-full border border-border/50 px-2 py-0.5 text-[11px]">فردي</span>
+                          <div className="tabular-nums">الكمية: 1</div>
+                        </div>
+                      )}
+                    </td>
                     <td className="p-3">{formatCurrency(row.purchasePrice)}</td>
                     <td className="p-3 text-muted-foreground">{row.usageCount} / {row.expectedLifeUses}</td>
                     <td className="p-3 text-primary">{formatCurrency(row.currentValue)}</td>
@@ -1146,7 +1180,14 @@ export function AssetsPage() {
                       </td>
                       <td className="p-3 text-center">
                         <div className="flex items-center justify-center gap-1">
-                          {row.status === "active" && hasPerm(meQuery.data ?? null, "asset.sell") ? (
+                          {row.trackingMode === "quantity" ? (
+                            <Link href={`/admin/assets/new?edit=${row.productId}#quantities`}>
+                              <Button variant="ghost" size="sm" className="gap-1 text-primary">
+                                <Package className="h-3.5 w-3.5" /> الكميات
+                              </Button>
+                            </Link>
+                          ) : null}
+                          {row.status === "active" && row.trackingMode !== "quantity" && hasPerm(meQuery.data ?? null, "asset.sell") ? (
                             <Button variant="ghost" size="sm" className="gap-1 text-primary" onClick={() => setSaleTarget(row.productId)}>
                               <BadgeDollarSign className="h-3.5 w-3.5" /> بيع الأصل
                             </Button>
