@@ -29,6 +29,7 @@ const steps = [
   ["Kosha preparation booking cards", "pnpm", ["run", "test:preparation-cards"]],
   ["Kosha equipment and decimal inventory", "pnpm", ["run", "test:kosha-equipment"]],
   ["Quantity-based assets", "pnpm", ["run", "test:quantity-assets"]],
+  ["Asset list thumbnails", "pnpm", ["run", "test:asset-list"]],
   ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice customer search", "pnpm", ["run", "test:sales-customer-search"]],

@@ -149,6 +149,7 @@ type AssetRow = {
   status: string;
   depreciationPaused?: boolean;
   maintenanceDue: boolean;
+  imageUrl?: string | null;
   trackingMode?: "individual" | "quantity";
   unitOfMeasure?: string | null;
   totalQuantity?: number;
@@ -1121,12 +1122,13 @@ export function AssetsPage() {
       {isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد أصول مطابقة للبحث" /> : (
         <div className="overflow-hidden rounded-xl border border-border/30 bg-card">
           <div className="overflow-x-auto">
-            <table className="min-w-[1240px] w-full text-sm">
+            <table className="min-w-[1320px] w-full text-sm">
               <thead className="bg-background/50 text-muted-foreground">
                 <tr>
                   <th className="w-10 p-3"><input type="checkbox" aria-label="تحديد كل الأصول الظاهرة" checked={rows.length > 0 && rows.every((row) => selectedAssetIds.includes(row.productId))} onChange={(event) => setSelectedAssetIds(event.target.checked ? [...new Set([...selectedAssetIds, ...rows.map((row) => row.productId)])] : selectedAssetIds.filter((id) => !rows.some((row) => row.productId === id)))} /></th>
                   <th className="p-3 text-right">الأصل</th>
                   <th className="p-3 text-right">التعريف</th>
+                  <th className="w-20 p-3 text-center">الصورة</th>
                   <th className="p-3 text-right">الفئة / العلامة</th>
                   <th className="p-3 text-right">المسؤول والموقع</th>
                   <th className="p-3 text-right">الحجز</th>
@@ -1147,6 +1149,22 @@ export function AssetsPage() {
                       <div dir="ltr" className="mt-1 font-mono text-[11px] text-muted-foreground">{highlightAssetMatch(row.assetCode, deferredSearch)}</div>
                     </td>
                     <td className="p-3 text-xs text-muted-foreground"><div dir="ltr">SN: {highlightAssetMatch(row.serialNumber, deferredSearch)}</div><div dir="ltr" className="mt-1">{row.barcode ? <>BC: {highlightAssetMatch(row.barcode, deferredSearch)}</> : "—"}</div>{row.qrToken ? <div dir="ltr" title={row.qrToken} className="mt-1 max-w-44 truncate">QR: {highlightAssetMatch(row.qrToken, deferredSearch)}</div> : null}</td>
+                    <td className="p-2 text-center">
+                      {row.imageUrl ? (
+                        <img
+                          src={row.imageUrl}
+                          alt={row.name}
+                          title={row.name}
+                          loading="lazy"
+                          decoding="async"
+                          className="mx-auto h-14 w-14 rounded-lg border border-border/40 bg-white object-cover"
+                        />
+                      ) : (
+                        <div className="mx-auto grid h-14 w-14 place-items-center rounded-lg border border-dashed border-border/50 bg-background/60 text-muted-foreground" title="لا توجد صورة">
+                          <Package className="h-5 w-5" aria-hidden="true" />
+                        </div>
+                      )}
+                    </td>
                     <td className="p-3 text-xs text-muted-foreground"><div>{highlightAssetMatch(row.category, deferredSearch)}</div><div className="mt-1">{highlightAssetMatch([row.brand, row.model].filter(Boolean).join(" · ") || "—", deferredSearch)}</div></td>
                     <td className="p-3 text-xs text-muted-foreground"><div>{highlightAssetMatch(row.responsibleName, deferredSearch)}</div><div className="mt-1">{highlightAssetMatch([row.warehouseName, row.storageLocation].filter(Boolean).join(" · ") || "—", deferredSearch)}</div></td>
                     <td className="p-3 text-xs text-muted-foreground">{highlightAssetMatch(row.bookingNumber, deferredSearch)}</td>

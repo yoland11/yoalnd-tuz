@@ -44357,6 +44357,11 @@ async function handleAdmin(
         name: product.nameAr || product.name || `#${product.id}`,
         productName: product.nameAr || product.name || `#${product.id}`,
         assetCode: `AJN-A${String(product.id).padStart(6, "0")}`,
+        // Thumbnail for the list: the asset's main photo through the media route
+        // (product images may live in a private bucket or be legacy data URLs).
+        imageUrl:
+          publicMediaList("product", product, product.images)[0] ??
+          (/^(https?:\/\/|\/api\/media\/)/i.test(String(passport?.imageUrl ?? "")) ? String(passport?.imageUrl) : null),
         qrToken: passport?.qrToken ?? null,
         barcode: product.barcode ?? null,
         purchasePrice,
