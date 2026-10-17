@@ -867,8 +867,8 @@ export function AssetsPage() {
         { key: "category", header: "الفئة / العلامة", width: 15, priority: "medium", value: (row) => [row.category, [row.brand, row.model].filter(Boolean).join(" · ")].filter(Boolean).join(" — ") || "—" },
         { key: "responsibleName", header: "المسؤول / الموقع", width: 15, priority: "medium", value: (row) => [row.responsibleName, [row.warehouseName, row.storageLocation].filter(Boolean).join(" · ")].filter(Boolean).join(" — ") || "—" },
         { key: "purchasePrice", header: "سعر الشراء", width: 10, kind: "money", priority: "high" },
-        { key: "usage", header: "الاستخدام / العمر", width: 9, kind: "number", align: "center", priority: "low", value: (row) => `${row.usageCount} / ${row.expectedLifeUses}` },
-        { key: "quantity", header: "الكمية (متاح / خارج)", width: 10, align: "center", priority: "medium", value: (row) => row.trackingMode === "quantity" ? `${row.totalQuantity ?? 0} (${row.availableQuantity ?? 0} / ${row.checkedOutQuantity ?? 0})` : "1" },
+        { key: "usage", header: "الاستخدام", width: 9, kind: "number", align: "center", priority: "low", value: (row) => `${row.usageCount} / ${row.expectedLifeUses}` },
+        { key: "quantity", header: "الكمية", width: 10, align: "center", priority: "medium", value: (row) => row.trackingMode === "quantity" ? `${row.totalQuantity ?? 0} · متاح ${row.availableQuantity ?? 0} · خارج ${row.checkedOutQuantity ?? 0}` : "1" },
         { key: "currentValue", header: "القيمة المتبقية", width: 10, kind: "money", priority: "high" },
         { key: "status", header: "الحالة", width: 9, align: "center", priority: "high", value: statusText },
       ];

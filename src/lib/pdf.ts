@@ -331,7 +331,9 @@ export async function downloadElementPdf(
           imageTimeout: 20_000,
           onclone: preparePdfClone,
         },
-        jsPDF: { unit: "mm", format: options?.format ?? "a4", orientation: options?.orientation ?? "portrait" },
+        // Lossless stream compression: the page images are otherwise stored as
+        // raw pixels (an 89-row report was 53 MB).
+        jsPDF: { unit: "mm", format: options?.format ?? "a4", orientation: options?.orientation ?? "portrait", compress: true },
         pagebreak: { mode: options?.pagebreakMode ?? ["avoid-all", "css", "legacy"] },
       })
       .from(snapshot)

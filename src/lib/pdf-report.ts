@@ -135,7 +135,7 @@ export function reportDocumentCss(orientation: "portrait" | "landscape" = "portr
     table.rpt-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     .rpt-table thead { display: table-header-group; }
     .rpt-table th { background: #f3f4f6; border: 1px solid #111827; padding: 6px 5px;
-      font-weight: 800; text-align: center; font-size: 11px; }
+      font-weight: 800; text-align: center; font-size: 11px; overflow-wrap: anywhere; }
     .rpt-table td { border: 1px solid #d1d5db; padding: 5px; vertical-align: top;
       overflow-wrap: anywhere; word-break: break-word; font-size: 11px; }
     .rpt-table tr { break-inside: avoid; page-break-inside: avoid; }
@@ -314,20 +314,30 @@ export async function downloadReportPdf(
   orientation: "portrait" | "landscape" = "portrait",
 ): Promise<void> {
   const parsed = new DOMParser().parseFromString(html, "text/html");
-  const wrapper = document.createElement("div");
-  wrapper.style.cssText = "position:fixed;left:-100000px;top:0;background:#ffffff;pointer-events:none;";
-  wrapper.style.width = orientation === "landscape" ? "1122px" : "794px";
-  wrapper.dir = "rtl";
-  wrapper.innerHTML = `<style>${parsed.head.querySelector("style")?.textContent ?? ""}</style>${parsed.body.innerHTML}`;
-  document.body.appendChild(wrapper);
+  const margin: [number, number, number, number] = [10, 8, 12, 8];
+  // Only the outer holder is moved off-screen. The rendered node must stay in
+  // normal flow: the PDF snapshot copies its inline styles, and a copied
+  // `position:fixed` collapsed it to a 0px-tall canvas (a blank PDF).
+  const holder = document.createElement("div");
+  holder.style.cssText = "position:fixed;left:-100000px;top:0;pointer-events:none;";
+  const report = document.createElement("div");
+  // Lay the report out at the printable width (page minus side margins) so the
+  // left edge is not clipped when the page image is placed on the PDF.
+  const pageWidthMm = orientation === "landscape" ? 297 : 210;
+  report.style.width = `${Math.floor(((pageWidthMm - margin[1] - margin[3]) * 96) / 25.4)}px`;
+  report.style.background = "#ffffff";
+  report.dir = "rtl";
+  report.innerHTML = `<style>${parsed.head.querySelector("style")?.textContent ?? ""}</style>${parsed.body.innerHTML}`;
+  holder.appendChild(report);
+  document.body.appendChild(holder);
   try {
-    await downloadElementPdf(wrapper, filename, {
+    await downloadElementPdf(report, filename, {
       format: "a4",
       orientation,
-      margin: [10, 8, 12, 8],
+      margin,
       pagebreakMode: ["css", "legacy"],
     });
   } finally {
-    wrapper.remove();
+    holder.remove();
   }
 }
