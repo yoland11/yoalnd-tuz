@@ -15,6 +15,7 @@ import {
   vehicleExpensesTable,
 } from "@workspace/db";
 import { isPaymentStateSourceType, reconcilePaymentState } from "./payment-state";
+import { postApprovedInstallmentPayment, rejectPendingInstallmentPayment, reconcileLegacyInstallmentInvoice, reversePostedInstallmentPayment } from "./installment-payment-posting";
 
 export type FinancialActor = {
   id: number | null;
@@ -895,7 +896,11 @@ async function executePendingFinancialTransaction(
     const sourceId = Number(transaction.sourceId);
     let receiptAllocations: any[] = [];
     if (Number.isInteger(sourceId) && sourceId > 0) {
-      if (transaction.sourceType === "expense") {
+      if (transaction.sourceType === "installment_payment") {
+        await postApprovedInstallmentPayment(tx, id, sourceId, amount, actor);
+      } else if (transaction.sourceType === "installment_contract" && ["payment", "reconciliation"].includes(transaction.sourceEvent)) {
+        await reconcileLegacyInstallmentInvoice(tx, sourceId, transaction.sourceEvent, amount);
+      } else if (transaction.sourceType === "expense") {
         await tx.execute(
           sql`UPDATE expenses SET approval_status = 'executed', updated_at = now() WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
         );
@@ -1205,13 +1210,13 @@ export async function rejectFinancialTransaction(
     throw new Error("رفض المعاملات متاح للمدير فقط");
   const cleanReason = reason.trim();
   if (cleanReason.length < 3) throw new Error("سبب الرفض مطلوب");
-  const existing = await db.query.financialTransactionsTable.findFirst({
-    where: eq(financialTransactionsTable.id, id),
-  });
+  return db.transaction(async (tx) => {
+  const [existing] = await tx.select().from(financialTransactionsTable)
+    .where(eq(financialTransactionsTable.id, id)).limit(1).for("update");
   if (!existing) throw new Error("المعاملة غير موجودة");
   if (existing.approvalStatus !== "pending")
     throw new Error("يمكن رفض المعاملات المعلّقة فقط");
-  const [saved] = await db
+  const [saved] = await tx
     .update(financialTransactionsTable)
     .set({
       approvalStatus: "rejected",
@@ -1225,19 +1230,21 @@ export async function rejectFinancialTransaction(
     .returning();
   const sourceId = Number(existing.sourceId);
   if (Number.isInteger(sourceId) && sourceId > 0) {
-    if (existing.sourceType === "expense") {
-      await db.execute(
+    if (existing.sourceType === "installment_payment") {
+      await rejectPendingInstallmentPayment(tx, id, sourceId, actor, cleanReason);
+    } else if (existing.sourceType === "expense") {
+      await tx.execute(
         sql`UPDATE expenses SET approval_status = 'rejected', updated_at = now() WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
       );
     } else if (existing.sourceType === "vehicle_expense") {
-      await db.execute(
+      await tx.execute(
         sql`UPDATE vehicle_expenses SET status = 'rejected', updated_at = now() WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
       );
     } else if (existing.sourceType === "receipt_voucher") {
-      await db.execute(
+      await tx.execute(
         sql`UPDATE receipt_vouchers SET approval_status = 'rejected' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
       );
-      await db.execute(sql`
+      await tx.execute(sql`
         UPDATE kosha_payment_requests SET
           status = 'rejected', rejection_reason = ${cleanReason},
           reviewed_by_staff_id = ${actor.id}, reviewed_by_name = ${actor.name}, reviewed_at = now()
@@ -1245,20 +1252,17 @@ export async function rejectFinancialTransaction(
           AND status IN ('pending', 'pending_manager_approval', 'processing')
       `);
     } else if (existing.sourceType === "payment_voucher") {
-      await db.execute(
+      await tx.execute(
         sql`UPDATE payment_vouchers SET approval_status = 'rejected' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
       );
     }
   }
-  await addAudit(
-    id,
-    "rejected",
-    actor,
-    snapshot(existing as any),
-    snapshot(saved as any),
-    cleanReason,
-  );
+  await tx.insert(financialAuditLogsTable).values({
+    transactionId: id, action: "rejected", actorId: actor.id, actorName: actor.name,
+    oldValues: snapshot(existing as any), newValues: snapshot(saved as any), reason: cleanReason,
+  });
   return saved;
+  });
 }
 
 /**
@@ -1294,7 +1298,8 @@ export async function reverseFinancialTransaction(
       .select()
       .from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id, id))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!original) throw new Error("المعاملة غير موجودة");
     if (original.approvalStatus !== "executed")
       throw new Error("يمكن عكس الحركات المنفّذة فقط");
@@ -1327,6 +1332,13 @@ export async function reverseFinancialTransaction(
     const alreadyReversedAmount = money(priorReversal?.amount);
     const remainingReversible = money(Math.max(originalAmount - alreadyReversedAmount, 0));
     const requestedAmount = options?.amount == null ? originalAmount : money(options.amount);
+    if (original.sourceType === "installment_payment" &&
+      (Math.abs(requestedAmount-originalAmount)>.005 ||
+        (options?.sourceType != null && options.sourceType !== original.sourceType) ||
+        (options?.sourceId != null && String(options.sourceId) !== original.sourceId)))
+      throw new Error("العكس الجزئي أو تغيير مصدر دفعة القسط غير مدعوم؛ استخدم العكس الكامل");
+    if (original.sourceType === "installment_contract")
+      throw new Error("عكس مصالحة أقساط قديمة يتطلب مراجعة توزيع الدفعات؛ لم يتم تعديل السجل");
     if (requestedAmount <= 0 || requestedAmount - remainingReversible > 0.005)
       throw new Error("مبلغ العكس يتجاوز المبلغ المتبقي القابل للعكس");
 
@@ -1484,6 +1496,8 @@ export async function reverseFinancialTransaction(
     // Cash, journal, allocation ledger, and invoice payment state are one unit.
     // A partial reversal reduces only the still-valid allocation balance.
     const receiptVoucherId = Number(original.sourceId);
+    if (original.sourceType === "installment_payment" && Number.isInteger(receiptVoucherId) && receiptVoucherId > 0)
+      await reversePostedInstallmentPayment(tx, original.id, receiptVoucherId, amount, actor, cleanReason);
     if (original.sourceType === "receipt_voucher" && Number.isInteger(receiptVoucherId) && receiptVoucherId > 0) {
       await reverseReceiptVoucherAllocations(
         tx,

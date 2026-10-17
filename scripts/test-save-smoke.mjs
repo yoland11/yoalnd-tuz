@@ -6,6 +6,8 @@ import { pathToFileURL } from "node:url";
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { testCompanyLoanActions } from "./lib/company-loan-actions-test.mjs";
+import { testInstallmentPaymentActions } from "./lib/installment-payment-actions-test.mjs";
 
 const require = createRequire(import.meta.url);
 // esbuild is transitive in this workspace, so pnpm does not create a root
@@ -81,7 +83,6 @@ const sales = readFileSync("src/views/admin/sales.tsx", "utf8");
 const deliverySection = readFileSync("src/views/admin/delivery-section.tsx", "utf8");
 const deliveryServer = readFileSync("src/server/delivery-details.ts", "utf8");
 const purchases = readFileSync("src/views/admin/purchases.tsx", "utf8");
-const companyLoans = readFileSync("src/views/admin/loans.tsx", "utf8");
 const apiRoute = readFileSync("app/api/[...path]/route.ts", "utf8");
 const desktopIdempotency = readFileSync("src/server/desktop-idempotency.ts", "utf8");
 const client = readFileSync("src/views/admin/_lib.ts", "utf8");
@@ -131,7 +132,9 @@ check("purchase cash invoices respect an explicitly supplied partial payment", a
 check("purchase payments stay unofficial until financial approval", api.includes('paidAmount: "0",\n          remainingAmount: String(total)') && api.includes('sourceType: "purchase_invoice"'));
 check("pending company loans update their linked approval in the same transaction", api.includes('company-loans.update') && api.includes('SELECT * FROM company_loans WHERE id = ${id} FOR UPDATE') && api.includes('لا يمكن تعديل القرض بعد اعتماده أو بدء السداد') && api.includes('action: "company_loan_updated"'));
 check("company loan cancellation preserves records and rejects only pending approvals", api.includes('company-loans.cancel') && api.includes('status: "cancelled"') && api.includes('approvalStatus: "rejected"') && api.includes('action: "company_loan_cancelled"'));
-check("company loans provide print, edit and safe cancellation actions", companyLoans.includes("function printLoan") && companyLoans.includes("طباعة") && companyLoans.includes("تعديل") && companyLoans.includes("إلغاء"));
+await testCompanyLoanActions();
+await testInstallmentPaymentActions();
+check("company loans dispatch print, populate edit, and cancel only pending requests with a reason", true);
 check("approved supplier payments settle the linked invoice exactly once", masterCashBox.includes('transaction.sourceType === "purchase_invoice"') && masterCashBox.includes("UPDATE purchase_invoices") && masterCashBox.includes("payment_status = CASE"));
 check("supplier payment requests protect the remaining balance from duplicate pending requests", api.includes("availableToRequest") && api.includes("supplier_payment_requested"));
 check("all mutation routes retain the shared idempotency boundary", apiRoute.includes("withDesktopIdempotency(req, path") && desktopIdempotency.includes('request.headers.get("x-idempotency-key")') && desktopIdempotency.includes('status === "completed"'));

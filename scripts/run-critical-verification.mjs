@@ -14,6 +14,7 @@ const steps = [
   ["Database/shared-core change authorization", "pnpm", ["run", "test:critical-file-changes"]],
   ["Financial approval invariant", "pnpm", ["run", "test:financial-approval"]],
   ["Payment-state reconciliation invariant", "pnpm", ["run", "test:payment-state"]],
+  ["Installment approval and retry contracts", "pnpm", ["run", "test:installments"]],
   ["Payroll movement schema recovery", "pnpm", ["run", "test:payroll-movement-schema"]],
   ["Graduation student sash selection", "pnpm", ["run", "test:graduation-student-flow"]],
   ["Graduation group sash names and duplicates", "pnpm", ["run", "test:graduation-sash-name"]],

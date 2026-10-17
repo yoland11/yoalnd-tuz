@@ -93,6 +93,22 @@ export async function reconcilePaymentState(
           AND coalesce(v.approval_status, 'executed') = 'executed'
       )`
     : sql`, allocations AS (SELECT 0::numeric AS value)`;
+  // Installment cash has its own source identity. It is disjoint from direct
+  // sales-invoice collections and receipt allocations, including net reversals.
+  const installments = input.sourceType === "sales_invoice"
+    ? sql`, installment_financials AS (
+        SELECT coalesce(sum(CASE WHEN f.direction='revenue' THEN f.amount::numeric ELSE -f.amount::numeric END),0)::numeric AS value
+        FROM financial_transactions f
+        WHERE f.approval_status='executed' AND (
+          (f.source_type='installment_payment' AND EXISTS (
+            SELECT 1 FROM installment_payments p JOIN installment_contracts c ON c.id=p.contract_id
+            WHERE p.id::text=f.source_id AND c.sales_invoice_id=${sourceId}
+          )) OR (f.source_type='installment_contract' AND f.source_event IN ('payment','reconciliation','reversal') AND EXISTS (
+            SELECT 1 FROM installment_contracts c WHERE c.id::text=f.source_id AND c.sales_invoice_id=${sourceId}
+          ))
+        )
+      )`
+    : sql`, installment_financials AS (SELECT 0::numeric AS value)`;
 
   const result = await tx.execute(sql`
     WITH source AS (
@@ -110,10 +126,10 @@ export async function reconcilePaymentState(
         AND source_id = ${String(sourceId)}
         AND approval_status = 'executed'
     )
-    ${allocations}, computed AS (
+    ${allocations}${installments}, computed AS (
       SELECT source.id, source.total_amount,
-        greatest(direct_financials.value + allocations.value, 0)::numeric AS approved_paid
-      FROM source, direct_financials, allocations
+        greatest(direct_financials.value + allocations.value + installment_financials.value, 0)::numeric AS approved_paid
+      FROM source, direct_financials, allocations, installment_financials
     )
     UPDATE ${table} document
     SET ${paid} = least(computed.total_amount, computed.approved_paid),

@@ -329,17 +329,37 @@ try {
   assert.equal(createdResearch?.status, 201);
   const createdResearchBody = await createdResearch!.json();
   const researchFinancial = await one(
-    `select r.paid_amount research_paid,i.paid_amount invoice_paid,f.approval_status,
+    `select f.id transaction_id,r.paid_amount research_paid,i.paid_amount invoice_paid,f.approval_status,
       (select count(*)::int from financial_ledger_entries l where l.transaction_id=f.id) ledger_count
      from research_orders r join sales_invoices i on i.id=r.invoice_id
      join financial_transactions f on f.source_type='research_order' and f.source_id=r.id::text
      where r.id=$1`, [createdResearchBody.order.id],
   );
-  assert.equal(Number(researchFinancial.research_paid), 25);
-  assert.equal(Number(researchFinancial.invoice_paid), 25);
-  assert.equal(researchFinancial.approval_status, "executed");
-  assert.equal(researchFinancial.ledger_count, 2);
-  pass("research deposit saves order, invoice, cash movement, and ledger atomically");
+  assert.equal(Number(researchFinancial.research_paid), 0);
+  assert.equal(Number(researchFinancial.invoice_paid), 0);
+  assert.equal(researchFinancial.approval_status, "pending");
+  assert.equal(researchFinancial.ledger_count, 0);
+  pass("research deposit creates a pending request without settling the order, invoice, or ledger");
+  const { approveAndExecuteFinancialTransaction, createSourceFinancialRequest } = await import("../src/server/master-cash-box");
+  const financialReviewer = { id: researchUser.id, name: researchUser.fullName, role: "admin", permissions: researchUser.permissions };
+  await assert.rejects(
+    approveAndExecuteFinancialTransaction(Number(researchFinancial.transaction_id), { ...financialReviewer, role: "employee" }),
+    /اعتماد المعاملات المالية متاح للمدير الرئيسي فقط/,
+  );
+  await approveAndExecuteFinancialTransaction(Number(researchFinancial.transaction_id), financialReviewer);
+  await approveAndExecuteFinancialTransaction(Number(researchFinancial.transaction_id), financialReviewer);
+  const approvedResearch = await one(
+    `select r.paid_amount research_paid,i.paid_amount invoice_paid,f.approval_status,
+      (select count(*)::int from financial_ledger_entries l where l.transaction_id=f.id) ledger_count
+     from research_orders r join sales_invoices i on i.id=r.invoice_id
+     join financial_transactions f on f.id=$2 where r.id=$1`,
+    [createdResearchBody.order.id, researchFinancial.transaction_id],
+  );
+  assert.equal(Number(approvedResearch.research_paid), 25);
+  assert.equal(Number(approvedResearch.invoice_paid), 25);
+  assert.equal(approvedResearch.approval_status, "executed");
+  assert.equal(approvedResearch.ledger_count, 2);
+  pass("authorized research approval settles order and invoice exactly once with a balanced ledger pair");
 
   const researchPaymentKey = `phase3-research-${randomUUID()}`;
   const researchPaymentBody = JSON.stringify({ amount: 10, paymentMethod: "cash", idempotencyKey: researchPaymentKey });
@@ -361,10 +381,23 @@ try {
      from research_orders r where r.id=$1`,
     [createdResearchBody.order.id, `research-payment:${createdResearchBody.order.id}:${researchPaymentKey}`],
   );
-  assert.equal(Number(retryState.paid_amount), 35);
+  assert.equal(Number(retryState.paid_amount), 25);
   assert.equal(retryState.transaction_count, 1);
-  assert.equal(retryState.ledger_count, 2);
-  pass("research payment retry preserves one payment movement and one balanced ledger entry pair");
+  assert.equal(retryState.ledger_count, 0);
+  pass("research payment retry preserves one pending request without prematurely settling balances");
+  const pendingResearchPayment = await one("select id from financial_transactions where idempotency_key=$1", [`research-payment:${createdResearchBody.order.id}:${researchPaymentKey}`]);
+  await approveAndExecuteFinancialTransaction(Number(pendingResearchPayment.id), financialReviewer);
+  await approveAndExecuteFinancialTransaction(Number(pendingResearchPayment.id), financialReviewer);
+  const approvedRetryState = await one(
+    `select r.paid_amount research_paid,i.paid_amount invoice_paid,
+      (select count(*)::int from financial_ledger_entries l where l.transaction_id=$2) ledger_count
+     from research_orders r join sales_invoices i on i.id=r.invoice_id where r.id=$1`,
+    [createdResearchBody.order.id, pendingResearchPayment.id],
+  );
+  assert.equal(Number(approvedRetryState.research_paid), 35);
+  assert.equal(Number(approvedRetryState.invoice_paid), 35);
+  assert.equal(approvedRetryState.ledger_count, 2);
+  pass("research collection approval updates both balances once even when approval is retried");
 
   await cleanPool.query(`create or replace function phase3_reject_research_finance() returns trigger language plpgsql as $$ begin if new.source_type='research_order' then raise exception 'phase3 accounting failure'; end if; return new; end $$`);
   await cleanPool.query("create trigger phase3_reject_research_finance before insert on financial_transactions for each row execute function phase3_reject_research_finance() ");
@@ -477,6 +510,14 @@ try {
     },
     body: purchasePayload,
   });
+  // This disposable database has only 35 from the research fixtures. Fund the
+  // expense test through the real approval gate, never by editing cash balance.
+  const funding = await createSourceFinancialRequest({
+    direction: "revenue", amount: 100, department: "general", transactionType: "test_funding",
+    description: `TEST-${suffix}-purchase funding`, paymentMethod: "cash",
+    sourceType: "test_funding", sourceId: "1", idempotencyKey: `phase3-funding:${suffix}`,
+  }, financialReviewer);
+  await approveAndExecuteFinancialTransaction(Number(funding.id), financialReviewer);
   const cashBeforePurchase = await one("select coalesce(sum(current_balance::numeric),0)::float balance from master_cash_box");
   const createdPurchase = await dispatch(purchaseRequest(), ["admin", "purchase-invoices"]);
   assert.equal(createdPurchase.status, 201);
@@ -489,9 +530,27 @@ try {
   assert.equal((await one("select count(*)::int count from purchase_invoice_items where invoice_id=$1", [createdPurchaseBody.id])).count, 1);
   assert.equal((await one("select count(*)::int count from stock_movements where related_type='purchase_invoice' and related_id=$1", [createdPurchaseBody.id])).count, 1);
   assert.equal(Number((await one("select stock from products where id=$1", [saleProduct.id])).stock), 13);
-  assert.equal(Number((await one("select balance from suppliers where id=$1", [purchaseSupplier.id])).balance), 80);
+  assert.equal(Number((await one("select balance from suppliers where id=$1", [purchaseSupplier.id])).balance), 120);
   assert.equal((await one("select count(*)::int count from financial_transactions where source_type='purchase_invoice' and source_id=$1", [String(createdPurchaseBody.id)])).count, 1);
   assert.equal(Number((await one("select coalesce(sum(current_balance::numeric),0)::float balance from master_cash_box")).balance), Number(cashBeforePurchase.balance));
+  const pendingPurchase = await one(
+    `select f.id,f.approval_status,i.paid_amount,i.remaining_amount,
+      (select count(*)::int from financial_ledger_entries l where l.transaction_id=f.id) ledger_count
+     from purchase_invoices i join financial_transactions f on f.source_type='purchase_invoice' and f.source_id=i.id::text where i.id=$1`,
+    [createdPurchaseBody.id],
+  );
+  assert.equal(pendingPurchase.approval_status, "pending");
+  assert.equal(Number(pendingPurchase.paid_amount), 0);
+  assert.equal(Number(pendingPurchase.remaining_amount), 120);
+  assert.equal(pendingPurchase.ledger_count, 0);
+  await approveAndExecuteFinancialTransaction(Number(pendingPurchase.id), financialReviewer);
+  await approveAndExecuteFinancialTransaction(Number(pendingPurchase.id), financialReviewer);
+  const approvedPurchase = await one("select paid_amount,remaining_amount from purchase_invoices where id=$1", [createdPurchaseBody.id]);
+  assert.equal(Number(approvedPurchase.paid_amount), 40);
+  assert.equal(Number(approvedPurchase.remaining_amount), 80);
+  assert.equal(Number((await one("select balance from suppliers where id=$1", [purchaseSupplier.id])).balance), 80);
+  assert.equal(Number((await one("select coalesce(sum(current_balance::numeric),0)::float balance from master_cash_box")).balance), Number(cashBeforePurchase.balance) - 40);
+  assert.equal((await one("select count(*)::int count from financial_ledger_entries where transaction_id=$1", [pendingPurchase.id])).count, 2);
   const purchaseRegister = await api.handleApi(
     new NextRequest("http://localhost/api/admin/purchase-invoices?limit=20", { headers: { authorization: `Bearer ${adminSession.token}` } }),
     ["admin", "purchase-invoices"],

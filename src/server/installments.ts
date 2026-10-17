@@ -114,7 +114,7 @@ export async function handleInstallments(req: NextRequest, parts: string[], user
     const cancelled=await db.transaction(async tx=>{
       const locked=(await tx.execute(sql`SELECT * FROM installment_contracts WHERE id=${id} FOR UPDATE`)).rows[0] as any;
       if(!locked)return {error:"عقد الأقساط غير موجود",status:404};
-      const payments=await tx.execute(sql`SELECT count(*) count FROM installment_payments WHERE contract_id=${id} AND status='posted'`);
+      const payments=await tx.execute(sql`SELECT count(*) count FROM installment_payments WHERE contract_id=${id} AND status IN ('posted','pending')`);
       if(Number((payments.rows[0] as any)?.count||0)>0)return {error:"لا يمكن إلغاء عقد له دفعات؛ استخدم مسار العكس المالي المعتمد",status:409};
       await tx.execute(sql`UPDATE installment_contracts SET status='cancelled',cancelled_at=now(),cancelled_reason=${reason},updated_at=now() WHERE id=${id}`);
       await tx.execute(sql`UPDATE installment_schedule SET is_cancelled=true,status='cancelled',updated_at=now() WHERE contract_id=${id}`);
@@ -132,7 +132,7 @@ async function verifyLinkedFinancialMovement(tx:Tx,payment:any){
   if(!payment.financial_transaction_id)return false;
   const result=await tx.execute(sql`SELECT ft.id,ft.approval_status,ft.source_type,ft.source_id,ft.source_event,ft.amount,count(le.id)::int ledger_count FROM financial_transactions ft LEFT JOIN financial_ledger_entries le ON le.transaction_id=ft.id WHERE ft.id=${Number(payment.financial_transaction_id)} GROUP BY ft.id,ft.approval_status,ft.source_type,ft.source_id,ft.source_event,ft.amount`);
   const row=result.rows[0] as any;
-  if(!row||row.approval_status!=="executed"||Number(row.ledger_count)<2)throw new Error("الدفعة مرتبطة بحركة مالية غير مكتملة");
+  if(!row||!["pending","rejected","executed"].includes(row.approval_status)||(row.approval_status==="executed"&&Number(row.ledger_count)<2))throw new Error("الدفعة مرتبطة بحركة مالية غير مكتملة");
   const direct=row.source_type==="installment_payment"&&String(row.source_id)===String(payment.id)&&Math.abs(money(row.amount)-money(payment.amount))<.005;
   const reconciled=row.source_type==="installment_contract"&&row.source_event==="reconciliation"&&String(row.source_id)===String(payment.contract_id);
   if(!direct&&!reconciled)throw new Error("الدفعة مرتبطة بحركة مالية لا تطابق مصدرها");
@@ -149,6 +149,7 @@ async function createPaymentFinancialMovement(tx:Tx,payment:any,contract:any,use
 
 export async function postInstallmentPayment(contractId:number,data:any,user:User,downPayment=false):Promise<NextResponse|{payment:any;duplicate?:boolean}>{
   await ensureMasterCashBoxTables();
+  if(!Number.isFinite(Number(data.amount))||money(data.amount)<=0)return fail("مبلغ القسط غير صالح",422);
   const key=data.idempotencyKey||randomUUID();
   const paymentResult=await db.transaction(async tx=>{
     const contract=(await tx.execute(sql`SELECT * FROM installment_contracts WHERE id=${contractId} FOR UPDATE`)).rows[0] as any;
@@ -157,26 +158,43 @@ export async function postInstallmentPayment(contractId:number,data:any,user:Use
     if(duplicate){
       if(Number(duplicate.contract_id)!==contractId)return {error:"مفتاح التكرار مستخدم لعقد آخر",status:409};
       if(Math.abs(money(duplicate.amount)-money(data.amount))>.005||String(duplicate.payment_method)!==String(data.paymentMethod))return {error:"مفتاح التكرار مستخدم لدفعة مختلفة",status:409};
-      if(!(await verifyLinkedFinancialMovement(tx,duplicate)))await reconcileInstallmentPaymentsInTransaction(tx,contractId,user,contract);
+      if(downPayment||data.allocations?.length){
+        const persisted=(await tx.execute(sql`SELECT installment_id,amount FROM installment_payment_allocations WHERE payment_id=${Number(duplicate.id)} ORDER BY installment_id`)).rows as any[];
+        const requested=downPayment?[]:[...data.allocations].sort((a:any,b:any)=>Number(a.installmentId)-Number(b.installmentId));
+        if(persisted.length!==requested.length||persisted.some((item:any,index:number)=>Number(item.installment_id)!==Number(requested[index].installmentId)||money(item.amount)!==money(requested[index].amount)))
+          return {error:"مفتاح التكرار مستخدم لتوزيع دفعة مختلف",status:409};
+      }
+      if(!(await verifyLinkedFinancialMovement(tx,duplicate)))return {error:"دفعة قديمة غير مرتبطة محاسبياً؛ راجع المصالحة المالية قبل إعادة إرسالها",status:409};
       const refreshed=(await tx.execute(sql`SELECT * FROM installment_payments WHERE id=${duplicate.id}`)).rows[0] as any;
       if(!(await verifyLinkedFinancialMovement(tx,refreshed)))throw new Error("تعذر تأكيد الحركة المالية للدفعة المكررة");
       return {payment:refreshed,duplicate:true};
     }
     if(!["active","overdue"].includes(contract.status))return {error:"لا يمكن استلام دفعة لعقد غير نشط",status:409};
+    const pending=(await tx.execute(sql`SELECT coalesce(sum(amount),0)::numeric amount FROM installment_payments WHERE contract_id=${contractId} AND status='pending'`)).rows[0] as any;
+    if(money(data.amount)>money(contract.balance_at_conversion)-money(contract.collected_amount)-money(pending.amount)+.009)
+      return {error:"مبلغ القسط يتجاوز الرصيد المتاح بعد الطلبات المعلّقة",status:422};
     const schedules=((await tx.execute(sql`SELECT * FROM installment_schedule WHERE contract_id=${contractId} AND is_cancelled=false ORDER BY due_date, installment_no FOR UPDATE`)).rows as any[]);
+    const held=(await tx.execute(sql`SELECT a.installment_id,sum(a.amount)::numeric amount FROM installment_payment_allocations a
+      JOIN installment_payments p ON p.id=a.payment_id WHERE p.contract_id=${contractId} AND p.status='pending' GROUP BY a.installment_id`)).rows as any[];
+    const available=(row:any)=>money(row.remaining_amount)-money(held.find(item=>Number(item.installment_id)===Number(row.id))?.amount);
     let left=money(data.amount);
-    const chosen=downPayment?[]:data.allocations?.length?data.allocations.map((x:any)=>({row:schedules.find(s=>Number(s.id)===Number(x.installmentId)),amount:money(x.amount)})):schedules.map(row=>({row,amount:Math.min(left,money(row.remaining_amount))})).filter(x=>{if(!data.allocations?.length)left=money(left-x.amount);return x.amount>0;});
-    if((data.allocations?.length&&chosen.some((x:any)=>!x.row))||chosen.reduce((sum:number,item:any)=>sum+item.amount,0)>money(data.amount)+.009)return {error:"توزيع الدفعة غير صالح",status:422};
+    const chosen=downPayment?[]:data.allocations?.length?data.allocations.map((x:any)=>({row:schedules.find(s=>Number(s.id)===Number(x.installmentId)),amount:money(x.amount)})):schedules.flatMap(row=>{const amount=Math.max(0,Math.min(left,available(row)));left=money(left-amount);return amount>0?[{row,amount}]:[];});
+    const allocated=money(chosen.reduce((sum:number,item:any)=>sum+item.amount,0));
+    const downUsed=downPayment?(await tx.execute(sql`SELECT coalesce(sum(p.amount-coalesce(a.allocated,0)),0)::numeric amount
+      FROM installment_payments p LEFT JOIN (
+        SELECT payment_id,sum(amount) allocated FROM installment_payment_allocations GROUP BY payment_id
+      ) a ON a.payment_id=p.id WHERE p.contract_id=${contractId} AND p.status IN ('pending','posted')`)).rows[0] as any:null;
+    if(chosen.some((x:any)=>!x.row||!(x.amount>0)||x.amount>available(x.row)+.009)
+      ||new Set(chosen.map((x:any)=>Number(x.row?.id))).size!==chosen.length
+      ||(!downPayment&&Math.abs(allocated-money(data.amount))>.009)
+      ||(downPayment&&money(data.amount)>money(contract.down_payment_amount)-money(downUsed?.amount??0)+.009))return {error:"توزيع الدفعة غير صالح أو يتجاوز الرصيد المتاح",status:422};
     const seqRow=(await tx.execute(sql`SELECT nextval('installment_payments_id_seq') AS id`)).rows[0] as any;
     const seq=Number(seqRow?.id||0); const no=`AJN-INSP-${new Date().getFullYear()}-${String(seq).padStart(6,"0")}`;
-    let payment=(await tx.execute(sql`INSERT INTO installment_payments (id,payment_no,idempotency_key,contract_id,amount,payment_method,receipt_number,receipt_image,paid_at,notes,received_by,received_by_name) VALUES (${seq},${no},${key},${contractId},${String(money(data.amount))},${data.paymentMethod},${data.receiptNumber||null},${data.receiptImage||null},${data.paidAt?new Date(data.paidAt):new Date()},${data.notes||null},${user.id},${user.fullName||user.username}) RETURNING *`)).rows[0] as any;
-    for(const allocation of chosen){if(!allocation.row)continue;const next=money(allocation.row.paid_amount)+allocation.amount;const remaining=money(allocation.row.original_amount)-next;await tx.execute(sql`UPDATE installment_schedule SET paid_amount=${String(next)},remaining_amount=${String(Math.max(0,remaining))},payment_method=${data.paymentMethod},receipt_number=${data.receiptNumber||null},receipt_image=${data.receiptImage||null},paid_at=${remaining<=.009?new Date():null},updated_at=now() WHERE id=${allocation.row.id}`);await tx.execute(sql`INSERT INTO installment_payment_allocations (payment_id,installment_id,amount) VALUES (${payment.id},${allocation.row.id},${String(allocation.amount)})`);}
-    const allocated=chosen.reduce((sum:number,item:any)=>sum+item.amount,0);const projectedCollected=money(contract.collected_amount)+money(data.amount);const projectedScheduled=money(contract.scheduled_paid_amount)+allocated;const remaining=money(contract.financed_amount)-projectedScheduled;const contractStatus=remaining<=.009?"completed":"active";
-    await tx.execute(sql`UPDATE installment_contracts SET collected_amount=${String(projectedCollected)},scheduled_paid_amount=${String(projectedScheduled)},remaining_amount=${String(Math.max(0,remaining))},status=${contractStatus},updated_at=now() WHERE id=${contractId}`);
-    if(contract.sales_invoice_id)await tx.execute(sql`UPDATE sales_invoices SET paid_amount=paid_amount::numeric+${String(money(data.amount))},remaining_amount=GREATEST(total::numeric-(paid_amount::numeric+${String(money(data.amount))}),0),payment_status=CASE WHEN paid_amount::numeric+${String(money(data.amount))}>total::numeric THEN 'overpaid' WHEN paid_amount::numeric+${String(money(data.amount))}>=total::numeric THEN 'paid' WHEN paid_amount::numeric+${String(money(data.amount))}>0 THEN 'partial' ELSE 'unpaid' END,updated_at=now() WHERE id=${contract.sales_invoice_id}`);
+    let payment=(await tx.execute(sql`INSERT INTO installment_payments (id,payment_no,idempotency_key,contract_id,amount,payment_method,receipt_number,receipt_image,paid_at,notes,status,received_by,received_by_name) VALUES (${seq},${no},${key},${contractId},${String(money(data.amount))},${data.paymentMethod},${data.receiptNumber||null},${data.receiptImage||null},${data.paidAt?new Date(data.paidAt):new Date()},${data.notes||null},'pending',${user.id},${user.fullName||user.username}) RETURNING *`)).rows[0] as any;
+    for(const allocation of chosen)await tx.execute(sql`INSERT INTO installment_payment_allocations (payment_id,installment_id,amount) VALUES (${payment.id},${allocation.row.id},${String(allocation.amount)})`);
     payment=await createPaymentFinancialMovement(tx,payment,contract,user);
-    await addHistory(tx,contractId,downPayment?"down_payment_received":"payment_received",user,{}, {paymentId:payment.id,amount:data.amount,financialTransactionId:payment.financial_transaction_id});
-    await tx.insert(entityTimelineTable).values({entityType:"installment_contract",entityId:contractId,type:"payment",title:downPayment?"تم استلام الدفعة المقدمة":"تم استلام قسط",actorId:user.id,actorName:user.fullName||user.username,metadata:{paymentId:payment.id,amount:data.amount,financialTransactionId:payment.financial_transaction_id}as any});
+    await addHistory(tx,contractId,downPayment?"down_payment_requested":"payment_requested",user,{}, {paymentId:payment.id,amount:data.amount,financialTransactionId:payment.financial_transaction_id});
+    await tx.insert(entityTimelineTable).values({entityType:"installment_contract",entityId:contractId,type:"payment",title:downPayment?"طلب دفعة مقدمة بانتظار الموافقة":"طلب قسط بانتظار الموافقة",actorId:user.id,actorName:user.fullName||user.username,metadata:{paymentId:payment.id,amount:data.amount,financialTransactionId:payment.financial_transaction_id}as any});
     return {payment};
   });
   if("error"in paymentResult)return fail(String(paymentResult.error),Number(paymentResult.status??400));
@@ -189,12 +207,21 @@ async function reconcileInstallmentPaymentsInTransaction(tx:Tx,contractId:number
   const payments=(await tx.execute(sql`SELECT * FROM installment_payments WHERE contract_id=${contractId} AND status='posted' AND reversed_at IS NULL ORDER BY id FOR UPDATE`)).rows as any[];
   const paymentIds=payments.map(payment=>String(payment.id));
   const paymentMovements=paymentIds.length?sql`OR (source_type='installment_payment' AND source_id IN (${sql.join(paymentIds.map(id=>sql`${id}`),sql`, `)}))`:sql``;
-  const relevantFinancials=(await tx.execute(sql`SELECT * FROM financial_transactions WHERE ((source_type='installment_contract' AND source_id=${String(contractId)} AND source_event IN ('payment','reconciliation')) ${paymentMovements}) ORDER BY id FOR UPDATE`)).rows as any[];
+  const relevantFinancials=(await tx.execute(sql`SELECT * FROM financial_transactions WHERE ((source_type='installment_contract' AND source_id=${String(contractId)} AND source_event IN ('payment','reconciliation')) ${paymentMovements}) ORDER BY id`)).rows as any[];
+  const expected=money(payments.reduce((sum,payment)=>sum+money(payment.amount),0));
+  const pendingReconciliation=relevantFinancials.find(financial=>financial.approval_status==='pending'&&financial.source_type==='installment_contract'&&financial.source_event==='reconciliation');
   const unresolvedFinancials=relevantFinancials.filter(financial=>financial.approval_status!=="executed");
+  const executedAmount=money(relevantFinancials.filter(item=>item.approval_status==='executed').reduce((sum,item)=>sum+(item.direction==='revenue'?money(item.amount):-money(item.amount)),0));
+  if(pendingReconciliation&&unresolvedFinancials.length===1
+    &&pendingReconciliation.idempotency_key===`installment-reconcile:${contractId}:${expected.toFixed(2)}:v1`
+    &&pendingReconciliation.direction==='revenue'&&money(pendingReconciliation.amount)===money(expected-executedAmount)
+    &&payments.every(payment=>Number(payment.financial_transaction_id)>0)){
+    for(const payment of payments)await verifyLinkedFinancialMovement(tx,payment);
+    return {contractId,contractNo:contract.contract_no,paymentCount:payments.length,expectedAmount:expected,executedBefore:executedAmount,delta:0,createdTransactionId:null,linkedPaymentIds:[],pendingTransactionId:Number(pendingReconciliation.id)};
+  }
   if(unresolvedFinancials.length)throw new Error(`توجد حركات مالية غير منفذة مرتبطة بالعقد (${unresolvedFinancials.map(item=>item.id).join(", ")})؛ تتطلب مراجعة قبل المصالحة`);
   const financials=relevantFinancials;
   for(const financial of financials){const ledger=await tx.execute(sql`SELECT count(*)::int value FROM financial_ledger_entries WHERE transaction_id=${financial.id}`);if(Number((ledger.rows[0] as any)?.value)<2)throw new Error(`الحركة المالية ${financial.id} بلا قيد محاسبي مكتمل`);}
-  const expected=money(payments.reduce((sum,payment)=>sum+money(payment.amount),0));
   const executedBefore=money(financials.reduce((sum,financial)=>sum+(financial.direction==="revenue"?money(financial.amount):-money(financial.amount)),0));
   const delta=money(expected-executedBefore);
   if(delta<-.005)throw new Error("الحركات المالية للأقساط أكبر من الدفعات المسجلة؛ تتطلب مراجعة يدوية");
