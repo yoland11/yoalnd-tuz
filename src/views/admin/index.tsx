@@ -30,6 +30,7 @@ const KoshaFinancePage = lazy(() => import("./kosha-finance"));
 const KoshatTasksPage = lazy(() => import("./koshat-tasks"));
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
 const ProductsPage = lazy(() => import("./products"));
+const ProductDetailsPage = lazy(() => import("./product-details"));
 const ProductLookupPage = lazy(() => import("./product-lookup"));
 const ProductBundlesPage = lazy(() => import("./product-bundles"));
 const BouquetDesignerAdminPage = lazy(() => import("./bouquet-designer"));
@@ -530,6 +531,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} anyPerm={RESEARCH_PERMS}>
                 <ResearchCenterPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/products/:id">
+            {() => (
+              <Guard me={me} perm="products">
+                <ProductDetailsPage />
               </Guard>
             )}
           </Route>

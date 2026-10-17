@@ -14,6 +14,13 @@ import bcrypt from "bcryptjs";
 import { staffPhotoUpdateSchema } from "./staff-photo";
 import { readKoshaEquipment, saveKoshaEquipment, koshaEquipmentCatalog, bookingKoshaEquipment, KoshaEquipmentError } from "./kosha-equipment";
 import {
+  ProductInsightsError,
+  normalizeRange as normalizeInsightsRange,
+  productInsights,
+  productMovements,
+  slowMovingProducts,
+} from "./product-insights";
+import {
   QuantityAssetError,
   adjustQuantityAsset,
   bookingDay,
@@ -14774,8 +14781,16 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         },
       );
     }
+    // Record before/after prices in the existing audit log so the product page
+    // can show a real price history (older entries only list field names).
+    const priceChanges = Object.fromEntries(
+      ["price", "costPrice", "wholesalePrice", "originalPrice"]
+        .filter((key) => update[key] !== undefined && String(update[key] ?? "") !== String(existing[key] ?? ""))
+        .map((key) => [key, { from: existing[key] ?? null, to: update[key] ?? null }]),
+    );
     void logAdminActivity(req, "product_updated", "product", product.id, {
       fields: Object.keys(update),
+      ...(Object.keys(priceChanges).length ? { priceChanges } : {}),
     });
     clearStoreCategoriesCache();
     const hydrated = await hydrateSharedStockProduct(product);
@@ -47928,6 +47943,52 @@ async function handleAdmin(
       return json({ ok: true, productId });
     }
     return error("غير مدعوم", 405);
+  }
+
+  if (section === "product-insights") {
+    if (method !== "GET") return error("الإجراء غير مدعوم", 405);
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    // Costs, profit, supplier prices and employee sales follow the accounting
+    // reports' permission; customer names follow invoice/customer access.
+    const financeAccess =
+      ["admin", "manager", "main_admin", "super_admin", "main_manager"].includes(String(auth.role ?? "").toLowerCase()) ||
+      hasPermission(auth, "accounting");
+    const customerAccess = financeAccess || hasPermission(auth, "customers") || hasPermission(auth, "invoices");
+    const params = req.nextUrl.searchParams;
+    const clampDays = (value: string | null, fallback: number, max: number) => {
+      const parsed = Math.floor(Number(value));
+      return Number.isFinite(parsed) && parsed >= 1 ? Math.min(parsed, max) : fallback;
+    };
+    try {
+      if (parts[2] === "slow-moving") {
+        const rows = await slowMovingProducts(db, clampDays(params.get("days"), 60, 730));
+        return json({
+          thresholdDays: clampDays(params.get("days"), 60, 730),
+          data: rows.map((row) => (financeAccess ? row : { ...row, stockValue: null })),
+        });
+      }
+      const productId = optionalPositiveId(parts[2]);
+      if (!productId) return error("معرّف المنتج غير صحيح", 400);
+      if (parts[3] === "movements") {
+        const page = Math.max(1, Math.floor(Number(params.get("page")) || 1));
+        return json(await productMovements(db, productId, { page, limit: Math.floor(Number(params.get("limit")) || 50) }));
+      }
+      if (parts[3]) return error("المسار غير موجود", 404);
+      const group = params.get("group");
+      return json(
+        await productInsights(db, productId, {
+          range: normalizeInsightsRange({ from: params.get("from"), to: params.get("to") }),
+          access: { finance: financeAccess, customers: customerAccess },
+          group: group === "day" || group === "year" ? group : "month",
+          slowDays: clampDays(params.get("slowDays"), 60, 730),
+          leadTimeDays: clampDays(params.get("leadTime"), 14, 365),
+        }),
+      );
+    } catch (cause) {
+      if (cause instanceof ProductInsightsError) return error(cause.message, cause.status);
+      throw cause;
+    }
   }
 
   if (section === "products") {

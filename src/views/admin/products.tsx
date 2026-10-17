@@ -139,7 +139,18 @@ export default function ProductsPage() {
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("");
   const [stockFilter, setStockFilter] = useState<StockFilter>("all");
-  const [visFilter, setVisFilter] = useState<"all" | "visible" | "hidden" | "archived" | "rental" | "nocat">("all");
+  const [visFilter, setVisFilter] = useState<"all" | "visible" | "hidden" | "archived" | "rental" | "nocat" | "slow">("all");
+  const [slowDays, setSlowDays] = useState(60);
+  const slowMovingQuery = useQuery<{ data: Array<{ productId: number; daysSinceSale: number | null; lastSaleDate: string | null }> }>({
+    queryKey: ["admin", "product-insights", "slow-moving", slowDays],
+    queryFn: () => adminFetch(`/admin/product-insights/slow-moving?days=${slowDays}`),
+    enabled: visFilter === "slow",
+    staleTime: 60_000,
+  });
+  const slowById = useMemo(
+    () => new Map((slowMovingQuery.data?.data ?? []).map((row) => [row.productId, row])),
+    [slowMovingQuery.data],
+  );
   const [view, setView] = useState<"list" | "stock">("list");
   const [stockDrafts, setStockDrafts] = useState<Record<number, string>>({});
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -174,6 +185,7 @@ export default function ProductsPage() {
     else if (visFilter === "archived") rows = rows.filter(isArchived);
     else if (visFilter === "rental") rows = rows.filter((p: any) => p.isRental);
     else if (visFilter === "nocat") rows = rows.filter(hasNoCategory);
+    else if (visFilter === "slow") rows = rows.filter((p: any) => slowById.has(p.id));
     if (search) {
       const s = search.toLowerCase();
       rows = rows.filter((p: any) =>
@@ -191,7 +203,7 @@ export default function ProductsPage() {
       );
     }
     return rows;
-  }, [productRows, search, catFilter, stockFilter, visFilter, allSubcategories]);
+  }, [productRows, search, catFilter, stockFilter, visFilter, allSubcategories, slowById]);
 
   const parentCats = categories?.filter(c => !c.parentId) ?? [];
   const subCats = categories?.filter(c => c.parentId) ?? [];
@@ -222,6 +234,39 @@ export default function ProductsPage() {
       setIsExportingPdf(false);
     }
   }
+
+  // One mapping for the edit button and the ?edit=<id> deep link.
+  const productEditForm = (p: any): ProductForm => {
+    const currentStock = stockQuantity(p);
+    return {
+      id: p.id, name: p.name, nameAr: p.nameAr,
+      itemType: (p as any).itemType === "service" ? "service" : "product",
+      serviceUnit: (p as any).serviceUnit ?? "",
+      trackInventory: (p as any).trackInventory !== false,
+      nameKu: (p as any).nameKu ?? "", nameTr: (p as any).nameTr ?? "",
+      description: p.description ?? "", descriptionAr: p.descriptionAr ?? "",
+      descriptionKu: (p as any).descriptionKu ?? "", descriptionTr: (p as any).descriptionTr ?? "",
+      price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
+      costPrice: p.costPrice ? String(p.costPrice) : "0",
+      stock: String(currentStock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
+      isRental: !!(p as any).isRental, pricePerDay: (p as any).pricePerDay ? String((p as any).pricePerDay) : "0", isAsset: !!(p as any).isAsset,
+      sharedStockProductId: (p as any).sharedStockProductId ?? null,
+      sharedStockLinkedProductIds: Array.isArray((p as any).sharedStockLinkedProducts) ? (p as any).sharedStockLinkedProducts.map((item: any) => Number(item.id)).filter(Boolean) : [],
+      categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null, subcategoryIds: Array.isArray((p as any).subcategoryIds) ? (p as any).subcategoryIds : ((p as any).subcategoryId ? [(p as any).subcategoryId] : []),
+      category: p.category ?? "", subcategory: p.subcategory ?? "",
+      images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
+      isFeatured: !!p.isFeatured, availableInBouquetDesigner: !!(p as any).availableInBouquetDesigner, showInBouquetBuilder: !!((p as any).showInBouquetBuilder ?? (p as any).availableInBouquetDesigner), bouquetElementType: (p as any).bouquetElementType ?? "FLOWER", previewCutoutUrl: (p as any).previewCutoutUrl ?? (p as any).previewAssetUrl ?? null, readyMadePreviewUrl: (p as any).readyMadePreviewUrl ?? null, previewAssetUrl: (p as any).previewAssetUrl ?? null, previewColor: (p as any).previewColor ?? "#d55b73", previewScale: (p as any).previewScale == null ? "1" : String((p as any).previewScale), previewRotation: (p as any).previewRotation == null ? "0" : String((p as any).previewRotation), previewLayer: (p as any).previewLayer == null ? "0" : String((p as any).previewLayer), bouquetRecipe: Array.isArray((p as any).bouquetRecipe) ? (p as any).bouquetRecipe : [], isReadyMadeBouquet: !!((p as any).isReadyMadeBouquet ?? (p as any).isBouquetTemplate), isBouquetTemplate: !!(p as any).isBouquetTemplate, isActive: p.isActive !== false,
+    };
+  };
+  useEffect(() => {
+    if (typeof window === "undefined" || !products?.length) return;
+    const editId = Number(new URLSearchParams(window.location.search).get("edit"));
+    if (!Number.isInteger(editId) || editId <= 0) return;
+    const target = products.find((product: any) => product.id === editId);
+    if (target) setEditing(productEditForm(target));
+    window.history.replaceState(null, "", window.location.pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products]);
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: getListProductsQueryKey() });
@@ -441,7 +486,16 @@ export default function ProductsPage() {
           <option value="archived">المؤرشفة</option>
           <option value="rental">الإيجار</option>
           <option value="nocat">بدون تصنيف</option>
+          <option value="slow">المنتجات الراكدة</option>
         </select>
+        {visFilter === "slow" ? (
+          <select value={slowDays} onChange={e => setSlowDays(Number(e.target.value))} aria-label="مدة الركود"
+            className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <option value={30}>بدون بيع 30 يوماً</option>
+            <option value={60}>بدون بيع 60 يوماً</option>
+            <option value={90}>بدون بيع 90 يوماً</option>
+          </select>
+        ) : null}
         <Button variant="ghost"
           type="button"
           onClick={() => setStockFilter(stockFilter === "out" ? "all" : "out")}
@@ -495,7 +549,12 @@ export default function ProductsPage() {
                             {p.images?.[0]
                               ? <img src={p.images[0]} className="w-10 h-10 rounded-lg" style={{ objectFit: (p as any).imageMetadata?.[0]?.objectFit ?? "cover" }} alt="" />
                               : <div className="w-10 h-10 rounded-lg bg-background border border-border/30" />}
-                            <span className="font-medium text-foreground">{p.nameAr}</span>
+                            <Link href={`/admin/products/${p.id}`} className="font-medium text-foreground hover:text-primary hover:underline">{p.nameAr}</Link>
+                            {visFilter === "slow" && slowById.get(p.id) ? (
+                              <span className="text-[11px] text-status-warning">
+                                {slowById.get(p.id)?.daysSinceSale == null ? "لم يُبع" : `آخر بيع قبل ${slowById.get(p.id)?.daysSinceSale} يوماً`}
+                              </span>
+                            ) : null}
                             {p.sharedStockProductName && (
                               <span className="text-[11px] text-primary inline-flex items-center gap-1">
                                 <Link2 className="w-3 h-3" /> مشترك مع {p.sharedStockProductName}
@@ -572,7 +631,7 @@ export default function ProductsPage() {
                             ? <img src={p.images[0]} className="w-12 h-12 rounded-lg" style={{ objectFit: (p as any).imageMetadata?.[0]?.objectFit ?? "cover" }} alt="" />
                             : <div className="w-12 h-12 rounded-lg bg-background border border-border/30" />}
                             <div>
-                              <p className="font-medium text-foreground">{p.nameAr}</p>
+                              <Link href={`/admin/products/${p.id}`} className="font-medium text-foreground hover:text-primary hover:underline">{p.nameAr}</Link>
                               <p className="text-xs text-muted-foreground">{p.name}</p>
                               {p.barcode && <p className="text-[11px] text-muted-foreground font-mono" dir="ltr">{p.barcode}</p>}
                               {p.sharedStockProductName && (
@@ -625,25 +684,10 @@ export default function ProductsPage() {
                       </td>
                       <td className="p-3">
                         <div className="flex items-center gap-2">
-                          <Button variant="ghost" onClick={() => setEditing({
-                            id: p.id, name: p.name, nameAr: p.nameAr,
-                            itemType: (p as any).itemType === "service" ? "service" : "product",
-                            serviceUnit: (p as any).serviceUnit ?? "",
-                            trackInventory: (p as any).trackInventory !== false,
-                            nameKu: (p as any).nameKu ?? "", nameTr: (p as any).nameTr ?? "",
-                            description: p.description ?? "", descriptionAr: p.descriptionAr ?? "",
-                            descriptionKu: (p as any).descriptionKu ?? "", descriptionTr: (p as any).descriptionTr ?? "",
-                            price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
-                            costPrice: p.costPrice ? String(p.costPrice) : "0",
-                            stock: String(currentStock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
-                            isRental: !!(p as any).isRental, pricePerDay: (p as any).pricePerDay ? String((p as any).pricePerDay) : "0", isAsset: !!(p as any).isAsset,
-                            sharedStockProductId: (p as any).sharedStockProductId ?? null,
-                            sharedStockLinkedProductIds: Array.isArray((p as any).sharedStockLinkedProducts) ? (p as any).sharedStockLinkedProducts.map((item: any) => Number(item.id)).filter(Boolean) : [],
-                            categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null, subcategoryIds: Array.isArray((p as any).subcategoryIds) ? (p as any).subcategoryIds : ((p as any).subcategoryId ? [(p as any).subcategoryId] : []),
-                            category: p.category ?? "", subcategory: p.subcategory ?? "",
-                            images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
-                            isFeatured: !!p.isFeatured, availableInBouquetDesigner: !!(p as any).availableInBouquetDesigner, showInBouquetBuilder: !!((p as any).showInBouquetBuilder ?? (p as any).availableInBouquetDesigner), bouquetElementType: (p as any).bouquetElementType ?? "FLOWER", previewCutoutUrl: (p as any).previewCutoutUrl ?? (p as any).previewAssetUrl ?? null, readyMadePreviewUrl: (p as any).readyMadePreviewUrl ?? null, previewAssetUrl: (p as any).previewAssetUrl ?? null, previewColor: (p as any).previewColor ?? "#d55b73", previewScale: (p as any).previewScale == null ? "1" : String((p as any).previewScale), previewRotation: (p as any).previewRotation == null ? "0" : String((p as any).previewRotation), previewLayer: (p as any).previewLayer == null ? "0" : String((p as any).previewLayer), bouquetRecipe: Array.isArray((p as any).bouquetRecipe) ? (p as any).bouquetRecipe : [], isReadyMadeBouquet: !!((p as any).isReadyMadeBouquet ?? (p as any).isBouquetTemplate), isBouquetTemplate: !!(p as any).isBouquetTemplate, isActive: p.isActive !== false,
-                          })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
+                          <Link href={`/admin/products/${p.id}`} className="text-muted-foreground hover:bg-muted p-2 rounded-lg" title="تفاصيل المنتج">
+                            <Eye className="w-4 h-4" />
+                          </Link>
+                          <Button variant="ghost" onClick={() => setEditing(productEditForm(p))} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
                             <Edit2 className="w-4 h-4" />
                           </Button>
                           <Link href={`/admin/print-labels?productId=${p.id}&kind=product`} className="text-muted-foreground hover:bg-muted p-2 rounded-lg" title="طباعة ملصق">

@@ -1210,6 +1210,11 @@ export function AssetsPage() {
                               <BadgeDollarSign className="h-3.5 w-3.5" /> بيع الأصل
                             </Button>
                           ) : null}
+                          <Link href={`/admin/products/${row.productId}`}>
+                            <Button variant="ghost" size="sm" className="gap-1 text-primary">
+                              <Eye className="h-3.5 w-3.5" /> التفاصيل
+                            </Button>
+                          </Link>
                           <Link href={`/admin/assets/new?edit=${row.productId}`}>
                             <Button
                               variant="ghost"
