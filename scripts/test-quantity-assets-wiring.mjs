@@ -50,7 +50,9 @@ assert.match(api, /كمية الأصل متعدد الكمية لا تُعدّل
 // Individual custody quantity rejection is executed by test-quantity-assets.ts;
 // extraction to a transaction-only helper must not depend on message placement.
 assert.match(api, /مجموعات العهدة تتبع القطع الفردية/);
-assert.match(api, /action !== "inspection" &&\s*\(await quantityProfilesFor\(db, \[productId\]\)\)\.has\(productId\)/);
+// The status handler must use its locked transaction, not the global connection.
+// Actual rejection/rollback is also exercised by test-asset-status-action.cjs.
+assert.match(api, /action !== "inspection" &&\s*\(await quantityProfilesFor\(tx, \[productId\]\)\)\.has\(productId\)/);
 assert.match(api, /quantityTracked: \(await quantityProfilesFor\(db, \[productId\]\)\)\.has\(productId\)/);
 assert.match(sale, /if \(input\.quantityTracked\)/);
 assert.match(api, /trackingMode: quantity \? "quantity" : "individual",\s*imageUrl:/, "QR scan returns the quantity picture");

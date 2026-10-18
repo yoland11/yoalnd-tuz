@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1761,21 +1761,28 @@ export function AssetMovementsPage() {
       }),
   });
 
+  const assetActionRequest = useRef<{ signature: string; requestId: string } | null>(null);
   const action = useMutation({
-    mutationFn: (actionName: string) =>
-      adminFetch("/admin/assets/action", {
+    mutationFn: async (actionName: string) => {
+      const payload = { productId: selectedId, action: actionName, notes: notes.trim() || null, cost: Number(cost) || 0 };
+      const signature = JSON.stringify(payload);
+      if (assetActionRequest.current?.signature !== signature)
+        assetActionRequest.current = { signature, requestId: crypto.randomUUID() };
+      const requestId = assetActionRequest.current.requestId;
+      const result = await adminFetch("/admin/assets/action", {
         method: "POST",
-        body: JSON.stringify({
-          productId: selectedId,
-          action: actionName,
-          notes: notes.trim() || null,
-          cost: Number(cost) || 0,
-        }),
-      }),
-    onSuccess: (_data, actionName) => {
+        body: JSON.stringify({ ...payload, requestId }),
+      });
+      return { result, requestId };
+    },
+    onSuccess: ({ requestId }, actionName) => {
+      const sameDraft = assetActionRequest.current?.requestId === requestId && assetActionRequest.current.signature === JSON.stringify({ productId: selectedId, action: actionName, notes: notes.trim() || null, cost: Number(cost) || 0 });
+      if (assetActionRequest.current?.requestId === requestId) assetActionRequest.current = null;
       refresh();
-      setNotes("");
-      setCost("");
+      if (sameDraft) {
+        setNotes("");
+        setCost("");
+      }
       toast({ title: `تم تسجيل ${MOVEMENT_LABELS[actionName] ?? "الحركة"}` });
     },
     onError: (error) =>

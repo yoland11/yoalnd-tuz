@@ -43102,93 +43102,25 @@ async function handleAdmin(
 
     if (parts[2] === "action" && method === "POST") {
       const payload = await body(req);
-      const productId = optionalPositiveId(payload?.productId);
-      const action = String(payload?.action ?? "").trim();
-      const allowed = new Set([
-        "available",
-        "reserved",
-        "maintenance",
-        "damage",
-        "repair",
-        "inspection",
-        "transferred",
-        "lost",
-        "retired",
-      ]);
-      if (!productId || !allowed.has(action))
-        return error("الأصل أو نوع الحركة غير صحيح", 400);
-      const product = await db.query.productsTable.findFirst({
-        where: eq(productsTable.id, productId),
-      });
-      if (!product) return error("الأصل غير موجود", 404);
-      // A status action applies to the whole record; for a quantity asset it would
-      // mark every unit at once, so unit states go through quantity adjustments.
-      if (
-        action !== "inspection" &&
-        (await quantityProfilesFor(db, [productId])).has(productId)
-      )
-        return error(
-          "هذا أصل متعدد الكمية؛ سجّل التلف أو الفقدان أو الصيانة من «تعديل كمية الأصل» بالكمية المطلوبة",
-          409,
-        );
-      const current = await db.query.assetProfilesTable.findFirst({
-        where: eq(assetProfilesTable.productId, productId),
-      });
-      if (current && ["sold", "disposed"].includes(current.status)) {
-        return error(
-          "لا يمكن تغيير حالة أصل تم بيعه أو استبعاده من إجراءات التشغيل",
-          409,
-        );
-      }
-      const statusByAction: Record<string, string> = {
-        available: "active",
-        reserved: "reserved",
-        maintenance: "maintenance",
-        damage: "maintenance",
-        repair: "active",
-        transferred: "transferred",
-        lost: "lost",
-        retired: "retired",
-      };
-      const nextStatus = statusByAction[action] ?? current?.status ?? "active";
-      const baseValues = {
-        status: nextStatus,
-        updatedAt: new Date(),
-      };
-      if (current) {
-        await db
-          .update(assetProfilesTable)
-          .set(baseValues)
-          .where(eq(assetProfilesTable.id, current.id));
-      } else {
-        const purchasePrice = String(Number(product.costPrice ?? 0));
-        await db.insert(assetProfilesTable).values({
-          productId,
-          purchasePrice,
-          currentValue: purchasePrice,
-          ...baseValues,
-        });
-      }
-
-      const cost = Math.max(0, enterpriseNumber(payload?.cost));
-      if (action === "repair" && cost > 0) {
-        const passport = await db.query.assetPassportsTable.findFirst({
-          where: eq(assetPassportsTable.productId, productId),
-        });
-        const maintenanceCost =
-          enterpriseNumber(passport?.maintenanceCost) + cost;
-        await db
-          .insert(assetPassportsTable)
-          .values({ productId, maintenanceCost: String(maintenanceCost) })
-          .onConflictDoUpdate({
-            target: assetPassportsTable.productId,
-            set: {
-              maintenanceCost: String(maintenanceCost),
-              updatedAt: new Date(),
-            },
-          });
-      }
-
+      const parsed = z.object({
+        productId: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+        action: z.enum(["available", "reserved", "maintenance", "damage", "repair", "inspection", "transferred", "lost", "retired"]),
+        cost: z.coerce.number().finite().min(0).max(1_000_000_000).default(0),
+        notes: z.string().trim().max(2000).nullable().optional(),
+        requestId: z.string().trim().min(8).max(80).optional(),
+      }).safeParse(payload);
+      if (!parsed.success) return validationError("assets.action", parsed);
+      const { productId, action, cost, requestId } = parsed.data;
+      const manager = auth.isActive && ["admin", "manager", "main_admin", "super_admin", "main_manager"].includes(String(auth.role ?? "").toLowerCase());
+      if (["damage", "maintenance", "repair"].includes(action) && !manager && !hasPermission(auth, "asset_damage_record"))
+        throw new IndividualCustodyError("ليس لديك صلاحية تسجيل التلف أو الصيانة", 403);
+      if (["lost", "retired"].includes(action) && !manager && !hasPermission(auth, "asset_damage_approve"))
+        throw new IndividualCustodyError("تسجيل الفقدان أو الاستبعاد يتطلب صلاحية الاعتماد", 403);
+      if (action === "repair" && !nullableText(parsed.data.notes))
+        throw new IndividualCustodyError("اكتب تفاصيل إكمال الإصلاح", 422);
+      if (action === "repair" && cost > 0 && !requestId)
+        throw new IndividualCustodyError("تحديث كلفة الإصلاح يحتاج معرّف طلب ثابت؛ حدّث الصفحة وأعد المحاولة", 422);
+      const actionInput = { action, cost, notes: nullableText(parsed.data.notes), warehouseId: optionalPositiveId(payload?.warehouseId), shelfCode: nullableText(payload?.shelfCode) };
       const titles: Record<string, string> = {
         available: "إعادة الأصل إلى المتاح",
         reserved: "حجز الأصل",
@@ -43200,38 +43132,78 @@ async function handleAdmin(
         lost: "تسجيل الأصل كمفقود",
         retired: "استبعاد الأصل من الخدمة",
       };
-      await addEntityTimeline({
-        entityType: "asset",
-        entityId: productId,
-        type: action,
-        title: titles[action],
-        body: nullableText(payload?.notes),
-        actor: erpActorFromAdmin(auth),
-        metadata: {
-          cost,
-          previousStatus: current?.status ?? "active",
-          nextStatus,
-          warehouseId: optionalPositiveId(payload?.warehouseId),
-          shelfCode: nullableText(payload?.shelfCode),
-        },
+      const result = await db.transaction(async (tx) => {
+        // The original product lock is shared with booking, quantity and custody
+        // writers. No decision below uses the pre-lock form snapshot.
+        await tx.execute(sql`select id from products where id=${productId} for update`);
+        const product = await tx.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+        if (!product) throw new IndividualCustodyError("الأصل غير موجود", 404);
+        if (requestId) {
+          const receipt = await tx.query.entityTimelineTable.findFirst({ where: and(
+            eq(entityTimelineTable.entityType, "asset"), eq(entityTimelineTable.entityId, productId),
+            sql`${entityTimelineTable.metadata}->>'assetActionRequestId' = ${requestId}`,
+          ) });
+          if (receipt) {
+            const metadata = assetMetadataObject(receipt.metadata);
+            const original = assetMetadataObject(metadata.assetActionInput);
+            if (receipt.actorId !== auth.id || !Object.entries(actionInput).every(([key, value]) => original[key] === value) || typeof metadata.assetActionStatus !== "string")
+              throw new IndividualCustodyError("معرّف الطلب مستخدم لإجراء أو بيانات مختلفة", 409);
+            return { product, previousStatus: metadata.previousStatus, nextStatus: metadata.assetActionStatus, replayed: true };
+          }
+        }
+        // Whole-record status changes never replace the quantity-unit engine.
+        if (action !== "inspection" && (await quantityProfilesFor(tx, [productId])).has(productId))
+          throw new IndividualCustodyError("هذا أصل متعدد الكمية؛ استخدم تعديل كمية الأصل بالكمية المطلوبة", 409);
+        const current = await tx.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+        const passport = await tx.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, productId) });
+        const issued = await tx.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")) });
+        if (current && (["sold", "disposed"].includes(current.status) || ((current.deletedAt || ["lost", "retired", "locked"].includes(current.status)) && action !== "inspection")))
+          throw new IndividualCustodyError("حالة الأصل محمية؛ لا يمكن إعادة تفعيل أصل مفقود أو مقفل أو مستبعد من إجراء تشغيل عام", 409);
+        if ((issued || passport?.lastStaffId != null) && !["damage", "maintenance", "lost", "inspection"].includes(action))
+          throw new IndividualCustodyError("الأصل بعهدة موظف؛ أكمل إرجاع العهدة الأصلية قبل تغيير توافره أو إصلاحه", 409);
+        if (["available", "reserved", "transferred"].includes(action) && (current?.status === "maintenance" || assetPassportHasCustodyHold(passport)))
+          throw new IndividualCustodyError("الأصل يحتاج توثيق إكمال الإصلاح؛ لا يمكن تجاوز حجز التلف أو الفحص بزر المتاح", 409);
+        const statusByAction: Record<string, string> = { available: "active", reserved: "reserved", maintenance: "maintenance", damage: "maintenance", repair: "active", transferred: "transferred", lost: "lost", retired: "retired" };
+        const nextStatus = statusByAction[action] ?? current?.status ?? "active";
+        const baseValues = { status: nextStatus, updatedAt: new Date() };
+        if (current) await tx.update(assetProfilesTable).set(baseValues).where(eq(assetProfilesTable.id, current.id));
+        else {
+          const purchasePrice = String(Number(product.costPrice ?? 0));
+          await tx.insert(assetProfilesTable).values({ productId, purchasePrice, currentValue: purchasePrice, ...baseValues });
+        }
+        if (action === "repair") {
+          const maintenanceCost = String(enterpriseNumber(passport?.maintenanceCost) + cost);
+          const metadata = { ...assetMetadataObject(passport?.metadata), damageHold: false, inspectionBlocked: false };
+          await tx.insert(assetPassportsTable).values({ productId, maintenanceCost, metadata }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { maintenanceCost, metadata, updatedAt: new Date() } });
+        }
+        const who = erpActorFromAdmin(auth);
+        await tx.insert(entityTimelineTable).values({
+          entityType: "asset", entityId: productId, type: action, title: titles[action], body: actionInput.notes,
+          actorId: who.id ?? null, actorName: who.name ?? "النظام",
+          metadata: { cost, previousStatus: current?.status ?? "active", nextStatus, warehouseId: actionInput.warehouseId, shelfCode: actionInput.shelfCode,
+            ...(requestId ? { assetActionRequestId: requestId, assetActionInput: actionInput, assetActionStatus: nextStatus } : {}),
+          },
+        });
+        return { product, previousStatus: current?.status ?? "active", nextStatus, replayed: false };
       });
+      if (result.replayed) return json({ ok: true, productId, status: result.nextStatus, replayed: true });
       await logAdminActivity(req, `asset_${action}`, "product", productId, {
-        name: product.nameAr || product.name,
-        previousStatus: current?.status ?? "active",
-        nextStatus,
+        name: result.product.nameAr || result.product.name,
+        previousStatus: result.previousStatus,
+        nextStatus: result.nextStatus,
         cost,
       });
       if (["damage", "lost", "retired"].includes(action))
         await createNotification({
           type: `asset_${action}`,
           title: titles[action],
-          body: product.nameAr || product.name,
+          body: result.product.nameAr || result.product.name,
           entityType: "product",
           entityId: productId,
           href: "/admin/asset-movements",
         });
       revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
-      return json({ ok: true, productId, status: nextStatus });
+      return json({ ok: true, productId, status: result.nextStatus });
     }
 
     if (parts[2] === "depreciation" && method === "DELETE") {
