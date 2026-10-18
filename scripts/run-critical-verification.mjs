@@ -26,6 +26,7 @@ const steps = [
   ["Calendar event target", "pnpm", ["run", "test:calendar-event-target"]],
   ["Booking center read preflight", "pnpm", ["run", "test:booking-center-read"]],
   ["Calendar read preflight", "pnpm", ["run", "test:calendar-read"]],
+  ["Daily booking operations read model and permissions", "pnpm", ["run", "test:booking-daily-operations"]],
   ["Preparation A4 and 80mm printing", "pnpm", ["run", "test:preparation-print"]],
   ["Kosha preparation booking cards", "pnpm", ["run", "test:preparation-cards"]],
   ["Kosha equipment and decimal inventory", "pnpm", ["run", "test:kosha-equipment"]],

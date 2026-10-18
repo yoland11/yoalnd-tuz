@@ -74,6 +74,7 @@ import {
 } from "./_lib";
 import { EmptyState } from "./_layout";
 import { AssetSaleDialog } from "./asset-sale-dialog";
+import { DailyOperationsTab } from "./daily-operations";
 import {
   getLabelHistory,
   labelHistoryStats,
@@ -273,6 +274,7 @@ type VehicleFinancials = {
 
 const TABS = [
   { value: "overview", label: "مركز القيادة", icon: Gauge },
+  { value: "daily-operations", label: "غرفة عمليات اليوم", icon: CalendarClock },
   { value: "operations", label: "العمليات الحية", icon: Route },
   { value: "queue", label: "الطابور", icon: Users },
   { value: "assets", label: "الأصول", icon: Boxes },
@@ -424,7 +426,10 @@ function Empty({ message }: { message: string }) {
 }
 
 export default function EnterpriseCommandCenterPage() {
-  const [tab, setTab] = useState<(typeof TABS)[number]["value"]>("overview");
+  const [tab, setTab] = useState<(typeof TABS)[number]["value"]>(() => {
+    const requested = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("tab");
+    return TABS.find((item) => item.value === requested)?.value || "overview";
+  });
   const [focusedAssetId, setFocusedAssetId] = useState<number | null>(null);
   const queryClient = useQueryClient();
   useEffect(() => {
@@ -440,6 +445,7 @@ export default function EnterpriseCommandCenterPage() {
     queryFn: () => adminFetch("/admin/enterprise/command-center"),
     staleTime: 20_000,
     refetchInterval: 30_000,
+    enabled: tab !== "daily-operations",
   });
   const risks = useQuery<any>({
     queryKey: ["admin", "enterprise", "risks"],
@@ -487,7 +493,12 @@ export default function EnterpriseCommandCenterPage() {
 
       <Tabs
         value={tab}
-        onValueChange={(value) => setTab(value as typeof tab)}
+        onValueChange={(value) => {
+          setTab(value as typeof tab);
+          const url = new URL(window.location.href);
+          url.searchParams.set("tab", value);
+          window.history.replaceState(window.history.state, "", url);
+        }}
         dir="rtl"
       >
         <div className="overflow-x-auto pb-1">
@@ -505,6 +516,7 @@ export default function EnterpriseCommandCenterPage() {
           </TabsList>
         </div>
 
+        <TabsContent value="daily-operations"><DailyOperationsTab /></TabsContent>
         <TabsContent value="overview" className="space-y-4">
           {command.isLoading ? (
             <LoadingGrid />

@@ -1,4 +1,6 @@
 import { revalidateTag, unstable_cache } from "next/cache";
+import { loadDailyOperations } from "./booking-daily-operations";
+import { parseDailyOperationsFilters } from "@/lib/booking-daily-operations";
 import { autoTranslate, autoTranslateStatus } from "@/server/translate";
 import { after, NextResponse, type NextRequest } from "next/server";
 import {
@@ -23048,6 +23050,21 @@ async function handleEnterpriseAdmin(
   req: NextRequest,
   parts: string[],
 ): Promise<NextResponse | null> {
+  if (parts[0] === "daily-operations") {
+    const auth = await requirePermission(req, "dashboard");
+    if (isResponse(auth)) return auth;
+    // Department/portal access is not permission to inspect all teams' bookings.
+    if (!(auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "bookings") || hasPermission(auth, "booking_operations_view")))
+      return error("ليس لديك صلاحية عرض غرفة عمليات الحجوزات", 403);
+    if (req.method !== "GET") return error("غرفة العمليات للعرض فقط", 405);
+    let filters;
+    try { filters = parseDailyOperationsFilters(req.nextUrl.searchParams); }
+    catch (cause) { return error(cause instanceof Error ? cause.message : "مرشحات غير صحيحة", 422, { code: "VALIDATION_ERROR" }); }
+    // Errors propagate to the existing structured API error boundary/request ID.
+    const response = json(await loadDailyOperations(db, filters, ["kosha", "service"]));
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
+  }
   const auth = await requireAnyPermission(req, [
     "dashboard",
     "orders",

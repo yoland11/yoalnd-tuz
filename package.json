@@ -10,6 +10,8 @@
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "typecheck": "tsc --noEmit",
+    "test:booking-daily-operations": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-daily-operations.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-daily-operations-store.ts && node ./scripts/test-booking-daily-operations-route.cjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-daily-operations-ui.tsx",
+    "test:booking-daily-operations-browser": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-daily-operations-browser.ts",
     "test:employee-salaries": "node ./scripts/test-employee-salary-logic.mjs",
     "test:staff-password-toggle": "node ./scripts/test-staff-password-toggle.mjs",
     "test:staff-permissions": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-staff-permissions.ts",
