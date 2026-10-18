@@ -30,6 +30,7 @@ const steps = [
   ["Kosha preparation booking cards", "pnpm", ["run", "test:preparation-cards"]],
   ["Kosha equipment and decimal inventory", "pnpm", ["run", "test:kosha-equipment"]],
   ["Quantity-based assets", "pnpm", ["run", "test:quantity-assets"]],
+  ["Equipment custody transactions and ownership", "pnpm", ["run", "test:custody-safety"]],
   ["Asset list thumbnails", "pnpm", ["run", "test:asset-list"]],
   ["Report PDF download", "pnpm", ["run", "test:report-pdf"]],
   ["Product details analytics", "pnpm", ["run", "test:product-insights"]],

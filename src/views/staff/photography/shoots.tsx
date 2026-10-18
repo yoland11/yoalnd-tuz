@@ -720,14 +720,14 @@ function ShootEquipment({
                 {asset.checkedOut ? (
                   <>
                     <Button size="sm" variant="outline" className="flex-1" disabled={busy}
-                      onClick={() => operate({ mode: "return", productId: asset.productId, problem: "none" }, "تم إرجاع المعدة")}>
+                      onClick={() => operate({ mode: "return", productId: asset.productId, custodyId: asset.custodyId ?? undefined, problem: "none" }, "تم إرجاع المعدة")}>
                       إرجاع
                     </Button>
                     <Button size="sm" variant="outline" className="flex-1 text-destructive" disabled={busy}
                       onClick={() => {
                         const note = window.prompt("صف العطل أو التلف:");
                         if (note === null) return;
-                        operate({ mode: "return", productId: asset.productId, problem: "broken", note }, "تم تسجيل بلاغ الصيانة");
+                        operate({ mode: "return", productId: asset.productId, custodyId: asset.custodyId ?? undefined, problem: "broken", note }, "تم تسجيل بلاغ الصيانة");
                       }}>
                       بلاغ تلف
                     </Button>

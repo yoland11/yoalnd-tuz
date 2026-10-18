@@ -483,7 +483,7 @@ function AssetsSection({ orderId, cancelled }: { orderId: number; cancelled: boo
   const checkout = (a: PhotographyAsset) => op({ mode: "checkout", productId: a.productId }, "تم إخراج الأصل");
   async function confirmReturn() {
     if (!ret) return;
-    const ok = await op({ mode: "return", productId: ret.asset.productId, problem: ret.problem, note: ret.note || undefined, cost: ret.problem === "broken" ? Number(ret.cost) || 0 : undefined, managerApproval: ret.problem === "lost" ? ret.approval : undefined }, "تم استلام الأصل");
+    const ok = await op({ mode: "return", productId: ret.asset.productId, custodyId: ret.asset.custodyId ?? undefined, problem: ret.problem, note: ret.note || undefined, cost: ret.problem === "broken" ? Number(ret.cost) || 0 : undefined, managerApproval: ret.problem === "lost" ? ret.approval : undefined }, "تم استلام الأصل");
     if (ok) setRet(null);
   }
 

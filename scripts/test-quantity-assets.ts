@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { PgDialect } from "drizzle-orm/pg-core";
+import { executeIndividualCustody, IndividualCustodyError } from "../src/server/individual-custody";
 import {
   adjustQuantityValuation,
   availabilityForDay,
@@ -296,6 +297,31 @@ const expectError = async (work: () => Promise<unknown>, pattern: RegExp, status
 };
 
 async function run() {
+  // The individual adapter was extracted from api.ts. Verify its real guard,
+  // not the old location/exact wording of an Arabic error message.
+  const custodyReads: string[] = [];
+  const individualTx = {
+    execute: async (statement: any) => {
+      const query = dialect.sqlToQuery(statement);
+      assert.match(query.sql, /^select .*from products where id = .*for update$/);
+      assert.deepEqual(query.params, [369]);
+      custodyReads.push(query.sql);
+      return { rows: [{ id: 369, name: "LED", name_ar: "إضاءة", cost_price: "100", is_active: true }] };
+    },
+  };
+  await assert.rejects(() => executeIndividualCustody(individualTx, {
+    mode: "checkout", productId: 369, actorId: 1, staffId: 2,
+    source: { kind: "standalone" }, checklist: { confirmed: true },
+  }, {
+    isQuantityTracked: async (connection, productId) => {
+      assert.equal(connection, individualTx); assert.equal(productId, 369);
+      assert.equal(custodyReads.length, 1, "fresh quantity guard follows canonical product lock");
+      return true;
+    },
+    audit: async () => { assert.fail("quantity asset must not create individual custody/audit"); },
+  }), (cause: unknown) => cause instanceof IndividualCustodyError && cause.status === 409);
+  assert.equal(custodyReads.length, 1, "quantity asset refused before individual custody writes");
+  console.log("PASS  quantity asset cannot bypass its original engine through individual custody");
   const db = createDatabase();
 
   // Schema not applied yet: the feature is inert, legacy assets keep working.

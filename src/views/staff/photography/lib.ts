@@ -540,6 +540,7 @@ export function readPositionOnce(timeoutMs = 8000): Promise<{ lat: number; lng: 
 
 export type PhotographyAsset = {
   productId: number;
+  custodyId?: number | null;
   name: string;
   assetCode: string;
   barcode: string | null;

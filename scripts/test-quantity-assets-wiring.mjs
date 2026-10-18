@@ -47,7 +47,8 @@ for (const route of ['quantityAction === "tracking"', 'quantityAction === "adjus
   assert.ok(api.includes(route), `missing ${route}`);
 assert.match(api, /TOTAL_CHANGING_ADJUSTMENTS\.includes\(input\.kind\) && !managerRole/);
 assert.match(api, /كمية الأصل متعدد الكمية لا تُعدّل من بطاقة المنتج/);
-assert.match(api, /هذا أصل متعدد الكمية؛ أخرجه من «أصول الحجز»/);
+// Individual custody quantity rejection is executed by test-quantity-assets.ts;
+// extraction to a transaction-only helper must not depend on message placement.
 assert.match(api, /مجموعات العهدة تتبع القطع الفردية/);
 assert.match(api, /action !== "inspection" &&\s*\(await quantityProfilesFor\(db, \[productId\]\)\)\.has\(productId\)/);
 assert.match(api, /quantityTracked: \(await quantityProfilesFor\(db, \[productId\]\)\)\.has\(productId\)/);

@@ -7,6 +7,7 @@ import { LiveScanner } from "../staff/live-scanner";
 
 type LinkedAsset = {
   productId: number;
+  custodyId?: number | null;
   name: string;
   assetCode: string;
   barcode?: string | null;
@@ -115,7 +116,7 @@ export function LinkedAssetsPanel({ entityType, entityId }: { entityType: string
     if (problem === "lost" && !managerApproval) return flash(false, "الفقدان يتطلب اعتماد المدير");
     setBusy(true);
     try {
-      await adminFetch(`/admin/asset-links`, { method: "POST", body: JSON.stringify({ mode: "return", entityType, entityId, productId: returnFor.productId, problem, note: note || undefined, cost: cost ? Number(cost) : undefined, managerApproval: managerApproval || undefined }) });
+      await adminFetch(`/admin/asset-links`, { method: "POST", body: JSON.stringify({ mode: "return", entityType, entityId, productId: returnFor.productId, custodyId: returnFor.custodyId ?? undefined, problem, note: note || undefined, cost: cost ? Number(cost) : undefined, managerApproval: managerApproval || undefined }) });
       flash(true, `تم استلام ${returnFor.name}`);
       setReturnFor(null);
       await load();

@@ -12,6 +12,12 @@ import {
 } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { staffPhotoUpdateSchema } from "./staff-photo";
+import {
+  executeIndividualCustody,
+  IndividualCustodyError,
+  type IndividualCustodyInput,
+} from "./individual-custody";
+import { sourceCustodyIds, assetPassportHasCustodyHold } from "./custody-source-safety";
 import { readKoshaEquipment, saveKoshaEquipment, koshaEquipmentCatalog, bookingKoshaEquipment, KoshaEquipmentError } from "./kosha-equipment";
 import {
   ProductInsightsError,
@@ -24524,177 +24530,8 @@ async function handleEnterpriseAdmin(
       });
       return json({ data: rows });
     }
-    if (method === "POST") {
-      const data = await body(req);
-      const productId = optionalPositiveId(data?.productId);
-      const staffId = optionalPositiveId(data?.staffId);
-      const quantity = Math.max(1, Math.round(Number(data?.quantity ?? 1)));
-      if (!productId || !staffId) return error("اختر الموظف والقطعة", 400);
-      const [product, staff] = await Promise.all([
-        db.query.productsTable.findFirst({
-          where: eq(productsTable.id, productId),
-        }),
-        db.query.staffTable.findFirst({ where: eq(staffTable.id, staffId) }),
-      ]);
-      if (!product || !staff) return error("الموظف أو القطعة غير موجودة", 404);
-      // Custody rows are per piece; a quantity asset leaves through the booking
-      // quantity checkout so its warehouse balance and counters stay exact.
-      if ((await quantityProfilesFor(db, [productId])).has(productId))
-        return error(
-          "هذا أصل متعدد الكمية؛ أخرجه من «أصول الحجز» أو شاشة المسح بإدخال الكمية",
-          409,
-        );
-
-      // Emergency Lock enforcement — a locked / retired asset cannot be checked out until a manager unlocks it.
-      await ensureAdminExtensionsTables();
-      const issueProfile = await db.query.assetProfilesTable.findFirst({
-        where: eq(assetProfilesTable.productId, productId),
-      });
-      if (
-        issueProfile &&
-        [
-          "maintenance",
-          "lost",
-          "retired",
-          "locked",
-          "sold",
-          "disposed",
-        ].includes(issueProfile.status)
-      )
-        return error(`حالة الأصل (${issueProfile.status}) تمنع إخراجه`, 423);
-
-      // Smart Checklist gating — block checkout unless the pre-checkout checklist is confirmed, or a reason for a missing item is written.
-      const checklistConfirmed = data?.checklistConfirmed === true;
-      const checklistReason = nullableText(data?.checklistReason);
-      if (!checklistConfirmed && !checklistReason) {
-        return json(
-          {
-            error: "يجب تأكيد قائمة الفحص قبل إخراج الأصل، أو كتابة سبب النقص",
-            requiresChecklist: true,
-            checklist: assetChecklistFor(product),
-          },
-          422,
-        );
-      }
-
-      const signatureUrl = data?.signature
-        ? await persistMediaValue(data.signature, "enterprise/signatures")
-        : nullableText(data?.signatureUrl);
-      const [row] = await db
-        .insert(equipmentCustodyTable)
-        .values({
-          productId,
-          staffId,
-          quantity,
-          signatureUrl,
-          notes: nullableText(data?.notes),
-          issuedBy: auth.id,
-        })
-        .returning();
-      await db
-        .update(assetPassportsTable)
-        .set({
-          lastStaffId: staffId,
-          lastLocation: `بعهدة ${staff.fullName || staff.username}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(assetPassportsTable.productId, productId));
-      await recordEnterpriseMutation(
-        req,
-        auth,
-        "equipment_issued",
-        "product",
-        productId,
-        "تم تسليم معدات لموظف",
-        { custodyId: row.id, staffId, quantity },
-      );
-      void addEntityTimeline({
-        entityType: "asset",
-        entityId: productId,
-        type: "checkout",
-        title: "📤 خروج الأصل بعهدة موظف",
-        body: `${staff.fullName || staff.username}${checklistReason ? ` · سبب نقص الفحص: ${checklistReason}` : " · اكتملت قائمة الفحص"}`,
-        actor: erpActorFromAdmin(auth),
-        metadata: {
-          custodyId: row.id,
-          staffId,
-          checklistConfirmed,
-          checklistReason,
-        },
-      });
-      await createNotification({
-        staffId,
-        type: "equipment_custody",
-        title: "معدات جديدة بعهدتك",
-        body: product.nameAr || product.name,
-        entityType: "product",
-        entityId: productId,
-        href: "/admin/command-center",
-      });
-      return json(row, 201);
-    }
-    if (method === "PATCH" && parts[1]) {
-      const id = int(parts[1]);
-      if (!id) return error("معرف العهدة غير صحيح", 400);
-      const current = await db.query.equipmentCustodyTable.findFirst({
-        where: eq(equipmentCustodyTable.id, id),
-      });
-      if (!current) return error("العهدة غير موجودة", 404);
-      if (current.status === "returned") return json(current);
-      const [row] = await db
-        .update(equipmentCustodyTable)
-        .set({
-          status: "returned",
-          returnedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(equipmentCustodyTable.id, id))
-        .returning();
-      await db
-        .update(assetPassportsTable)
-        .set({
-          lastStaffId: null,
-          lastLocation: "داخل المخزن",
-          updatedAt: new Date(),
-        })
-        .where(eq(assetPassportsTable.productId, current.productId));
-      const returnedProfile = await db.query.assetProfilesTable.findFirst({
-        where: eq(assetProfilesTable.productId, current.productId),
-      });
-      if (
-        returnedProfile &&
-        ![
-          "maintenance",
-          "lost",
-          "retired",
-          "locked",
-          "sold",
-          "disposed",
-        ].includes(returnedProfile.status)
-      )
-        await db
-          .update(assetProfilesTable)
-          .set({ status: "active", updatedAt: new Date() })
-          .where(eq(assetProfilesTable.id, returnedProfile.id));
-      await recordEnterpriseMutation(
-        req,
-        auth,
-        "equipment_returned",
-        "product",
-        current.productId,
-        "تم إرجاع المعدات",
-        { custodyId: id, staffId: current.staffId, quantity: current.quantity },
-      );
-      void addEntityTimeline({
-        entityType: "asset",
-        entityId: current.productId,
-        type: "checkin",
-        title: "📥 إرجاع الأصل إلى المخزن",
-        actor: erpActorFromAdmin(auth),
-        metadata: { custodyId: id },
-      });
-      return json(row);
-    }
+    if (method === "POST" || (method === "PATCH" && parts[1]))
+      return handleIndividualCustodyAdmin(req, auth, parts);
   }
 
   if (section === "cost-estimates") {
@@ -31004,6 +30841,7 @@ const BookingAssetActionSchema = z.object({
     "inspect",
   ]),
   productId: z.coerce.number().int().positive(),
+  custodyId: z.coerce.number().int().positive().optional(),
   quantity: z.coerce.number().int().positive().max(100000).default(1),
   usageHours: z.coerce.number().min(0).max(100000).optional(),
   problem: z.enum(["none", "damaged", "missing"]).default("none"),
@@ -31595,6 +31433,7 @@ async function bookingOperationAssets(reference: BookingOperationsReference) {
     const currentValue = Number(profile?.currentValue ?? purchaseValue);
     return {
       productId: item.productId,
+      custodyId: item.custodyId ?? null,
       name: product?.nameAr || product?.name || `#${item.productId}`,
       assetCode: `AJN-A${String(item.productId).padStart(6, "0")}`,
       serialNumber: profile?.serialNumber ?? passport?.serialNumber ?? null,
@@ -31841,6 +31680,9 @@ async function executeLockedBookingAssetAction(
       const profile = await db.query.assetProfilesTable.findFirst({
         where: eq(assetProfilesTable.productId, input.productId),
       });
+      const passport = await db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, input.productId) });
+      if (profile?.deletedAt || assetPassportHasCustodyHold(passport))
+        throw new IndividualCustodyError("الأصل مؤرشف أو موقوف للفحص", 423);
       if (
         profile &&
         [
@@ -31882,27 +31724,35 @@ async function executeLockedBookingAssetAction(
         ),
       });
       if (active) return error("الأصل خارج المستودع مسبقاً", 409);
+      let fixedReservation: any;
+      if (current.source === "fixed_custody") {
+        const found = await db.execute(sql`select r.*,g.name as group_name from employee_custody_reservations r join employee_custody_groups g on g.id=r.group_id where r.booking_type=${reference.entityType} and r.booking_id=${reference.id} and r.product_id=${input.productId} and r.status='reserved' for update of r`);
+        fixedReservation = (found.rows as any[]).find((row) => Number(row.product_id) === input.productId && row.status === "reserved");
+        if (!fixedReservation || (current.custodyEmployeeId && Number(current.custodyEmployeeId) !== Number(fixedReservation.staff_id)))
+          throw new IndividualCustodyError("لم يتم تأكيد حجز عهدة الموظف لهذه القطعة", 409);
+      }
+      const receivingStaffId = fixedReservation ? Number(fixedReservation.staff_id) : auth.id;
       const [custody] = await db
         .insert(equipmentCustodyTable)
         .values({
           productId: input.productId,
-          staffId: auth.id,
+          staffId: receivingStaffId,
           quantity: input.quantity,
           issuedBy: auth.id,
-          notes: `${reference.entityType} #${reference.id}`,
+          notes: fixedReservation ? `حجز ${reference.entityType} #${reference.id} · مجموعة عهدة ${fixedReservation.group_name}` : `${reference.entityType} #${reference.id}`,
         })
         .returning();
       await db
         .insert(assetPassportsTable)
         .values({
           productId: input.productId,
-          lastStaffId: auth.id,
+          lastStaffId: receivingStaffId,
           lastLocation: `حجز #${reference.id}`,
         })
         .onConflictDoUpdate({
           target: assetPassportsTable.productId,
           set: {
-            lastStaffId: auth.id,
+            lastStaffId: receivingStaffId,
             lastLocation: `حجز #${reference.id}`,
             updatedAt: new Date(),
           },
@@ -31914,29 +31764,49 @@ async function executeLockedBookingAssetAction(
         checkedOutAt: new Date().toISOString(),
         scannedCode: input.scannedCode ?? null,
       };
+      if (fixedReservation)
+        await db.execute(sql`update employee_custody_reservations set status='checked_out',checkout_at=now(),condition_out=${"good"},signature_url=${null},updated_at=now() where id=${fixedReservation.id}`);
     }
     if (input.mode === "return") {
-      const active = await db.query.equipmentCustodyTable.findFirst({
-        where: and(
-          eq(equipmentCustodyTable.productId, input.productId),
-          eq(equipmentCustodyTable.status, "issued"),
-        ),
-        orderBy: [desc(equipmentCustodyTable.issuedAt)],
-      });
-      if (active)
-        await db
+      if (index < 0) throw new IndividualCustodyError("الأصل ليس ضمن معدات هذا الحجز", 409);
+      const owns = (issue: any) => issue?.productId === input.productId && ((!String(issue.notes ?? "").trim() && current.custodyId === issue.id) || (current.source === "fixed_custody"
+        ? String(issue.notes ?? "").startsWith(`حجز ${reference.entityType} #${reference.id} · مجموعة عهدة `) && (!current.custodyEmployeeId || issue.staffId === Number(current.custodyEmployeeId))
+        : issue.notes === `${reference.entityType} #${reference.id}`));
+      const custodyId = input.custodyId ?? current.custodyId;
+      let original = custodyId ? await db.query.equipmentCustodyTable.findFirst({ where: eq(equipmentCustodyTable.id, custodyId) }) : undefined;
+      if (custodyId && (!original || !owns(original))) throw new IndividualCustodyError("العهدة الأصلية لا تخص هذا الحجز", 409);
+      if (original?.status === "returned") return json({ ok: true, productId: input.productId, name: product.nameAr || product.name });
+      const issued = await db.query.equipmentCustodyTable.findMany({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")), limit: 2 });
+      if (issued.length !== 1 || !owns(issued[0]) || (original && original.id !== issued[0].id))
+        throw new IndividualCustodyError("عهدة الإرجاع لا تطابق صرف هذا الحجز", 409);
+      original = issued[0];
+      if (input.custodyId === undefined) {
+        const history = await db.query.equipmentCustodyTable.findMany({ where: and(eq(equipmentCustodyTable.productId, input.productId), original.notes == null ? undefined : eq(equipmentCustodyTable.notes, original.notes)), limit: 2 });
+        if (history.length !== 1) throw new IndividualCustodyError("حدّث قائمة المعدات وحدد العهدة الأصلية قبل الإرجاع", 409);
+      }
+      if (input.quantity !== original.quantity) throw new IndividualCustodyError("يجب مطابقة كمية العهدة الأصلية قبل الإرجاع", 409);
+      const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, input.productId) });
+      const passport = await db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, input.productId) });
+      if (passport?.lastStaffId != null && passport.lastStaffId !== original.staffId) throw new IndividualCustodyError("حامل الأصل لا يطابق العهدة الأصلية", 409);
+      const manager = ["admin", "manager", "main_admin", "super_admin", "main_manager"].includes(String(auth.role).toLowerCase());
+      if (input.problem !== "none" && !manager && !hasPermission(auth, "asset_damage_record") && !hasPermission(auth, "koshat_tasks.report_damage")) throw new IndividualCustodyError("ليس لديك صلاحية تسجيل التلف", 403);
+      if (input.problem === "missing" && !manager && !hasPermission(auth, "asset_damage_approve")) throw new IndividualCustodyError("ليس لديك صلاحية اعتماد الفقدان", 403);
+      const terminal = profile?.deletedAt || ["lost", "retired", "locked", "sold", "disposed"].includes(String(profile?.status));
+      let fixedReservation: any;
+      if (current.source === "fixed_custody") {
+        const found = await db.execute(sql`select r.* from employee_custody_reservations r where r.booking_type=${reference.entityType} and r.booking_id=${reference.id} and r.product_id=${input.productId} and r.status='checked_out' for update`);
+        fixedReservation = (found.rows as any[]).find((row) => Number(row.product_id) === input.productId && row.status === "checked_out" && Number(row.staff_id) === original!.staffId);
+        if (!fixedReservation) throw new IndividualCustodyError("سجل صرف العهدة الجماعية لا يطابق الإرجاع", 409);
+      }
+      await db
           .update(equipmentCustodyTable)
           .set({
             status: "returned",
             returnedAt: new Date(),
             updatedAt: new Date(),
           })
-          .where(eq(equipmentCustodyTable.id, active.id));
-      if (input.problem !== "none" && !input.description)
-        return error("اكتب وصف التلف أو النقص", 422);
-      if (input.problem === "missing" && !input.managerApproval)
-        return error("تسجيل النقص يتطلب اعتماد المدير", 422);
-      if (input.problem === "damaged")
+          .where(eq(equipmentCustodyTable.id, original.id));
+      if (input.problem === "damaged" && !terminal)
         await db
           .insert(assetProfilesTable)
           .values({
@@ -31949,7 +31819,7 @@ async function executeLockedBookingAssetAction(
             target: assetProfilesTable.productId,
             set: { status: "maintenance", updatedAt: new Date() },
           });
-      if (input.problem === "missing")
+      if (input.problem === "missing" && !terminal)
         await db
           .insert(assetProfilesTable)
           .values({
@@ -31962,8 +31832,14 @@ async function executeLockedBookingAssetAction(
             target: assetProfilesTable.productId,
             set: { status: "lost", updatedAt: new Date() },
           });
+      const metadata = { ...(passport?.metadata ?? {}), ...(input.problem !== "none" ? { damageHold: true, inspectionBlocked: true } : {}) };
+      const lastLocation = input.problem === "missing" ? "مفقود" : "بانتظار فحص الإرجاع";
+      await db.insert(assetPassportsTable).values({ productId: input.productId, lastStaffId: null, lastLocation, metadata }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: null, lastLocation, metadata, updatedAt: new Date() } });
+      if (fixedReservation)
+        await db.execute(sql`update employee_custody_reservations set status=${input.problem === "missing" ? "missing" : "returned"},returned_at=now(),condition_in=${input.problem === "none" ? "good" : input.problem},damage_reason=${nullableText(input.description)},damage_photo_url=${input.photoUrls[0] ?? null},updated_at=now() where id=${fixedReservation.id}`);
       next = {
         ...next,
+        custodyId: original.id,
         stage: "returned",
         returnedAt: new Date().toISOString(),
         problem: input.problem,
@@ -31982,7 +31858,25 @@ async function executeLockedBookingAssetAction(
       const passport: any = await db.query.assetPassportsTable.findFirst({
         where: eq(assetPassportsTable.productId, input.productId),
       });
+      const issued = await db.query.equipmentCustodyTable.findMany({
+        where: and(
+          eq(equipmentCustodyTable.productId, input.productId),
+          eq(equipmentCustodyTable.status, "issued"),
+        ),
+        limit: 1,
+      });
+      if (issued.length || passport?.lastStaffId != null)
+        throw new IndividualCustodyError("لا يمكن فحص إرجاع قديم مع وجود عهدة أو مسؤولية صرف حالية", 409);
       const metadata = { ...(passport?.metadata ?? {}) } as Record<string, any>;
+      // Inspection is not an asset reactivation or a recovery of a lost item.
+      const protectedProfile = Boolean(profile?.deletedAt) || ["lost", "retired", "locked", "sold", "disposed"].includes(String(profile?.status));
+      const held = metadata.inspectionBlocked === true || metadata.damageHold === true || profile?.status === "maintenance";
+      const inspectionStatus = protectedProfile ? profile.status
+        : input.problem === "missing" ? "lost"
+          : input.problem === "damaged" || held ? "maintenance" : "active";
+      const inspectionLocation = protectedProfile
+        ? passport?.lastLocation ?? (inspectionStatus === "lost" ? "مفقود" : "يتطلب مراجعة")
+        : inspectionStatus === "lost" ? "مفقود" : "داخل المخزن";
       const alreadyRecorded = Boolean(current.usageRecordedAt);
       const usageHours = Number(
         input.usageHours ?? metadata.usageHoursPerBooking ?? 0,
@@ -32017,24 +31911,14 @@ async function executeLockedBookingAssetAction(
           purchasePrice: String(purchase),
           currentValue: String(nextValue),
           usageCount: nextUsageCount,
-          status:
-            input.problem === "damaged"
-              ? "maintenance"
-              : input.problem === "missing"
-                ? "lost"
-                : "active",
+          status: inspectionStatus,
         })
         .onConflictDoUpdate({
           target: assetProfilesTable.productId,
           set: {
             currentValue: String(nextValue),
             usageCount: nextUsageCount,
-            status:
-              input.problem === "damaged"
-                ? "maintenance"
-                : input.problem === "missing"
-                  ? "lost"
-                  : "active",
+            status: inspectionStatus,
             updatedAt: new Date(),
           },
         });
@@ -32043,7 +31927,7 @@ async function executeLockedBookingAssetAction(
         .values({
           productId: input.productId,
           lastStaffId: null,
-          lastLocation: "داخل المخزن",
+          lastLocation: inspectionLocation,
           metadata: {
             ...metadata,
             usageHours:
@@ -32059,7 +31943,7 @@ async function executeLockedBookingAssetAction(
           target: assetPassportsTable.productId,
           set: {
             lastStaffId: null,
-            lastLocation: "داخل المخزن",
+            lastLocation: inspectionLocation,
             metadata: {
               ...metadata,
               usageHours:
@@ -32168,9 +32052,97 @@ async function logCustodyAudit(input: {
   previous?: unknown;
   next?: unknown;
   auth: AdminUser;
-}) {
-  await db.execute(sql`insert into employee_custody_audit(group_id,product_id,staff_id,booking_type,booking_id,action,previous_value,new_value,actor_id,actor_name)
+}, connection: Pick<typeof db, "execute"> = db) {
+  await connection.execute(sql`insert into employee_custody_audit(group_id,product_id,staff_id,booking_type,booking_id,action,previous_value,new_value,actor_id,actor_name)
     values(${input.groupId ?? null},${input.productId ?? null},${input.staffId ?? null},${input.bookingType ?? null},${input.bookingId ?? null},${input.action},${JSON.stringify(input.previous ?? {})}::jsonb,${JSON.stringify(input.next ?? {})}::jsonb,${input.auth.id},${input.auth.fullName || input.auth.username})`);
+}
+
+/** Existing schema preflights run before opening a pooled transaction. */
+async function runIndividualCustody(auth: AdminUser, input: IndividualCustodyInput) {
+  await ensureEnterprisePhase5Tables();
+  await ensureAdminExtensionsTables();
+  await ensureCustodyGroupTables();
+  const manager = ["admin", "manager", "main_admin", "super_admin", "main_manager"].includes(String(auth.role ?? "").toLowerCase());
+  return db.transaction(async (tx) => executeIndividualCustody(tx, {
+    ...input,
+    actorId: auth.id,
+    canRecordDamage: auth.isActive && (manager || hasPermission(auth, "asset_damage_record")),
+    canApproveLoss: auth.isActive && (manager || hasPermission(auth, "asset_damage_approve")),
+  }, {
+    isQuantityTracked: async (connection, productId) => (await quantityProfilesFor(connection as Pick<typeof db, "execute">, [productId])).has(productId),
+    audit: async (connection, entry) => logCustodyAudit({
+      productId: entry.productId,
+      staffId: entry.staffId,
+      bookingType: entry.source.kind === "linked" ? entry.source.entityType : null,
+      bookingId: entry.source.kind === "linked" ? entry.source.entityId : null,
+      action: entry.action,
+      previous: entry.previous,
+      next: entry.next,
+      auth,
+    }, connection as Pick<typeof db, "execute">),
+  }));
+}
+
+/** Translate only known custody rule failures; database failures retain the API's safe outer error path. */
+function individualCustodyErrorResponse(req: NextRequest, cause: IndividualCustodyError, extra: Record<string, unknown> = {}) {
+  const requestId = makeRequestId(req.headers.get("x-request-id"));
+  console.warn("AJN custody operation rejected", { requestId, path: req.nextUrl.pathname, method: req.method, code: cause.code, status: cause.status });
+  const code: ApiErrorCode = cause.status === 403 ? "PERMISSION_DENIED" : cause.status === 404 ? "NOT_FOUND" : [409, 423].includes(cause.status) ? "CONFLICT" : "VALIDATION_ERROR";
+  return json({ ...createApiErrorPayload({ message: cause.message, status: cause.status, requestId, code, retryable: false }), ...extra }, cause.status, { "x-request-id": requestId });
+}
+
+async function handleIndividualCustodyAdmin(req: NextRequest, auth: AdminUser, parts: string[]) {
+  if (req.method === "POST") {
+    const data = await body(req);
+    const productId = optionalPositiveId(data?.productId);
+    const staffId = optionalPositiveId(data?.staffId);
+    if (!productId || !staffId) return error("اختر الموظف والقطعة", 400);
+    // This read is only for the existing checklist display. Authoritative
+    // product, staff, status and custody decisions are re-read under the lock.
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+    if (!product) return error("القطعة غير موجودة", 404);
+    const checklistConfirmed = data?.checklistConfirmed === true;
+    const checklistReason = nullableText(data?.checklistReason);
+    const signatureUrl = data?.signature
+      ? await persistMediaValue(data.signature, "enterprise/signatures")
+      : nullableText(data?.signatureUrl);
+    let result;
+    try {
+      result = await runIndividualCustody(auth, {
+        mode: "checkout", productId, actorId: auth.id,
+        source: { kind: "standalone" }, staffId,
+        quantity: Number(data?.quantity ?? 1), signatureUrl,
+        notes: nullableText(data?.notes),
+        checklist: { confirmed: checklistConfirmed, reason: checklistReason },
+      });
+    } catch (cause) {
+      if (cause instanceof IndividualCustodyError && cause.code === "CUSTODY_CHECKLIST_REQUIRED")
+        return individualCustodyErrorResponse(req, cause, { requiresChecklist: true, checklist: assetChecklistFor(product) });
+      throw cause;
+    }
+    const { row } = result;
+    if (!result.changed) return json(row);
+    await recordEnterpriseMutation(req, auth, "equipment_issued", "product", productId, "تم تسليم معدات لموظف", { custodyId: row.id, staffId, quantity: row.quantity });
+    void addEntityTimeline({
+      entityType: "asset", entityId: productId, type: "checkout", title: "📤 خروج الأصل بعهدة موظف",
+      body: `${result.staffName}${checklistReason ? ` · سبب نقص الفحص: ${checklistReason}` : " · اكتملت قائمة الفحص"}`,
+      actor: erpActorFromAdmin(auth), metadata: { custodyId: row.id, staffId, checklistConfirmed, checklistReason },
+    });
+    await createNotification({ staffId, type: "equipment_custody", title: "معدات جديدة بعهدتك", body: result.product.name, entityType: "product", entityId: productId, href: "/admin/command-center" });
+    return json(row, 201);
+  }
+  const id = int(parts[1]);
+  if (!id) return error("معرف العهدة غير صحيح", 400);
+  // Discover only the lock key. The original custody ID/source/status is
+  // validated again in the transaction, including already-returned retries.
+  const current = await db.query.equipmentCustodyTable.findFirst({ where: eq(equipmentCustodyTable.id, id) });
+  if (!current) return error("العهدة غير موجودة", 404);
+  const result = await runIndividualCustody(auth, { mode: "return", productId: current.productId, actorId: auth.id, source: { kind: "standalone" }, custodyId: id });
+  if (result.changed) {
+    await recordEnterpriseMutation(req, auth, "equipment_returned", "product", result.row.productId, "تم إرجاع المعدات", { custodyId: id, staffId: result.row.staffId, quantity: result.row.quantity });
+    void addEntityTimeline({ entityType: "asset", entityId: result.row.productId, type: "checkin", title: "📥 إرجاع الأصل إلى المخزن", actor: erpActorFromAdmin(auth), metadata: { custodyId: id } });
+  }
+  return json(result.row);
 }
 
 async function custodyAvailability(
@@ -32179,8 +32151,9 @@ async function custodyAvailability(
   endAt: Date,
   bookingType?: string,
   bookingId?: number,
+  connection: Pick<typeof db, "execute"> = db,
 ) {
-  const result: any = await db.execute(sql`
+  const result: any = await connection.execute(sql`
     select p.id, p.is_active, ap.status as asset_status, ap.deleted_at, pass.metadata,
       exists(select 1 from equipment_custody ec where ec.product_id=p.id and ec.status='issued') as is_checked_out,
       (select concat(r.booking_type,' #',r.booking_id) from employee_custody_reservations r
@@ -32223,9 +32196,10 @@ async function custodyPreview(
   endAt: Date,
   bookingType?: string,
   bookingId?: number,
+  connection: Pick<typeof db, "execute"> = db,
 ) {
   if (!staffIds.length) return [];
-  const result: any = await db.execute(sql`
+  const result: any = await connection.execute(sql`
     select g.id as group_id,g.name as group_name,g.group_type,g.staff_id,s.full_name,s.username,s.department,
       a.product_id,coalesce(p.name_ar,p.name) as asset_name,p.barcode,ap.serial_number,ap.status as asset_status,
       pass.qr_token,pass.warehouse_id,pass.shelf_code,pass.metadata
@@ -32254,6 +32228,7 @@ async function custodyPreview(
         endAt,
         bookingType,
         bookingId,
+        connection,
       )),
     })),
   );
@@ -33023,387 +32998,190 @@ async function handleBookingOperations(
     if (method !== "POST") return error("إجراء عهدة الحجز غير مدعوم", 405);
     const data = await body(req);
     const action = String(data?.action ?? "preview");
-    const employeeIds = Array.isArray(data?.employeeIds)
-      ? data.employeeIds.map(Number).filter(Boolean)
-      : savedEmployeeIds;
-    if (action === "set-employees") {
-      if (!canCustody("custody_groups_assign_employee"))
-        return error("ليس لديك صلاحية تعيين موظف العهدة", 403);
-      const before = savedEmployeeIds;
-      if (
-        JSON.stringify([...before].sort()) !==
-        JSON.stringify([...employeeIds].sort())
-      ) {
-        await db.execute(
-          sql`update employee_custody_reservations set status='released',updated_at=now() where booking_type=${reference.entityType} and booking_id=${reference.id} and status='reserved'`,
-        );
-        await logCustodyAudit({
-          bookingType: reference.entityType,
-          bookingId: reference.id,
-          action: "reservation_released",
-          previous: { employeeIds: before },
-          next: { employeeIds },
-          auth,
-        });
-      }
-      await saveBookingOperations(reference, {
-        ...reference.operations,
-        custodyEmployeeIds: employeeIds,
-      });
-      await addEntityTimeline({
-        entityType: reference.entityType,
-        entityId: reference.id,
-        type: "custody_employee_changed",
-        title: "تغيير موظف عهدة الحجز",
-        body: employeeIds.join(", ") || "بدون موظف",
-        actor: erpActorFromAdmin(auth),
-        metadata: { previous: before, next: employeeIds },
-      });
-      return json({
-        ok: true,
-        assets: await custodyPreview(
-          employeeIds,
-          eventStart,
-          eventEnd,
-          reference.entityType,
-          reference.id,
-        ),
-      });
-    }
-    if (action === "reserve") {
-      if (!canCustody("custody_groups_reserve", "asset_reserve"))
-        return error("ليس لديك صلاحية حجز معدات العهدة", 403);
-      const preview = await custodyPreview(
-        employeeIds,
-        eventStart,
-        eventEnd,
-        reference.entityType,
-        reference.id,
-      );
-      const unavailable = preview.filter((row) => !row.available);
-      // Replacing an unexecuted employee selection releases its prior holds; checked
-      // out equipment is intentionally never released automatically.
-      await db.execute(
-        sql`update employee_custody_reservations set status='released',updated_at=now() where booking_type=${reference.entityType} and booking_id=${reference.id} and status='reserved'`,
-      );
-      for (const item of preview.filter((row) => row.available))
-        await db.execute(sql`
-        insert into employee_custody_reservations(group_id,product_id,staff_id,booking_type,booking_id,start_at,end_at,status,created_by)
-        values(${item.groupId},${item.productId},${item.employeeId},${reference.entityType},${reference.id},${eventStart},${eventEnd},'reserved',${auth.id})
-        on conflict(booking_type,booking_id,product_id) do update set group_id=excluded.group_id,staff_id=excluded.staff_id,start_at=excluded.start_at,end_at=excluded.end_at,status='reserved',updated_at=now()`);
-      const linked = Array.isArray(reference.operations.assets)
-        ? reference.operations.assets.filter(
-            (item: any) => item.source !== "fixed_custody",
-          )
+    if (!["set-employees", "reserve", "release", "checkout", "return"].includes(action))
+      return error("إجراء عهدة الحجز غير مدعوم", 405);
+    const requestedAssets: any[] = Array.isArray(data?.assets) ? data.assets : [];
+    const requestedIds = requestedAssets.map((item) => optionalPositiveId(item?.productId));
+    if (requestedIds.some((id) => !id) || new Set(requestedIds).size !== requestedIds.length)
+      return error("عناصر العهدة مكررة أو غير صحيحة", 422);
+    if (Array.isArray(data?.employeeIds) && data.employeeIds.some((id: unknown) => !optionalPositiveId(id)))
+      return error("معرف الموظف غير صحيح", 422);
+    const effects: Parameters<typeof addEntityTimeline>[0][] = [];
+    const response = await db.transaction(async (transaction) => {
+      const db = transaction;
+      const reject = (message: string, status = 422): never => { throw new IndividualCustodyError(message, status); };
+      if (reference.source === "kosha")
+        await db.execute(sql`select id from kosha_bookings where id=${reference.id} for update`);
+      else
+        await db.execute(sql`select id from service_orders where id=${reference.id} for update`);
+      const fresh = reference.source === "kosha"
+        ? await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, reference.id) })
+        : await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, reference.id) });
+      if (!fresh) throw new IndividualCustodyError("الحجز غير موجود", 404);
+      if (fresh.archivedAt || ["cancelled", "canceled", "deleted"].includes(String(fresh.status)))
+        reject("الحجز غير متاح لإجراء العهدة", 409);
+      const details = (reference.source === "kosha" ? (fresh as any).bookingDetails : (fresh as any).customFields) ?? {};
+      const ref = { ...reference, row: fresh, details, operations: bookingOperationsState(details), eventDate: fresh.eventDate };
+      const savedIds: number[] = Array.isArray(ref.operations.custodyEmployeeIds) ? ref.operations.custodyEmployeeIds.map(Number).filter((id: number) => Number.isSafeInteger(id) && id > 0) : [];
+      const employeeIds: number[] = Array.isArray(data?.employeeIds) ? [...new Set<number>(data.employeeIds.map(Number))] : savedIds;
+      const time = String(details.eventTime ?? details.event_time ?? ref.operations.eventTime ?? "08:00").slice(0, 5);
+      const start = ref.eventDate ? new Date(String(ref.eventDate).slice(0, 10) + "T" + time + ":00") : new Date();
+      const end = new Date(start.getTime() + 8 * 60 * 60 * 1000);
+      if (!Number.isFinite(start.getTime())) reject("تاريخ أو وقت الحجز غير صحيح");
+      const reservationsResult = await db.execute(sql`select r.*,g.name as group_name,s.full_name,s.username from employee_custody_reservations r join employee_custody_groups g on g.id=r.group_id join staff s on s.id=r.staff_id where r.booking_type=${ref.entityType} and r.booking_id=${ref.id} order by r.id`);
+      const reservations = reservationsResult.rows as any[];
+      const candidates = employeeIds.length
+        ? (await db.execute(sql`select a.product_id from employee_custody_group_assets a join employee_custody_groups g on g.id=a.group_id where a.is_active=true and g.status='active' and g.staff_id in (${sql.join(employeeIds.map((id) => sql`${id}`), sql`, `)})`)).rows as any[]
         : [];
-      linked.push(
-        ...preview
-          .filter((row) => row.available)
-          .map((row) => ({
-            productId: row.productId,
-            quantity: 1,
-            stage: "reserved",
-            source: "fixed_custody",
-            custodyGroupId: row.groupId,
-            custodyEmployeeId: row.employeeId,
-            reservedAt: new Date().toISOString(),
-          })),
-      );
-      await saveBookingOperations(reference, {
-        ...reference.operations,
-        custodyEmployeeIds: employeeIds,
-        assets: linked,
-        custodyReservedAt: new Date().toISOString(),
-      });
-      for (const item of preview.filter((row) => row.available)) {
-        await logCustodyAudit({
-          groupId: item.groupId,
-          productId: item.productId,
-          staffId: item.employeeId,
-          bookingType: reference.entityType,
-          bookingId: reference.id,
-          action: "booking_reservation_created",
-          next: { status: "reserved", startAt: eventStart, endAt: eventEnd },
-          auth,
-        });
-        await addEntityTimeline({
-          entityType: "asset",
-          entityId: item.productId,
-          type: "custody_booking_reserved",
-          title: "محجوز للحجز",
-          body: `حجز #${reference.id} · بذمة ${item.employeeName}`,
-          actor: erpActorFromAdmin(auth),
-          metadata: {
-            groupId: item.groupId,
-            bookingType: reference.entityType,
-            bookingId: reference.id,
-            staffId: item.employeeId,
-          },
-        });
+      const operationsAssets: any[] = Array.isArray(ref.operations.assets) ? ref.operations.assets : [];
+      const lockIds = [...new Set<number>([
+        ...reservations.map((row) => Number(row.product_id)),
+        ...candidates.map((row) => Number(row.product_id)),
+        ...operationsAssets.map((row) => Number(row.productId)),
+        ...requestedIds.filter((id): id is number => !!id),
+      ])].filter((id) => Number.isSafeInteger(id) && id > 0).sort((a, b) => a - b);
+      for (const productId of lockIds)
+        await db.execute(sql`select id from products where id=${productId} for update`);
+      const quantity = await quantityProfilesFor(db, lockIds);
+      const fixedIds = new Set([...reservations.map((row) => Number(row.product_id)), ...candidates.map((row) => Number(row.product_id))]);
+      if ([...fixedIds].some((id) => quantity.has(id))) reject("عهدة الموظف للقطع الفردية؛ استخدم مسار الحجز بالكمية للأصل متعدد الكمية", 409);
+      const manager = ["admin", "manager", "main_admin", "super_admin", "main_manager"].includes(String(auth.role).toLowerCase());
+      const mayDamage = manager || hasPermission(auth, "asset_damage_record");
+      const mayApproveLoss = manager || hasPermission(auth, "asset_damage_approve");
+      const active = reservations.filter((row) => ["reserved", "checked_out"].includes(row.status));
+      const out = active.filter((row) => row.status === "checked_out");
+      const sourcePrefix = "حجز " + ref.entityType + " #" + ref.id + " · مجموعة عهدة ";
+      const ownIssue = (issue: any, row: any) => !!issue && issue.staffId === Number(row.staff_id) && String(issue.notes ?? "").startsWith(sourcePrefix);
+      const openIssues = (productId: number) => db.query.equipmentCustodyTable.findMany({ where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")), limit: 2 });
+      const save = (assets: any[], extra: Record<string, any> = {}) => saveBookingOperations(ref, { ...ref.operations, assets, ...extra }, db);
+      const releaseReserved = () => db.execute(sql`update employee_custody_reservations set status='released',updated_at=now() where booking_type=${ref.entityType} and booking_id=${ref.id} and status='reserved'`);
+      const preserveOut = (items: any[]) => items.filter((item) => item.source !== "fixed_custody" || out.some((row) => Number(row.product_id) === Number(item.productId)));
+
+      if (action === "set-employees") {
+        if (!canCustody("custody_groups_assign_employee")) reject("ليس لديك صلاحية تعيين موظف العهدة", 403);
+        if (JSON.stringify([...savedIds].sort((a,b) => a-b)) === JSON.stringify([...employeeIds].sort((a,b) => a-b))) return json({ ok: true });
+        if (out.length) reject("لا يمكن تغيير الموظف قبل إرجاع المعدات التي خرجت", 409);
+        await releaseReserved();
+        await logCustodyAudit({ bookingType: ref.entityType, bookingId: ref.id, action: "reservation_released", previous: { employeeIds: savedIds }, next: { employeeIds }, auth }, db);
+        await save(preserveOut(operationsAssets), { custodyEmployeeIds: employeeIds });
+        effects.push({ entityType: ref.entityType, entityId: ref.id, type: "custody_employee_changed", title: "تغيير موظف عهدة الحجز", body: employeeIds.join(", ") || "بدون موظف", actor: erpActorFromAdmin(auth), metadata: { previous: savedIds, next: employeeIds } });
+        return json({ ok: true, assets: await custodyPreview(employeeIds, start, end, ref.entityType, ref.id, db) });
       }
-      return json({
-        ok: true,
-        reserved: preview.filter((row) => row.available),
-        unavailable,
-      });
-    }
-    if (action === "release") {
-      if (!canCustody("asset_release"))
-        return error("ليس لديك صلاحية تحرير معدات العهدة", 403);
-      await db.execute(
-        sql`update employee_custody_reservations set status='released',updated_at=now() where booking_type=${reference.entityType} and booking_id=${reference.id} and status='reserved'`,
-      );
-      await saveBookingOperations(reference, {
-        ...reference.operations,
-        assets: (reference.operations.assets ?? []).filter(
-          (item: any) => item.source !== "fixed_custody",
-        ),
-      });
-      await logCustodyAudit({
-        bookingType: reference.entityType,
-        bookingId: reference.id,
-        action: "reservation_released",
-        auth,
-      });
-      return json({ ok: true });
-    }
-    const requestedAssets = Array.isArray(data?.assets) ? data.assets : [];
-    const activeRows: any = await db.execute(
-      sql`select r.*,g.name as group_name,s.full_name,s.username from employee_custody_reservations r join employee_custody_groups g on g.id=r.group_id join staff s on s.id=r.staff_id where r.booking_type=${reference.entityType} and r.booking_id=${reference.id} and r.status in ('reserved','checked_out')`,
-    );
-    if (action === "checkout") {
-      if (!canCustody("custody_groups_checkout", "warehouse_issue"))
-        return error("ليس لديك صلاحية تسليم معدات العهدة", 403);
-      const ids = requestedAssets.length
-        ? new Set(requestedAssets.map((x: any) => Number(x.productId)))
-        : new Set(
-            (activeRows.rows ?? []).map((x: any) => Number(x.product_id)),
-          );
-      for (const row of activeRows.rows ?? []) {
-        if (!ids.has(Number(row.product_id))) continue;
-        const available = await custodyAvailability(
-          Number(row.product_id),
-          eventStart,
-          eventEnd,
-          reference.entityType,
-          reference.id,
-        );
-        if (!available.available && available.reason !== "المعدة غير متاحة")
-          return error(`المعدة غير متاحة: ${available.reason}`, 409);
-        const detail =
-          requestedAssets.find(
-            (x: any) => Number(x.productId) === Number(row.product_id),
-          ) ?? {};
-        const existing = await db.query.equipmentCustodyTable.findFirst({
-          where: and(
-            eq(equipmentCustodyTable.productId, Number(row.product_id)),
-            eq(equipmentCustodyTable.status, "issued"),
-          ),
-        });
-        if (!existing)
-          await db.insert(equipmentCustodyTable).values({
-            productId: Number(row.product_id),
-            staffId: Number(row.staff_id),
-            quantity: 1,
-            status: "issued",
-            issuedBy: auth.id,
-            signatureUrl: nullableText(detail.signatureUrl),
-            notes: `حجز ${reference.entityType} #${reference.id} · مجموعة عهدة ${row.group_name}`,
-          });
-        await db.execute(
-          sql`update employee_custody_reservations set status='checked_out',checkout_at=now(),condition_out=${detail.conditionOut ?? "good"},signature_url=${nullableText(detail.signatureUrl)},updated_at=now() where id=${row.id}`,
-        );
-        await db
-          .insert(assetPassportsTable)
-          .values({
-            productId: Number(row.product_id),
-            lastStaffId: Number(row.staff_id),
-            lastLocation: `خرجت للحجز – بذمة ${row.full_name || row.username}`,
-          })
-          .onConflictDoUpdate({
-            target: assetPassportsTable.productId,
-            set: {
-              lastStaffId: Number(row.staff_id),
-              lastLocation: `خرجت للحجز – بذمة ${row.full_name || row.username}`,
-              updatedAt: new Date(),
-            },
-          });
-        await logCustodyAudit({
-          groupId: Number(row.group_id),
-          productId: Number(row.product_id),
-          staffId: Number(row.staff_id),
-          bookingType: reference.entityType,
-          bookingId: reference.id,
-          action: "equipment_checked_out",
-          next: { conditionOut: detail.conditionOut ?? "good" },
-          auth,
-        });
+      if (action === "release") {
+        if (!canCustody("asset_release")) reject("ليس لديك صلاحية تحرير معدات العهدة", 403);
+        if (!active.some((row) => row.status === "reserved")) return json({ ok: true });
+        await releaseReserved();
+        await save(preserveOut(operationsAssets));
+        await logCustodyAudit({ bookingType: ref.entityType, bookingId: ref.id, action: "reservation_released", auth }, db);
+        return json({ ok: true });
       }
-      return json({ ok: true });
-    }
-    if (action === "return") {
-      if (!canCustody("custody_groups_return", "booking_return_confirm"))
-        return error("ليس لديك صلاحية استلام معدات العهدة", 403);
-      const rows = (activeRows.rows ?? []).filter(
-        (row: any) => row.status === "checked_out",
-      );
-      if (
-        requestedAssets.length !== rows.length ||
-        rows.some(
-          (row: any) =>
-            !requestedAssets.find(
-              (x: any) =>
-                Number(x.productId) === Number(row.product_id) && x.condition,
-            ),
-        )
-      )
-        return error("يجب فحص حالة كل معدة قبل تأكيد الاستلام", 422);
-      for (const row of rows) {
-        const detail = requestedAssets.find(
-          (x: any) => Number(x.productId) === Number(row.product_id),
-        );
-        const problem =
-          detail.condition === "missing"
-            ? "missing"
-            : detail.condition === "damaged"
-              ? "damaged"
-              : "none";
-        if (
-          problem !== "none" &&
-          (!detail.damageReason || !detail.damagePhotoUrl)
-        )
-          return error("سبب التلف أو الفقدان وصورته مطلوبان", 422);
-        await db
-          .update(equipmentCustodyTable)
-          .set({
-            status: "returned",
-            returnedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(equipmentCustodyTable.productId, Number(row.product_id)),
-              eq(equipmentCustodyTable.status, "issued"),
-            ),
-          );
-        const product: any = await db.query.productsTable.findFirst({
-          where: eq(productsTable.id, Number(row.product_id)),
-        });
-        const profile: any = await db.query.assetProfilesTable.findFirst({
-          where: eq(assetProfilesTable.productId, Number(row.product_id)),
-        });
-        const passport: any = await db.query.assetPassportsTable.findFirst({
-          where: eq(assetPassportsTable.productId, Number(row.product_id)),
-        });
+      if (action === "reserve") {
+        if (!canCustody("custody_groups_reserve", "asset_reserve")) reject("ليس لديك صلاحية حجز معدات العهدة", 403);
+        if (out.length) reject("يجب إرجاع المعدات التي خرجت قبل إعادة حجزها", 409);
+        const preview = await custodyPreview(employeeIds, start, end, ref.entityType, ref.id, db);
+        if (preview.some((item) => !lockIds.includes(item.productId))) reject("تغيرت معدات الموظف أثناء الحجز؛ أعد المحاولة", 409);
+        if (preview.some((item) => reservations.some((row) => Number(row.product_id) === item.productId && ["returned", "missing"].includes(row.status))))
+          reject("عهدة سابقة مغلقة؛ لا يمكن إعادة كتابة تاريخ صرف وإرجاع الحجز", 409);
+        const unavailable = preview.filter((item) => !item.available);
+        if (unavailable.length) reject("المعدة غير متاحة: " + unavailable.map((item) => item.name + " — " + item.reason).join("، "), 409);
+        const unchanged = preview.length === active.length && preview.every((item) => active.some((row) => row.status === "reserved" && Number(row.product_id) === item.productId && Number(row.staff_id) === item.employeeId && Number(row.group_id) === item.groupId && new Date(row.start_at).getTime() === start.getTime() && new Date(row.end_at).getTime() === end.getTime()));
+        if (unchanged) return json({ ok: true, reserved: preview, unavailable: [] });
+        await releaseReserved();
+        for (const item of preview) {
+          await db.execute(sql`insert into employee_custody_reservations(group_id,product_id,staff_id,booking_type,booking_id,start_at,end_at,status,created_by)
+            values(${item.groupId},${item.productId},${item.employeeId},${ref.entityType},${ref.id},${start},${end},'reserved',${auth.id})
+            on conflict(booking_type,booking_id,product_id) do update set group_id=excluded.group_id,staff_id=excluded.staff_id,start_at=excluded.start_at,end_at=excluded.end_at,status='reserved',updated_at=now()`);
+          await logCustodyAudit({ groupId: item.groupId, productId: item.productId, staffId: item.employeeId, bookingType: ref.entityType, bookingId: ref.id, action: "booking_reservation_created", next: { status: "reserved", startAt: start, endAt: end }, auth }, db);
+          effects.push({ entityType: "asset", entityId: item.productId, type: "custody_booking_reserved", title: "محجوز للحجز", body: "حجز #" + ref.id + " · بذمة " + item.employeeName, actor: erpActorFromAdmin(auth), metadata: { groupId: item.groupId, bookingType: ref.entityType, bookingId: ref.id, staffId: item.employeeId } });
+        }
+        await save([...operationsAssets.filter((item) => item.source !== "fixed_custody"), ...preview.map((item) => ({ productId: item.productId, quantity: 1, stage: "reserved", source: "fixed_custody", custodyGroupId: item.groupId, custodyEmployeeId: item.employeeId, reservedAt: new Date().toISOString() }))], { custodyEmployeeIds: employeeIds, custodyReservedAt: new Date().toISOString() });
+        return json({ ok: true, reserved: preview, unavailable: [] });
+      }
+      if (action === "checkout") {
+        if (!canCustody("custody_groups_checkout", "warehouse_issue")) reject("ليس لديك صلاحية تسليم معدات العهدة", 403);
+        const selected = requestedIds.length ? active.filter((row) => requestedIds.includes(Number(row.product_id))) : active;
+        if (requestedIds.some((id) => !selected.some((row) => Number(row.product_id) === id))) reject("المعدة ليست ضمن عهدة هذا الحجز", 409);
+        const nextAssets = [...operationsAssets];
+        let changed = false;
+        for (const row of selected) {
+          const productId = Number(row.product_id);
+          const issues = await openIssues(productId);
+          const linked = nextAssets.find((item) => Number(item.productId) === productId && item.source === "fixed_custody");
+          if (row.status === "checked_out") {
+            if (issues.length !== 1 || !ownIssue(issues[0], row) || (linked?.custodyId && linked.custodyId !== issues[0].id)) reject("عهدة الصرف لا تطابق مسؤولية الحجز", 409);
+            continue;
+          }
+          if (issues.length) reject("المعدة خرجت بعهدة أخرى", 409);
+          const availability = await custodyAvailability(productId, start, end, ref.entityType, ref.id, db);
+          if (!availability.available) reject("المعدة غير متاحة: " + availability.reason, 409);
+          const detail = requestedAssets.find((item) => Number(item.productId) === productId) ?? {};
+          const [issue] = await db.insert(equipmentCustodyTable).values({ productId, staffId: Number(row.staff_id), quantity: 1, status: "issued", issuedBy: auth.id, signatureUrl: nullableText(detail.signatureUrl), notes: sourcePrefix + row.group_name }).returning();
+          if (!issue) throw new Error("Custody insert returned no row");
+          await db.execute(sql`update employee_custody_reservations set status='checked_out',checkout_at=now(),condition_out=${detail.conditionOut ?? "good"},signature_url=${nullableText(detail.signatureUrl)},updated_at=now() where id=${row.id}`);
+          await db.insert(assetPassportsTable).values({ productId, lastStaffId: Number(row.staff_id), lastLocation: "خرجت للحجز – بذمة " + (row.full_name || row.username) }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: Number(row.staff_id), lastLocation: "خرجت للحجز – بذمة " + (row.full_name || row.username), updatedAt: new Date() } });
+          await logCustodyAudit({ groupId: Number(row.group_id), productId, staffId: Number(row.staff_id), bookingType: ref.entityType, bookingId: ref.id, action: "equipment_checked_out", next: { custodyId: issue.id, conditionOut: detail.conditionOut ?? "good" }, auth }, db);
+          const next = { ...(linked ?? {}), productId, quantity: 1, source: "fixed_custody", custodyGroupId: Number(row.group_id), custodyEmployeeId: Number(row.staff_id), custodyId: issue.id, stage: "out", checkedOutAt: new Date().toISOString() };
+          const index = nextAssets.indexOf(linked);
+          if (index >= 0) nextAssets[index] = next; else nextAssets.push(next);
+          changed = true;
+        }
+        if (changed) await save(nextAssets);
+        return json({ ok: true });
+      }
+      if (!canCustody("custody_groups_return", "booking_return_confirm")) reject("ليس لديك صلاحية استلام معدات العهدة", 403);
+      if (!out.length) {
+        if (requestedIds.some((id) => !reservations.some((row) => Number(row.product_id) === id && ["returned", "missing"].includes(row.status)))) reject("لا يوجد صرف سابق مطابق لإرجاع الطلب", 409);
+        return json({ ok: true });
+      }
+      if (requestedAssets.length !== out.length || out.some((row) => !requestedAssets.some((item) => Number(item.productId) === Number(row.product_id) && ["good", "damaged", "missing", "maintenance"].includes(item.condition))))
+        reject("يجب فحص حالة كل معدة قبل تأكيد الاستلام");
+      // Preflight every line before the first return write. The shared product
+      // locks keep the exact issue and passport stable until all writes commit.
+      const validated = [];
+      for (const row of out) {
+        const productId = Number(row.product_id);
+        const detail = requestedAssets.find((item) => Number(item.productId) === productId);
+        const problem = detail.condition === "missing" ? "missing" : ["damaged", "maintenance"].includes(detail.condition) ? "damaged" : "none";
+        if (problem !== "none" && (!nullableText(detail.damageReason) || !nullableText(detail.damagePhotoUrl))) reject("سبب التلف أو الفقدان وصورته مطلوبان");
+        if (problem !== "none" && !mayDamage) reject("ليس لديك صلاحية تسجيل التلف أو الفقدان", 403);
+        if (problem === "missing" && !mayApproveLoss) reject("ليس لديك صلاحية اعتماد الفقدان", 403);
+        if (problem === "missing" && data?.managerApproval !== true && detail.managerApproval !== true) reject("تسجيل الفقدان يتطلب اعتماد المدير");
+        const issues = await openIssues(productId);
+        const linked = operationsAssets.find((item) => Number(item.productId) === productId && item.source === "fixed_custody");
+        if (issues.length !== 1 || !ownIssue(issues[0], row) || (linked?.custodyId && linked.custodyId !== issues[0].id) || (detail.custodyId !== undefined && Number(detail.custodyId) !== issues[0].id)) reject("عهدة الإرجاع لا تخص صرف هذا الحجز أو مسؤولية الموظف", 409);
+        const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+        const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+        const passport = await db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, productId) });
+        if (passport?.lastStaffId != null && passport.lastStaffId !== Number(row.staff_id)) reject("حامل الأصل لا يطابق مسؤولية العهدة", 409);
+        validated.push({ row, detail, problem, productId, product, profile, passport, issue: issues[0] });
+      }
+      const nextAssets = [...operationsAssets];
+      for (const { row, detail, problem, productId, product, profile, passport, issue } of validated) {
+        await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(and(eq(equipmentCustodyTable.id, issue.id), eq(equipmentCustodyTable.status, "issued")));
         const metadata = assetMetadataObject(passport?.metadata);
-        const purchase = Number(
-          profile?.purchasePrice ?? product?.costPrice ?? 0,
-        );
+        const purchase = Number(profile?.purchasePrice ?? product?.costPrice ?? 0);
         const previous = Number(profile?.currentValue ?? purchase);
-        const perUse =
-          Number(profile?.expectedLifeUses ?? 0) > 0
-            ? purchase / Number(profile.expectedLifeUses)
-            : 0;
-        // A removed or paused depreciation record freezes the asset value: usage is still
-        // tracked, but no depreciation accrues for the disabled period.
-        const depreciationActive =
-          !profile?.deletedAt && metadata.depreciationPaused !== true;
-        const nextValue =
-          metadata.automaticDepreciation === true && depreciationActive
-            ? Math.max(0, previous - perUse)
-            : previous;
-        // depreciation_applied_at provides the idempotency boundary: one completed
-        // custody reservation can update centralized usage only once.
-        await db.execute(
-          sql`update employee_custody_reservations set status=${problem === "missing" ? "missing" : "returned"},returned_at=now(),condition_in=${detail.condition},damage_reason=${nullableText(detail.damageReason)},damage_photo_url=${nullableText(detail.damagePhotoUrl)},depreciation_applied_at=coalesce(depreciation_applied_at,now()),updated_at=now() where id=${row.id}`,
-        );
+        const perUse = Number(profile?.expectedLifeUses ?? 0) > 0 ? purchase / Number(profile?.expectedLifeUses) : 0;
+        const nextValue = metadata.automaticDepreciation === true && !profile?.deletedAt && metadata.depreciationPaused !== true ? Math.max(0, previous - perUse) : previous;
+        const protectedStatus = profile?.deletedAt || ["lost", "retired", "locked", "sold", "disposed"].includes(String(profile?.status));
+        const held = metadata.inspectionBlocked === true || metadata.damageHold === true || profile?.status === "maintenance";
+        const status = protectedStatus ? profile!.status : problem === "missing" ? "lost" : problem === "damaged" ? "maintenance" : held ? (profile?.status ?? "maintenance") : "active";
+        await db.execute(sql`update employee_custody_reservations set status=${problem === "missing" ? "missing" : "returned"},returned_at=now(),condition_in=${detail.condition},damage_reason=${nullableText(detail.damageReason)},damage_photo_url=${nullableText(detail.damagePhotoUrl)},depreciation_applied_at=coalesce(depreciation_applied_at,now()),updated_at=now() where id=${row.id}`);
         if (!row.depreciation_applied_at)
-          await db
-            .insert(assetProfilesTable)
-            .values({
-              productId: Number(row.product_id),
-              purchasePrice: String(purchase),
-              currentValue: String(nextValue),
-              usageCount: Number(profile?.usageCount ?? 0) + 1,
-              status:
-                problem === "missing"
-                  ? "lost"
-                  : problem === "damaged"
-                    ? "maintenance"
-                    : "active",
-            })
-            .onConflictDoUpdate({
-              target: assetProfilesTable.productId,
-              set: {
-                currentValue: String(nextValue),
-                usageCount: Number(profile?.usageCount ?? 0) + 1,
-                status:
-                  problem === "missing"
-                    ? "lost"
-                    : problem === "damaged"
-                      ? "maintenance"
-                      : "active",
-                updatedAt: new Date(),
-              },
-            });
-        await db
-          .insert(assetPassportsTable)
-          .values({
-            productId: Number(row.product_id),
-            lastStaffId: null,
-            lastLocation: passport?.lastLocation ?? "داخل المستودع",
-            metadata: {
-              ...metadata,
-              lastBooking: `${reference.entityType}:${reference.id}`,
-              lastInspection: new Date().toISOString(),
-            },
-          })
-          .onConflictDoUpdate({
-            target: assetPassportsTable.productId,
-            set: {
-              lastStaffId: null,
-              lastLocation: passport?.lastLocation ?? "داخل المستودع",
-              metadata: {
-                ...metadata,
-                lastBooking: `${reference.entityType}:${reference.id}`,
-                lastInspection: new Date().toISOString(),
-              },
-              updatedAt: new Date(),
-            },
-          });
-        await logCustodyAudit({
-          groupId: Number(row.group_id),
-          productId: Number(row.product_id),
-          staffId: Number(row.staff_id),
-          bookingType: reference.entityType,
-          bookingId: reference.id,
-          action:
-            problem === "missing"
-              ? "missing_reported"
-              : problem === "damaged"
-                ? "damage_reported"
-                : "equipment_returned",
-          next: { condition: detail.condition },
-          auth,
-        });
-        await addEntityTimeline({
-          entityType: "asset",
-          entityId: Number(row.product_id),
-          type: "custody_booking_returned",
-          title: "إرجاع معدات عهدة الموظف",
-          body: `حجز #${reference.id} · ${detail.condition}`,
-          actor: erpActorFromAdmin(auth),
-          metadata: {
-            bookingType: reference.entityType,
-            bookingId: reference.id,
-            staffId: row.staff_id,
-            problem,
-          },
-        });
+          await db.insert(assetProfilesTable).values({ productId, purchasePrice: String(purchase), currentValue: String(nextValue), usageCount: Number(profile?.usageCount ?? 0) + 1, status }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { currentValue: String(nextValue), usageCount: Number(profile?.usageCount ?? 0) + 1, status, updatedAt: new Date() } });
+        const nextMetadata = { ...metadata, ...(problem !== "none" ? { damageHold: true, inspectionBlocked: true } : {}), lastBooking: ref.entityType + ":" + ref.id, lastInspection: new Date().toISOString() };
+        const lastLocation = problem === "missing" ? "مفقود" : problem === "damaged" ? "بانتظار الفحص والصيانة" : "داخل المستودع";
+        await db.insert(assetPassportsTable).values({ productId, lastStaffId: null, lastLocation, metadata: nextMetadata }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: null, lastLocation, metadata: nextMetadata, updatedAt: new Date() } });
+        await logCustodyAudit({ groupId: Number(row.group_id), productId, staffId: Number(row.staff_id), bookingType: ref.entityType, bookingId: ref.id, action: problem === "missing" ? "missing_reported" : problem === "damaged" ? "damage_reported" : "equipment_returned", previous: { custodyId: issue.id }, next: { custodyId: issue.id, condition: detail.condition }, auth }, db);
+        effects.push({ entityType: "asset", entityId: productId, type: "custody_booking_returned", title: "إرجاع معدات عهدة الموظف", body: "حجز #" + ref.id + " · " + detail.condition, actor: erpActorFromAdmin(auth), metadata: { bookingType: ref.entityType, bookingId: ref.id, staffId: row.staff_id, custodyId: issue.id, problem } });
+        const index = nextAssets.findIndex((item) => Number(item.productId) === productId && item.source === "fixed_custody");
+        if (index >= 0) nextAssets[index] = { ...nextAssets[index], stage: "returned", returnedAt: new Date().toISOString(), problem, usageRecordedAt: nextAssets[index].usageRecordedAt ?? new Date().toISOString() };
       }
+      await save(nextAssets);
       return json({ ok: true });
-    }
-    return error("إجراء عهدة الحجز غير مدعوم", 405);
+    });
+    for (const effect of effects) runAfter("fixed-custody-timeline", () => addEntityTimeline(effect));
+    return response;
   }
 
   if (resource === "assets") {
@@ -47623,6 +47401,7 @@ async function handleAdmin(
       const profMap = new Map(profiles.map((p: any) => [p.productId, p]));
       const whMap = new Map(warehouses.map((w: any) => [w.id, w.name]));
       const outSet = new Set(custody.map((c) => c.productId));
+      const ownCustodyIds = sourceCustodyIds(custody, `إخراج · ${entityType} #${entityId}`);
       return json({
         assets: ids.map((pid) => {
           const p: any = pmap.get(pid);
@@ -47630,6 +47409,7 @@ async function handleAdmin(
           const prof: any = profMap.get(pid);
           return {
             productId: pid,
+            custodyId: ownCustodyIds.get(pid) ?? null,
             name: p?.nameAr || p?.name || `#${pid}`,
             assetCode: `AJN-A${String(pid).padStart(6, "0")}`,
             barcode: p?.barcode ?? null,
@@ -47665,65 +47445,35 @@ async function handleAdmin(
 
       // Checkout / return for a linked asset — reuses custody + passport + timeline + audit.
       if (mode === "checkout" || mode === "return") {
-        const linkedRows: any[] =
-          (
-            (await db.execute(
-              sql`select 1 from "asset_links" where product_id = ${productId} and entity_type = ${entityType} and entity_id = ${entityId} limit 1`,
-            )) as any
-          ).rows ?? [];
-        if (!linkedRows.length)
-          return error("هذا الأصل غير مرتبط بهذا الطلب", 409);
-        const activeCustody = await db.query.equipmentCustodyTable.findFirst({
-          where: and(
-            eq(equipmentCustodyTable.productId, productId),
-            eq(equipmentCustodyTable.status, "issued"),
-          ),
-          orderBy: [desc(equipmentCustodyTable.issuedAt)],
-        });
         const tag = ` · ${entityType} #${entityId}`;
+        const returnProblem = String(b?.problem ?? "none");
+        if (
+          returnProblem !== "none" &&
+          returnProblem !== "broken" &&
+          returnProblem !== "lost"
+        )
+          return error("حالة الإرجاع غير صالحة", 422);
+        const result = await runIndividualCustody(auth, {
+          mode,
+          productId,
+          actorId: auth.id,
+          source: {
+            kind: "linked",
+            entityType,
+            entityId,
+            issueNote: `إخراج${tag}`,
+          },
+          staffId: optionalPositiveId(b?.staffId) ?? auth.id,
+          custodyId: b?.custodyId === undefined ? undefined : Number(b.custodyId),
+          quantity: Number(b?.quantity ?? 1),
+          problem: returnProblem,
+          repairCost: Number(b?.cost ?? 0),
+          note: nullableText(b?.note),
+          managerApproval: b?.managerApproval === true,
+        });
+        const name = result.product.name;
+        if (!result.changed) return json({ ok: true, productId, name });
         if (mode === "checkout") {
-          const profile = await db.query.assetProfilesTable.findFirst({
-            where: eq(assetProfilesTable.productId, productId),
-          });
-          if (
-            profile &&
-            [
-              "maintenance",
-              "lost",
-              "retired",
-              "locked",
-              "sold",
-              "disposed",
-            ].includes(profile.status)
-          )
-            return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
-          if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
-          const staffId = optionalPositiveId(b?.staffId) ?? auth.id;
-          const [row] = await db
-            .insert(equipmentCustodyTable)
-            .values({
-              productId,
-              staffId,
-              quantity: 1,
-              issuedBy: auth.id,
-              notes: `إخراج${tag}`,
-            })
-            .returning();
-          await db
-            .insert(assetPassportsTable)
-            .values({
-              productId,
-              lastStaffId: staffId,
-              lastLocation: "بعهدة موظف",
-            })
-            .onConflictDoUpdate({
-              target: assetPassportsTable.productId,
-              set: {
-                lastStaffId: staffId,
-                lastLocation: "بعهدة موظف",
-                updatedAt: new Date(),
-              },
-            });
           void addEntityTimeline({
             entityType: "asset",
             entityId: productId,
@@ -47731,39 +47481,18 @@ async function handleAdmin(
             title: "📤 خروج الأصل",
             body: `${entityType} #${entityId}`,
             actor: erpActorFromAdmin(auth),
-            metadata: { custodyId: row.id, entityType, entityId },
+            metadata: { custodyId: result.row?.id, entityType, entityId },
           });
           void logAdminActivity(req, "asset_checkout", "product", productId, {
             entityType,
             entityId,
-            custodyId: row.id,
+            custodyId: result.row?.id,
           });
-          return json({
-            ok: true,
-            productId,
-            name: product.nameAr || product.name,
-          });
+          return json({ ok: true, productId, name });
         }
-        // return: none | broken | lost
-        const problem = String(b?.problem ?? "none");
+        const { problem, repairCost } = result;
         const note = nullableText(b?.note);
-        const repairCost = Math.max(0, Number(b?.cost ?? 0) || 0);
-        const cost = String(Number(product.costPrice ?? 0));
         if (problem === "lost") {
-          if (b?.managerApproval !== true)
-            return error("تسجيل الفقدان يتطلب اعتماد المدير", 422);
-          await db
-            .insert(assetProfilesTable)
-            .values({
-              productId,
-              purchasePrice: cost,
-              currentValue: cost,
-              status: "lost",
-            })
-            .onConflictDoUpdate({
-              target: assetProfilesTable.productId,
-              set: { status: "lost", updatedAt: new Date() },
-            });
           void addEntityTimeline({
             entityType: "asset",
             entityId: productId,
@@ -47780,44 +47509,12 @@ async function handleAdmin(
           await createNotification({
             type: "asset_lost",
             title: "فقدان أصل",
-            body: product.nameAr || product.name,
+            body: name,
             entityType: "product",
             entityId: productId,
             href: "/admin/asset-movements",
           });
         } else if (problem === "broken") {
-          await db
-            .insert(assetProfilesTable)
-            .values({
-              productId,
-              purchasePrice: cost,
-              currentValue: cost,
-              status: "maintenance",
-            })
-            .onConflictDoUpdate({
-              target: assetProfilesTable.productId,
-              set: { status: "maintenance", updatedAt: new Date() },
-            });
-          if (repairCost > 0)
-            await db
-              .insert(assetPassportsTable)
-              .values({ productId, maintenanceCost: String(repairCost) })
-              .onConflictDoUpdate({
-                target: assetPassportsTable.productId,
-                set: {
-                  maintenanceCost: sql`${assetPassportsTable.maintenanceCost} + ${repairCost}`,
-                  updatedAt: new Date(),
-                },
-              });
-          if (activeCustody)
-            await db
-              .update(equipmentCustodyTable)
-              .set({
-                status: "returned",
-                returnedAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(eq(equipmentCustodyTable.id, activeCustody.id));
           void addEntityTimeline({
             entityType: "asset",
             entityId: productId,
@@ -47838,47 +47535,12 @@ async function handleAdmin(
           await createNotification({
             type: "asset_damage",
             title: "كسر أصل",
-            body: product.nameAr || product.name,
+            body: name,
             entityType: "product",
             entityId: productId,
             href: "/admin/asset-movements",
           });
         } else {
-          if (activeCustody)
-            await db
-              .update(equipmentCustodyTable)
-              .set({
-                status: "returned",
-                returnedAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(eq(equipmentCustodyTable.id, activeCustody.id));
-          await db
-            .update(assetPassportsTable)
-            .set({
-              lastStaffId: null,
-              lastLocation: "داخل المخزن",
-              updatedAt: new Date(),
-            })
-            .where(eq(assetPassportsTable.productId, productId));
-          const prof = await db.query.assetProfilesTable.findFirst({
-            where: eq(assetProfilesTable.productId, productId),
-          });
-          if (
-            prof &&
-            ![
-              "maintenance",
-              "lost",
-              "retired",
-              "locked",
-              "sold",
-              "disposed",
-            ].includes(prof.status)
-          )
-            await db
-              .update(assetProfilesTable)
-              .set({ status: "active", updatedAt: new Date() })
-              .where(eq(assetProfilesTable.id, prof.id));
           void addEntityTimeline({
             entityType: "asset",
             entityId: productId,
@@ -47893,11 +47555,7 @@ async function handleAdmin(
             entityId,
           });
         }
-        return json({
-          ok: true,
-          productId,
-          name: product.nameAr || product.name,
-        });
+        return json({ ok: true, productId, name });
       }
 
       // link (default)
@@ -61383,6 +61041,7 @@ async function shootEquipmentPayload(shootId: number) {
     warehouses.map((row: any) => [row.id, row.name]),
   );
   const checkedOut = new Set(custody.map((row) => row.productId));
+  const ownCustodyIds = sourceCustodyIds(custody, `إخراج · تصوير ميداني #${shootId}`);
   return ids.map((productId) => {
     const product: any = productMap.get(productId);
     const passport: any = passportMap.get(productId);
@@ -61390,6 +61049,7 @@ async function shootEquipmentPayload(shootId: number) {
     return {
       productId,
       name: product?.nameAr || product?.name || `#${productId}`,
+      custodyId: ownCustodyIds.get(productId) ?? null,
       assetCode: `AJN-A${String(productId).padStart(6, "0")}`,
       barcode: product?.barcode ?? null,
       imageUrl:
@@ -61416,6 +61076,7 @@ async function shootEquipmentPayload(shootId: number) {
  */
 async function runShootAssetOperation(input: {
   req: NextRequest;
+  auth: AdminUser;
   mode: string;
   productId: number;
   product: any;
@@ -61424,7 +61085,7 @@ async function runShootAssetOperation(input: {
   actor: { id: number; name: string };
   payload: any;
 }): Promise<NextResponse> {
-  const { req, mode, productId, product, shootId, eventId, actor, payload } =
+  const { req, auth, mode, productId, product, shootId, eventId, actor, payload } =
     input;
   const tag = ` · تصوير ميداني #${shootId}`;
   const name = product.nameAr || product.name;
@@ -61451,55 +61112,40 @@ async function runShootAssetOperation(input: {
     return json({ ok: true, productId, name });
   }
 
-  const linked: any[] =
-    (
-      (await db.execute(
-        sql`select 1 from "asset_links" where product_id = ${productId} and entity_type = 'photography_shoot' and entity_id = ${shootId} limit 1`,
-      )) as any
-    ).rows ?? [];
-  if (!linked.length) return error("هذا الأصل غير مرتبط بهذه المهمة", 409);
+  if (mode !== "checkout" && mode !== "return")
+    return error("الإجراء غير مدعوم", 400);
 
-  const activeCustody = await db.query.equipmentCustodyTable.findFirst({
-    where: and(
-      eq(equipmentCustodyTable.productId, productId),
-      eq(equipmentCustodyTable.status, "issued"),
-    ),
-    orderBy: [desc(equipmentCustodyTable.issuedAt)],
+  const returnProblem = String(payload?.problem ?? "none");
+  if (
+    returnProblem !== "none" &&
+    returnProblem !== "broken" &&
+    returnProblem !== "lost"
+  )
+    return error("حالة الإرجاع غير صالحة", 422);
+  const result = await runIndividualCustody(auth, {
+    mode,
+    productId,
+    actorId: auth.id,
+    source: {
+      kind: "linked",
+      entityType: "photography_shoot",
+      entityId: shootId,
+      issueNote: `إخراج${tag}`,
+    },
+    staffId: auth.id,
+    quantity: Number(payload?.quantity ?? 1),
+    custodyId: payload?.custodyId === undefined ? undefined : Number(payload.custodyId),
+    problem: returnProblem,
+    repairCost: Number(payload?.cost ?? 0),
+    note: nullableText(payload?.note),
+    managerApproval: payload?.managerApproval === true,
+    closeCustodyOnLoss: true,
   });
+  const custodyName = result.product.name;
+  if (!result.changed)
+    return json({ ok: true, productId, name: custodyName });
 
   if (mode === "checkout") {
-    const profile = await db.query.assetProfilesTable.findFirst({
-      where: eq(assetProfilesTable.productId, productId),
-    });
-    if (
-      profile &&
-      ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(
-        profile.status,
-      )
-    )
-      return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
-    if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
-    const [row] = await db
-      .insert(equipmentCustodyTable)
-      .values({
-        productId,
-        staffId: actor.id,
-        quantity: 1,
-        issuedBy: actor.id,
-        notes: `إخراج${tag}`,
-      })
-      .returning();
-    await db
-      .insert(assetPassportsTable)
-      .values({ productId, lastStaffId: actor.id, lastLocation: "بعهدة موظف" })
-      .onConflictDoUpdate({
-        target: assetPassportsTable.productId,
-        set: {
-          lastStaffId: actor.id,
-          lastLocation: "بعهدة موظف",
-          updatedAt: new Date(),
-        },
-      });
     void addEntityTimeline({
       entityType: "asset",
       entityId: productId,
@@ -61508,7 +61154,7 @@ async function runShootAssetOperation(input: {
       body: `تصوير ميداني #${shootId}`,
       actor,
       metadata: {
-        custodyId: row.id,
+        custodyId: result.row?.id,
         entityType: "photography_shoot",
         entityId: shootId,
         eventId,
@@ -61517,34 +61163,14 @@ async function runShootAssetOperation(input: {
     void logAdminActivity(req, "asset_checkout", "product", productId, {
       entityType: "photography_shoot",
       entityId: shootId,
-      custodyId: row.id,
+      custodyId: result.row?.id,
     });
-    return json({ ok: true, productId, name });
+    return json({ ok: true, productId, name: custodyName });
   }
 
-  if (mode !== "return") return error("الإجراء غير مدعوم", 400);
-
-  // return: none | broken | lost — the damage paths double as maintenance reports.
-  const problem = String(payload?.problem ?? "none");
+  const { problem, repairCost } = result;
   const note = nullableText(payload?.note);
-  const repairCost = Math.max(0, Number(payload?.cost ?? 0) || 0);
-  const cost = String(Number(product.costPrice ?? 0));
-
   if (problem === "lost") {
-    if (payload?.managerApproval !== true)
-      return error("تسجيل الفقدان يتطلب اعتماد المدير", 422);
-    await db
-      .insert(assetProfilesTable)
-      .values({
-        productId,
-        purchasePrice: cost,
-        currentValue: cost,
-        status: "lost",
-      })
-      .onConflictDoUpdate({
-        target: assetProfilesTable.productId,
-        set: { status: "lost", updatedAt: new Date() },
-      });
     void addEntityTimeline({
       entityType: "asset",
       entityId: productId,
@@ -61557,35 +61183,12 @@ async function runShootAssetOperation(input: {
     await createNotification({
       type: "asset_lost",
       title: "فقدان أصل",
-      body: name,
+      body: custodyName,
       entityType: "product",
       entityId: productId,
       href: "/admin/asset-movements",
     });
   } else if (problem === "broken") {
-    await db
-      .insert(assetProfilesTable)
-      .values({
-        productId,
-        purchasePrice: cost,
-        currentValue: cost,
-        status: "maintenance",
-      })
-      .onConflictDoUpdate({
-        target: assetProfilesTable.productId,
-        set: { status: "maintenance", updatedAt: new Date() },
-      });
-    if (repairCost > 0)
-      await db
-        .insert(assetPassportsTable)
-        .values({ productId, maintenanceCost: String(repairCost) })
-        .onConflictDoUpdate({
-          target: assetPassportsTable.productId,
-          set: {
-            maintenanceCost: sql`${assetPassportsTable.maintenanceCost} + ${repairCost}`,
-            updatedAt: new Date(),
-          },
-        });
     void addEntityTimeline({
       entityType: "asset",
       entityId: productId,
@@ -61605,22 +61208,13 @@ async function runShootAssetOperation(input: {
     await createNotification({
       type: "asset_damage",
       title: "تلف معدة تصوير",
-      body: name,
+      body: custodyName,
       entityType: "product",
       entityId: productId,
       href: "/admin/asset-movements",
     });
   }
 
-  if (activeCustody)
-    await db
-      .update(equipmentCustodyTable)
-      .set({
-        status: "returned",
-        returnedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(equipmentCustodyTable.id, activeCustody.id));
   if (problem === "none")
     void addEntityTimeline({
       entityType: "asset",
@@ -61636,7 +61230,7 @@ async function runShootAssetOperation(input: {
     entityId: shootId,
     problem,
   });
-  return json({ ok: true, productId, name });
+  return json({ ok: true, productId, name: custodyName });
 }
 
 async function photographyPendingAmount(orderId: number) {
@@ -63373,6 +62967,7 @@ async function handlePhotographyStaffPortal(
         if (!product) return error("الأصل غير موجود", 404);
         const result = await runShootAssetOperation({
           req,
+          auth,
           mode,
           productId,
           product,
@@ -64314,6 +63909,7 @@ async function handlePhotographyStaffPortal(
         const profMap = new Map(profiles.map((p: any) => [p.productId, p]));
         const whMap = new Map(warehouses.map((w: any) => [w.id, w.name]));
         const outSet = new Set(custody.map((c) => c.productId));
+        const ownCustodyIds = sourceCustodyIds(custody, `إخراج · photography #${entityId}`);
         return json({
           assets: ids.map((pid) => {
             const p: any = pmap.get(pid);
@@ -64321,6 +63917,7 @@ async function handlePhotographyStaffPortal(
             const prof: any = profMap.get(pid);
             return {
               productId: pid,
+              custodyId: ownCustodyIds.get(pid) ?? null,
               name: p?.nameAr || p?.name || `#${pid}`,
               assetCode: `AJN-A${String(pid).padStart(6, "0")}`,
               barcode: p?.barcode ?? null,
@@ -64352,7 +63949,6 @@ async function handlePhotographyStaffPortal(
           where: eq(productsTable.id, productId),
         });
         if (!product) return error("الأصل غير موجود", 404);
-        const tag = ` · ${entityType} #${entityId}`;
         if (mode === "unlink") {
           await db.execute(
             sql`delete from "asset_links" where product_id = ${productId} and entity_type = 'photography' and entity_id = ${entityId}`,
@@ -64364,111 +63960,61 @@ async function handlePhotographyStaffPortal(
           return json({ ok: true, productId });
         }
         if (mode === "checkout" || mode === "return") {
-          const linkedRows: any[] =
-            (
-              (await db.execute(
-                sql`select 1 from "asset_links" where product_id = ${productId} and entity_type = 'photography' and entity_id = ${entityId} limit 1`,
-              )) as any
-            ).rows ?? [];
-          if (!linkedRows.length)
-            return error("هذا الأصل غير مرتبط بهذا الطلب", 409);
-          const activeCustody = await db.query.equipmentCustodyTable.findFirst({
-            where: and(
-              eq(equipmentCustodyTable.productId, productId),
-              eq(equipmentCustodyTable.status, "issued"),
-            ),
-            orderBy: [desc(equipmentCustodyTable.issuedAt)],
+          const tag = ` · ${entityType} #${entityId}`;
+          const returnProblem = String(b?.problem ?? "none");
+          if (
+            returnProblem !== "none" &&
+            returnProblem !== "broken" &&
+            returnProblem !== "lost"
+          )
+            return error("حالة الإرجاع غير صالحة", 422);
+          const result = await runIndividualCustody(auth, {
+            mode,
+            productId,
+            actorId: auth.id,
+            source: {
+              kind: "linked",
+              entityType,
+              entityId,
+              issueNote: `إخراج${tag}`,
+            },
+            staffId: auth.id,
+            quantity: Number(b?.quantity ?? 1),
+            custodyId: b?.custodyId === undefined ? undefined : Number(b.custodyId),
+            problem: returnProblem,
+            repairCost: Number(b?.cost ?? 0),
+            note: nullableText(b?.note),
+            managerApproval: b?.managerApproval === true,
           });
+          const name = result.product.name;
+          if (!result.changed) return json({ ok: true, productId, name });
           if (mode === "checkout") {
-            const profile = await db.query.assetProfilesTable.findFirst({
-              where: eq(assetProfilesTable.productId, productId),
-            });
-            if (
-              profile &&
-              [
-                "maintenance",
-                "lost",
-                "retired",
-                "locked",
-                "sold",
-                "disposed",
-              ].includes(profile.status)
-            )
-              return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
-            if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
-            const staffId = auth.id;
-            const [row] = await db
-              .insert(equipmentCustodyTable)
-              .values({
-                productId,
-                staffId,
-                quantity: 1,
-                issuedBy: auth.id,
-                notes: `إخراج${tag}`,
-              })
-              .returning();
-            await db
-              .insert(assetPassportsTable)
-              .values({
-                productId,
-                lastStaffId: staffId,
-                lastLocation: "بعهدة موظف",
-              })
-              .onConflictDoUpdate({
-                target: assetPassportsTable.productId,
-                set: {
-                  lastStaffId: staffId,
-                  lastLocation: "بعهدة موظف",
-                  updatedAt: new Date(),
-                },
-              });
             void addEntityTimeline({
               entityType: "asset",
               entityId: productId,
               type: "checkout",
               title: "📤 خروج الأصل",
               body: `${entityType} #${entityId}`,
-              actor,
-              metadata: { custodyId: row.id, entityType, entityId },
+              actor: actor,
+              metadata: { custodyId: result.row?.id, entityType, entityId },
             });
             void logAdminActivity(req, "asset_checkout", "product", productId, {
               entityType,
               entityId,
-              custodyId: row.id,
+              custodyId: result.row?.id,
             });
-            return json({
-              ok: true,
-              productId,
-              name: product.nameAr || product.name,
-            });
+            return json({ ok: true, productId, name });
           }
-          // return: none | broken | lost
-          const problem = String(b?.problem ?? "none");
+          const { problem, repairCost } = result;
           const note = nullableText(b?.note);
-          const repairCost = Math.max(0, Number(b?.cost ?? 0) || 0);
-          const cost = String(Number(product.costPrice ?? 0));
           if (problem === "lost") {
-            if (b?.managerApproval !== true)
-              return error("تسجيل الفقدان يتطلب اعتماد المدير", 422);
-            await db
-              .insert(assetProfilesTable)
-              .values({
-                productId,
-                purchasePrice: cost,
-                currentValue: cost,
-                status: "lost",
-              })
-              .onConflictDoUpdate({
-                target: assetProfilesTable.productId,
-                set: { status: "lost", updatedAt: new Date() },
-              });
             void addEntityTimeline({
               entityType: "asset",
               entityId: productId,
               type: "lost",
               title: "⚠️ فقدان أصل",
               body: `${note ?? ""}${tag} · باعتماد المدير`,
-              actor,
+              actor: actor,
               metadata: { entityType, entityId },
             });
             void logAdminActivity(req, "asset_lost", "product", productId, {
@@ -64478,44 +64024,12 @@ async function handlePhotographyStaffPortal(
             await createNotification({
               type: "asset_lost",
               title: "فقدان أصل",
-              body: product.nameAr || product.name,
+              body: name,
               entityType: "product",
               entityId: productId,
               href: "/admin/asset-movements",
             });
           } else if (problem === "broken") {
-            await db
-              .insert(assetProfilesTable)
-              .values({
-                productId,
-                purchasePrice: cost,
-                currentValue: cost,
-                status: "maintenance",
-              })
-              .onConflictDoUpdate({
-                target: assetProfilesTable.productId,
-                set: { status: "maintenance", updatedAt: new Date() },
-              });
-            if (repairCost > 0)
-              await db
-                .insert(assetPassportsTable)
-                .values({ productId, maintenanceCost: String(repairCost) })
-                .onConflictDoUpdate({
-                  target: assetPassportsTable.productId,
-                  set: {
-                    maintenanceCost: sql`${assetPassportsTable.maintenanceCost} + ${repairCost}`,
-                    updatedAt: new Date(),
-                  },
-                });
-            if (activeCustody)
-              await db
-                .update(equipmentCustodyTable)
-                .set({
-                  status: "returned",
-                  returnedAt: new Date(),
-                  updatedAt: new Date(),
-                })
-                .where(eq(equipmentCustodyTable.id, activeCustody.id));
             void addEntityTimeline({
               entityType: "asset",
               entityId: productId,
@@ -64525,7 +64039,7 @@ async function handlePhotographyStaffPortal(
                 [note, repairCost > 0 ? `تكلفة: ${repairCost}` : null]
                   .filter(Boolean)
                   .join(" · ") || null,
-              actor,
+              actor: actor,
               metadata: { entityType, entityId, repairCost },
             });
             void logAdminActivity(req, "asset_broken", "product", productId, {
@@ -64536,54 +64050,19 @@ async function handlePhotographyStaffPortal(
             await createNotification({
               type: "asset_damage",
               title: "كسر أصل",
-              body: product.nameAr || product.name,
+              body: name,
               entityType: "product",
               entityId: productId,
               href: "/admin/asset-movements",
             });
           } else {
-            if (activeCustody)
-              await db
-                .update(equipmentCustodyTable)
-                .set({
-                  status: "returned",
-                  returnedAt: new Date(),
-                  updatedAt: new Date(),
-                })
-                .where(eq(equipmentCustodyTable.id, activeCustody.id));
-            await db
-              .update(assetPassportsTable)
-              .set({
-                lastStaffId: null,
-                lastLocation: "داخل المخزن",
-                updatedAt: new Date(),
-              })
-              .where(eq(assetPassportsTable.productId, productId));
-            const prof = await db.query.assetProfilesTable.findFirst({
-              where: eq(assetProfilesTable.productId, productId),
-            });
-            if (
-              prof &&
-              ![
-                "maintenance",
-                "lost",
-                "retired",
-                "locked",
-                "sold",
-                "disposed",
-              ].includes(prof.status)
-            )
-              await db
-                .update(assetProfilesTable)
-                .set({ status: "active", updatedAt: new Date() })
-                .where(eq(assetProfilesTable.id, prof.id));
             void addEntityTimeline({
               entityType: "asset",
               entityId: productId,
               type: "checkin",
               title: "📥 إرجاع الأصل",
               body: `${entityType} #${entityId}`,
-              actor,
+              actor: actor,
               metadata: { entityType, entityId },
             });
             void logAdminActivity(req, "asset_return", "product", productId, {
@@ -64591,11 +64070,7 @@ async function handlePhotographyStaffPortal(
               entityId,
             });
           }
-          return json({
-            ok: true,
-            productId,
-            name: product.nameAr || product.name,
-          });
+          return json({ ok: true, productId, name });
         }
         // link (default)
         await db.execute(
@@ -68219,6 +67694,7 @@ async function handleStaffPortal(
           ok: true,
           productId,
           name: product?.nameAr || product?.name || current.name,
+          custodyId: current.custodyId ?? null,
           assetCode:
             current.assetCode || "AJN-A" + String(productId).padStart(6, "0"),
           status: profile?.status ?? current.status ?? "active",
@@ -68244,6 +67720,7 @@ async function handleStaffPortal(
       const parsed = BookingAssetActionSchema.safeParse({
         mode: actionMode,
         productId,
+        custodyId: payload?.custodyId,
         quantity: Math.max(
           1,
           Number(
@@ -75177,6 +74654,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
+    if (err instanceof IndividualCustodyError)
+      return individualCustodyErrorResponse(req, err);
     if (err instanceof ProductionEnvironmentError) {
       const requestId = makeRequestId(req.headers.get("x-request-id"));
       console.error("AJN production environment is invalid", {

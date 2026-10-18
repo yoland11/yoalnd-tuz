@@ -231,8 +231,8 @@ export const staffApi = {
   searchProducts: (q: string) => adminFetch<{ products: Array<{ productId: number; name: string; barcode: string | null; assetCode: string; isRental: boolean; imageUrl: string | null }> }>(`${base}/products?search=${encodeURIComponent(q)}`),
   linkAsset: (id: number, payload: { mode: "link" | "setqty" | "unlink"; productId?: number; code?: string; quantity?: number }, source: "kosha" | "service" = "kosha") =>
     adminFetch<{ ok: boolean; productId: number; name?: string }>(`${base}/bookings/${id}/assets${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(payload) }),
-  scanAsset: (id: number, payload: { mode: "resolve" | "checkout" | "return"; code: string; problem?: "none" | "broken" | "lost"; note?: string; cost?: number; managerApproval?: boolean }, source: "kosha" | "service" = "kosha") =>
-    adminFetch<{ ok: boolean; productId: number; name?: string; assetCode?: string; status?: string; imageUrl?: string | null; checkedOut?: boolean }>(`${base}/bookings/${id}/assets${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(payload) }),
+  scanAsset: (id: number, payload: { mode: "resolve" | "checkout" | "return"; code: string; custodyId?: number; problem?: "none" | "broken" | "lost"; note?: string; cost?: number; managerApproval?: boolean }, source: "kosha" | "service" = "kosha") =>
+    adminFetch<{ ok: boolean; productId: number; custodyId?: number | null; name?: string; assetCode?: string; status?: string; imageUrl?: string | null; checkedOut?: boolean }>(`${base}/bookings/${id}/assets${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(payload) }),
   // Report damage/loss to management (creates a "بلاغ" for manager review — never a
   // direct financial penalty). Reuses the canonical booking-operations penalty store.
   reportDamage: (

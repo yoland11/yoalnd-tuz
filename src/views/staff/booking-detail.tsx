@@ -898,7 +898,7 @@ function ProductsAssetsSection({ id, source }: { id: number; source: "kosha" | "
 }
 
 type GateAsset = { productId: number; name: string; assetCode: string; imageUrl?: string | null; checkedOut: boolean };
-type Pending = { productId: number; name: string; assetCode: string; status: string; imageUrl?: string | null; checkedOut: boolean };
+type Pending = { productId: number; custodyId?: number | null; name: string; assetCode: string; status: string; imageUrl?: string | null; checkedOut: boolean };
 
 export function AssetsSection({ id, source = "kosha" }: { id: number; source?: "kosha" | "service" }) {
   const [assets, setAssets] = useState<GateAsset[]>([]);
@@ -929,7 +929,7 @@ export function AssetsSection({ id, source = "kosha" }: { id: number; source?: "
       if (mode === "checkout" && r.checkedOut) { setMsg({ ok: false, text: `${r.name}: مُخرَج مسبقاً` }); return; }
       if (mode === "return" && !r.checkedOut) { setMsg({ ok: false, text: `${r.name}: غير مُخرَج` }); return; }
       setProblem("none"); setNote(""); setCost(""); setManagerApproval(false);
-      setPending({ productId: r.productId, name: r.name ?? "", assetCode: r.assetCode ?? "", status: r.status ?? "", imageUrl: r.imageUrl, checkedOut: Boolean(r.checkedOut) });
+      setPending({ productId: r.productId, custodyId: r.custodyId, name: r.name ?? "", assetCode: r.assetCode ?? "", status: r.status ?? "", imageUrl: r.imageUrl, checkedOut: Boolean(r.checkedOut) });
     } catch (e: any) {
       setMsg({ ok: false, text: String(e?.message ?? "").replace(/^HTTP\s+\d+:\s*/i, "") || "تعذّر المسح" });
     } finally { setBusy(false); }
@@ -947,7 +947,7 @@ export function AssetsSection({ id, source = "kosha" }: { id: number; source?: "
       const code = pending.assetCode || `AJN-A${String(pending.productId).padStart(6, "0")}`;
       await staffApi.scanAsset(id, mode === "checkout"
         ? { mode: "checkout", code }
-        : { mode: "return", code, problem, note: note || undefined, cost: cost ? Number(cost) : undefined, managerApproval: managerApproval || undefined }, source);
+        : { mode: "return", code, custodyId: pending.custodyId ?? undefined, problem, note: note || undefined, cost: cost ? Number(cost) : undefined, managerApproval: managerApproval || undefined }, source);
       setMsg({ ok: true, text: mode === "checkout" ? `تم إخراج ${pending.name}` : problem === "lost" ? `سُجّل ${pending.name} كمفقود` : problem === "broken" ? `${pending.name} أُرسل للصيانة` : `تم استلام ${pending.name}` });
       setPending(null);
       await load();
