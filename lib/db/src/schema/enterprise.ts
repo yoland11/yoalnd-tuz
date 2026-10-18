@@ -6,6 +6,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  primaryKey,
   serial,
   text,
   timestamp,
@@ -16,7 +17,8 @@ import { customersTable } from "./customers";
 import { crewsTable } from "./crews";
 import { productsTable } from "./products";
 import { staffTable } from "./staff";
-import { warehousesTable } from "./admin-extensions";
+import { sql } from "drizzle-orm";
+import { tasksTable, warehousesTable } from "./admin-extensions";
 
 export const enterpriseBranchesTable = pgTable("enterprise_branches", {
   id: serial("id").primaryKey(),
@@ -177,9 +179,60 @@ export const internalMessagesTable = pgTable("internal_messages", {
   body: text("body"),
   voiceUrl: text("voice_url"),
   voiceDuration: integer("voice_duration"),
+  // Work command center (migration 0126).
+  messageType: varchar("message_type", { length: 20 }).notNull().default("text"),
+  attachments: jsonb("attachments").$type<Array<Record<string, unknown>>>().notNull().default([]),
+  // Self-reference; the foreign key (ON DELETE SET NULL) lives in the migration.
+  replyToId: integer("reply_to_id"),
+  taskId: integer("task_id").references(() => tasksTable.id, { onDelete: "set null" }),
+  clientKey: varchar("client_key", { length: 80 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => ({
   channelIdx: index("internal_messages_channel_idx").on(table.channelId, table.createdAt),
+  clientKeyIdx: uniqueIndex("internal_messages_client_key_idx").on(table.channelId, table.clientKey).where(sql`${table.clientKey} is not null`),
+  taskIdx: index("internal_messages_task_idx").on(table.taskId).where(sql`${table.taskId} is not null`),
+}));
+
+/** Read position per employee and channel (unread counts, read receipts). */
+export const internalChannelReadsTable = pgTable("internal_channel_reads", {
+  channelId: integer("channel_id").notNull().references(() => internalChannelsTable.id, { onDelete: "cascade" }),
+  staffId: integer("staff_id").notNull().references(() => staffTable.id, { onDelete: "cascade" }),
+  lastReadMessageId: integer("last_read_message_id").notNull().default(0),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.channelId, table.staffId] }),
+}));
+
+/**
+ * Work order settings for an existing task. The task row stays the single
+ * authoritative record (status, assignees, deadline, evidence, approval).
+ */
+export const workOrdersTable = pgTable("work_orders", {
+  taskId: integer("task_id").primaryKey().references(() => tasksTable.id, { onDelete: "cascade" }),
+  channelId: integer("channel_id").references(() => internalChannelsTable.id, { onDelete: "set null" }),
+  parentTaskId: integer("parent_task_id").references(() => tasksTable.id, { onDelete: "set null" }),
+  mandatory: boolean("mandatory").notNull().default(true),
+  templateKey: varchar("template_key", { length: 60 }),
+  requiresApproval: boolean("requires_approval").notNull().default(false),
+  evidenceRequired: boolean("evidence_required").notNull().default(false),
+  customerId: integer("customer_id").references(() => customersTable.id, { onDelete: "set null" }),
+  customerName: text("customer_name"),
+  productId: integer("product_id").references(() => productsTable.id, { onDelete: "set null" }),
+  sourceType: varchar("source_type", { length: 40 }),
+  sourceId: integer("source_id"),
+  pendingDueAt: timestamp("pending_due_at"),
+  pendingDueReason: text("pending_due_reason"),
+  pendingDueBy: integer("pending_due_by").references(() => staffTable.id, { onDelete: "set null" }),
+  pendingDueRequestedAt: timestamp("pending_due_requested_at"),
+  idempotencyKey: varchar("idempotency_key", { length: 120 }),
+  createdBy: integer("created_by").references(() => staffTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  idempotencyIdx: uniqueIndex("work_orders_idempotency_idx").on(table.idempotencyKey).where(sql`${table.idempotencyKey} is not null`),
+  parentIdx: index("work_orders_parent_idx").on(table.parentTaskId).where(sql`${table.parentTaskId} is not null`),
+  sourceIdx: index("work_orders_source_idx").on(table.sourceType, table.sourceId).where(sql`${table.sourceType} is not null`),
+  channelIdx: index("work_orders_channel_idx").on(table.channelId),
 }));
 
 export const customerQueueEntriesTable = pgTable("customer_queue_entries", {

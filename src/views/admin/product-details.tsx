@@ -40,6 +40,8 @@ import { PRODUCT_KIND_LABELS, type ProductKind } from "@/lib/product-insights";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { QuantityAssetPanel } from "./quantity-asset-panel";
+import { CreateWorkOrderDialog } from "@/components/work-commands/create-order-dialog";
+import { useWorkMe } from "@/components/work-commands/shared";
 
 type Channel = {
   quantity: number;
@@ -375,6 +377,8 @@ export default function ProductDetailsPage() {
   const [leadTime, setLeadTime] = useState(14);
   const [movementPage, setMovementPage] = useState(1);
   const [tab, setTab] = useState("overview");
+  const [workOrderOpen, setWorkOrderOpen] = useState(false);
+  const workMe = useWorkMe();
   const range = presetRange(preset, custom);
   const query = new URLSearchParams({ group, slowDays: String(slowDays), leadTime: String(leadTime) });
   if (range.from) query.set("from", range.from);
@@ -586,8 +590,19 @@ export default function ProductDetailsPage() {
                 ) : null}
                 {kind !== "service" ? <DropdownMenuItem onSelect={() => setTab("inventory")}><History className="h-4 w-4" /> عرض سجل الحركات</DropdownMenuItem> : null}
                 <DropdownMenuItem onSelect={() => setTab("reports")}><FileDown className="h-4 w-4" /> تصدير تقرير</DropdownMenuItem>
+                {workMe.data?.ready && workMe.data.access.canCreate ? (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => setWorkOrderOpen(true)}><ClipboardList className="h-4 w-4" /> إصدار أمر عمل</DropdownMenuItem>
+                  </>
+                ) : null}
               </DropdownMenuContent>
             </DropdownMenu>
+            <CreateWorkOrderDialog
+              open={workOrderOpen}
+              onOpenChange={setWorkOrderOpen}
+              defaults={{ productId: product.id, contextLabel: `${isAsset ? "الأصل" : "المنتج"}: ${product.name}` }}
+            />
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Kpi label="سعر البيع" value={money(product.price)} hint={product.wholesalePrice ? `الجملة ${formatCurrency(product.wholesalePrice)}` : undefined} />

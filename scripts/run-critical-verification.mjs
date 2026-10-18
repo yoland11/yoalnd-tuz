@@ -36,6 +36,7 @@ const steps = [
   ["Asset list thumbnails", "pnpm", ["run", "test:asset-list"]],
   ["Report PDF download", "pnpm", ["run", "test:report-pdf"]],
   ["Product details analytics", "pnpm", ["run", "test:product-insights"]],
+  ["Work command center", "pnpm", ["run", "test:work-commands"]],
   ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice customer search", "pnpm", ["run", "test:sales-customer-search"]],
