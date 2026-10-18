@@ -27,7 +27,7 @@ const server = createServer((req,res)=>{
 await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
 const origin=`http://127.0.0.1:${(server.address() as any).port}`;
 const facts: DailyBookingFact[] = [
-  {source:"kosha",id:12,number:"AJN-KOSHA-0012",customerName:"أحمد محمد حسين",eventDate:"2026-10-18",eventTime:"18:00",location:"بغداد — قاعة المناسبات",status:"preparing",category:"kosha",details:{bookingOperations:{productMeta:{"4:0":{prep:{status:"ready"}}}}},assignedStaffId:8,staff:[{id:8,name:"حسين علي"}],vehicleId:2,vehicleName:"سيارة التجهيز رقم ٢",transportationMode:"ajn",crewName:"فريق الكوشات",overdueTasks:2,openTasks:3,products:[{productId:4,variantId:null,quantity:2,status:"reserved"}]},
+  {source:"kosha",id:12,number:"AJN-KOSHA-0012",customerName:"أحمد محمد حسين",eventDate:"2026-10-18",eventTime:"18:00",location:"بغداد — قاعة المناسبات",status:"preparing",category:"kosha",details:{bookingOperations:{productMeta:{"4:0":{prep:{status:"ready"}}}}},assignedStaffId:8,staff:[{id:8,name:"حسين علي"}],staffConfirmation:{trackedIds:[8],acceptedIds:[8]},vehicleId:2,vehicleName:"سيارة التجهيز رقم ٢",vehicleState:{active:true,status:"maintenance"},transportationMode:"ajn",crewName:"فريق الكوشات",overdueTasks:2,openTasks:3,products:[{productId:4,variantId:null,quantity:2,status:"reserved"}]},
   {source:"service",id:12,number:"SRV-0012",customerName:"سارة عبد الرحمن محمد عبد الله الطويل لاختبار عرض الاسم",eventDate:"2026-10-18",eventTime:null,location:"المنصور",status:"new",category:"sound",details:{},assignedStaffId:null,vehicleId:null,vehicleName:null,transportationMode:"customer",crewName:null,overdueTasks:0,openTasks:1,products:[]},
 ];
 const browser = await chromium.launch({executablePath:"C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",headless:true});
@@ -58,8 +58,21 @@ try {
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth > window.innerWidth+1),false,`no document overflow at ${width}`);
     assert.equal(await page.locator('a[href="/admin/bookings/kosha/12"]').first().getAttribute("href"),"/admin/bookings/kosha/12");
     await page.getByText("عرض الفحوص",{exact:true}).first().click();
-    assert.ok(await page.getByText("التعيين وحده لا يثبت تأكيد حضور الفريق",{exact:true}).first().isVisible());
+    assert.ok(await page.getByText("قبول المهمة موثق لجميع الموظفين المعيّنين",{exact:true}).first().isVisible());
     await page.screenshot({path:`${output}/daily-${width}.png`,fullPage:true});
+    await page.getByRole("button",{name:"تأكيد الفريق",exact:true}).click();
+    await page.getByRole("article",{name:"الحجز AJN-KOSHA-0012"}).waitFor({state:"detached"});
+    await page.getByRole("article",{name:"الحجز SRV-0012"}).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("opsAttention"),"team");
+    await page.getByRole("button",{name:"كل الحجوزات",exact:true}).click();
+    await page.getByLabel("الموظف",{exact:true}).selectOption("8");
+    await page.getByRole("article",{name:"الحجز AJN-KOSHA-0012"}).waitFor();
+    await page.getByRole("article",{name:"الحجز SRV-0012"}).waitFor({state:"detached"});
+    assert.equal(new URL(page.url()).searchParams.get("opsEmployee"),"8");
+    await page.reload({waitUntil:"networkidle"});
+    assert.equal(await page.getByLabel("الموظف",{exact:true}).inputValue(),"8","employee filter survives reload/back URL");
+    await page.getByRole("button",{name:"مسح الفلاتر",exact:true}).click();
+    await page.getByRole("article",{name:"الحجز SRV-0012"}).waitFor();
     await page.getByPlaceholder("ابحث بالاسم أو رقم الحجز").fill("سارة");
     await page.getByRole("article",{name:"الحجز AJN-KOSHA-0012"}).waitFor({state:"detached"});
     await page.getByRole("article",{name:"الحجز SRV-0012"}).waitFor();

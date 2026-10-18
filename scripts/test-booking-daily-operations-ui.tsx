@@ -8,6 +8,9 @@ assert.ok(existsSync("src/views/admin/daily-operations.tsx"), "daily room UI mus
 const { DailyOperationsResults } = await import("../src/views/admin/daily-operations");
 const data = buildDailyOperations([{ source: "kosha", id: 12, number: "AJN-KOSHA-0012", customerName: "أحمد محمد", eventDate: "2026-10-18", eventTime: null, location: "بغداد", status: "new", category: "kosha", details: {}, assignedStaffId: null, vehicleId: null, vehicleName: null, transportationMode: null, crewName: null, overdueTasks: 2, openTasks: 3, products: [] }], { period: "today", search: "", category: "all", status: "all", employee: null, vehicle: null, location: "" }, true, new Date("2026-10-18T12:00:00Z"));
 const html = renderToStaticMarkup(React.createElement(DailyOperationsResults,{data}));
+const interactive = renderToStaticMarkup(React.createElement(DailyOperationsResults,{data,onAttentionChange:()=>{}}));
+assert.doesNotMatch(interactive,/<button[^>]*>تجهيز كامل بالسجل<\/button>/,"a metric without a matching drilldown must not navigate to all bookings");
+assert.doesNotMatch(interactive,/<button[^>]*>تنفيذ ميداني<\/button>/,"active execution metric must not falsely offer an all-bookings drilldown");
 assert.match(html,/أحمد محمد/);
 assert.match(html,/href="\/admin\/bookings\/kosha\/12/);
 assert.match(html,/تغطية محدودة/);

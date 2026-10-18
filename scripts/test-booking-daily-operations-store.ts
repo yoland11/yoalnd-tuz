@@ -11,9 +11,10 @@ const row = { source: "kosha", id: 12, number: "AJN-KOSHA-0012", customer_name: 
 const executor = { async execute(query: any) {
   const built = new PgDialect().sqlToQuery(query); seen.push(built); reads++;
   if (reads === 1) return { rows: [row] };
-  if (reads === 2) return { rows: [] };
-  if (reads === 3) return { rows: [{ source_type: "kosha_booking", source_id: 12, overdue_tasks: 2, open_tasks: 3 }] };
-  return { rows: [{ id: 8, full_name: "حسين" }] };
+  if (built.sql.includes("FROM stock_reservations")) return { rows: [] };
+  if (built.sql.includes("FROM tasks")) return { rows: [{ source_type: "kosha_booking", source_id: 12, overdue_tasks: 2, open_tasks: 3 }] };
+  if (built.sql.includes("FROM staff")) return { rows: [{ id: 8, full_name: "حسين" }] };
+  return { rows: [] };
 } };
 const result = await loadDailyOperations(executor, filters, ["kosha"], now);
 assert.equal(result.rows[0].staff[0].name, "حسين");
