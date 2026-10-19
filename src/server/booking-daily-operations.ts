@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { buildDailyOperations, dailyAssignedStaffIds, dailyOperationsRange, type DailyBookingFact, type DailyFilters, type DailySource } from "@/lib/booking-daily-operations";
+import type { BookingOperationRef } from "@/lib/booking-operational-readiness";
 
 type Executor = { execute: (query: any) => Promise<any> };
 const sourceType = (source: DailySource) => source === "kosha" ? "kosha_booking" : "service_order";
@@ -21,8 +22,14 @@ function baghdadTimestamp(value: unknown): string | null {
 }
 
 /** No global cache, schema setup, writes, inventory calculation or financial queries. */
-export async function loadDailyOperations(executor: Executor, filters: DailyFilters, allowedSources: DailySource[], now = new Date()) {
+export async function loadDailyOperations(executor: Executor, filters: DailyFilters, allowedSources: DailySource[], now = new Date(), bookingRefs?: readonly BookingOperationRef[]) {
   if (!allowedSources.length) throw new Error("لا توجد صلاحية لعرض الحجوزات");
+  if (bookingRefs) {
+    if (bookingRefs.length>1000) throw new Error("Readiness reference limit exceeded");
+    if (bookingRefs.some(ref=>!allowedSources.includes(ref.source) || !Number.isSafeInteger(ref.id) || ref.id<=0)) throw new Error("Invalid readiness reference");
+    if (!bookingRefs.length) return buildDailyOperations([],filters,false,now);
+  }
+  const cap=bookingRefs ? bookingRefs.length : 500;
   const range = dailyOperationsRange(filters.period, now);
   const selects = [];
   if (allowedSources.includes("kosha")) selects.push(sql`
@@ -38,7 +45,7 @@ export async function loadDailyOperations(executor: Executor, filters: DailyFilt
     LEFT JOIN crews c ON c.id = d.crew_id
     LEFT JOIN kosha_work_orders w ON w.booking_id=b.id AND w.cancelled_at IS NULL AND lower(w.status) <> 'cancelled'
     WHERE b.archived_at IS NULL AND lower(coalesce(b.status,'')) NOT IN ('cancelled','canceled','deleted')
-      AND left(b.event_date,10) >= ${range.from} AND left(b.event_date,10) < ${range.to}
+      ${bookingRefs ? sql`` : sql`AND left(b.event_date,10) >= ${range.from} AND left(b.event_date,10) < ${range.to}`}
   `);
   if (allowedSources.includes("service")) selects.push(sql`
     SELECT 'service'::text AS source, b.id, b.tracking_code AS number, b.customer_name,
@@ -54,9 +61,10 @@ export async function loadDailyOperations(executor: Executor, filters: DailyFilt
     LEFT JOIN crews c ON c.id = d.crew_id
     LEFT JOIN photography_shoots ps ON ps.booking_id=b.id AND lower(ps.stage) <> 'cancelled'
     WHERE b.archived_at IS NULL AND lower(coalesce(b.status,'')) NOT IN ('cancelled','canceled','deleted')
-      AND left(b.event_date,10) >= ${range.from} AND left(b.event_date,10) < ${range.to}
+      ${bookingRefs ? sql`` : sql`AND left(b.event_date,10) >= ${range.from} AND left(b.event_date,10) < ${range.to}`}
   `);
   const conditions = [];
+  if (bookingRefs) conditions.push(sql`(source, id) IN (${sql.join(bookingRefs.map(ref=>sql`(${ref.source},${ref.id})`),sql`,`)})`);
   if(filters.search) conditions.push(sql`position(lower(${filters.search}) in lower(coalesce(nullif(number,''), CASE WHEN source='kosha' THEN 'KOSHA-' ELSE 'SRV-' END || id::text) || ' ' || coalesce(customer_name,''))) > 0`);
   if(filters.category !== "all") conditions.push(sql`category=${filters.category}`);
   if(filters.status !== "all") conditions.push(sql`lower(coalesce(nullif(execution_stage,''),nullif(details->'bookingOperations'->>'bookingStage',''),status,''))=${filters.status}`);
@@ -79,12 +87,12 @@ export async function loadDailyOperations(executor: Executor, filters: DailyFilt
   const candidates = rowsOf(await executor.execute(sql`
     SELECT * FROM (${sql.join(selects, sql` UNION ALL `)}) bookings
     ${conditions.length ? sql`WHERE ${sql.join(conditions,sql` AND `)}` : sql``}
-    ORDER BY left(event_date,10), event_time NULLS LAST, source, id LIMIT ${501}
+    ORDER BY left(event_date,10), event_time NULLS LAST, source, id LIMIT ${cap+1}
   `));
-  const truncated = candidates.length > 500;
-  const facts: DailyBookingFact[] = candidates.slice(0, 500).map((b) => ({
+  const truncated = candidates.length > cap;
+  const facts: DailyBookingFact[] = candidates.slice(0, cap).map((b) => ({
     source: b.source, id: Number(b.id), number: b.number || `${b.source === "kosha" ? "KOSHA" : "SRV"}-${b.id}`,
-    customerName: b.customer_name, eventDate: b.event_date, eventTime: b.event_time || null,
+    customerName: b.customer_name, eventDate: b.event_date || "", eventTime: b.event_time || null,
     location: b.location, status: b.status, category: b.category, details: b.details ?? {},
     assignedStaffId: idOrNull(b.assigned_staff_id), vehicleId: idOrNull(b.vehicle_id), vehicleName: b.vehicle_name,
     transportationMode: b.transportation_mode, crewName: b.crew_name, openTasks: 0, overdueTasks: 0, products: [],

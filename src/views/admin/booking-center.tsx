@@ -63,6 +63,8 @@ import { aerialPhotographyCharge } from "@/lib/booking-aerial-photography";
 import { formatIraqiPhone } from "@/lib/phone";
 import { CustomerQuickAddDialog } from "./customer-quick-add";
 import { BookingOperationsWorkspace } from "./booking-operations-workspace";
+import {BookingReadinessPanel,readinessText,type ReadinessDisplay} from "@/components/booking-readiness-panel";
+import type {BookingReadinessSummary} from "@/lib/booking-operational-readiness";
 import { EditServiceOrderModal } from "./orders";
 import { EditKoshaBookingModal } from "./koshas";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
@@ -260,6 +262,7 @@ type AdminService = { id: number; name: string; nameAr: string; type: string; is
 type Customer = { id: number; name: string; fullName?: string | null; phone: string; city?: string | null };
 
 type UnifiedBooking = {
+  operationalReadiness?:BookingReadinessSummary|null;
   source: "service" | "kosha" | "store" | "graduation" | "photography" | "rental";
   id: number;
   number: string;
@@ -494,26 +497,8 @@ function Money({ value, className = "" }: { value: number; className?: string })
   return <span className={`tabular-nums ${className}`}>{formatCurrency(value)}</span>;
 }
 
-function ReadinessRing({ value, label = "جاهزية الحجز" }: { value: number; label?: string }) {
-  const safe = Math.min(100, Math.max(0, Math.round(value)));
-  return (
-    <div className="ajn-readiness-ring" style={{ "--progress": `${safe * 3.6}deg` } as React.CSSProperties}>
-      <div className="ajn-readiness-ring__inside">
-        <strong>{safe}%</strong>
-        <span>{label}</span>
-      </div>
-    </div>
-  );
-}
-
 function getReadiness(booking: UnifiedBooking) {
-  const statusPoints: Record<string, number> = { waiting: 18, pending: 24, preparing: 50, processing: 50, ready: 82, dispatched: 86, installed: 92, running: 94, finished: 100, completed: 100, delivered: 100, returned: 100, confirmed: 65 };
-  const serviceScore = booking.services.length
-    ? booking.services.reduce((sum, service) => sum + (statusPoints[service.status] ?? 30), 0) / booking.services.length
-    : 25;
-  const paymentScore = booking.remaining <= 0 ? 100 : booking.total > 0 ? Math.max(15, (booking.paid / booking.total) * 100) : 40;
-  const contract = booking.contractNumber ? 100 : 35;
-  return Math.round(serviceScore * 0.55 + paymentScore * 0.3 + contract * 0.15);
+  return booking.operationalReadiness?.percentage ?? null;
 }
 
 function transportationSummary(booking: UnifiedBooking) {
@@ -623,7 +608,7 @@ function buildBookingReport(options: BookingReportOptions, all: UnifiedBooking[]
     time: { label: "الوقت", cell: (b: UnifiedBooking) => escapeReportHtml(b.eventTime || "—") },
     hall: { label: "القاعة", cell: (b: UnifiedBooking) => escapeReportHtml(b.hall || "—") },
     status: { label: "الحالة", cell: (b: UnifiedBooking) => escapeReportHtml(STATUS_LABELS[b.status] || b.status) },
-    readiness: { label: "الجاهزية", cell: (b: UnifiedBooking) => `${getReadiness(b)}%` },
+    readiness: { label: "الفحوص التشغيلية", cell: (b: UnifiedBooking) => escapeReportHtml(readinessText(b.operationalReadiness)) },
     total: { label: "الإجمالي", money: "total" as const, cell: (b: UnifiedBooking) => formatCurrency(b.total) },
     paid: { label: "المدفوع", money: "paid" as const, cell: (b: UnifiedBooking) => formatCurrency(b.paid) },
     remaining: { label: "المتبقّي", money: "remaining" as const, remaining: true, cell: (b: UnifiedBooking) => formatCurrency(b.remaining) },
@@ -874,7 +859,7 @@ function BookingDashboard() {
   const [serviceFilter, setServiceFilter] = useState<ServiceKey | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
   const [reportFor, setReportFor] = useState<ServiceKey | "all" | null>(null);
-  const centralBookingsQuery = useQuery({ queryKey: ["admin", "booking-center"], queryFn: () => adminFetch<any[]>("/admin/booking-center") });
+  const centralBookingsQuery = useQuery({ queryKey: ["admin", "booking-center"], queryFn: () => adminFetch<any[]>("/admin/booking-center?readiness=1") });
   // §15 — unresolved damage/penalty flags per booking for the list indicator.
   const penaltyIndicators = useQuery<{ indicators: Record<string, { remaining: number; pendingReview: number; count: number }> }>({
     queryKey: ["admin", "penalty-indicators"],
@@ -912,7 +897,7 @@ function BookingDashboard() {
     { label: "حجوزات اليوم", value: bookings.filter((booking) => booking.eventDate === today).length, icon: CalendarDays, tone: "rose" },
     { label: "المناسبات القادمة", value: bookings.filter((booking) => booking.eventDate >= today && !["cancelled", "completed", "returned"].includes(booking.status)).length, icon: Sparkles, tone: "plum" },
     { label: "دفعات معلّقة", value: bookings.filter((booking) => booking.remaining > 0 && booking.status !== "cancelled").length, icon: CircleDollarSign, tone: "gold" },
-    { label: "جاهزة اليوم", value: bookings.filter((booking) => booking.eventDate === today && getReadiness(booking) >= 80).length, icon: PackageCheck, tone: "green" },
+    { label: "جاهزية مؤكدة اليوم", value: bookings.filter((booking) => booking.eventDate === today && booking.operationalReadiness?.status === "ready").length, icon: PackageCheck, tone: "green" },
     { label: "إيراد الشهر", value: formatCurrency(bookings.filter((booking) => booking.eventDate.startsWith(month)).reduce((sum, booking) => sum + booking.total, 0)), icon: Banknote, tone: "gold" },
   ];
   const refresh = () => {
@@ -1092,7 +1077,7 @@ function BookingPreview({ booking, penalty, onDelete, deleting = false }: { book
         </div>
       ) : null}
       <div className="ajn-preview-services">{booking.services.slice(0, 5).map((service) => { const meta = SERVICE_META.find((item) => item.key === service.type)!; const Icon = meta.icon; return <span key={service.type} title={meta.label}><Icon /><small>{meta.short}</small></span>; })}</div>
-      <div className="ajn-preview-progress"><span><i style={{ width: `${readiness}%` }} /></span><small>الجاهزية {readiness}%</small></div>
+      <div className="ajn-preview-progress">{readiness != null ? <span aria-hidden="true"><i style={{ width: `${readiness}%` }} /></span> : null}<small>{readinessText(booking.operationalReadiness)}</small></div>
       <div className="ajn-preview-finance"><div><small>الإجمالي</small><Money value={booking.total} /></div><div><small>المتبقي</small><Money value={booking.remaining} className={booking.remaining > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600"} /></div></div>
       {transport ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Car className="h-3.5 w-3.5 text-amber-600" /><span>{transport}</span></div> : null}
       {attendees > 0 ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Camera className="h-3.5 w-3.5 text-primary" /><span>{attendees.toLocaleString("ar-IQ-u-nu-latn")} مشارك · لقطات جماعية</span></div> : null}
@@ -2236,6 +2221,7 @@ function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: num
 function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; id: number }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const readinessQuery=useQuery<ReadinessDisplay>({queryKey:["admin","booking-operations",source,id,"readiness"],queryFn:()=>adminFetch(`/admin/booking-operations/${source}/${id}/readiness`),refetchInterval:30_000});
   const serviceOrdersQuery = useQuery({ queryKey: ["admin", "booking-workspace", "service-orders"], queryFn: () => adminFetch<ServiceOrder[]>("/admin/service-orders?limit=250"), enabled: source === "service" });
   const koshaQuery = useQuery({ queryKey: ["admin", "booking-workspace", "kosha"], queryFn: () => adminFetch<KoshaBooking[]>("/admin/kosha-bookings?search=&status="), enabled: source === "kosha" });
   const data = useMemo(() => unify(serviceOrdersQuery.data ?? [], koshaQuery.data ?? []).find((booking) => booking.source === source && booking.id === id), [source, id, serviceOrdersQuery.data, koshaQuery.data]);
@@ -2256,20 +2242,11 @@ function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; i
   if (serviceOrdersQuery.isLoading || koshaQuery.isLoading) return <div className="space-y-4"><Skeleton className="h-44 rounded-2xl" /><Skeleton className="h-[520px] rounded-2xl" /></div>;
   if (!data) return <div className="ajn-empty"><AlertTriangle /><h2>الحجز غير موجود</h2><p>قد يكون مؤرشفاً أو لم تعد لديك صلاحية عرضه.</p><Button asChild><Link href="/admin/bookings">العودة إلى مركز الحجوزات</Link></Button></div>;
 
-  const readiness = getReadiness(data);
   const finance: any = source === "kosha" && historyQuery.data && !Array.isArray(historyQuery.data) ? historyQuery.data : null;
   const history = Array.isArray(historyQuery.data) ? historyQuery.data : finance?.payments ?? finance?.collections ?? [];
   const reservations = reservationsQuery.data?.items ?? [];
   const whatsapp = `https://wa.me/${String(data.phone).replace(/\D/g, "")}`;
   const invoiceUrl = `/admin/invoice/${data.id}?type=${source === "kosha" ? "kosha" : "booking"}`;
-  const readinessParts = [
-    { label: "الدفع", value: data.remaining <= 0 ? 100 : data.total ? Math.round((data.paid / data.total) * 100) : 20 },
-    { label: "المستودع", value: reservations.length ? 85 : source === "kosha" ? 35 : 55 },
-    { label: "الموظفون", value: data.services.some((service) => ["ready", "installed", "running", "finished"].includes(service.status)) ? 85 : 45 },
-    { label: "المعدات", value: reservations.length ? 90 : 50 },
-    { label: "النقل", value: data.services.some((service) => service.type === "transportation") ? 55 : 100 },
-    { label: "العقد", value: data.contractNumber ? 100 : 35 },
-  ];
   const recommendations = [
     data.remaining > 0 ? `يوجد مبلغ ${formatCurrency(data.remaining)} متبقٍ على العميل قبل المناسبة.` : null,
     !data.contractNumber ? "لم يُسجل رقم عقد لهذا الحجز بعد." : null,
@@ -2298,10 +2275,7 @@ function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; i
               <TabsTrigger value="warehouse">المستودع</TabsTrigger><TabsTrigger value="employees">الموظفون</TabsTrigger><TabsTrigger value="payments">المدفوعات</TabsTrigger><TabsTrigger value="invoices">الفواتير</TabsTrigger><TabsTrigger value="tasks">المهام</TabsTrigger><TabsTrigger value="attachments">المرفقات</TabsTrigger><TabsTrigger value="timeline">التايم لاين</TabsTrigger><TabsTrigger value="notes">الملاحظات</TabsTrigger>
             </TabsList>
             <TabsContent value="summary" className="space-y-4">
-              <section className="ajn-readiness-panel">
-                <ReadinessRing value={readiness} />
-                <div className="ajn-readiness-details"><div><span>حالة التنفيذ</span><h2>{readiness >= 80 ? "الحجز قريب من الجاهزية" : readiness >= 55 ? "التجهيز يسير وفق الخطة" : "الحجز يحتاج متابعة"}</h2><p>النسبة محسوبة من الدفع، الخدمات، العقد، الموظفين والمستودع.</p></div><div className="ajn-readiness-bars">{readinessParts.map((item) => <div key={item.label}><span>{item.label}<b>{item.value}%</b></span><i><em style={{ width: `${Math.min(100, item.value)}%` }} /></i></div>)}</div></div>
-              </section>
+              <BookingReadinessPanel readiness={readinessQuery.data} loading={readinessQuery.isFetching} error={readinessQuery.error} onRetry={()=>void readinessQuery.refetch()}/>
               <section className="ajn-panel"><div className="ajn-panel-title"><div><Sparkles /><span><small>الخدمات</small><h2>الخدمات المطلوبة في هذا الحجز</h2></span></div></div><div className="ajn-selected-services">{data.services.map((service) => <ServiceWorkspaceCard key={service.type} service={service} editable={source === "service"} onStatus={(status) => updateService.mutate({ type: service.type, status })} />)}</div></section>
               {data.source === "service" && data.services.some((service) => service.type === "photography") ? <ServiceOrderItemsEditor order={data.raw as ServiceOrder} /> : null}
               <section className="ajn-panel"><div className="ajn-panel-title"><div><Clock3 /><span><small>مباشر</small><h2>آخر أحداث الحجز</h2></span></div><Button variant="ghost" onClick={() => document.querySelector('[data-state="inactive"][value="timeline"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }))}>عرض الكل</Button></div><TimelineRows history={history} data={data} compact /></section>

@@ -1,5 +1,6 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { loadDailyOperations } from "./booking-daily-operations";
+import { loadBookingReadiness } from "./booking-operational-readiness";
 import { parseDailyOperationsFilters } from "@/lib/booking-daily-operations";
 import { autoTranslate, autoTranslateStatus } from "@/server/translate";
 import { after, NextResponse, type NextRequest } from "next/server";
@@ -32515,6 +32516,18 @@ async function handleBookingOperations(
     auth.role === "manager" ||
     hasPermission(auth, "bookings") ||
     permissions.some((permission) => hasPermission(auth, permission));
+  if (parts[4] === "readiness") {
+    if (req.method !== "GET") return error("الإجراء غير مدعوم", 405);
+    const source=parts[2], id=int(parts[3]);
+    if (parts.length!==5 || !["kosha","service"].includes(source ?? "") || !id || !/^\d+$/.test(parts[3] ?? "") || !Number.isSafeInteger(id)) return error("مسار الحجز غير صحيح",400);
+    if (!["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase()) && !can("orders","booking_operations_view")) return error("ليس لديك صلاحية عرض عمليات الحجز",403);
+    const result=await loadBookingReadiness(db,[{source:source as "kosha"|"service",id}]);
+    const readiness=result.get(`${source}:${id}`);
+    if (!readiness) return error("الحجز غير متاح للفحص أو ملغى أو مؤرشف",404);
+    const response=json(readiness);
+    response.headers.set("Cache-Control","private, no-store");
+    return response;
+  }
   await Promise.all([
     ensureAdminExtensionsTables(),
     ensureKoshaStaffTables(),
@@ -34693,6 +34706,16 @@ async function handleCentralBookingCenter(
   const reportScope = req.nextUrl.searchParams.get("scope") === "report";
   const rowCap = reportScope ? 20_000 : 500;
   const { rows, truncated } = await listCentralBookingCenterRows(rowCap);
+  if (!reportScope && req.nextUrl.searchParams.get("readiness") === "1") {
+    const refs=rows.flatMap(row=>row.source==="kosha" || row.source==="service" ? [{source:row.source as "kosha"|"service",id:row.id}] : []);
+    const evidence=await loadBookingReadiness(db,refs);
+    const response=json(rows.map(row=>{
+      const snapshot=evidence.get(`${row.source}:${row.id}`);
+      return {...row,operationalReadiness:snapshot ? {status:snapshot.status,percentage:snapshot.percentage,generatedAt:snapshot.generatedAt} : null};
+    }));
+    response.headers.set("Cache-Control","private, no-store");
+    return response;
+  }
   return reportScope ? json({ rows, truncated }) : json(rows);
 }
 

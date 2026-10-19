@@ -4,6 +4,7 @@ import { Link } from "wouter";
 import { EmployeeAvatar } from "@/components/employee-avatar";
 import { KoshaEquipmentImport } from "./kosha-equipment-import";
 import { QuantityBookingAssetDialog, type QuantityBookingTarget } from "./quantity-booking-asset-dialog";
+import { BookingReadinessPanel, BookingReadinessStatus, type ReadinessDisplay } from "@/components/booking-readiness-panel";
 import { PhotographyProductionPanel } from "./photography-production-shared";
 import { EmployeeSelect } from "@/components/employee-select";
 import { employeeMatchesSearch } from "@/lib/employee-identity";
@@ -411,10 +412,11 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
   };
 
   const overview = useQuery<OverviewData>({ queryKey: [...key, "overview"], queryFn: () => adminFetch(`${base}/overview`) });
+  const readinessQuery = useQuery<ReadinessDisplay>({ queryKey: [...key,"readiness"], queryFn: () => adminFetch(`${base}/readiness`), refetchInterval:30_000 });
   const transportation = useQuery<{ transportation: { mode: "ajn" | "customer" | null; fee: number } | null }>({ queryKey: [...key, "transportation"], queryFn: () => adminFetch(`${base}/transportation`) });
   const setTransportation = useMutation({
     mutationFn: (payload: { mode: "ajn" | "customer" | null; fee: number }) => adminFetch(`${base}/transportation`, { method: "POST", body: JSON.stringify(payload) }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: [...key, "transportation"] }); queryClient.invalidateQueries({ queryKey: [...key, "overview"] }); toast({ title: "تم تحديث خدمة النقل" }); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: [...key, "transportation"] }); queryClient.invalidateQueries({ queryKey: [...key, "overview"] }); queryClient.invalidateQueries({queryKey:[...key,"readiness"]}); queryClient.invalidateQueries({queryKey:["admin","booking-center"]}); toast({ title: "تم تحديث خدمة النقل" }); },
     onError: (error: any) => toast({ title: "تعذر تحديث خدمة النقل", description: error?.message, variant: "destructive" }),
   });
   const attendees = useQuery<{ attendees: GroupAttendee[] }>({ queryKey: [...key, "group-attendees"], queryFn: () => adminFetch(`${base}/group-attendees`) });
@@ -524,9 +526,9 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
       <WorkflowRail title="مسار المستودع" icon={Warehouse} steps={WAREHOUSE_STEPS} current={overview.data?.warehouseStage ?? "reserved"} onStep={(stage, label) => setConfirm({ kind: "warehouse", stage, label })} />
     </section>
 
-    {overview.data?.alerts?.length ? <Button variant="ghost" className="ajn-op-alert" onClick={() => changeTab(overview.data!.alerts[0].tab)}><TriangleAlert /><strong>{overview.data.alerts[0].title}</strong><span>{overview.data.alerts.length > 1 ? `و${overview.data.alerts.length - 1} تنبيهات أخرى` : "فتح التفاصيل"}</span><ChevronLeft /></Button> : <div className="ajn-op-all-clear"><CheckCircle2 /><span>لا توجد تنبيهات تشغيلية حرجة لهذا الحجز</span></div>}
+    {overview.data?.alerts?.length ? <Button variant="ghost" className="ajn-op-alert" onClick={() => changeTab(overview.data!.alerts[0].tab)}><TriangleAlert /><strong>{overview.data.alerts[0].title}</strong><span>{overview.data.alerts.length > 1 ? `و${overview.data.alerts.length - 1} تنبيهات أخرى` : "فتح التفاصيل"}</span><ChevronLeft /></Button> : <div className="flex items-center gap-2 rounded-xl border border-border bg-card p-3 text-sm" role="status"><ClipboardCheck className="h-4 w-4 shrink-0"/><span>راجع فحص الجاهزية قبل التنفيذ؛ عدم وجود تنبيه مسجّل لا يعني اكتمال المتطلبات.</span></div>}
 
-    <OperationsSummary data={overview.data} booking={booking} onTab={changeTab} />
+    <OperationsSummary data={overview.data} booking={booking} onTab={changeTab} readiness={readinessQuery.isError ? undefined : readinessQuery.data} />
 
     <section className="ajn-op-quickbar"><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button className="ajn-op-add-item"><Plus /> إضافة عنصر <ChevronDown /></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="ajn-op-add-menu"><DropdownMenuItem onSelect={() => changeTab("products")}><span className="is-store"><ShoppingBag /></span><span><b>إضافة منتج من المتجر</b><small>اختر المنتجات والمتغيرات واحجز الكمية من المخزون.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("assets")}><span className="is-asset"><PackageCheck /></span><span><b>إضافة أصل من الأصول</b><small>اربط المعدات وتحقق من التوفر وحالة الأصل.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => { window.requestAnimationFrame(() => document.getElementById("ajn-transport-card")?.scrollIntoView({ behavior: "smooth", block: "center" })); }}><span className="is-asset"><Truck /></span><span><b>إضافة خدمة نقل</b><small>حدّد النقل بواسطة AJN أو من مسؤولية الزبون لهذا الحجز.</small></span><ChevronLeft /></DropdownMenuItem></DropdownMenuContent></DropdownMenu><div>{nextBooking && <Button variant="outline" onClick={() => setConfirm({ kind: "booking", stage: nextBooking[0], label: nextBooking[1] })}><Check /> {nextBooking[1]}</Button>}{nextWarehouse && <Button variant="outline" onClick={() => setConfirm({ kind: "warehouse", stage: nextWarehouse[0], label: nextWarehouse[1] })}><QrCode /> {nextWarehouse[1]}</Button>}<Button variant="outline" onClick={() => changeTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="outline" onClick={() => changeTab("documents")}><FileText /> رفع مستند</Button></div></section>
 
@@ -538,7 +540,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <div className="ajn-op-workspace-grid"><main><Tabs value={tab} onValueChange={changeTab} className="ajn-op-tabs">
       <TabsList>{TAB_LABELS.map(([value, label, Icon]) => <TabsTrigger key={value} value={value}><Icon /> {label}{overview.data && value in overview.data.counts && <em>{(overview.data.counts as any)[value]}</em>}</TabsTrigger>)}</TabsList>
-      <TabsContent value="overview"><OverviewTab data={overview.data} loading={overview.isLoading} error={overview.error} booking={booking} onTab={changeTab} /></TabsContent>
+      <TabsContent value="overview"><OverviewTab data={overview.data} loading={overview.isLoading} error={overview.error} booking={booking} onTab={changeTab} readiness={readinessQuery.data} readinessLoading={readinessQuery.isFetching} readinessError={readinessQuery.error} onReadinessRetry={()=>void readinessQuery.refetch()} /></TabsContent>
       <TabsContent value="products"><ProductsTab base={base} queryKey={key} /></TabsContent>
       <TabsContent value="assets"><AssetsTab base={base} queryKey={key} /></TabsContent>
       <TabsContent value="warehouse"><WarehouseTab base={base} queryKey={key} overview={overview.data} onStage={(stage, label) => setConfirm({ kind: "warehouse", stage, label })} /></TabsContent>
@@ -548,7 +550,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
       <TabsContent value="tasks"><TasksTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       <TabsContent value="documents"><DocumentsTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       <TabsContent value="activity"><ActivityTab base={base} queryKey={key} /></TabsContent>
-    </Tabs></main><BookingSidebar booking={booking} data={overview.data} invoiceUrl={invoiceUrl} paymentUrl={paymentUrl} onTab={changeTab} department={department} responsibleTeam={responsibleTeam} /></div>
+    </Tabs></main><BookingSidebar booking={booking} data={overview.data} invoiceUrl={invoiceUrl} paymentUrl={paymentUrl} onTab={changeTab} department={department} responsibleTeam={responsibleTeam} readiness={readinessQuery.isError ? undefined : readinessQuery.data} /></div>
 
     <section className="ajn-op-bottom-timeline"><div className="ajn-op-section-head"><div><History /><span><small>الأثر الكامل للحجز</small><h2>التسلسل الزمني</h2></span></div><Button variant="ghost" size="sm" onClick={() => changeTab("activity")}>عرض كل النشاط <ChevronLeft /></Button></div><Timeline rows={overview.data?.recentActivity ?? []} /></section>
 
@@ -646,27 +648,26 @@ function TransportationCard({ mode, fee, busy, onSave }: { mode: "ajn" | "custom
   );
 }
 
-function OperationsSummary({ data, booking, onTab }: { data?: OverviewData; booking: BookingOperationsBooking; onTab: (tab: string) => void }) {
-  const parts = data?.readinessParts ?? {};
-  const warehouseReady = data?.warehouseStage === "completed" ? 100 : data?.warehouseStage === "reserved" ? 20 : data?.warehouseStage === "out" ? 80 : 60;
+function OperationsSummary({ data, booking, onTab, readiness }: { data?: OverviewData; booking: BookingOperationsBooking; onTab: (tab: string) => void; readiness?: ReadinessDisplay }) {
+  const percentage=(category:string)=>readiness?.categories[category] ? `${readiness.categories[category].percentage}%` : "غير مفحوص";
   const items = [
-    { label: "جاهزية المنتجات", value: `${parts.products ?? 0}%`, tone: "green", icon: ShoppingBag, tab: "products" },
-    { label: "جاهزية الأصول", value: `${parts.assets ?? 0}%`, tone: "purple", icon: PackageCheck, tab: "assets" },
-    { label: "جاهزية المستودع", value: `${warehouseReady}%`, tone: "blue", icon: Warehouse, tab: "warehouse" },
+    { label: "فحوص المعدات", value: percentage("equipment"), tone: "green", icon: ShoppingBag, tab: "assets" },
+    { label: "تأكيد الفريق", value: percentage("staff"), tone: "purple", icon: Users, tab: "tasks" },
+    { label: "فحوص النقل", value: percentage("transport"), tone: "blue", icon: Truck, tab: "overview" },
     { label: "حالة الدفع", value: booking.paymentStatus || (booking.remaining <= 0 ? "مكتمل" : "جزئي"), tone: booking.remaining <= 0 ? "green" : "amber", icon: CircleDollarSign, tab: "finance" },
     { label: "الرصيد المتبقي", value: formatCurrency(booking.remaining), tone: booking.remaining > 0 ? "amber" : "green", icon: Banknote, tab: "finance" },
-    { label: "التنبيهات", value: String(data?.counts.alerts ?? 0), tone: data?.counts.alerts ? "red" : "green", icon: TriangleAlert, tab: data?.alerts[0]?.tab || "overview" },
+    { label: "التنبيهات", value: data ? String(data.counts.alerts) : "غير مفحوص", tone: data?.counts.alerts ? "red" : "amber", icon: TriangleAlert, tab: data?.alerts[0]?.tab || "overview" },
   ];
   return <section className="ajn-op-command-summary" aria-label="ملخص عمليات الحجز">{items.map(({ label, value, tone, icon: Icon, tab }) => <Button variant="ghost" key={label} type="button" className={`is-${tone}`} onClick={() => onTab(tab)}><span><Icon /></span><div><small>{label}</small><strong>{value}</strong></div><ChevronLeft /></Button>)}</section>;
 }
 
-function BookingSidebar({ booking, data, invoiceUrl, paymentUrl, onTab, department, responsibleTeam }: { booking: BookingOperationsBooking; data?: OverviewData; invoiceUrl: string; paymentUrl: string; onTab: (tab: string) => void; department: string; responsibleTeam: string }) {
+function BookingSidebar({ booking, data, invoiceUrl, paymentUrl, onTab, department, responsibleTeam, readiness }: { booking: BookingOperationsBooking; data?: OverviewData; invoiceUrl: string; paymentUrl: string; onTab: (tab: string) => void; department: string; responsibleTeam: string; readiness?:ReadinessDisplay }) {
   return <aside className="ajn-op-sidebar" aria-label="ملخص الحجز الجانبي">
     <section><div className="ajn-op-side-title"><UserRound /><h2>معلومات العميل</h2></div><dl><div><dt>العميل</dt><dd>{booking.customerName}</dd></div><div><dt>رقم الهاتف</dt><dd dir="ltr">{booking.phone || "—"}</dd></div><div><dt>رقم الحجز</dt><dd>{booking.number}</dd></div></dl></section>
     <section><div className="ajn-op-side-title"><CalendarDays /><h2>معلومات الحجز</h2></div><dl><div><dt>التاريخ</dt><dd>{readableDate(booking.eventDate)}</dd></div><div><dt>الموقع</dt><dd>{booking.hall || "غير محدد"}</dd></div><div><dt>القسم</dt><dd>{department}</dd></div><div><dt>الفريق</dt><dd>{responsibleTeam}</dd></div></dl></section>
     <section className="ajn-op-side-finance"><div className="ajn-op-side-title"><CircleDollarSign /><h2>ملخص مالي سريع</h2></div><div><span>إجمالي الحجز</span><b>{money(booking.total)}</b></div><div><span>المدفوع</span><b className="is-positive">{money(booking.paid)}</b></div><div><span>المتبقي</span><b className={booking.remaining > 0 ? "is-negative" : "is-positive"}>{money(booking.remaining)}</b></div><Button variant="ghost" type="button" onClick={() => onTab("finance")}>فتح التفاصيل المالية <ChevronLeft /></Button></section>
     <section><div className="ajn-op-side-title"><Sparkles /><h2>إجراءات سريعة</h2></div><div className="ajn-op-side-actions"><Button className="ajn-op-primary" onClick={() => onTab("finance")}><Banknote /> تسجيل دفعة</Button><Button variant="outline" asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></Button><BookingThermalPrintAction booking={booking} className="w-full" /><Button variant="outline" onClick={() => onTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="outline" onClick={() => onTab("documents")}><FileText /> المستندات</Button></div></section>
-    <div className="ajn-op-side-readiness"><ReadinessRing value={data?.readiness ?? 0} /><div><small>الجاهزية الشاملة</small><b>{data?.readiness ?? 0}%</b><span>تُحسب من المخزون والأصول والمهام والمالية.</span></div></div>
+    <div className="ajn-op-side-readiness"><div><small>فحوص الجاهزية التشغيلية</small><BookingReadinessStatus readiness={readiness}/><span>من سجل التجهيز والفريق والنقل، وليست من قيمة الدفعات.</span></div></div>
   </aside>;
 }
 
@@ -680,22 +681,10 @@ function WorkflowRail({ title, icon: Icon, steps, current, onStep }: { title: st
   return <div className="ajn-op-flow"><div className="ajn-op-flow-title"><Icon /><strong>{title}</strong><OperationStatus value={current} /></div><div className="ajn-op-flow-steps">{steps.map(([value, label], index) => <Button variant="ghost" key={value} type="button" className={index < currentIndex ? "is-done" : index === currentIndex ? "is-current" : ""} onClick={() => onStep(value, label)} aria-current={index === currentIndex ? "step" : undefined}><i>{index < currentIndex ? <Check /> : index + 1}</i><span>{label}</span></Button>)}</div></div>;
 }
 
-function OverviewTab({ data, loading, error, booking, onTab }: { data?: OverviewData; loading: boolean; error?: unknown; booking: BookingOperationsBooking; onTab: (tab: string) => void }) {
-  const parts = data?.readinessParts ?? {};
-  const rows = [
-    ["products", "جاهزية المنتجات", parts.products ?? 0, ShoppingBag],
-    ["assets", "جاهزية الأصول", parts.assets ?? 0, PackageCheck],
-    ["warehouse", "جاهزية المستودع", data?.warehouseStage === "completed" ? 100 : data?.warehouseStage === "reserved" ? 25 : 65, Warehouse],
-    ["finance", "المتطلبات المالية", parts.finance ?? 0, CircleDollarSign],
-    ["tasks", "تقدم المهام", parts.tasks ?? 0, ListChecks],
-    ["documents", "مستندات الحجز", parts.documents ?? 0, FileText],
-  ] as const;
-  return <QueryState loading={loading} error={error}><div className="ajn-op-overview"><section className="ajn-op-readiness"><div className="ajn-op-section-head"><div><Gauge /><span><small>الحالة التشغيلية</small><h2>جاهزية الحجز</h2></span></div><ReadinessRing value={data?.readiness ?? 0} /></div><div className="ajn-op-readiness-rows">{rows.map(([tab, label, value, Icon]) => <Button variant="ghost" key={tab} onClick={() => onTab(tab)}><Icon /><span><strong>{label}</strong><i><em style={{ width: `${value}%` }} /></i></span><b>{value}%</b><ChevronLeft /></Button>)}</div></section><section className="ajn-op-timeline-panel"><div className="ajn-op-section-head"><div><Clock3 /><span><small>آخر التحديثات</small><h2>السجل الزمني</h2></span></div><Button variant="ghost" size="sm" onClick={() => onTab("activity")}>عرض الكل</Button></div><Timeline rows={data?.recentActivity ?? []} /></section><section className="ajn-op-summary-strip"><div><span>إجمالي الحجز</span><b>{money(booking.total)}</b></div><div><span>المدفوع</span><b className="is-positive">{money(booking.paid)}</b></div><div><span>المتبقي</span><b className="is-negative">{money(booking.remaining)}</b></div><div><span>المهام</span><b>{data?.counts.completedTasks ?? 0} / {data?.counts.tasks ?? 0}</b></div><div><span>المستندات</span><b>{data?.counts.documents ?? 0}</b></div></section></div></QueryState>;
+function OverviewTab({ data, loading, error, booking, onTab, readiness, readinessLoading, readinessError, onReadinessRetry }: { data?: OverviewData; loading: boolean; error?: unknown; booking: BookingOperationsBooking; onTab: (tab: string) => void; readiness?: ReadinessDisplay; readinessLoading:boolean; readinessError?:unknown; onReadinessRetry:()=>void }) {
+  return <QueryState loading={loading} error={error}><div className="ajn-op-overview"><BookingReadinessPanel readiness={readiness} loading={readinessLoading} error={readinessError} onRetry={onReadinessRetry} /><section className="ajn-op-timeline-panel"><div className="ajn-op-section-head"><div><Clock3 /><span><small>آخر التحديثات</small><h2>السجل الزمني</h2></span></div><Button variant="ghost" size="sm" onClick={() => onTab("activity")}>عرض الكل</Button></div><Timeline rows={data?.recentActivity ?? []} /></section><section className="ajn-op-summary-strip"><div><span>إجمالي الحجز</span><b>{money(booking.total)}</b></div><div><span>المدفوع</span><b className="is-positive">{money(booking.paid)}</b></div><div><span>المتبقي</span><b className="is-negative">{money(booking.remaining)}</b></div><div><span>المهام</span><b>{data?.counts.completedTasks ?? 0} / {data?.counts.tasks ?? 0}</b></div><div><span>المستندات</span><b>{data?.counts.documents ?? 0}</b></div></section></div></QueryState>;
 }
 
-function ReadinessRing({ value }: { value: number }) {
-  return <div className="ajn-op-ring" style={{ "--op-progress": `${Math.max(0, Math.min(100, value)) * 3.6}deg` } as React.CSSProperties}><span><strong>{value}%</strong><small>جاهز</small></span></div>;
-}
 
 function ProductsTab({ base, queryKey }: { base: string; queryKey: unknown[] }) {
   const queryClient = useQueryClient();

@@ -1,4 +1,5 @@
 import { normalizeQuantityLine, lineOutstanding } from "./quantity-assets";
+import { evaluateBookingReadiness } from "./booking-operational-readiness";
 
 export type DailySource = "kosha" | "service";
 export type DailyFilters = {
@@ -155,7 +156,8 @@ export function projectDailyBooking(fact: DailyBookingFact, now = new Date()) {
     { id: "requirements", label: "متطلبات التنفيذ", state: "unknown", reason: "راجع متطلبات التركيب والوثائق والموافقات التشغيلية", href: `${href}?tab=documents` },
   ];
   const applicable = checks.filter(c=>c.applicable!==false);
-  const passed = applicable.filter((c) => c.state === "pass").length;
+  const categories:Record<string,string>={date:"location",location:"location",preparation:"equipment",staff:"staff","staff-confirmation":"staff",vehicle:"transport","vehicle-condition":"transport",conflicts:"equipment",requirements:"requirements"};
+  const readiness=evaluateBookingReadiness(checks.map(c=>({...c,category:categories[c.id],mandatory:true,applicable:c.applicable!==false})));
   const issues = applicable.filter((c) => c.state === "fail").map((c) => ({ kind: c.id === "preparation" ? "equipment" : c.id, label: c.reason, href: c.href }));
   if (returnEvidenceIncomplete) issues.push({kind:"custody-review",label:"سجلات عهدة المعدات غير متطابقة؛ راجع الإرجاع قبل اعتماد الكمية",href:`${href}?tab=assets`});
   if (fact.overdueTasks > 0) issues.push({ kind: "tasks", label: `${fact.overdueTasks} مهام متأخرة`, href: `${href}?tab=tasks` });
@@ -171,7 +173,7 @@ export function projectDailyBooking(fact: DailyBookingFact, now = new Date()) {
     staff: staffIds.map((id) => ({ id, name: fact.staff?.find((s) => s.id === id)?.name || "موظف معيّن" })), crewName: fact.crewName, vehicleId: fact.vehicleId, vehicleName: fact.vehicleName,
     preparation: { total, prepared, problems, shortage, percentage: total ? Math.round(prepared / total * 100) : null }, closed,
     pendingReturn, returnEvidenceIncomplete, overdueTasks: fact.overdueTasks, openTasks: fact.openTasks,
-    readiness: { status: applicable.some((c) => c.state === "fail") ? "not_ready" as const : "needs_followup" as const, percentage: Math.round(passed / applicable.length * 100), checks },
+    readiness: {...readiness,percentage:readiness.percentage ?? 0},
     issues, nextAction: firstIssue ? { label: firstIssue.label, href: firstIssue.href } : { label: nextCheck.reason, href: nextCheck.href },
   };
 }
