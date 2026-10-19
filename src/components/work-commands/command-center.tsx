@@ -463,6 +463,9 @@ function MessageRow({
             </div>
           ) : null}
           {message.voiceUrl ? <audio controls preload="none" src={message.voiceUrl} className="h-10 w-60 max-w-full" aria-label="رسالة صوتية" /> : null}
+          {!message.voiceUrl && message.type === "voice" && message.pending ? (
+            <p className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground"><Mic className="h-3.5 w-3.5" />رسالة صوتية{message.voiceDuration ? ` · ${Math.floor(message.voiceDuration / 60)}:${String(message.voiceDuration % 60).padStart(2, "0")}` : ""}</p>
+          ) : null}
           {message.body ? <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{message.body}</p> : null}
           {message.attachments.length ? <div className="mt-1.5 grid gap-1.5">{message.attachments.map((item, index) => <AttachmentView key={`${item.url}-${index}`} item={item} />)}</div> : null}
           <p className="mt-1 flex items-center justify-end gap-1 text-[10px] text-muted-foreground">
@@ -614,11 +617,14 @@ function Composer({
   };
 
   const sendVoice = async () => {
+    if (draft.uploading) return;
     setSendingVoice(true);
     try {
       const result = await voice.finish(true);
       if (!result) return;
-      onSend({ body: "", attachments: [], voice: await blobToDataUrl(result.blob), voiceDuration: result.seconds });
+      onSend({ body: text.trim(), attachments: draft.attachments, voice: await blobToDataUrl(result.blob), voiceDuration: result.seconds });
+      setText("");
+      setDraft({ attachments: [], uploading: 0 });
     } catch (error) {
       toast({ variant: "destructive", title: "تعذر إرسال التسجيل", description: apiErrorMessage(error) });
     } finally {
@@ -658,7 +664,9 @@ function Composer({
         <div className="flex min-h-12 items-center gap-2 rounded-xl bg-destructive/5 px-2">
           <span className="relative ms-1 flex h-2.5 w-2.5"><span className="absolute inline-flex h-full w-full rounded-full bg-destructive opacity-60 motion-safe:animate-ping" /><span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-destructive" /></span>
           <span className="text-sm font-bold tabular-nums" dir="ltr">{clock}</span>
-          <span className="text-xs text-muted-foreground">يتوقف تلقائياً عند 3 دقائق</span>
+          <span className="min-w-0 truncate text-xs text-muted-foreground">
+            {text.trim() || draft.attachments.length ? `يُرسل مع ${text.trim() ? `«${text.trim().slice(0, 40)}${text.trim().length > 40 ? "…" : ""}»` : "المرفقات"}` : "يتوقف تلقائياً عند 3 دقائق"}
+          </span>
           <Button type="button" variant="quiet" size="iconSm" className="ms-auto" aria-label="إلغاء التسجيل" onClick={() => void voice.finish(false)}><Trash2 className="h-4 w-4" /></Button>
           <Button type="button" size="icon" className="h-10 w-10 rounded-full" aria-label="إرسال التسجيل" disabled={sendingVoice} onClick={() => void sendVoice()}>{sendingVoice ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4 -scale-x-100" />}</Button>
         </div>
@@ -677,11 +685,10 @@ function Composer({
             aria-label="نص الرسالة"
             className="max-h-36 min-h-10 flex-1 resize-none rounded-xl py-2.5 leading-5 [field-sizing:content]"
           />
+          <Button type="button" variant="outline" size="icon" className="h-10 w-10 shrink-0 rounded-full" aria-label={text.trim() || draft.attachments.length ? "تسجيل رسالة صوتية تُرسل مع النص" : "تسجيل رسالة صوتية"} title="تسجيل رسالة صوتية" onClick={() => void voice.start()}><Mic className="h-4 w-4" /></Button>
           {text.trim() || draft.attachments.length ? (
             <Button type="button" size="icon" className="h-10 w-10 shrink-0 rounded-full" aria-label="إرسال" disabled={Boolean(draft.uploading)} onClick={submit}><Send className="h-4 w-4 -scale-x-100" /></Button>
-          ) : (
-            <Button type="button" variant="outline" size="icon" className="h-10 w-10 shrink-0 rounded-full" aria-label="تسجيل رسالة صوتية" onClick={() => void voice.start()}><Mic className="h-4 w-4" /></Button>
-          )}
+          ) : null}
         </div>
       )}
     </div>

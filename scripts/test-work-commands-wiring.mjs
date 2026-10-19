@@ -46,6 +46,7 @@ assert.match(read("src/views/admin/_lib.ts"), /"task_approve",\s*"work_orders\.i
 assert.match(read("src/views/admin/_lib.ts"), /"work_orders\.issue": "مركز أوامر العمل: إصدار أوامر"/);
 assert.match(server, /canGrant: role === "admin" \|\| has\("staff"\)/, "granting follows the staff screen's permission rule");
 assert.match(server, /FOR UPDATE/, "transitions lock the task row");
+assert.match(read("src/components/work-commands/command-center.tsx"), /onSend\(\{ body: text\.trim\(\), attachments: draft\.attachments, voice: await blobToDataUrl/, "a voice note is sent together with the typed text and attachments");
 assert.match(read("src/components/work-commands/create-order-dialog.tsx"), /description: description\.trim\(\) \|\| sourceText\.trim\(\)/, "a message typed in the extraction box is saved as the instructions");
 assert.doesNotMatch(server, /canAccessOrder|لوحة المتابعة للإدارة فقط/, "every employee may read every order");
 assert.match(server, /const problem = transitionProblem\(input\.action, actionContext\(before, user\)\)/, "acting still requires being the assignee or management");

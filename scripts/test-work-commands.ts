@@ -351,6 +351,14 @@ async function run() {
   await rejects(server.sendMessage(harness().db as any, editor, { channelId: 1, body: "  " }), 422, /اكتب رسالة/);
   await rejects(server.sendMessage(harness().db as any, editor, { channelId: 1, voiceUrl: "data:audio/webm;base64,AAAA" }), 503, /الرسالة الصوتية/);
   {
+    // A voice note can carry text (and attachments) in the same message.
+    const h = harness();
+    const sent = await server.sendMessage(h.db as any, editor, { channelId: 1, body: "شوف هذا قبل التصدير", voiceUrl: "https://cdn.example.com/enterprise/voice-notes/b.webm", voiceDuration: 9 });
+    const insert = h.statements.find((statement) => statement.sql.startsWith("INSERT INTO internal_messages") && statement.sql.includes("RETURNING *"))!;
+    assert.deepEqual([insert.params[3], insert.params[4], insert.params[6]], ["شوف هذا قبل التصدير", "https://cdn.example.com/enterprise/voice-notes/b.webm", "voice"]);
+    assert.equal(sent.replayed, false);
+  }
+  {
     const replay = await server.sendMessage(harness().db as any, editor, { channelId: 1, body: "مرحبا", clientKey: "c-1" });
     assert.equal(replay.replayed, true);
     assert.equal(replay.message.id, 77);
