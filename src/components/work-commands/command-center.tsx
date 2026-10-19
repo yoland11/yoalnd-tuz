@@ -36,6 +36,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { EmployeeAvatar } from "@/components/employee-avatar";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -393,9 +394,18 @@ function AttachmentView({ item }: { item: Attachment }) {
   );
 }
 
+/** Same sender, same day, within five minutes: one visual group. */
+function sameRun(a: Message | undefined, b: Message | undefined) {
+  if (!a || !b || a.type === "system" || b.type === "system" || a.type === "work_order" || b.type === "work_order") return false;
+  if (a.senderId !== b.senderId || formatDay(a.createdAt) !== formatDay(b.createdAt)) return false;
+  return Math.abs(new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()) < 5 * 60_000;
+}
+
 function MessageRow({
   message,
   mine,
+  firstInRun = true,
+  lastInRun = true,
   order,
   canCreate,
   onReply,
@@ -405,6 +415,9 @@ function MessageRow({
 }: {
   message: Message;
   mine: boolean;
+  /** Name above the first bubble of a run, photo beside the last one. */
+  firstInRun?: boolean;
+  lastInRun?: boolean;
   order: WorkOrder | undefined;
   canCreate: boolean;
   onReply: (message: Message) => void;
@@ -423,18 +436,26 @@ function MessageRow({
   if (message.type === "work_order")
     return (
       <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-        <div className="w-full max-w-md space-y-1">
-          <p className="px-1 text-[11px] font-bold text-muted-foreground">{mine ? "أصدرتَ" : `أصدر ${message.senderName}`} أمر عمل · {formatTime(message.createdAt)}</p>
-          {order ? <WorkOrderCard order={order} onOpen={onOpenOrder} /> : <div className="rounded-xl border border-border bg-card p-3 text-sm text-muted-foreground">{message.body}</div>}
+        <div className="flex w-full max-w-md items-end gap-1">
+          {mine ? null : <EmployeeAvatar name={message.senderName} photoUrl={message.senderPhotoUrl} size={32} className="mb-0.5" />}
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="px-1 text-[11px] font-bold text-muted-foreground">{mine ? "أصدرتَ" : `أصدر ${message.senderName}`} أمر عمل · {formatTime(message.createdAt)}</p>
+            {order ? <WorkOrderCard order={order} onOpen={onOpenOrder} /> : <div className="rounded-xl border border-border bg-card p-3 text-sm text-muted-foreground">{message.body}</div>}
+          </div>
         </div>
       </div>
     );
   const canConvert = canCreate && message.type !== "work_order" && !message.pending && Boolean(message.body || message.voiceUrl);
   return (
-    <div className={`group flex ${mine ? "justify-end" : "justify-start"}`}>
+    <div className={`group flex ${mine ? "justify-end" : "justify-start"} ${!firstInRun ? "-mt-1" : ""}`}>
       <div className={`flex max-w-[85%] items-end gap-1 sm:max-w-[75%] ${mine ? "flex-row-reverse" : ""}`}>
+        {mine ? null : lastInRun ? (
+          <EmployeeAvatar name={message.senderName} photoUrl={message.senderPhotoUrl} size={32} className="mb-0.5" />
+        ) : (
+          <span className="w-8 shrink-0" aria-hidden />
+        )}
         <div className={`min-w-0 rounded-2xl border px-3 py-2 ${mine ? "rounded-ee-md border-primary/20 bg-primary/10" : "rounded-es-md border-border bg-card"} ${message.pending === "failed" ? "border-destructive/50" : ""}`}>
-          {!mine ? <p className="mb-0.5 text-xs font-extrabold text-primary">{message.senderName}</p> : null}
+          {!mine && firstInRun ? <p className="mb-0.5 text-xs font-extrabold text-primary">{message.senderName}</p> : null}
           {message.replyTo ? (
             <div className="mb-1.5 rounded-lg bg-background/80 px-2 py-1 text-xs">
               <span className="flex items-center gap-1 font-bold text-primary"><Reply className="h-3 w-3" />{message.replyTo.senderName}</span>
@@ -835,7 +856,7 @@ function ChatPanel({
             ) : null}
             {thread.isError ? <Failure title="انقطع تحديث المحادثة" error={thread.error} onRetry={() => void thread.refetch()} /> : null}
             {!messages.length ? <Empty>ابدأ المحادثة أو أصدر أول أمر عمل لهذا القسم.</Empty> : null}
-            {messages.map((message) => {
+            {messages.map((message, index) => {
               const day = formatDay(message.createdAt);
               const separator = day !== lastDay ? day : null;
               lastDay = day;
@@ -845,6 +866,8 @@ function ChatPanel({
                   <MessageRow
                     message={message}
                     mine={message.senderId === me.user.id}
+                    firstInRun={!sameRun(messages[index - 1], message)}
+                    lastInRun={!sameRun(message, messages[index + 1])}
                     order={message.taskId ? orders.get(message.taskId) : undefined}
                     canCreate={me.access.canCreate}
                     onReply={setReplyTo}

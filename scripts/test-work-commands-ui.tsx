@@ -39,7 +39,7 @@ const thread = {
   hasOlder: false,
   orders: [order],
   messages: [
-    message(1, { senderId: 8, senderName: "زينب", body: "تم رفع الملفات على الدرايف" }),
+    message(1, { senderId: 8, senderName: "زينب", senderPhotoUrl: "https://cdn.example.com/zainab.jpg", body: "تم رفع الملفات على الدرايف" }),
     message(2, { type: "work_order", body: order.title, taskId: 40 }),
     message(3, { type: "voice", voiceUrl: "https://cdn.example.com/v.webm", voiceDuration: 12, senderId: 7, senderName: "علي حسن", readBy: 2, replyTo: { id: 1, senderName: "زينب", body: "تم رفع الملفات على الدرايف" } }),
     message(4, { type: "system", body: "استلم علي حسن الأمر TSK-000039", taskId: 39 }),
@@ -81,6 +81,8 @@ const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove:
   assert.match(html, /href="\/admin\/bookings\/kosha\/120"/, "order links to its booking");
   assert.match(html, /<audio[^>]+src="https:\/\/cdn\.example\.com\/v\.webm"/);
   assert.match(html, /aria-label="2 غير مقروءة"/);
+  assert.match(html, /<img src="https:\/\/cdn\.example\.com\/zainab\.jpg" alt="زينب"/, "the sender's photo is shown beside their message");
+  assert.match(html, /role="img" aria-label="المدير"/, "without a photo, the sender's initials are shown");
 }
 
 // Manager.

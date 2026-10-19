@@ -363,6 +363,7 @@ function messageFromRow(row: any) {
     channelId: Number(row.channel_id),
     senderId: row.sender_id == null ? null : Number(row.sender_id),
     senderName: String(row.sender_name ?? ""),
+    senderPhotoUrl: row.sender_photo ?? null,
     body: row.body ?? null,
     type: String(row.message_type ?? "text"),
     voiceUrl: row.voice_url ?? null,
@@ -384,10 +385,10 @@ export async function listMessages(executor: Executor, user: WorkUser, channelId
   const rows = rowsOf(
     await executor.execute(sql`
       SELECT * FROM (
-        SELECT m.*, rp.id AS reply_id, rp.sender_name AS reply_sender, rp.body AS reply_body,
+        SELECT m.*, rp.id AS reply_id, rp.sender_name AS reply_sender, rp.body AS reply_body, sp.photo_url AS sender_photo,
           (SELECT COUNT(*) FROM internal_channel_reads r
             WHERE r.channel_id = m.channel_id AND r.last_read_message_id >= m.id AND r.staff_id <> COALESCE(m.sender_id, 0))::int AS read_by
-        FROM internal_messages m LEFT JOIN internal_messages rp ON rp.id = m.reply_to_id
+        FROM internal_messages m LEFT JOIN internal_messages rp ON rp.id = m.reply_to_id LEFT JOIN staff sp ON sp.id = m.sender_id
         WHERE m.channel_id = ${channelId}
           AND (${after} = 0 OR m.id > ${after})
           AND (${before} = 0 OR m.id < ${before})

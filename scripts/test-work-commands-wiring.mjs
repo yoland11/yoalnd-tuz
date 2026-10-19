@@ -46,6 +46,7 @@ assert.match(read("src/views/admin/_lib.ts"), /"task_approve",\s*"work_orders\.i
 assert.match(read("src/views/admin/_lib.ts"), /"work_orders\.issue": "مركز أوامر العمل: إصدار أوامر"/);
 assert.match(server, /canGrant: role === "admin" \|\| has\("staff"\)/, "granting follows the staff screen's permission rule");
 assert.match(server, /FOR UPDATE/, "transitions lock the task row");
+assert.match(server, /sp\.photo_url AS sender_photo[\s\S]{0,400}LEFT JOIN staff sp ON sp\.id = m\.sender_id/, "messages carry the sender's staff photo");
 assert.match(server, /ON CONFLICT \(channel_id, client_key\) WHERE client_key IS NOT NULL DO NOTHING/, "message sends are idempotent");
 assert.match(server, /return null;\s*\}\s*\n\s*export \{ ACTIVE_TASK_STATUSES \}/, "no transcription provider is wired");
 

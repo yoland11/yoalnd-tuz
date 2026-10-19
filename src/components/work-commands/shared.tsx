@@ -77,6 +77,7 @@ export type Message = {
   channelId: number;
   senderId: number | null;
   senderName: string;
+  senderPhotoUrl?: string | null;
   body: string | null;
   type: string;
   voiceUrl: string | null;
