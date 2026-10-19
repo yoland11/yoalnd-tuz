@@ -147,6 +147,8 @@ function harness(options: HarnessOptions = {}) {
       if (q.includes("t.due_at < now() + interval '2 hours'")) return rows([...orders.values()].filter((order) => ["new", "accepted", "in_progress"].includes(order.status)).map(orderRow));
       return rows([]);
     }
+    if (/^SELECT (type, title, body, actor_name, metadata, created_at FROM entity_timeline|to_jsonb\(a\) AS item FROM task_attachments|c\.body, c\.created_at, COALESCE\(NULLIF\(s\.full_name, ''\), s\.username\) AS name FROM task_comments|id, title, required_quantity, completed_quantity FROM task_checklist_items)/.test(q)) return rows([]);
+    if (q.startsWith("SELECT voice_url FROM internal_messages WHERE id = $1 AND channel_id = $2")) return rows([{ voice_url: "https://cdn.example.com/enterprise/voice-notes/a.webm" }]);
     if (q.startsWith("SELECT status FROM tasks WHERE id = $1 FOR UPDATE")) return rows([{ status: options.lockedStatus ?? orders.get(Number(params[0]))?.status }]);
     if (q.startsWith("SELECT requires_approval, evidence_required FROM work_orders WHERE task_id")) {
       const order = orders.get(Number(params[0]));
@@ -260,6 +262,12 @@ async function run() {
     const again = await server.createWorkOrder(linked.db as any, manager, { channelId: 1, title: "طباعة", assigneeIds: [7], source: { type: "print_job", id: 3 } }, helpers());
     assert.equal(again.order.id, 40, "a print job keeps one active order");
   }
+  {
+    // An order made from a voice message keeps that recording for the employee.
+    const tools = helpers();
+    await server.createWorkOrder(harness().db as any, manager, { channelId: 1, title: "مونتاج من رسالة صوتية", assigneeIds: [7], voiceMessageId: 12 }, tools);
+    assert.deepEqual(tools.media, [{ taskId: 501, category: "manager_voice", count: 1 }]);
+  }
   await rejects(server.createWorkOrder(harness().db as any, editor, { channelId: 1, title: "أمر", assigneeIds: [8] }, helpers()), 403, /صلاحية/);
   await rejects(server.createWorkOrder(harness().db as any, manager, { channelId: 1, title: "أمر", assigneeIds: [404] }, helpers()), 422, /غير نشط/);
   await rejects(server.createWorkOrder(harness().db as any, manager, { channelId: 1, title: "أمر", assigneeIds: [] }, helpers()), 422, /الموظف المسؤول/);
@@ -276,7 +284,15 @@ async function run() {
   }
   await rejects(server.workOrderAction(harness({ orders: [baseOrder({ status: "new" })] }).db as any, editor, 40, { action: "start" }, helpers()), 409, /استلم الأمر أولاً/);
   await rejects(server.workOrderAction(harness({ orders: [baseOrder({ status: "review" })] }).db as any, editor, 40, { action: "approve" }, helpers()), 409, /للإدارة فقط/);
-  await rejects(server.workOrderAction(harness({ orders: [baseOrder({ assigned: [7] })] }).db as any, photographer, 40, { action: "complete" }, helpers()), 403, /صلاحية/);
+  await rejects(server.workOrderAction(harness({ orders: [baseOrder({ assigned: [7] })] }).db as any, photographer, 40, { action: "complete" }, helpers()), 409, /للموظف المسؤول/);
+  {
+    // Every employee sees every order (owner decision), but cannot act on someone else's.
+    const seen = await server.workOrderDetails(harness({ orders: [baseOrder({ assigned: [7] })] }).db as any, photographer, 40);
+    assert.equal(seen.order.id, 40);
+    assert.deepEqual(seen.actions, [], "an unassigned employee can read but not act");
+    const board = await server.dashboard(harness().db as any, photographer, {});
+    assert.equal(board.total, 0, "the shared order list is open to every employee");
+  }
   await rejects(server.workOrderAction(harness({ orders: [baseOrder()], lockedStatus: "completed" }).db as any, editor, 40, { action: "complete" }, helpers()), 409, /تغيرت حالة الأمر/);
   {
     // Mandatory subtasks block the parent.

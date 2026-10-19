@@ -51,12 +51,12 @@ const details = {
   attachments: [], comments: [], checklist: [{ id: 1, title: "استلام الملفات", done: true }, { id: 2, title: "المونتاج", done: false }],
 };
 
-function render(me: unknown, actions: string[] = details.actions) {
+function render(me: unknown, actions: string[] = details.actions, orderPatch: Record<string, unknown> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchInterval: false } } });
   client.setQueryData(["work-commands", "me"], me);
   client.setQueryData(["work-commands", "channels"], [channel]);
   client.setQueryData(["work-commands", "messages", 1], thread);
-  client.setQueryData(["work-commands", "order", 40], { ...details, actions });
+  client.setQueryData(["work-commands", "order", 40], { ...details, actions, order: { ...details.order, ...orderPatch } });
   client.setQueryData(["work-commands", "team"], {
     canGrant: true,
     staffDepartments: [{ value: "editing", department: "editing" }, { value: "تصوير", department: "photography" }],
@@ -75,10 +75,12 @@ const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove:
   for (const text of ["المحادثات", "أوامري", "المونتاج", "تم رفع الملفات على الدرايف", "مونتاج حفلة أحمد", "TSK-000040", "جديد", "استلام الأمر", "أوامر مفتوحة", "سجل الأمر", "تم إصدار أمر العمل", "قائمة التحقق", "يتطلب اعتماد", "رسالة صوتية", "استلم علي حسن الأمر"])
     assert.ok(html.includes(text), `employee view shows «${text}»`);
   assert.doesNotMatch(html, /لوحة <\/span>المتابعة/, "the follow-up board is for managers");
+  assert.ok(html.includes("كل الأوامر"), "every employee gets the shared list of all orders");
   assert.ok(!html.includes(">إصدار أمر عمل<") && !html.includes("aria-label=\"إصدار أمر عمل\""), "employees without permission cannot issue orders");
   assert.ok(!html.includes("اعتماد الإنجاز"), "approval is not offered to the assignee");
   assert.ok(!html.includes(">الإعدادات<") && !html.includes("تعديل المحادثة") && !html.includes("تعديل الأمر"), "settings and edits are for managers");
-  assert.match(html, /href="\/admin\/bookings\/kosha\/120"/, "order links to its booking");
+  assert.doesNotMatch(html, /href="\/admin\/bookings\/kosha\/120"/, "employees see the booking number without an admin link");
+  assert.match(html, /<bdi dir="ltr">#<!-- -->120<\/bdi>|<bdi dir="ltr">#120<\/bdi>/, "the booking number is shown");
   assert.match(html, /<audio[^>]+src="https:\/\/cdn\.example\.com\/v\.webm"/);
   assert.match(html, /aria-label="2 غير مقروءة"/);
   assert.ok(html.includes("تعليمات المدير") && html.includes("النسخة الطويلة مع الأغنية"), "the management's written instructions reach the employee");
@@ -87,12 +89,21 @@ const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove:
   assert.match(html, /role="img" aria-label="المدير"/, "without a photo, the sender's initials are shown");
 }
 
+// An order without written instructions says so instead of showing nothing.
+{
+  const html = render({ ready: true, user: { id: 7, name: "علي حسن", department: "editing" }, access: access(false) }, details.actions, { description: null, notes: null });
+  assert.ok(html.includes("لم تُكتب تعليمات لهذا الأمر."), "an empty instructions section is explicit");
+  const withNotes = render({ ready: true, user: { id: 7, name: "علي حسن", department: "editing" }, access: access(false) }, details.actions, { notes: "اتصل بالزبون قبل التسليم" });
+  assert.ok(withNotes.includes("اتصل بالزبون قبل التسليم"), "management notes reach the employee");
+}
+
 // Manager.
 {
   const html = render({ ready: true, user: { id: 1, name: "المدير", department: "general" }, access: access(true) }, ["reassign", "cancel"]);
   assert.match(html, /لوحة <\/span>المتابعة/, "manager sees the follow-up board tab");
   for (const text of ["إصدار أمر عمل", "قناة", "تحويل إلى أمر عمل", "تغيير المسؤول", "إلغاء الأمر", "الإعدادات", "تعديل المحادثة", "تعديل الأمر", "نوع الأمر", "أمر مونتاج"]) assert.ok(html.includes(text), `manager view shows «${text}»`);
   assert.ok(!html.includes(">استلام الأمر<"), "only the assignee acknowledges");
+  assert.match(html, /href="\/admin\/bookings\/kosha\/120"/, "managers get the link to the booking");
 }
 
 // Settings: editable order types, departments (with their staff departments) and the issue permission.

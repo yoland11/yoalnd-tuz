@@ -47771,7 +47771,7 @@ async function handleAdmin(
       }
       if (parts[2] === "transcription" && method === "GET") return json(TRANSCRIPTION_UNAVAILABLE);
       if (parts[2] === "staff" && method === "GET") {
-        if (!access.canCreate) return error("ليس لديك صلاحية إصدار أوامر العمل", 403);
+        // Names and departments only; everyone sees assignees on the shared order list.
         const rows = await db
           .select({ id: staffTable.id, fullName: staffTable.fullName, username: staffTable.username, department: staffTable.department, jobTitle: staffTable.jobTitle })
           .from(staffTable)

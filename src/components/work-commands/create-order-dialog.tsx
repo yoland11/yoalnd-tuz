@@ -198,7 +198,7 @@ export function CreateWorkOrderDialog({
         body: JSON.stringify({
           channelId,
           title,
-          description,
+          description: description.trim() || sourceText.trim(),
           department,
           templateKey,
           assigneeIds,
@@ -288,6 +288,10 @@ export function CreateWorkOrderDialog({
               <Input id="wo-title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={500} placeholder="مثال: مونتاج فيديو حفلة التخرج" className="min-h-11" />
             </Field>
 
+            <Field label="تعليمات للموظف" htmlFor="wo-desc" hint="تظهر للموظف في بطاقة الأمر وتفاصيله. إذا تركتها فارغة يُحفظ نص الرسالة المكتوب أعلاه.">
+              <Textarea id="wo-desc" value={description} onChange={(event) => setDescription(event.target.value)} rows={3} placeholder="ما المطلوب بالضبط؟ أي ملاحظات للموظف." />
+            </Field>
+
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="القسم" htmlFor="wo-dept">
                 <select id="wo-dept" value={department} onChange={(event) => setDepartment(event.target.value)} className={fieldClass}>
@@ -324,9 +328,6 @@ export function CreateWorkOrderDialog({
               </Field>
             </div>
 
-            <Field label="التفاصيل" htmlFor="wo-desc">
-              <Textarea id="wo-desc" value={description} onChange={(event) => setDescription(event.target.value)} rows={3} placeholder="ما المطلوب بالضبط؟ أي ملاحظات للموظف." />
-            </Field>
 
             {defaults?.booking ? null : (
               <Field label="الزبون والحجز (اختياري)" hint={template?.needsBooking ? "هذا النوع يرتبط عادة بحجز: اختر الزبون من العملاء ثم حجزه." : "اختر الزبون من قائمة العملاء ثم الحجز المرتبط به."}>

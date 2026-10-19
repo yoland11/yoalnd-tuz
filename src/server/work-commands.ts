@@ -493,6 +493,7 @@ function orderFromRow(row: any) {
     orderNo: row.task_no ?? `TSK-${String(row.id).padStart(6, "0")}`,
     title: String(row.title),
     description: row.description ?? null,
+    notes: row.notes ?? null,
     taskStatus: task.status,
     status,
     statusLabel: WORK_ORDER_STATUS_LABELS[status],
@@ -539,16 +540,9 @@ async function loadOrder(executor: Executor, taskId: number) {
   return orderFromRow(row);
 }
 
-/** Employees reach an order they are assigned to, created, or whose channel they can open. */
-async function canAccessOrder(executor: Executor, order: WorkOrder, user: WorkUser) {
-  if (workAccess(user).manager) return true;
-  if (order.assignedStaffIds.includes(user.id) || order.createdBy === user.id) return true;
-  if (order.channelId) {
-    const channel = await loadChannel(executor, order.channelId).catch(() => null);
-    if (channel && canAccessChannel(channel, user)) return true;
-  }
-  return false;
-}
+// Owner decision (2026-10-19): every employee sees every order, with its
+// instructions and customer. Acting on an order stays with the assigned
+// employee and management (transitionProblem / editWorkOrder checks).
 
 function actionContext(order: WorkOrder, user: WorkUser) {
   return {
@@ -686,6 +680,20 @@ export async function createWorkOrder(
   const idempotencyKey = input.idempotencyKey ? String(input.idempotencyKey).slice(0, 120) : null;
   if (input.channelId) await requireChannel(database, input.channelId, user);
   const linkedCustomer = await resolveOrderCustomer(database, { booking: input.booking ?? null, customerId: input.customerId ?? null });
+  const voiceRow = input.voiceMessageId && input.channelId
+    ? rowsOf(
+        await database.execute(sql`
+          SELECT voice_url FROM internal_messages WHERE id = ${input.voiceMessageId} AND channel_id = ${input.channelId} AND voice_url IS NOT NULL
+        `),
+      )[0]
+    : null;
+  const voiceNote: MediaInput | null = voiceRow?.voice_url
+    ? {
+        url: String(voiceRow.voice_url),
+        mediaType: /\.mp4($|\?)/i.test(String(voiceRow.voice_url)) ? "audio/mp4" : /\.ogg($|\?)/i.test(String(voiceRow.voice_url)) ? "audio/ogg" : "audio/webm",
+        fileName: "رسالة صوتية من الإدارة",
+      }
+    : null;
 
   // A retry or a second click returns the original order.
   if (idempotencyKey) {
@@ -744,6 +752,7 @@ export async function createWorkOrder(
         VALUES (${parentId}, ${item.slice(0, 300)}, '1', '0', ${index})
       `);
     if (attachments.length) await helpers.insertMedia(tx, parentId, attachments, "manager_photo");
+    if (voiceNote) await helpers.insertMedia(tx, parentId, [voiceNote], "manager_voice");
     const childIds: number[] = [];
     for (const item of subtasks) {
       const childId = await insertTask({
@@ -839,7 +848,6 @@ export async function workOrderChannelNote(executor: Executor, taskId: number, u
 export async function workOrderDetails(executor: Executor, user: WorkUser, taskId: number) {
   await requireReady(executor);
   const order = await loadOrder(executor, taskId);
-  if (!(await canAccessOrder(executor, order, user))) throw new WorkCommandError("لا تملك صلاحية هذا الأمر", 403);
   const [subtaskRows, history, media, comments, checklist, parent] = await Promise.all([
     executor.execute(sql`${ORDER_SELECT} WHERE w.parent_task_id = ${taskId} AND t.archived_at IS NULL ORDER BY t.id`),
     executor.execute(sql`
@@ -890,7 +898,6 @@ export async function workOrderAction(
 ) {
   await requireReady(database);
   const before = await loadOrder(database, taskId);
-  if (!(await canAccessOrder(database, before, user))) throw new WorkCommandError("لا تملك صلاحية هذا الأمر", 403);
   const problem = transitionProblem(input.action, actionContext(before, user));
   if (problem) throw new WorkCommandError(problem, 409);
   const reason = String(input.reason ?? "").trim().slice(0, 1_000);
@@ -1061,7 +1068,6 @@ export type DashboardFilters = {
 
 export async function dashboard(executor: Executor, user: WorkUser, filters: DashboardFilters) {
   await requireReady(executor);
-  if (!workAccess(user).manager && !workAccess(user).canApprove) throw new WorkCommandError("لوحة المتابعة للإدارة فقط", 403);
   const day = (value: unknown) => (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null);
   const conditions = [sql`t.archived_at IS NULL`, sql`w.parent_task_id IS NULL`];
   if (filters.department) conditions.push(sql`t.department = ${catalogDepartment(workCatalog(), filters.department)}`);
@@ -1131,8 +1137,7 @@ export async function search(executor: Executor, user: WorkUser, query: string, 
     `),
   ]);
   const channelTitles = new Map(channels.map((channel) => [channel.id, channel.title]));
-  const orders = [];
-  for (const order of rowsOf(orderRows).map(orderFromRow)) if (await canAccessOrder(executor, order, user)) orders.push(order);
+  const orders = rowsOf(orderRows).map(orderFromRow);
   return {
     messages: rowsOf(messageRows).map((row) => ({
       id: Number(row.id),
@@ -1283,7 +1288,6 @@ export type EditOrderInput = {
 export async function editWorkOrder(database: Database, user: WorkUser, taskId: number, input: EditOrderInput, helpers: { notify: Notifier }) {
   const catalog = await requireReady(database);
   const before = await loadOrder(database, taskId);
-  if (!(await canAccessOrder(database, before, user))) throw new WorkCommandError("لا تملك صلاحية هذا الأمر", 403);
   if (!(workAccess(user, catalog).canApprove || before.createdBy === user.id)) throw new WorkCommandError("تعديل الأمر للإدارة أو لمن أصدره فقط", 403);
   if (["completed", "cancelled"].includes(before.taskStatus)) throw new WorkCommandError("لا يمكن تعديل أمر منجز أو ملغى", 409);
   const title = input.title == null ? before.title : String(input.title).trim().slice(0, 500);

@@ -24,6 +24,7 @@ export type WorkOrder = {
   orderNo: string;
   title: string;
   description: string | null;
+  notes?: string | null;
   taskStatus: string;
   status: WorkOrderStatus;
   statusLabel: string;

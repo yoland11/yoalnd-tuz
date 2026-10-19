@@ -393,7 +393,7 @@ export function EditOrderDialog({ order, open, onClose }: { order: WorkOrder; op
             </label>
             <label className="block space-y-1 text-sm font-bold">موعد الإنجاز<Input type="datetime-local" value={form.dueAt} onChange={(event) => set({ dueAt: event.target.value })} className="min-h-11 font-normal" dir="ltr" /></label>
           </div>
-          <label className="block space-y-1 text-sm font-bold">التفاصيل<Textarea value={form.description} onChange={(event) => set({ description: event.target.value })} rows={3} className="font-normal" /></label>
+          <label className="block space-y-1 text-sm font-bold">تعليمات للموظف<Textarea value={form.description} onChange={(event) => set({ description: event.target.value })} rows={3} className="font-normal" /></label>
         </div>
         <DialogFooter className="gap-2 sm:justify-start">
           <Button type="button" className="min-h-11 gap-2" disabled={save.isPending || form.title.trim().length < 2} onClick={() => save.mutate()}>{save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}حفظ التعديل</Button>
@@ -425,7 +425,9 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
   if (details.isError) return <div className="p-4"><Failure title="تعذر تحميل أمر العمل" error={details.error} onRetry={() => void details.refetch()} /></div>;
   const data = details.data!;
   const { order } = data;
-  const managerMedia = data.attachments.filter((item) => !item.category.startsWith("employee_"));
+  const isAudio = (item: OrderDetails["attachments"][number]) => item.mediaType.startsWith("audio");
+  const voiceNotes = data.attachments.filter((item) => !item.category.startsWith("employee_") && isAudio(item));
+  const managerMedia = data.attachments.filter((item) => !item.category.startsWith("employee_") && !isAudio(item));
   const evidence = data.attachments.filter((item) => item.category.startsWith("employee_"));
   const asPhoto = (item: OrderDetails["attachments"][number]) => ({ url: item.url, thumbnailUrl: item.thumbnailUrl, fileName: item.fileName, mediaType: item.mediaType, caption: null });
   const isImage = (item: OrderDetails["attachments"][number]) => item.mediaType === "image" || item.mediaType.startsWith("image/");
@@ -445,12 +447,15 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
         <CustomerLine order={order} className="pt-1 text-sm" />
       </header>
 
-      {order.description ? (
-        <section className="space-y-1 rounded-xl bg-muted/60 px-3 py-2.5">
-          <h3 className="flex items-center gap-1.5 text-xs font-extrabold text-muted-foreground"><FileText className="h-3.5 w-3.5" />تعليمات {order.createdByName || "الإدارة"}</h3>
-          <p className="whitespace-pre-line text-sm leading-7 text-foreground">{order.description}</p>
-        </section>
-      ) : null}
+      <section className="space-y-1.5 rounded-xl bg-muted/60 px-3 py-2.5" aria-label="تعليمات الأمر">
+        <h3 className="flex items-center gap-1.5 text-xs font-extrabold text-muted-foreground"><FileText className="h-3.5 w-3.5" />تعليمات {order.createdByName || "الإدارة"}</h3>
+        {order.description ? <p className="whitespace-pre-line text-sm leading-7 text-foreground">{order.description}</p> : null}
+        {order.notes ? <p className="whitespace-pre-line text-sm leading-7 text-foreground"><b>ملاحظات: </b>{order.notes}</p> : null}
+        {voiceNotes.map((item) => <audio key={item.url} controls preload="none" src={item.url} className="h-10 w-full" aria-label="رسالة صوتية من الإدارة" />)}
+        {!order.description && !order.notes && !voiceNotes.length ? (
+          <p className="text-sm text-muted-foreground">لم تُكتب تعليمات لهذا الأمر.{me.data && (me.data.access.canApprove || order.createdBy === me.data.user.id) ? " أضفها من «تعديل الأمر»." : ""}</p>
+        ) : null}
+      </section>
 
       {order.status === "needs_rework" && order.returnReason ? (
         <div className="rounded-xl bg-destructive/10 px-3 py-2.5 text-sm leading-6 text-destructive"><b>يحتاج تعديل:</b> {order.returnReason}</div>
@@ -476,7 +481,15 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
         <Fact label="القسم">{order.departmentLabel}</Fact>
         {order.templateLabel ? <Fact label="نوع الأمر">{order.templateLabel}</Fact> : null}
         <Fact label="الاعتماد">{order.requiresApproval ? "يتطلب اعتماد" : "بدون اعتماد"}{order.evidenceRequired ? " · دليل إنجاز" : ""}</Fact>
-        {order.booking ? <Fact label="الحجز"><Link href={bookingHref(order.booking)} className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline">#{order.booking.id}<ExternalLink className="h-3 w-3" /></Link></Fact> : null}
+        {order.booking ? (
+          <Fact label="الحجز">
+            {me.data?.access.manager ? (
+              <Link href={bookingHref(order.booking)} className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"><bdi dir="ltr">#{order.booking.id}</bdi><ExternalLink className="h-3 w-3" /></Link>
+            ) : (
+              <bdi dir="ltr">#{order.booking.id}</bdi>
+            )}
+          </Fact>
+        ) : null}
         {order.customer?.name ? <Fact label="الزبون">{order.customer.name}</Fact> : null}
         {order.product ? <Fact label="المنتج / الأصل"><Link href={`/admin/products/${order.product.id}`} className="text-primary underline-offset-4 hover:underline">{order.product.name ?? `#${order.product.id}`}</Link></Fact> : null}
         <Fact label="تاريخ الإصدار">{formatDateTime(order.createdAt)}</Fact>

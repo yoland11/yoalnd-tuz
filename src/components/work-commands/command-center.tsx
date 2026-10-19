@@ -909,7 +909,7 @@ type BoardData = {
   orders: WorkOrder[];
 };
 
-function Board({ onOpenOrder, isWide }: { onOpenOrder: (order: WorkOrder) => void; isWide: boolean }) {
+function Board({ onOpenOrder, isWide, canOpenBookings }: { onOpenOrder: (order: WorkOrder) => void; isWide: boolean; canOpenBookings: boolean }) {
   const [filters, setFilters] = useState({ department: "", staffId: "", priority: "", status: "", from: "", to: "", customer: "", page: 1 });
   const staff = useWorkStaff(true);
   const catalog = useWorkCatalog();
@@ -944,7 +944,7 @@ function Board({ onOpenOrder, isWide }: { onOpenOrder: (order: WorkOrder) => voi
         })}
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <select value={filters.department} onChange={(event) => set({ department: event.target.value })} className={fieldClass} aria-label="القسم">
           <option value="">كل الأقسام</option>
           {catalog.departments.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
@@ -959,7 +959,7 @@ function Board({ onOpenOrder, isWide }: { onOpenOrder: (order: WorkOrder) => voi
         </select>
         <label className="flex items-center gap-2 text-xs font-bold text-muted-foreground">من<Input type="date" value={filters.from} onChange={(event) => set({ from: event.target.value })} aria-label="من تاريخ" className="min-h-11 flex-1" dir="ltr" /></label>
         <label className="flex items-center gap-2 text-xs font-bold text-muted-foreground">إلى<Input type="date" value={filters.to} onChange={(event) => set({ to: event.target.value })} aria-label="إلى تاريخ" className="min-h-11 flex-1" dir="ltr" /></label>
-        <Input value={filters.customer} onChange={(event) => set({ customer: event.target.value })} placeholder="اسم الزبون" aria-label="اسم الزبون" className="min-h-11" />
+        <Input value={filters.customer} onChange={(event) => set({ customer: event.target.value })} placeholder="اسم الزبون" aria-label="اسم الزبون" className="col-span-2 min-h-11 sm:col-span-1" />
       </div>
 
       {board.isError ? <Failure title="تعذر تحميل لوحة المتابعة" error={board.error} onRetry={() => void board.refetch()} /> : null}
@@ -972,7 +972,7 @@ function Board({ onOpenOrder, isWide }: { onOpenOrder: (order: WorkOrder) => voi
             <div className="overflow-hidden rounded-xl border border-border">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-right text-xs text-muted-foreground">
-                  <tr>{["الأمر", "القسم", "المسؤول", "الحالة", "الموعد", "التأخير", "الحجز"].map((label) => <th key={label} scope="col" className="px-3 py-2.5 font-bold">{label}</th>)}</tr>
+                  <tr>{["الأمر", "الزبون", "القسم", "المسؤول", "الحالة", "الموعد", "التأخير", "الحجز"].map((label) => <th key={label} scope="col" className="px-3 py-2.5 font-bold">{label}</th>)}</tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {board.data.orders.map((order) => (
@@ -980,13 +980,15 @@ function Board({ onOpenOrder, isWide }: { onOpenOrder: (order: WorkOrder) => voi
                       <td className="max-w-[18rem] px-3 py-2">
                         <Button type="button" variant="link" size="flush" onClick={() => onOpenOrder(order)} className="block h-auto max-w-full border-transparent truncate text-start font-extrabold text-foreground">{order.title}</Button>
                         <span className="text-[11px] tabular-nums text-muted-foreground" dir="ltr">{order.orderNo}</span>
+                        {order.description ? <span className="line-clamp-2 text-xs leading-5 text-muted-foreground" title={order.description}>{order.description}</span> : null}
                       </td>
+                      <td className="max-w-[10rem] truncate px-3 py-2 font-bold">{order.customer?.name ?? "—"}</td>
                       <td className="px-3 py-2 text-muted-foreground">{order.departmentLabel}</td>
                       <td className="max-w-[10rem] truncate px-3 py-2">{order.assigneeNames ?? "—"}</td>
                       <td className="px-3 py-2"><StatusChip status={order.status} /></td>
                       <td className={`px-3 py-2 tabular-nums ${order.overdue ? "font-bold text-destructive" : ""}`}>{formatDateTime(order.dueAt)}</td>
                       <td className="px-3 py-2 tabular-nums">{order.delayMinutes ? <span className="font-bold text-destructive">{order.delayMinutes >= 60 ? `${Math.round(order.delayMinutes / 60)} س` : `${order.delayMinutes} د`}</span> : "—"}</td>
-                      <td className="px-3 py-2">{order.booking ? <Link href={bookingHref(order.booking)} className="font-bold text-primary underline-offset-4 hover:underline">#{order.booking.id}</Link> : "—"}</td>
+                      <td className="px-3 py-2">{order.booking ? canOpenBookings ? <Link href={bookingHref(order.booking)} className="font-bold text-primary underline-offset-4 hover:underline"><bdi dir="ltr">#{order.booking.id}</bdi></Link> : <bdi dir="ltr" className="tabular-nums">#{order.booking.id}</bdi> : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1109,7 +1111,9 @@ export function WorkCommandCenter({ mode = "admin" }: { mode?: "admin" | "staff"
   const me = useWorkMe();
   const isWide = useMediaQuery("(min-width: 1280px)");
   const isLarge = useMediaQuery("(min-width: 1024px)");
-  const showBoard = Boolean(me.data && (me.data.access.manager || me.data.access.canApprove));
+  // Every employee sees all orders; managers get it as the follow-up board.
+  const showBoard = Boolean(me.data);
+  const boardIsManagers = Boolean(me.data && (me.data.access.manager || me.data.access.canApprove));
   const showSettings = Boolean(me.data && (me.data.access.canManageCatalog || me.data.access.canGrant));
   const [tab, setTab] = useState<Tab>(() => {
     if (typeof window === "undefined") return "chat";
@@ -1168,7 +1172,7 @@ export function WorkCommandCenter({ mode = "admin" }: { mode?: "admin" | "staff"
     <div className="space-y-3">
       <div className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-0.5" role="tablist" aria-label="أقسام مركز أوامر العمل">
         <TabButton active={tab === "chat"} onClick={() => selectTab("chat")} icon={MessagesSquare} badge={unreadTotal}>المحادثات</TabButton>
-        {showBoard ? <TabButton active={tab === "board"} onClick={() => selectTab("board")} icon={LayoutDashboard}><span className="max-sm:hidden">لوحة </span>المتابعة</TabButton> : null}
+        {showBoard ? <TabButton active={tab === "board"} onClick={() => selectTab("board")} icon={LayoutDashboard}>{boardIsManagers ? <><span className="max-sm:hidden">لوحة </span>المتابعة</> : "كل الأوامر"}</TabButton> : null}
         <TabButton active={tab === "mine"} onClick={() => selectTab("mine")} icon={ClipboardList}>أوامري</TabButton>
         <TabButton active={tab === "search"} onClick={() => selectTab("search")} icon={Search}>بحث</TabButton>
         {showSettings ? <TabButton active={tab === "settings"} onClick={() => selectTab("settings")} icon={Settings2}>الإعدادات</TabButton> : null}
@@ -1207,7 +1211,7 @@ export function WorkCommandCenter({ mode = "admin" }: { mode?: "admin" | "staff"
         </div>
       ) : null}
 
-      {tab === "board" && showBoard ? <Board onOpenOrder={openOrder} isWide={isLarge} /> : null}
+      {tab === "board" && showBoard ? <Board onOpenOrder={openOrder} isWide={isLarge} canOpenBookings={Boolean(me.data?.access.manager)} /> : null}
       {tab === "mine" ? <MyOrders onOpenOrder={openOrder} /> : null}
       {tab === "search" ? <SearchPanel onOpenOrder={openOrder} onOpenChannel={openChannel} /> : null}
       {tab === "settings" && showSettings ? <WorkSettingsPanel /> : null}
