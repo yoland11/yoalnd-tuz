@@ -4,6 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   CalendarClock,
   CheckCircle2,
+  Contact,
   Clock3,
   ExternalLink,
   FileText,
@@ -284,6 +285,13 @@ export function WorkOrderCard({ order, onOpen, actionLimit = 2 }: { order: WorkO
         <span className={`inline-flex items-center gap-1 ${order.overdue ? "font-bold text-destructive" : order.dueSoon ? "font-bold text-amber-700 dark:text-amber-300" : ""}`}><Clock3 className="h-3.5 w-3.5" />{dueText(order)}</span>
         <PriorityChip priority={order.priority} />
       </div>
+      <CustomerLine order={order} className="mt-1.5" />
+      {order.description ? (
+        <div className="mt-2 rounded-lg bg-muted/60 px-2.5 py-2">
+          <p className="text-[11px] font-bold text-muted-foreground">تعليمات {order.createdByName || "الإدارة"}</p>
+          <p className="line-clamp-3 whitespace-pre-line text-sm leading-6 text-foreground">{order.description}</p>
+        </div>
+      ) : null}
       {order.status === "needs_rework" && order.returnReason ? <p className="mt-2 rounded-lg bg-destructive/10 px-2.5 py-1.5 text-xs leading-5 text-destructive">سبب الإرجاع: {order.returnReason}</p> : null}
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
         <ActionButtons order={order} actions={actions} onDialog={setDialog} compact limit={actionLimit} />
@@ -291,6 +299,18 @@ export function WorkOrderCard({ order, onOpen, actionLimit = 2 }: { order: WorkO
       </div>
       <OrderActionDialog order={order} action={dialog} onClose={() => setDialog(null)} />
     </article>
+  );
+}
+
+/** «الزبون: … · حجز #…» from the customer/booking the order was issued for. */
+function CustomerLine({ order, className = "" }: { order: WorkOrder; className?: string }) {
+  if (!order.customer?.name && !order.booking) return null;
+  return (
+    <p className={`flex flex-wrap items-center gap-x-1.5 text-xs font-bold text-foreground ${className}`}>
+      <Contact className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      الزبون: {order.customer?.name || "غير محدد"}
+      {order.booking ? <span className="font-normal text-muted-foreground">· حجز <bdi dir="ltr">#{order.booking.id}</bdi></span> : null}
+    </p>
   );
 }
 
@@ -422,7 +442,15 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
         {data.parent ? (
           <Button type="button" variant="link" size="flush" className="border-transparent text-xs" onClick={() => onOpenOrder?.(data.parent!.id)}>جزء من: {data.parent.title}</Button>
         ) : null}
+        <CustomerLine order={order} className="pt-1 text-sm" />
       </header>
+
+      {order.description ? (
+        <section className="space-y-1 rounded-xl bg-muted/60 px-3 py-2.5">
+          <h3 className="flex items-center gap-1.5 text-xs font-extrabold text-muted-foreground"><FileText className="h-3.5 w-3.5" />تعليمات {order.createdByName || "الإدارة"}</h3>
+          <p className="whitespace-pre-line text-sm leading-7 text-foreground">{order.description}</p>
+        </section>
+      ) : null}
 
       {order.status === "needs_rework" && order.returnReason ? (
         <div className="rounded-xl bg-destructive/10 px-3 py-2.5 text-sm leading-6 text-destructive"><b>يحتاج تعديل:</b> {order.returnReason}</div>
@@ -455,13 +483,6 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
       </dl>
       {order.channelId && onOpenChannel ? (
         <Button type="button" variant="outline" size="compact" className="gap-1.5" onClick={() => onOpenChannel(order.channelId!)}><MessageSquareText className="h-3.5 w-3.5" />عرض المحادثة</Button>
-      ) : null}
-
-      {order.description ? (
-        <section className="space-y-1.5">
-          <h3 className="flex items-center gap-1.5 text-sm font-extrabold"><FileText className="h-4 w-4 text-muted-foreground" />التفاصيل</h3>
-          <p className="whitespace-pre-line text-sm leading-7 text-foreground/90">{order.description}</p>
-        </section>
       ) : null}
 
       {data.subtasks.length ? (

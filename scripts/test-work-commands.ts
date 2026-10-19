@@ -247,6 +247,7 @@ async function run() {
     assert.deepEqual([settingsRow.params[5], settingsRow.params[6]], [55, "أحمد سالم"], "the customer comes from the booking record, not typed text");
     assert.deepEqual(tools.notices.map((notice) => [notice.staffId, notice.type]), [[7, "work_task_assigned"], [8, "work_task_assigned"], [8, "work_task_participant"]]);
     assert.ok(tools.notices.every((notice) => notice.href.startsWith("/staff?tab=work&order=")));
+    assert.match(tools.notices[0].body, /الزبون: أحمد/, "the assignment notice names the customer");
     for (const statement of h.statements) assert.doesNotMatch(statement.sql, FORBIDDEN, `work orders never touch finance or stock: ${statement.sql.slice(0, 90)}`);
   }
   // Retries and duplicates return the original order without writing.

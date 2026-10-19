@@ -65928,6 +65928,21 @@ async function handleUnifiedStaffPortal(
         if (stage && !workflowStageByTask.has(entry.entityId))
           workflowStageByTask.set(entry.entityId, stage);
       }
+      // The customer a task is for: the work order's customer, else its booking's.
+      const customerByTask = new Map<number, string>();
+      if (taskIds.length) {
+        const hasWorkOrders = await workCommandsReady(db);
+        const customerRows = await db.execute(sql`
+          SELECT t.id, ${hasWorkOrders ? sql`COALESCE(NULLIF(w.customer_name, ''), kb.customer_name, so.customer_name)` : sql`COALESCE(kb.customer_name, so.customer_name)`} AS customer_name
+          FROM tasks t
+          ${hasWorkOrders ? sql`LEFT JOIN work_orders w ON w.task_id = t.id` : sql``}
+          LEFT JOIN kosha_bookings kb ON t.related_type = 'kosha_booking' AND kb.id = t.related_id
+          LEFT JOIN service_orders so ON t.related_type = 'service_order' AND so.id = t.related_id
+          WHERE t.id IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+        `);
+        for (const row of ((customerRows as any).rows ?? []) as Array<{ id: number; customer_name: string | null }>)
+          if (row.customer_name) customerByTask.set(Number(row.id), String(row.customer_name));
+      }
       const formattedTasks = visibleTasks.map((task) => {
         const workflow = getTaskWorkflow(task.department);
         const stage = getTaskWorkflowStage(
@@ -65936,6 +65951,7 @@ async function handleUnifiedStaffPortal(
         );
         return {
           ...formatTask(task),
+          customerName: customerByTask.get(task.id) ?? null,
           workflow: {
             department: workflow.department,
             label: workflow.label,

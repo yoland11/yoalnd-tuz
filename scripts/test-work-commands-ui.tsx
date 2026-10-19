@@ -81,6 +81,8 @@ const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove:
   assert.match(html, /href="\/admin\/bookings\/kosha\/120"/, "order links to its booking");
   assert.match(html, /<audio[^>]+src="https:\/\/cdn\.example\.com\/v\.webm"/);
   assert.match(html, /aria-label="2 غير مقروءة"/);
+  assert.ok(html.includes("تعليمات المدير") && html.includes("النسخة الطويلة مع الأغنية"), "the management's written instructions reach the employee");
+  assert.ok(html.includes("الزبون: <!-- -->أحمد") || html.includes("الزبون: أحمد"), "the customer name reaches the employee");
   assert.match(html, /<img src="https:\/\/cdn\.example\.com\/zainab\.jpg" alt="زينب"/, "the sender's photo is shown beside their message");
   assert.match(html, /role="img" aria-label="المدير"/, "without a photo, the sender's initials are shown");
 }

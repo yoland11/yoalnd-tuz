@@ -781,7 +781,7 @@ export async function createWorkOrder(
   const order = await loadOrder(database, created.parentId);
   const subtaskOrders = await orderSummaries(database, created.childIds);
   for (const staffId of assigneeIds)
-    await helpers.notify({ audienceType: "staff", staffId, type: "work_task_assigned", title: "أمر عمل جديد", body: `${order.orderNo} · ${title}`, entityType: "task", entityId: order.id, href: `/staff?tab=work&order=${order.id}` });
+    await helpers.notify({ audienceType: "staff", staffId, type: "work_task_assigned", title: "أمر عمل جديد", body: [order.orderNo, title, order.customer?.name ? `الزبون: ${order.customer.name}` : ""].filter(Boolean).join(" · "), entityType: "task", entityId: order.id, href: `/staff?tab=work&order=${order.id}` });
   for (const child of subtaskOrders)
     for (const staffId of child.assignedStaffIds)
       await helpers.notify({ audienceType: "staff", staffId, type: "work_task_assigned", title: "مهمة فرعية جديدة", body: `${child.title} · ${title}`, entityType: "task", entityId: child.id, href: `/staff?tab=work&order=${child.id}` });

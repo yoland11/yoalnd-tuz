@@ -90,6 +90,9 @@ assert.match(api, /sweepWorkOrderDeadlines\(db, \(notice\) => createNotification
 assert.match(routes, /<Route path="\/admin\/work-commands">/);
 assert.match(layout, /href: "\/admin\/work-commands"/);
 assert.match(portal, /\{tab === "work" \? <WorkCommandCenter mode="staff" \/> : null\}/);
+assert.match(portal, /\{task\.customerName \? <p className="mt-1 text-sm font-bold text-foreground">الزبون: \{task\.customerName\}<\/p> : null\}/, "«مهامي» shows the customer");
+assert.match(api, /customerName: customerByTask\.get\(task\.id\) \?\? null/, "the portal dashboard returns each task's customer");
+assert.match(api, /LEFT JOIN kosha_bookings kb ON t\.related_type = 'kosha_booking' AND kb\.id = t\.related_id/);
 assert.match(read("src/views/admin/booking-operations-workspace.tsx"), /<IssueWorkOrderButton defaults=\{\{ booking:/);
 assert.match(read("src/views/admin/product-details.tsx"), /<CreateWorkOrderDialog/);
 
