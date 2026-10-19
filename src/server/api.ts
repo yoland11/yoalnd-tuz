@@ -30,6 +30,30 @@ import {
   slowMovingProducts,
 } from "./product-insights";
 import {
+  TRANSCRIPTION_UNAVAILABLE,
+  WorkCommandError,
+  canAccessChannel as canAccessWorkChannel,
+  createChannel as createWorkChannel,
+  createWorkOrder,
+  dashboard as workOrdersDashboard,
+  listChannels as listWorkChannels,
+  listMessages as listWorkMessages,
+  markRead as markWorkChannelRead,
+  myOrders as myWorkOrders,
+  requireChannel as requireWorkChannel,
+  search as searchWorkCommands,
+  sendMessage as sendWorkMessage,
+  sweepDeadlines as sweepWorkOrderDeadlines,
+  workAccess,
+  workCommandsReady,
+  workOrderAction,
+  workOrderChannelNote,
+  workOrderCompletionPolicy,
+  workOrderDetails,
+  type WorkUser,
+} from "./work-commands";
+import { WORK_ORDER_ACTIONS, workDepartment as workDepartmentKey, type WorkOrderAction } from "@/lib/work-commands";
+import {
   QuantityAssetError,
   adjustQuantityAsset,
   bookingDay,
@@ -2216,6 +2240,37 @@ async function requireAnyPermission(
 
 function isResponse(value: unknown): value is NextResponse {
   return value instanceof NextResponse;
+}
+
+/** internal_messages columns that exist before migration 0126. */
+const legacyInternalMessageColumns = {
+  id: true,
+  channelId: true,
+  senderId: true,
+  senderName: true,
+  body: true,
+  voiceUrl: true,
+  voiceDuration: true,
+  createdAt: true,
+} as const;
+
+/**
+ * Work command center channels follow department access; older channels keep
+ * their original visibility for everyone with enterprise access.
+ */
+function canReadInternalChannel(channel: Parameters<typeof canAccessWorkChannel>[0], user: AdminUser) {
+  if (!["work_department", "work_channel"].includes(String(channel.entityType ?? ""))) return true;
+  return canAccessWorkChannel(channel, workUserFromAdmin(user));
+}
+
+function workUserFromAdmin(user: AdminUser): WorkUser {
+  return {
+    id: user.id,
+    name: user.fullName || user.username,
+    role: user.role,
+    department: user.department ?? null,
+    permissions: user.permissions ?? [],
+  };
 }
 
 // Portal entry guard: like requirePermission but tags denials as a portal-access
@@ -24076,7 +24131,14 @@ async function handleEnterpriseAdmin(
       );
       if (method === "GET") {
         if (!channelId) return error("اختر قناة المحادثة", 400);
+        const channel = await db.query.internalChannelsTable.findFirst({
+          where: and(eq(internalChannelsTable.id, channelId), sql`${internalChannelsTable.archivedAt} is null`),
+        });
+        if (!channel) return error("قناة المحادثة غير موجودة", 404);
+        if (!canReadInternalChannel(channel, auth)) return error("لا تملك صلاحية هذه المحادثة", 403);
+        // Explicit columns: works before and after the 0126 message columns exist.
         const rows = await db.query.internalMessagesTable.findMany({
+          columns: legacyInternalMessageColumns,
           where: eq(internalMessagesTable.channelId, channelId),
           orderBy: [asc(internalMessagesTable.createdAt)],
           limit: 500,
@@ -24094,12 +24156,15 @@ async function handleEnterpriseAdmin(
           ),
         });
         if (!channel) return error("قناة المحادثة غير موجودة", 404);
+        if (!canReadInternalChannel(channel, auth)) return error("لا تملك صلاحية هذه المحادثة", 403);
         const messageBody = nullableText(data?.body);
         const voiceUrl = data?.voice
           ? await persistMediaValue(data.voice, "enterprise/voice-notes")
           : nullableText(data?.voiceUrl);
         if (!messageBody && !voiceUrl)
           return error("اكتب رسالة أو أرفق ملاحظة صوتية", 400);
+        if (voiceUrl?.startsWith("data:"))
+          return error("تعذر حفظ الملاحظة الصوتية في التخزين، أعد المحاولة", 503, { retryable: true });
         const [row] = await db
           .insert(internalMessagesTable)
           .values({
@@ -24113,7 +24178,16 @@ async function handleEnterpriseAdmin(
                 ? null
                 : Math.max(0, Math.round(Number(data.voiceDuration))),
           })
-          .returning();
+          .returning({
+            id: internalMessagesTable.id,
+            channelId: internalMessagesTable.channelId,
+            senderId: internalMessagesTable.senderId,
+            senderName: internalMessagesTable.senderName,
+            body: internalMessagesTable.body,
+            voiceUrl: internalMessagesTable.voiceUrl,
+            voiceDuration: internalMessagesTable.voiceDuration,
+            createdAt: internalMessagesTable.createdAt,
+          });
         await db
           .update(internalChannelsTable)
           .set({ updatedAt: new Date() })
@@ -24149,7 +24223,7 @@ async function handleEnterpriseAdmin(
         orderBy: [desc(internalChannelsTable.updatedAt)],
         limit: 200,
       });
-      return json({ data: rows });
+      return json({ data: rows.filter((row) => canReadInternalChannel(row, auth)) });
     }
     if (method === "POST") {
       const data = await body(req);
@@ -45358,6 +45432,11 @@ async function handleAdmin(
       const videos = files.filter((file) => file.mediaType.startsWith("video/"));
       const documents = files.filter((file) => !file.mediaType.startsWith("video/"));
       const completionNotes = nullableText(b?.completionNotes ?? b?.notes)?.slice(0, 4_000) ?? null;
+      // Work orders: mandatory subtasks and required evidence block completion;
+      // orders that do not need approval complete directly.
+      const workPolicy = await workOrderCompletionPolicy(db, id!, photos.length + files.length);
+      if (workPolicy.isWorkOrder && workPolicy.problem) return error(workPolicy.problem, 422);
+      const nextStatus = workPolicy.isWorkOrder ? workPolicy.nextStatus! : "review";
       const submittedAt = new Date();
       const storageShape = await taskStorageShape();
       const updated = await db.transaction(async (tx) => {
@@ -45367,20 +45446,23 @@ async function handleAdmin(
         if (completionNotes) await tx.insert(taskCommentsTable).values({
           taskId: id!, staffId: auth.id, body: `ملاحظات الإنجاز: ${completionNotes}`,
         });
-        const completionUpdate: any = { status: "review", submittedAt, updatedAt: submittedAt };
+        const completionUpdate: any = { status: nextStatus, submittedAt, updatedAt: submittedAt };
+        if (nextStatus === "completed") completionUpdate.completedAt = submittedAt;
         if (storageShape.taskColumns.has("completion_notes")) completionUpdate.completionNotes = completionNotes;
         if (storageShape.taskColumns.has("completed_by")) completionUpdate.completedBy = auth.id;
         const [row] = await tx.update(tasksTable).set(completionUpdate).where(eq(tasksTable.id, id!)).returning(taskStableReturning);
         return row;
       });
       await createNotification({
-        type: "task_submitted", title: "مهمة بانتظار المراجعة",
+        type: "task_submitted", title: nextStatus === "completed" ? "تم إنجاز مهمة" : "مهمة بانتظار المراجعة",
         body: updated.title, entityType: "task", entityId: id!, href: "/admin/tasks",
       });
-      void logAdminActivity(req, "task_completion_submitted", "task", id!, { oldStatus: task.status, newStatus: "review", photoCount: photos.length, videoCount: videos.length, documentCount: documents.length, completionNotes: Boolean(completionNotes) });
+      if (workPolicy.isWorkOrder)
+        await workOrderChannelNote(db, id!, workUserFromAdmin(auth), `${nextStatus === "completed" ? "أنجز" : "أنهى وأرسل للاعتماد"} ${auth.fullName || auth.username} الأمر ${updated.taskNo ?? updated.title}`);
+      void logAdminActivity(req, "task_completion_submitted", "task", id!, { oldStatus: task.status, newStatus: nextStatus, photoCount: photos.length, videoCount: videos.length, documentCount: documents.length, completionNotes: Boolean(completionNotes) });
       if (photos.length)
         void logAdminActivity(req, "task_employee_photos_added", "task", id!, { photoCount: photos.length, source: "task_completion" });
-      void addEntityTimeline({ entityType: "task", entityId: id!, type: "task_completion_submitted", title: "أكد الموظف إنجاز المهمة", body: completionNotes, actor: erpActorFromAdmin(auth), metadata: { photoCount: photos.length, videoCount: videos.length, documentCount: documents.length, submittedAt: submittedAt.toISOString(), status: "review" } });
+      void addEntityTimeline({ entityType: "task", entityId: id!, type: "task_completion_submitted", title: "أكد الموظف إنجاز المهمة", body: completionNotes, actor: erpActorFromAdmin(auth), metadata: { photoCount: photos.length, videoCount: videos.length, documentCount: documents.length, submittedAt: submittedAt.toISOString(), status: nextStatus } });
       return json(formatTask(updated));
     }
 
@@ -45421,18 +45503,25 @@ async function handleAdmin(
         return error("ليس لديك صلاحية إرسال هذه المهمة", 403);
       if (["completed", "cancelled"].includes(task.status))
         return error("لا يمكن إرسال مهمة مكتملة أو ملغاة", 409);
+      const workPolicy = await workOrderCompletionPolicy(db, id!, 0);
+      if (workPolicy.isWorkOrder && workPolicy.problem) return error(workPolicy.problem, 422);
+      const nextStatus = workPolicy.isWorkOrder ? workPolicy.nextStatus! : "review";
+      const submittedAt = new Date();
       const [updated] = await db
         .update(tasksTable)
         .set({
-          status: "review",
-          submittedAt: new Date(),
-          updatedAt: new Date(),
+          status: nextStatus,
+          submittedAt,
+          updatedAt: submittedAt,
+          ...(nextStatus === "completed" ? { completedAt: submittedAt } : {}),
         })
         .where(eq(tasksTable.id, id!))
         .returning(taskStableReturning);
+      if (workPolicy.isWorkOrder)
+        await workOrderChannelNote(db, id!, workUserFromAdmin(auth), `${nextStatus === "completed" ? "أنجز" : "أنهى وأرسل للاعتماد"} ${auth.fullName || auth.username} الأمر ${updated.taskNo ?? updated.title}`);
       await createNotification({
         type: "task_submitted",
-        title: "مهمة بانتظار المراجعة",
+        title: nextStatus === "completed" ? "تم إنجاز مهمة" : "مهمة بانتظار المراجعة",
         body: updated.title,
         entityType: "task",
         entityId: id!,
@@ -45440,7 +45529,7 @@ async function handleAdmin(
       });
       void logAdminActivity(req, "task_submitted", "task", id!, {
         oldStatus: task.status,
-        newStatus: "review",
+        newStatus: nextStatus,
       });
       void addEntityTimeline({
         entityType: "task",
@@ -47613,6 +47702,181 @@ async function handleAdmin(
       return json({ ok: true, productId });
     }
     return error("غير مدعوم", 405);
+  }
+
+  if (section === "work-commands") {
+    // Any signed-in employee; every channel and order is authorized per object.
+    const auth = await getAdminUser(req);
+    if (!auth || !auth.isActive) return error("غير مخول", 401);
+    const user = workUserFromAdmin(auth);
+    const access = workAccess(user);
+    const params = req.nextUrl.searchParams;
+    const notify = (notice: Parameters<typeof createNotification>[0]) => createNotification(notice);
+    const storageShape = await taskStorageShape();
+    const insertMedia = (tx: any, taskId: number, media: Array<{ url: string; thumbnailUrl?: string | null; fileName?: string | null; mediaType: string; caption?: string | null }>, category: string) =>
+      insertTaskMedia(tx, taskId, media.map((item) => ({ id: null, url: item.url, thumbnailUrl: item.thumbnailUrl ?? null, fileName: item.fileName ?? null, mediaType: item.mediaType, caption: item.caption ?? null })), category, auth, storageShape);
+    const deadlineSweep = () =>
+      runAfter("work_order_deadlines", () => sweepWorkOrderDeadlines(db, notify));
+    try {
+      if (parts[2] === "me" && method === "GET") {
+        const ready = await workCommandsReady(db);
+        return json({ ready, user: { id: user.id, name: user.name, department: access.department }, access });
+      }
+      if (parts[2] === "transcription" && method === "GET") return json(TRANSCRIPTION_UNAVAILABLE);
+      if (parts[2] === "staff" && method === "GET") {
+        if (!access.canCreate) return error("ليس لديك صلاحية إصدار أوامر العمل", 403);
+        const rows = await db
+          .select({ id: staffTable.id, fullName: staffTable.fullName, username: staffTable.username, department: staffTable.department, jobTitle: staffTable.jobTitle })
+          .from(staffTable)
+          .where(eq(staffTable.isActive, true))
+          .orderBy(asc(staffTable.fullName));
+        return json({ data: rows.map((row) => ({ id: row.id, name: row.fullName || row.username, department: workDepartmentKey(row.department), jobTitle: row.jobTitle ?? null })) });
+      }
+      if (parts[2] === "channels") {
+        const channelId = parts[3] ? optionalPositiveId(parts[3]) : null;
+        if (!parts[3]) {
+          if (method === "GET") {
+            deadlineSweep();
+            return json({ data: await listWorkChannels(db, user) });
+          }
+          if (method === "POST") {
+            const b = await body(req);
+            const channel = await createWorkChannel(db, user, {
+              title: String(b?.title ?? ""),
+              department: String(b?.department ?? "general"),
+              participantStaffIds: idList(b?.participantStaffIds),
+            });
+            void logAdminActivity(req, "internal_channel_created", "internal_channel", channel.id, { title: channel.title, source: "work_commands" });
+            return json(channel, 201);
+          }
+        }
+        if (!channelId) return error("معرف المحادثة غير صحيح", 400);
+        if (parts[4] === "messages" && method === "GET")
+          return json(await listWorkMessages(db, user, channelId, {
+            after: Number(params.get("after")) || 0,
+            before: Number(params.get("before")) || 0,
+            limit: Number(params.get("limit")) || 60,
+          }));
+        if (parts[4] === "messages" && method === "POST") {
+          const b = await body(req);
+          let voiceUrl: string | null = null;
+          if (b?.voice) {
+            const voice = String(b.voice);
+            if (!/^data:audio\/(webm|ogg|mp4|mpeg|aac|wav);base64,/i.test(voice)) return error("صيغة التسجيل الصوتي غير مدعومة", 422);
+            if (voice.length > 4_000_000) return error("التسجيل الصوتي أطول من المسموح (حوالي 3 دقائق)", 413);
+            voiceUrl = await persistDataUrlToStorage(voice, "enterprise/voice-notes");
+            // Storage failure returns the inline data; never save that as a message.
+            if (!voiceUrl || voiceUrl.startsWith("data:")) return error("تعذر حفظ الرسالة الصوتية في التخزين، أعد المحاولة", 503, { retryable: true });
+          }
+          const sent = await sendWorkMessage(db, user, {
+            channelId,
+            body: b?.body ?? null,
+            attachments: b?.attachments,
+            replyToId: optionalPositiveId(b?.replyToId),
+            voiceUrl,
+            voiceDuration: b?.voiceDuration == null ? null : Number(b.voiceDuration),
+            clientKey: b?.clientKey ?? null,
+          });
+          return json(sent, sent.replayed ? 200 : 201);
+        }
+        if (parts[4] === "read" && method === "POST") {
+          await requireWorkChannel(db, channelId, user);
+          const b = await body(req);
+          await markWorkChannelRead(db, user, channelId, Number(b?.lastMessageId) || 0);
+          return json({ ok: true });
+        }
+        return error("المسار غير موجود", 404);
+      }
+      if (parts[2] === "orders") {
+        if (!parts[3] && method === "POST") {
+          const b = await body(req);
+          const booking = b?.booking && ["kosha_booking", "service_order"].includes(String(b.booking.type)) && optionalPositiveId(b.booking.id)
+            ? { type: String(b.booking.type) as "kosha_booking" | "service_order", id: optionalPositiveId(b.booking.id)! }
+            : null;
+          const source = b?.source && optionalPositiveId(b.source.id) ? { type: String(b.source.type ?? ""), id: optionalPositiveId(b.source.id)! } : null;
+          const created = await createWorkOrder(db, user, {
+            channelId: optionalPositiveId(b?.channelId),
+            title: String(b?.title ?? ""),
+            description: b?.description ?? null,
+            department: b?.department ?? null,
+            templateKey: b?.templateKey ?? null,
+            assigneeIds: idList(b?.assigneeIds),
+            participantIds: idList(b?.participantIds),
+            priority: b?.priority ?? null,
+            dueAt: b?.dueAt ?? null,
+            estimatedMinutes: Number.isFinite(Number(b?.estimatedMinutes)) && Number(b?.estimatedMinutes) > 0 ? Number(b.estimatedMinutes) : null,
+            attachments: b?.attachments,
+            booking,
+            customerId: optionalPositiveId(b?.customerId),
+            customerName: b?.customerName ?? null,
+            productId: optionalPositiveId(b?.productId),
+            source,
+            notes: b?.notes ?? null,
+            requiresApproval: typeof b?.requiresApproval === "boolean" ? b.requiresApproval : undefined,
+            evidenceRequired: typeof b?.evidenceRequired === "boolean" ? b.evidenceRequired : undefined,
+            checklist: Array.isArray(b?.checklist) ? b.checklist.map(String) : undefined,
+            subtasks: Array.isArray(b?.subtasks)
+              ? b.subtasks.slice(0, 20).map((item: any) => ({ title: String(item?.title ?? ""), assigneeId: Number(item?.assigneeId), dueAt: item?.dueAt ?? null, mandatory: item?.mandatory !== false }))
+              : [],
+            idempotencyKey: b?.idempotencyKey ?? null,
+            voiceMessageId: optionalPositiveId(b?.voiceMessageId),
+          }, { notify, insertMedia });
+          if (!created.existing)
+            void logAdminActivity(req, "work_order_created", "task", created.order.id, {
+              orderNo: created.order.orderNo,
+              assigneeIds: created.order.assignedStaffIds,
+              subtasks: created.subtasks.length,
+              channelId: created.order.channelId,
+              source: created.order.source,
+            });
+          return json(created, created.existing ? 200 : 201);
+        }
+        const taskId = optionalPositiveId(parts[3]);
+        if (!taskId) return error("معرف الأمر غير صحيح", 400);
+        if (!parts[4] && method === "GET") return json(await workOrderDetails(db, user, taskId));
+        if (parts[4] === "actions" && method === "POST") {
+          const b = await body(req);
+          const action = String(b?.action ?? "") as WorkOrderAction;
+          if (!(WORK_ORDER_ACTIONS as readonly string[]).includes(action)) return error("إجراء غير معروف", 400);
+          const result = await workOrderAction(db, user, taskId, {
+            action,
+            notes: b?.notes ?? null,
+            reason: b?.reason ?? null,
+            evidence: b?.evidence,
+            dueAt: b?.dueAt ?? null,
+            approve: b?.approve === true,
+            assigneeIds: idList(b?.assigneeIds),
+          }, { notify, insertMedia });
+          void logAdminActivity(req, `work_order_${action}`, "task", taskId, { status: result.order.taskStatus });
+          return json(result);
+        }
+        return error("المسار غير موجود", 404);
+      }
+      if (parts[2] === "my" && method === "GET") {
+        deadlineSweep();
+        return json(await myWorkOrders(db, user));
+      }
+      if (parts[2] === "dashboard" && method === "GET") {
+        deadlineSweep();
+        return json(await workOrdersDashboard(db, user, {
+          department: params.get("department"),
+          staffId: optionalPositiveId(params.get("staffId")),
+          priority: params.get("priority"),
+          status: params.get("status"),
+          from: params.get("from"),
+          to: params.get("to"),
+          bookingId: optionalPositiveId(params.get("bookingId")),
+          customer: params.get("customer"),
+          page: Number(params.get("page")) || 1,
+        }));
+      }
+      if (parts[2] === "search" && method === "GET")
+        return json(await searchWorkCommands(db, user, String(params.get("q") ?? ""), Number(params.get("page")) || 1));
+      return error("المسار غير موجود", 404);
+    } catch (cause) {
+      if (cause instanceof WorkCommandError) return error(cause.message, cause.status);
+      throw cause;
+    }
   }
 
   if (section === "product-insights") {
@@ -74409,11 +74673,12 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       if (!secret) return error("خدمة Cron غير مهيأة", 503);
       const auth = req.headers.get("authorization") ?? "";
       if (auth !== `Bearer ${secret}`) return error("غير مصرح", 401);
-      const [summary, rateLimitCleanup] = await Promise.all([
+      const [summary, rateLimitCleanup, workOrderDeadlines] = await Promise.all([
         runSmartNotificationsSweep(),
         cleanupExpiredRateLimits(),
+        sweepWorkOrderDeadlines(db, (notice) => createNotification(notice), { force: true }),
       ]);
-      return json({ ok: true, summary, rateLimitCleanup });
+      return json({ ok: true, summary, rateLimitCleanup, workOrderDeadlines });
     }
     if (
       req.method === "GET" &&
