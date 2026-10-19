@@ -9,16 +9,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { TaskFilePicker, TaskPhotoPicker, type TaskFile, type TaskPhoto } from "@/components/task-photo-gallery";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/query-client";
-import {
-  PRIORITY_LABELS,
-  WORK_DEPARTMENTS,
-  WORK_ORDER_TEMPLATES,
-  departmentLabel,
-  extractWorkOrderFields,
-  workOrderTemplate,
-} from "@/lib/work-commands";
+import { PRIORITY_LABELS, catalogOrderType, extractWorkOrderFields } from "@/lib/work-commands";
 import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
-import { Failure, fieldClass, fromLocalInput, newClientKey, toLocalInput, useWorkMe, useWorkStaff, type WorkOrder, type WorkStaff } from "./shared";
+import { CustomerBookingPicker, type PickedBooking, type PickedCustomer } from "./customer-booking-picker";
+import { Failure, fieldClass, fromLocalInput, newClientKey, toLocalInput, useDepartmentLabel, useWorkCatalog, useWorkMe, useWorkStaff, type WorkOrder, type WorkStaff } from "./shared";
 
 export type WorkOrderDefaults = {
   title?: string;
@@ -36,11 +30,6 @@ export type WorkOrderDefaults = {
 
 type Subtask = { key: string; title: string; assigneeId: number | null; mandatory: boolean };
 
-const BOOKING_TYPES = [
-  { value: "kosha_booking", label: "حجز كوشة" },
-  { value: "service_order", label: "طلب خدمة" },
-] as const;
-
 function Field({ label, hint, children, htmlFor }: { label: string; hint?: string; children: ReactNode; htmlFor?: string }) {
   return (
     <div className="space-y-1.5">
@@ -53,6 +42,7 @@ function Field({ label, hint, children, htmlFor }: { label: string; hint?: strin
 
 export function StaffPicker({ staff, selected, onChange, exclude = [], label }: { staff: WorkStaff[]; selected: number[]; onChange: (ids: number[]) => void; exclude?: number[]; label: string }) {
   const [query, setQuery] = useState("");
+  const departmentLabel = useDepartmentLabel();
   const visible = staff.filter((member) => !exclude.includes(member.id) && (!query.trim() || member.name.includes(query.trim()) || departmentLabel(member.department).includes(query.trim())));
   const toggle = (id: number) => onChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
   return (
@@ -105,6 +95,13 @@ export function CreateWorkOrderDialog({
 }) {
   const { toast } = useToast();
   const me = useWorkMe();
+  const catalog = useWorkCatalog();
+  const orderTypes = catalog.orderTypes.filter((item) => item.active);
+  const departments = catalog.departments.filter((item) => item.active);
+  const workOrderTemplate = (key: unknown) => {
+    const found = catalogOrderType(catalog, key);
+    return found?.active ? found : null;
+  };
   const staffQuery = useWorkStaff(open && Boolean(me.data?.access.canCreate));
   const staff = staffQuery.data ?? [];
   const [idempotencyKey, setIdempotencyKey] = useState(newClientKey);
@@ -118,9 +115,8 @@ export function CreateWorkOrderDialog({
   const [showParticipants, setShowParticipants] = useState(false);
   const [dueAt, setDueAt] = useState("");
   const [estimated, setEstimated] = useState("");
-  const [bookingType, setBookingType] = useState<"kosha_booking" | "service_order">("kosha_booking");
-  const [bookingId, setBookingId] = useState("");
-  const [customerName, setCustomerName] = useState("");
+  const [customer, setCustomer] = useState<PickedCustomer | null>(null);
+  const [booking, setBooking] = useState<PickedBooking | null>(null);
   const [checklist, setChecklist] = useState<string[]>([]);
   const [checkDraft, setCheckDraft] = useState("");
   const [subtasks, setSubtasks] = useState<Subtask[]>([]);
@@ -139,16 +135,16 @@ export function CreateWorkOrderDialog({
     setTemplateKey(template?.key ?? null);
     setTitle(defaults?.title ?? template?.title ?? "");
     setDescription(defaults?.description ?? "");
-    setDepartment(defaults?.department ?? template?.department ?? me.data?.user.department ?? "general");
+    const preferred = defaults?.department ?? template?.department ?? me.data?.user.department ?? "general";
+    setDepartment(departments.some((item) => item.key === preferred) ? preferred : "general");
     setPriority(template?.priority ?? "medium");
     setAssigneeIds([]);
     setParticipantIds([]);
     setShowParticipants(false);
     setDueAt("");
     setEstimated(template ? String(template.estimatedMinutes) : "");
-    setBookingType(defaults?.booking?.type ?? "kosha_booking");
-    setBookingId(defaults?.booking ? String(defaults.booking.id) : "");
-    setCustomerName(defaults?.customerName ?? "");
+    setCustomer(null);
+    setBooking(null);
     setChecklist(template?.checklist ?? []);
     setCheckDraft("");
     setSubtasks([]);
@@ -165,7 +161,7 @@ export function CreateWorkOrderDialog({
     const template = workOrderTemplate(key);
     setTemplateKey(template?.key ?? null);
     if (!template) return;
-    if (!title.trim() || WORK_ORDER_TEMPLATES.some((item) => item.title === title)) setTitle(template.title);
+    if (!title.trim() || orderTypes.some((item) => item.title === title)) setTitle(template.title);
     setDepartment(template.department);
     setPriority(template.priority);
     setEstimated(String(template.estimatedMinutes));
@@ -181,8 +177,11 @@ export function CreateWorkOrderDialog({
     if (fields.description) setDescription(fields.description);
     if (fields.assigneeIds.length) setAssigneeIds(fields.assigneeIds);
     if (fields.dueAt) setDueAt(toLocalInput(fields.dueAt));
-    if (fields.bookingId) setBookingId(String(fields.bookingId));
-    setExtractNotes(["راجع كل الحقول قبل الإصدار؛ لن يُنشأ الأمر إلا بعد تأكيدك.", ...fields.notes]);
+    setExtractNotes([
+      "راجع كل الحقول قبل الإصدار؛ لن يُنشأ الأمر إلا بعد تأكيدك.",
+      ...(fields.bookingId && !defaults?.booking ? [`ذُكر الحجز رقم ${fields.bookingId}؛ اختر الزبون ثم حجزه من القائمة.`] : []),
+      ...fields.notes,
+    ]);
   };
 
   const template = workOrderTemplate(templateKey);
@@ -193,7 +192,7 @@ export function CreateWorkOrderDialog({
 
   const create = useMutation({
     mutationFn: () => {
-      const booking = defaults?.booking ?? (Number(bookingId) > 0 ? { type: bookingType, id: Number(bookingId) } : null);
+      const linkedBooking = defaults?.booking ?? (booking ? { type: booking.type, id: booking.id } : null);
       return adminFetch<{ order: WorkOrder; existing: boolean }>("/admin/work-commands/orders", {
         method: "POST",
         body: JSON.stringify({
@@ -208,9 +207,9 @@ export function CreateWorkOrderDialog({
           dueAt: fromLocalInput(dueAt),
           estimatedMinutes: Number(estimated) || null,
           attachments: [...photos, ...files].map((item) => ({ url: item.url, thumbnailUrl: item.thumbnailUrl ?? null, fileName: item.fileName ?? null, mediaType: item.mediaType || "image", caption: item.caption || null })),
-          booking,
-          customerId: defaults?.customerId ?? null,
-          customerName: customerName || null,
+          booking: linkedBooking,
+          // The server takes the name from the customer or booking record.
+          customerId: defaults?.booking ? defaults.customerId ?? null : customer?.id ?? null,
           productId: defaults?.productId ?? null,
           source: defaults?.source ?? null,
           requiresApproval,
@@ -279,7 +278,7 @@ export function CreateWorkOrderDialog({
             <Field label="نوع الأمر">
               <div className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1 [scrollbar-width:thin]">
                 <Button type="button" size="compact" variant={templateKey === null ? "selected" : "outline"} onClick={() => setTemplateKey(null)}>عام</Button>
-                {WORK_ORDER_TEMPLATES.map((item) => (
+                {orderTypes.map((item) => (
                   <Button key={item.key} type="button" size="compact" variant={templateKey === item.key ? "selected" : "outline"} onClick={() => applyTemplate(item.key)}>{item.label}</Button>
                 ))}
               </div>
@@ -292,7 +291,7 @@ export function CreateWorkOrderDialog({
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="القسم" htmlFor="wo-dept">
                 <select id="wo-dept" value={department} onChange={(event) => setDepartment(event.target.value)} className={fieldClass}>
-                  {WORK_DEPARTMENTS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+                  {departments.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
                 </select>
               </Field>
               <Field label="الأولوية">
@@ -329,21 +328,18 @@ export function CreateWorkOrderDialog({
               <Textarea id="wo-desc" value={description} onChange={(event) => setDescription(event.target.value)} rows={3} placeholder="ما المطلوب بالضبط؟ أي ملاحظات للموظف." />
             </Field>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              {defaults?.booking ? null : (
-                <Field label="ربط بحجز (اختياري)" hint={template?.needsBooking ? "هذا النوع يرتبط عادة بحجز." : undefined}>
-                  <div className="flex gap-2">
-                    <select value={bookingType} onChange={(event) => setBookingType(event.target.value as typeof bookingType)} className={`${fieldClass} w-36 shrink-0`} aria-label="نوع الحجز">
-                      {BOOKING_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                    </select>
-                    <Input value={bookingId} onChange={(event) => setBookingId(event.target.value.replace(/\D/g, ""))} inputMode="numeric" placeholder="رقم" aria-label="رقم الحجز" className="min-h-11" dir="ltr" />
-                  </div>
-                </Field>
-              )}
-              <Field label="اسم الزبون (اختياري)" htmlFor="wo-customer">
-                <Input id="wo-customer" value={customerName} onChange={(event) => setCustomerName(event.target.value)} className="min-h-11" />
+            {defaults?.booking ? null : (
+              <Field label="الزبون والحجز (اختياري)" hint={template?.needsBooking ? "هذا النوع يرتبط عادة بحجز: اختر الزبون من العملاء ثم حجزه." : "اختر الزبون من قائمة العملاء ثم الحجز المرتبط به."}>
+                <CustomerBookingPicker
+                  customer={customer}
+                  booking={booking}
+                  onChange={(value) => {
+                    setCustomer(value.customer);
+                    setBooking(value.booking);
+                  }}
+                />
               </Field>
-            </div>
+            )}
 
             <Field label="قائمة التحقق" hint="بنود يراها الموظف أثناء التنفيذ.">
               <div className="space-y-1.5">

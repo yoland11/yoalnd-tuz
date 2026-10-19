@@ -2,20 +2,24 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import {
   ACTIVE_TASK_STATUSES,
-  WORK_DEPARTMENTS,
+  DEFAULT_WORK_CATALOG,
   WORK_ORDER_ACTION_LABELS,
   WORK_ORDER_STATUS_LABELS,
   allowedActions,
-  departmentLabel,
+  catalogDepartment,
+  catalogDepartmentLabel,
+  catalogOrderType,
+  catalogProblems,
   isDueSoon,
   isOverdue,
+  normalizeCatalog,
   subtaskProgress,
   transitionProblem,
-  workDepartment,
   workOrderStatus,
-  workOrderTemplate,
+  type WorkCatalog,
   type WorkOrderAction,
 } from "@/lib/work-commands";
+import { shortBookingNumber } from "@/lib/booking-number";
 
 /**
  * مركز أوامر العمل on top of existing records:
@@ -67,16 +71,64 @@ const iso = (value: unknown) => (value instanceof Date ? value.toISOString() : v
 const idList = (values: number[]) => sql.join(values.map((value) => sql`${value}`), sql`, `);
 const MANAGER_ROLES = ["admin", "manager", "main_admin", "super_admin", "main_manager"];
 
-export function workAccess(user: WorkUser) {
-  const manager = MANAGER_ROLES.includes(String(user.role ?? "").toLowerCase()) || user.permissions.includes("staff");
+/** Permission granted from the command center to let an employee issue orders. */
+export const ISSUE_PERMISSION = "work_orders.issue";
+
+export function workAccess(user: WorkUser, catalog: WorkCatalog = workCatalog()) {
+  const role = String(user.role ?? "").toLowerCase();
+  const manager = MANAGER_ROLES.includes(role) || user.permissions.includes("staff");
   const has = (permission: string) => user.permissions.includes(permission);
   return {
     manager,
-    canCreate: manager || has("task_create") || has("booking_tasks_manage"),
+    canCreate: manager || has("task_create") || has("booking_tasks_manage") || has(ISSUE_PERMISSION),
     canApprove: manager || has("task_approve"),
     canCreateChannel: manager,
-    department: workDepartment(user.department),
+    canManageCatalog: manager,
+    // Same rule as the staff screen's permission editor.
+    canGrant: role === "admin" || has("staff"),
+    department: catalogDepartment(catalog, user.department),
   };
+}
+
+// ─── Catalog: editable order types and departments (settings table) ────────
+
+const CATALOG_SETTING = "workCommandsConfig";
+let catalogCache: { value: WorkCatalog; at: number } | null = null;
+
+/** Current catalog; request entry points refresh it first (30-second cache). */
+export function workCatalog(): WorkCatalog {
+  return catalogCache?.value ?? DEFAULT_WORK_CATALOG;
+}
+
+export async function loadWorkCatalog(executor: Executor, options: { fresh?: boolean } = {}) {
+  if (!options.fresh && catalogCache && Date.now() - catalogCache.at < 30_000) return catalogCache.value;
+  const row = rowsOf(await executor.execute(sql`SELECT value FROM settings WHERE key = ${CATALOG_SETTING}`))[0];
+  const value = normalizeCatalog(row?.value);
+  catalogCache = { value, at: Date.now() };
+  return value;
+}
+
+export async function saveWorkCatalog(database: Database, user: WorkUser, input: { departments?: unknown; orderTypes?: unknown }) {
+  await requireReady(database);
+  if (!workAccess(user).canManageCatalog) throw new WorkCommandError("تعديل الأقسام وأنواع الأوامر للإدارة فقط", 403);
+  const problems = catalogProblems(input);
+  if (problems.length) throw new WorkCommandError(problems.slice(0, 3).join("، "), 422, { problems });
+  const value = normalizeCatalog(input);
+  await database.transaction(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO settings (key, value, updated_at) VALUES (${CATALOG_SETTING}, ${JSON.stringify(value)}::jsonb, now())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    `);
+    // A department channel carries its department's name.
+    for (const department of value.departments)
+      await tx.execute(sql`
+        UPDATE internal_channels SET title = ${department.label}
+        WHERE entity_type = 'work_department' AND department = ${department.key} AND archived_at IS NULL AND title <> ${department.label}
+      `);
+  });
+  catalogCache = { value, at: Date.now() };
+  departmentsSeeded = "";
+  return value;
 }
 
 let schemaReady = false;
@@ -92,6 +144,7 @@ export async function workCommandsReady(executor: Executor = db) {
 async function requireReady(executor: Executor) {
   if (!(await workCommandsReady(executor)))
     throw new WorkCommandError("يلزم تطبيق ترقية قاعدة البيانات 0126_work_command_center قبل استخدام مركز أوامر العمل", 503);
+  return loadWorkCatalog(executor);
 }
 
 // ─── Channels ───────────────────────────────────────────────────────────────
@@ -111,26 +164,29 @@ function channelFromRow(row: any): ChannelRow {
 }
 
 /** Managers see every channel; employees see their department, general, and channels they belong to. */
-export function canAccessChannel(channel: ChannelRow, user: WorkUser) {
-  const access = workAccess(user);
+export function canAccessChannel(channel: ChannelRow, user: WorkUser, catalog: WorkCatalog = workCatalog()) {
+  const access = workAccess(user, catalog);
   if (access.manager) return true;
   if (channel.participantStaffIds.includes(user.id) || channel.createdBy === user.id) return true;
-  const department = workDepartment(channel.department);
+  const department = catalogDepartment(catalog, channel.department);
   return department === "general" || department === access.department;
 }
 
-let departmentsSeeded = false;
+/** Active department keys the channels were last seeded for ("" = not yet). */
+let departmentsSeeded = "";
 
-/** One channel per department; created on demand by a manager, never duplicated. */
-export async function ensureDepartmentChannels(executor: Executor, user: WorkUser) {
-  if (departmentsSeeded || !workAccess(user).manager) return;
-  for (const department of WORK_DEPARTMENTS)
+/** One channel per active department; created on demand by a manager, never duplicated. */
+export async function ensureDepartmentChannels(executor: Executor, user: WorkUser, catalog: WorkCatalog = workCatalog()) {
+  const active = catalog.departments.filter((department) => department.active);
+  const signature = active.map((department) => department.key).join(",");
+  if (departmentsSeeded === signature || !workAccess(user, catalog).manager) return;
+  for (const department of active)
     await executor.execute(sql`
       INSERT INTO internal_channels (title, department, entity_type, participant_staff_ids, created_by)
       VALUES (${department.label}, ${department.key}, 'work_department', '[]'::jsonb, ${user.id})
       ON CONFLICT (department) WHERE entity_type = 'work_department' AND archived_at IS NULL DO NOTHING
     `);
-  departmentsSeeded = true;
+  departmentsSeeded = signature;
 }
 
 async function loadChannel(executor: Executor, channelId: number) {
@@ -148,8 +204,9 @@ export async function requireChannel(executor: Executor, channelId: number, user
 }
 
 export async function listChannels(executor: Executor, user: WorkUser) {
-  await requireReady(executor);
-  await ensureDepartmentChannels(executor, user);
+  const catalog = await requireReady(executor);
+  await ensureDepartmentChannels(executor, user, catalog);
+  const inactive = new Set(catalog.departments.filter((department) => !department.active).map((department) => department.key));
   const rows = rowsOf(
     await executor.execute(sql`
       SELECT c.*,
@@ -171,11 +228,14 @@ export async function listChannels(executor: Executor, user: WorkUser) {
   );
   return rows
     .map((row) => ({ channel: channelFromRow(row), row }))
-    .filter(({ channel }) => canAccessChannel(channel, user))
+    // A deactivated department's channel leaves the list; its history stays.
+    .filter(({ channel }) => !(channel.entityType === "work_department" && inactive.has(channel.department)))
+    .filter(({ channel }) => canAccessChannel(channel, user, catalog))
     .map(({ channel, row }) => ({
       ...channel,
+      title: channel.entityType === "work_department" ? catalogDepartmentLabel(catalog, channel.department) : channel.title,
       isDepartment: channel.entityType === "work_department",
-      departmentLabel: departmentLabel(channel.department),
+      departmentLabel: catalogDepartmentLabel(catalog, channel.department),
       unread: num(row.unread),
       pendingOrders: num(row.pending_orders),
       activeEmployees: num(row.active_employees),
@@ -184,19 +244,91 @@ export async function listChannels(executor: Executor, user: WorkUser) {
     }));
 }
 
+function activeDepartment(catalog: WorkCatalog, value: unknown) {
+  const key = String(value ?? "").trim();
+  const department = catalog.departments.find((item) => item.key === key);
+  if (!department) throw new WorkCommandError("القسم غير موجود", 422);
+  if (!department.active) throw new WorkCommandError(`قسم «${department.label}» غير مفعّل`, 422);
+  return department.key;
+}
+
 export async function createChannel(executor: Executor, user: WorkUser, input: { title: string; department: string; participantStaffIds: number[] }) {
-  await requireReady(executor);
-  if (!workAccess(user).canCreateChannel) throw new WorkCommandError("إنشاء القنوات متاح للإدارة فقط", 403);
+  const catalog = await requireReady(executor);
+  if (!workAccess(user, catalog).canCreateChannel) throw new WorkCommandError("إنشاء القنوات متاح للإدارة فقط", 403);
   const title = input.title.trim().slice(0, 180);
-  if (title.length < 2) throw new WorkCommandError("اكتب اسم القناة");
+  if (title.length < 2) throw new WorkCommandError("اكتب اسم القناة", 422);
+  const department = activeDepartment(catalog, input.department || "general");
+  const members = [...new Set(input.participantStaffIds)];
+  if ((await activeStaff(executor, members)).length !== members.length) throw new WorkCommandError("يتضمن الأعضاء موظفاً غير نشط أو غير موجود", 422);
   const row = rowsOf(
     await executor.execute(sql`
       INSERT INTO internal_channels (title, department, entity_type, participant_staff_ids, created_by)
-      VALUES (${title}, ${workDepartment(input.department)}, 'work_channel', ${JSON.stringify([...new Set(input.participantStaffIds)])}::jsonb, ${user.id})
+      VALUES (${title}, ${department}, 'work_channel', ${JSON.stringify(members)}::jsonb, ${user.id})
       RETURNING *
     `),
   )[0];
   return channelFromRow(row);
+}
+
+/**
+ * Edit a channel. A department channel's name and the staff departments that
+ * belong to it live in the catalog; extra members are stored on the channel.
+ */
+export async function updateChannel(
+  database: Database,
+  user: WorkUser,
+  channelId: number,
+  input: { title?: string | null; department?: string | null; participantStaffIds?: number[] | null; aliases?: string[] | null },
+) {
+  const catalog = await requireReady(database);
+  if (!workAccess(user, catalog).canCreateChannel) throw new WorkCommandError("تعديل القنوات متاح للإدارة فقط", 403);
+  const channel = await loadChannel(database, channelId);
+  const title = input.title == null ? channel.title : String(input.title).trim().slice(0, 180);
+  if (title.length < 2) throw new WorkCommandError("اكتب اسم القناة", 422);
+  const members = input.participantStaffIds ? [...new Set(input.participantStaffIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))] : channel.participantStaffIds;
+  if ((await activeStaff(database, members)).length !== members.length) throw new WorkCommandError("يتضمن الأعضاء موظفاً غير نشط أو غير موجود", 422);
+  const isDepartment = channel.entityType === "work_department";
+  const department = isDepartment ? channel.department : input.department ? activeDepartment(catalog, input.department) : channel.department;
+  if (isDepartment) {
+    const next = {
+      departments: catalog.departments.map((item) =>
+        item.key === channel.department
+          ? { ...item, label: title, aliases: input.aliases ? [...new Set(input.aliases.map((alias) => String(alias).trim().slice(0, 60)).filter(Boolean))] : item.aliases }
+          : item,
+      ),
+      orderTypes: catalog.orderTypes,
+    };
+    if (!catalog.departments.some((item) => item.key === channel.department)) throw new WorkCommandError("قسم هذه القناة غير موجود في الإعدادات", 422);
+    await saveWorkCatalog(database, user, next);
+  }
+  await database.transaction(async (tx) => {
+    await tx.execute(sql`
+      UPDATE internal_channels SET title = ${title}, department = ${department}, participant_staff_ids = ${JSON.stringify(members)}::jsonb, updated_at = now()
+      WHERE id = ${channel.id}
+    `);
+    await systemMessage(tx, channel.id, user, `عدّل ${user.name} إعدادات المحادثة`, null);
+  });
+  return { ...channel, title, department, participantStaffIds: members };
+}
+
+/** Archive a custom channel; messages stay. Department channels follow their department. */
+export async function archiveChannel(executor: Executor, user: WorkUser, channelId: number) {
+  const catalog = await requireReady(executor);
+  if (!workAccess(user, catalog).canCreateChannel) throw new WorkCommandError("أرشفة القنوات متاحة للإدارة فقط", 403);
+  const channel = await loadChannel(executor, channelId);
+  if (channel.entityType === "work_department")
+    throw new WorkCommandError("قناة القسم لا تُؤرشف؛ أوقف القسم من إعدادات الأقسام", 422);
+  const open = num(
+    rowsOf(
+      await executor.execute(sql`
+        SELECT COUNT(*)::int AS count FROM work_orders w JOIN tasks t ON t.id = w.task_id
+        WHERE w.channel_id = ${channel.id} AND t.archived_at IS NULL AND t.status IN ('new', 'accepted', 'in_progress', 'review')
+      `),
+    )[0]?.count,
+  );
+  if (open) throw new WorkCommandError(`لا يمكن أرشفة قناة فيها أوامر مفتوحة (${open})`, 409);
+  await executor.execute(sql`UPDATE internal_channels SET archived_at = now(), updated_at = now() WHERE id = ${channel.id} AND archived_at IS NULL`);
+  return { id: channel.id, archived: true };
 }
 
 // ─── Messages ───────────────────────────────────────────────────────────────
@@ -326,7 +458,7 @@ export async function markRead(executor: Executor, user: WorkUser, channelId: nu
   `);
 }
 
-async function systemMessage(executor: Executor, channelId: number | null, user: WorkUser, body: string, taskId: number) {
+async function systemMessage(executor: Executor, channelId: number | null, user: WorkUser, body: string, taskId: number | null) {
   if (!channelId) return;
   await executor.execute(sql`
     INSERT INTO internal_messages (channel_id, sender_id, sender_name, body, message_type, task_id)
@@ -364,8 +496,9 @@ function orderFromRow(row: any) {
     status,
     statusLabel: WORK_ORDER_STATUS_LABELS[status],
     priority: String(row.priority ?? "medium"),
-    department: workDepartment(row.department),
-    departmentLabel: departmentLabel(row.department),
+    department: catalogDepartment(workCatalog(), row.department),
+    departmentLabel: catalogDepartmentLabel(workCatalog(), row.department),
+    templateLabel: catalogOrderType(workCatalog(), row.template_key)?.label ?? null,
     dueAt: task.dueAt,
     overdue: isOverdue(task),
     dueSoon: isDueSoon(task),
@@ -474,7 +607,43 @@ const DEPARTMENT_TASK_TYPES: Record<string, string> = {
   editing: "editing", photography: "photography", printing: "printing", koshas: "koshas", warehouse: "warehouse", delivery: "delivery",
 };
 export function workOrderTaskType(templateKey: string | null | undefined, department: string) {
+  // Custom order types and departments fall back to the department's type, then "other".
   return (templateKey && TEMPLATE_TASK_TYPES[templateKey]) || DEPARTMENT_TASK_TYPES[department] || "other";
+}
+
+const digits = (value: unknown) => String(value ?? "").replace(/\D/g, "").slice(-10);
+
+/**
+ * The booking's own customer wins: an order linked to a booking always carries
+ * that booking's customer. A chosen customer must own the booking.
+ */
+export async function resolveOrderCustomer(
+  executor: Executor,
+  input: { booking?: { type: string; id: number } | null; customerId?: number | null },
+) {
+  let customer: { id: number; name: string; phone: string } | null = null;
+  if (input.customerId) {
+    const row = rowsOf(
+      await executor.execute(sql`
+        SELECT id, COALESCE(NULLIF(full_name, ''), NULLIF(name, ''), phone) AS name, phone FROM customers WHERE id = ${input.customerId}
+      `),
+    )[0];
+    if (!row) throw new WorkCommandError("الزبون غير موجود", 422);
+    customer = { id: Number(row.id), name: String(row.name), phone: String(row.phone ?? "") };
+  }
+  if (!input.booking) return { customerId: customer?.id ?? null, customerName: customer?.name ?? null };
+  const booking = rowsOf(
+    await executor.execute(
+      input.booking.type === "service_order"
+        ? sql`SELECT id, customer_id, customer_name, phone FROM service_orders WHERE id = ${input.booking.id} AND archived_at IS NULL`
+        : sql`SELECT id, customer_id, customer_name, phone FROM kosha_bookings WHERE id = ${input.booking.id} AND archived_at IS NULL`,
+    ),
+  )[0];
+  if (!booking) throw new WorkCommandError("الحجز غير موجود أو مؤرشف", 422);
+  const bookingCustomer = booking.customer_id == null ? null : Number(booking.customer_id);
+  if (customer && bookingCustomer && bookingCustomer !== customer.id) throw new WorkCommandError("الحجز المختار لا يخص هذا الزبون", 422);
+  if (customer && !bookingCustomer && digits(booking.phone) !== digits(customer.phone)) throw new WorkCommandError("الحجز المختار لا يخص هذا الزبون", 422);
+  return { customerId: bookingCustomer ?? customer?.id ?? null, customerName: String(booking.customer_name ?? customer?.name ?? "") || null };
 }
 
 const SOURCE_TYPES = new Set(["photography_production_item", "print_job", "graduation_order", "graduation_group", "kosha_booking", "service_order", "product", "asset", "vehicle", "warehouse_transfer"]);
@@ -492,8 +661,8 @@ export async function createWorkOrder(
   input: CreateOrderInput,
   helpers: { notify: Notifier; insertMedia: MediaWriter },
 ) {
-  await requireReady(database);
-  const access = workAccess(user);
+  const catalog = await requireReady(database);
+  const access = workAccess(user, catalog);
   if (!access.canCreate) throw new WorkCommandError("ليس لديك صلاحية إصدار أوامر العمل", 403);
   const title = String(input.title ?? "").trim().slice(0, 500);
   if (title.length < 2) throw new WorkCommandError("اكتب عنوان الأمر", 422);
@@ -504,8 +673,10 @@ export async function createWorkOrder(
   const staffIds = [...new Set([...assigneeIds, ...participantIds, ...subtasks.map((item) => Number(item.assigneeId))])];
   const staff = await activeStaff(database, staffIds);
   if (staff.length !== staffIds.length) throw new WorkCommandError("يتضمن الأمر موظفاً غير نشط أو غير موجود", 422);
-  const template = workOrderTemplate(input.templateKey);
-  const department = workDepartment(input.department ?? template?.department ?? "general");
+  const template = input.templateKey ? catalogOrderType(catalog, input.templateKey) : null;
+  if (input.templateKey && !template) throw new WorkCommandError("نوع الأمر غير موجود", 422);
+  if (template && !template.active) throw new WorkCommandError(`نوع الأمر «${template.label}» غير مفعّل`, 422);
+  const department = activeDepartment(catalog, input.department || template?.department || "general");
   const priority = PRIORITIES.has(String(input.priority)) ? String(input.priority) : template?.priority ?? "medium";
   const dueAt = cleanDate(input.dueAt);
   if (input.dueAt && !dueAt) throw new WorkCommandError("موعد الإنجاز غير صالح", 422);
@@ -513,6 +684,7 @@ export async function createWorkOrder(
   const source = input.source && SOURCE_TYPES.has(input.source.type) && Number.isInteger(input.source.id) && input.source.id > 0 ? input.source : null;
   const idempotencyKey = input.idempotencyKey ? String(input.idempotencyKey).slice(0, 120) : null;
   if (input.channelId) await requireChannel(database, input.channelId, user);
+  const linkedCustomer = await resolveOrderCustomer(database, { booking: input.booking ?? null, customerId: input.customerId ?? null });
 
   // A retry or a second click returns the original order.
   if (idempotencyKey) {
@@ -562,7 +734,7 @@ export async function createWorkOrder(
       INSERT INTO work_orders (task_id, channel_id, template_key, requires_approval, evidence_required, customer_id, customer_name,
                                product_id, source_type, source_id, idempotency_key, created_by)
       VALUES (${parentId}, ${input.channelId}, ${template?.key ?? null}, ${requiresApproval}, ${evidenceRequired},
-              ${input.customerId ?? null}, ${input.customerName ? String(input.customerName).slice(0, 200) : null},
+              ${linkedCustomer.customerId}, ${linkedCustomer.customerName ? linkedCustomer.customerName.slice(0, 200) : null},
               ${input.productId ?? null}, ${source?.type ?? null}, ${source?.id ?? null}, ${idempotencyKey}, ${user.id})
     `);
     for (const [index, item] of checklist.entries())
@@ -583,7 +755,7 @@ export async function createWorkOrder(
       await tx.execute(sql`
         INSERT INTO work_orders (task_id, channel_id, parent_task_id, mandatory, requires_approval, evidence_required, customer_id, customer_name, product_id, created_by)
         VALUES (${childId}, ${input.channelId}, ${parentId}, ${item.mandatory !== false}, false, false,
-                ${input.customerId ?? null}, ${input.customerName ?? null}, ${input.productId ?? null}, ${user.id})
+                ${linkedCustomer.customerId}, ${linkedCustomer.customerName ? linkedCustomer.customerName.slice(0, 200) : null}, ${input.productId ?? null}, ${user.id})
       `);
       childIds.push(childId);
     }
@@ -891,7 +1063,7 @@ export async function dashboard(executor: Executor, user: WorkUser, filters: Das
   if (!workAccess(user).manager && !workAccess(user).canApprove) throw new WorkCommandError("لوحة المتابعة للإدارة فقط", 403);
   const day = (value: unknown) => (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null);
   const conditions = [sql`t.archived_at IS NULL`, sql`w.parent_task_id IS NULL`];
-  if (filters.department) conditions.push(sql`t.department = ${workDepartment(filters.department)}`);
+  if (filters.department) conditions.push(sql`t.department = ${catalogDepartment(workCatalog(), filters.department)}`);
   if (filters.staffId) conditions.push(sql`t.assigned_staff_ids @> ${JSON.stringify([filters.staffId])}::jsonb`);
   if (filters.priority && PRIORITIES.has(filters.priority)) conditions.push(sql`t.priority = ${filters.priority}`);
   if (day(filters.from)) conditions.push(sql`t.created_at >= ${day(filters.from)}::date`);
@@ -973,6 +1145,208 @@ export async function search(executor: Executor, user: WorkUser, query: string, 
     orders,
   };
 }
+
+// ─── Team: who may issue orders ─────────────────────────────────────────────
+
+export async function workTeam(executor: Executor, user: WorkUser) {
+  const catalog = await requireReady(executor);
+  const access = workAccess(user, catalog);
+  if (!access.manager && !access.canGrant) throw new WorkCommandError("إدارة الفريق متاحة للإدارة فقط", 403);
+  const rows = rowsOf(
+    await executor.execute(sql`
+      SELECT id, COALESCE(NULLIF(full_name, ''), username) AS name, role, department, job_title, permissions
+      FROM staff WHERE is_active = true ORDER BY COALESCE(NULLIF(full_name, ''), username)
+    `),
+  );
+  const members = rows.map((row) => {
+    const permissions: string[] = Array.isArray(row.permissions) ? row.permissions.map(String) : [];
+    const member = { id: Number(row.id), name: String(row.name), role: String(row.role ?? "employee"), department: row.department ?? null, permissions };
+    const memberAccess = workAccess(member, catalog);
+    const explicit = permissions.includes(ISSUE_PERMISSION);
+    const via = memberAccess.manager
+      ? "manager"
+      : permissions.includes("task_create")
+        ? "task_create"
+        : permissions.includes("booking_tasks_manage")
+          ? "booking_tasks_manage"
+          : explicit
+            ? "issue"
+            : null;
+    return {
+      id: member.id,
+      name: member.name,
+      role: member.role,
+      jobTitle: row.job_title ?? null,
+      staffDepartment: row.department ?? null,
+      department: memberAccess.department,
+      departmentLabel: catalogDepartmentLabel(catalog, row.department),
+      canIssue: memberAccess.canCreate,
+      explicit,
+      // Issuing that comes from a role or another permission is changed on the staff screen.
+      lockedBy: via && via !== "issue" ? via : null,
+    };
+  });
+  const staffDepartments = [...new Set(rows.map((row) => String(row.department ?? "").trim()).filter(Boolean))].map((value) => ({
+    value,
+    department: catalogDepartment(catalog, value),
+  }));
+  return { members, staffDepartments, canGrant: access.canGrant };
+}
+
+export async function setIssuePermission(executor: Executor, user: WorkUser, staffId: number, allowed: boolean) {
+  const catalog = await requireReady(executor);
+  if (!workAccess(user, catalog).canGrant) throw new WorkCommandError("منح الصلاحيات متاح لمن يملك إدارة الموظفين", 403);
+  const target = rowsOf(
+    await executor.execute(sql`SELECT id, role, is_active, COALESCE(NULLIF(full_name, ''), username) AS name FROM staff WHERE id = ${staffId}`),
+  )[0];
+  if (!target || target.is_active !== true) throw new WorkCommandError("الموظف غير موجود أو غير نشط", 404);
+  if (String(target.role) === "admin") throw new WorkCommandError("حساب المدير العام يملك كل الصلاحيات", 422);
+  if (allowed)
+    await executor.execute(sql`
+      UPDATE staff SET permissions = COALESCE(permissions, '[]'::jsonb) || ${JSON.stringify([ISSUE_PERMISSION])}::jsonb
+      WHERE id = ${staffId} AND NOT (COALESCE(permissions, '[]'::jsonb) ? ${ISSUE_PERMISSION})
+    `);
+  else
+    await executor.execute(sql`UPDATE staff SET permissions = COALESCE(permissions, '[]'::jsonb) - ${ISSUE_PERMISSION} WHERE id = ${staffId}`);
+  return { staffId, name: String(target.name), allowed };
+}
+
+// ─── Customers and their bookings (read-only lookups) ───────────────────────
+
+export async function searchCustomers(executor: Executor, user: WorkUser, query: string) {
+  const catalog = await requireReady(executor);
+  if (!workAccess(user, catalog).canCreate) throw new WorkCommandError("ليس لديك صلاحية إصدار أوامر العمل", 403);
+  const text = query.trim().slice(0, 80);
+  if (text.length < 2) return [];
+  const like = `%${text.replace(/[\\%_]/g, "\\$&")}%`;
+  const phone = text.replace(/\D/g, "");
+  const rows = rowsOf(
+    await executor.execute(sql`
+      SELECT c.id, COALESCE(NULLIF(c.full_name, ''), NULLIF(c.name, ''), c.phone) AS name, c.phone,
+        (SELECT COUNT(*) FROM kosha_bookings k WHERE k.archived_at IS NULL AND (k.customer_id = c.id OR (k.customer_id IS NULL AND k.phone = c.phone)))::int
+        + (SELECT COUNT(*) FROM service_orders s WHERE s.archived_at IS NULL AND (s.customer_id = c.id OR (s.customer_id IS NULL AND s.phone = c.phone)))::int AS bookings
+      FROM customers c
+      WHERE c.full_name ILIKE ${like} OR c.name ILIKE ${like} ${phone.length >= 3 ? sql`OR c.phone LIKE ${`%${phone}%`}` : sql``}
+      ORDER BY bookings DESC, c.id DESC
+      LIMIT 20
+    `),
+  );
+  // Employees see only the last digits of a phone, enough to tell customers apart.
+  return rows.map((row) => ({ id: Number(row.id), name: String(row.name), phoneTail: String(row.phone ?? "").slice(-4), bookings: num(row.bookings) }));
+}
+
+export async function customerBookings(executor: Executor, user: WorkUser, customerId: number) {
+  const catalog = await requireReady(executor);
+  if (!workAccess(user, catalog).canCreate) throw new WorkCommandError("ليس لديك صلاحية إصدار أوامر العمل", 403);
+  const customer = rowsOf(await executor.execute(sql`SELECT id FROM customers WHERE id = ${customerId}`))[0];
+  if (!customer) throw new WorkCommandError("الزبون غير موجود", 404);
+  const rows = rowsOf(
+    await executor.execute(sql`
+      SELECT * FROM (
+        SELECT 'kosha_booking' AS type, k.id, k.tracking_code, k.event_date, k.status, COALESCE(NULLIF(k.package_name, ''), 'حجز كوشة') AS title
+        FROM kosha_bookings k JOIN customers c ON c.id = ${customerId}
+        WHERE k.archived_at IS NULL AND (k.customer_id = c.id OR (k.customer_id IS NULL AND k.phone = c.phone))
+        UNION ALL
+        SELECT 'service_order' AS type, s.id, s.tracking_code, s.event_date, s.status, COALESCE(sv.name_ar, 'طلب خدمة') AS title
+        FROM service_orders s JOIN customers c ON c.id = ${customerId} LEFT JOIN services sv ON sv.id = s.service_id
+        WHERE s.archived_at IS NULL AND (s.customer_id = c.id OR (s.customer_id IS NULL AND s.phone = c.phone))
+      ) bookings
+      ORDER BY event_date DESC NULLS LAST, id DESC
+      LIMIT 40
+    `),
+  );
+  return rows.map((row) => {
+    const type = String(row.type) as "kosha_booking" | "service_order";
+    return {
+      type,
+      id: Number(row.id),
+      number: shortBookingNumber(type === "service_order" ? "service" : "kosha", Number(row.id), row.tracking_code ?? null) || `#${row.id}`,
+      title: String(row.title),
+      eventDate: row.event_date ?? null,
+      status: String(row.status ?? ""),
+    };
+  });
+}
+
+// ─── Editing an order ───────────────────────────────────────────────────────
+
+export type EditOrderInput = {
+  title?: string | null;
+  description?: string | null;
+  templateKey?: string | null;
+  department?: string | null;
+  priority?: string | null;
+  dueAt?: string | null;
+};
+
+export async function editWorkOrder(database: Database, user: WorkUser, taskId: number, input: EditOrderInput, helpers: { notify: Notifier }) {
+  const catalog = await requireReady(database);
+  const before = await loadOrder(database, taskId);
+  if (!(await canAccessOrder(database, before, user))) throw new WorkCommandError("لا تملك صلاحية هذا الأمر", 403);
+  if (!(workAccess(user, catalog).canApprove || before.createdBy === user.id)) throw new WorkCommandError("تعديل الأمر للإدارة أو لمن أصدره فقط", 403);
+  if (["completed", "cancelled"].includes(before.taskStatus)) throw new WorkCommandError("لا يمكن تعديل أمر منجز أو ملغى", 409);
+  const title = input.title == null ? before.title : String(input.title).trim().slice(0, 500);
+  if (title.length < 2) throw new WorkCommandError("اكتب عنوان الأمر", 422);
+  const description = input.description === undefined ? before.description : String(input.description ?? "").trim().slice(0, 4_000) || null;
+  let templateKey = before.templateKey;
+  if (input.templateKey !== undefined) {
+    if (input.templateKey) {
+      const template = catalogOrderType(catalog, input.templateKey);
+      if (!template) throw new WorkCommandError("نوع الأمر غير موجود", 422);
+      if (!template.active && template.key !== before.templateKey) throw new WorkCommandError(`نوع الأمر «${template.label}» غير مفعّل`, 422);
+      templateKey = template.key;
+    } else templateKey = null;
+  }
+  const department = input.department && input.department !== before.department ? activeDepartment(catalog, input.department) : before.department;
+  const priority = input.priority == null ? before.priority : PRIORITIES.has(String(input.priority)) ? String(input.priority) : null;
+  if (!priority) throw new WorkCommandError("الأولوية غير صالحة", 422);
+  let dueAt = before.dueAt ? new Date(before.dueAt) : null;
+  if (input.dueAt !== undefined) {
+    dueAt = input.dueAt ? cleanDate(input.dueAt) : null;
+    if (input.dueAt && !dueAt) throw new WorkCommandError("موعد الإنجاز غير صالح", 422);
+  }
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  const track = (field: string, from: unknown, to: unknown) => {
+    if ((from ?? null) !== (to ?? null)) changes[field] = { from: from ?? null, to: to ?? null };
+  };
+  track("title", before.title, title);
+  track("description", before.description, description);
+  track("templateKey", before.templateKey, templateKey);
+  track("department", before.department, department);
+  track("priority", before.priority, priority);
+  track("dueAt", before.dueAt, dueAt ? dueAt.toISOString() : null);
+  if (!Object.keys(changes).length) return { order: before, changed: [] as string[] };
+
+  await database.transaction(async (tx) => {
+    const locked = rowsOf(await tx.execute(sql`SELECT status FROM tasks WHERE id = ${taskId} FOR UPDATE`))[0];
+    if (!locked || String(locked.status) !== before.taskStatus) throw new WorkCommandError("تغيرت حالة الأمر؛ أعد تحميله", 409);
+    await tx.execute(sql`
+      UPDATE tasks SET title = ${title}, description = ${description}, department = ${department},
+        task_type = ${workOrderTaskType(templateKey, department)}, priority = ${priority}, due_at = ${dueAt}, updated_at = now()
+      WHERE id = ${taskId}
+    `);
+    await tx.execute(sql`UPDATE work_orders SET template_key = ${templateKey}, updated_at = now() WHERE task_id = ${taskId}`);
+    const labels: Record<string, string> = { title: "العنوان", description: "التفاصيل", templateKey: "نوع الأمر", department: "القسم", priority: "الأولوية", dueAt: "موعد الإنجاز" };
+    const summary = Object.keys(changes).map((field) => labels[field]).join("، ");
+    await timeline(tx, taskId, user, "work_order_edited", "تعديل الأمر", summary, { changes });
+    await systemMessage(tx, before.channelId, user, `عدّل ${user.name} الأمر ${before.orderNo}: ${summary}`, taskId);
+  });
+  const order = await loadOrder(database, taskId);
+  if (changes.dueAt || changes.title || changes.description)
+    for (const staffId of before.assignedStaffIds)
+      await helpers.notify({
+        audienceType: "staff",
+        staffId,
+        type: "work_task_edited",
+        title: changes.dueAt ? "تغيّر موعد أمر عمل" : "تم تعديل أمر عمل",
+        body: `${order.orderNo} · ${order.title}`,
+        entityType: "task",
+        entityId: taskId,
+        href: `/staff?tab=work&order=${taskId}`,
+      });
+  return { order, changed: Object.keys(changes) };
+}
+
 
 // ─── Deadlines ──────────────────────────────────────────────────────────────
 

@@ -50,9 +50,18 @@ import {
   workOrderChannelNote,
   workOrderCompletionPolicy,
   workOrderDetails,
+  archiveChannel as archiveWorkChannel,
+  customerBookings as workCustomerBookings,
+  editWorkOrder,
+  loadWorkCatalog,
+  saveWorkCatalog,
+  searchCustomers as searchWorkCustomers,
+  setIssuePermission,
+  updateChannel as updateWorkChannel,
+  workTeam,
   type WorkUser,
 } from "./work-commands";
-import { WORK_ORDER_ACTIONS, workDepartment as workDepartmentKey, type WorkOrderAction } from "@/lib/work-commands";
+import { WORK_ORDER_ACTIONS, catalogDepartment, type WorkOrderAction } from "@/lib/work-commands";
 import {
   QuantityAssetError,
   adjustQuantityAsset,
@@ -904,6 +913,7 @@ export const ALL_PERMISSIONS = [
   "task_delete",
   "task_assign",
   "task_approve",
+  "work_orders.issue",
   "koshas",
   "koshat_tasks.view",
   "koshat_tasks.assign",
@@ -24117,6 +24127,7 @@ async function handleEnterpriseAdmin(
   }
 
   if (section === "chat") {
+    await loadWorkCatalog(db);
     if (parts[1] === "messages") {
       const channelId = optionalPositiveId(
         req.nextUrl.searchParams.get("channelId") ??
@@ -47709,7 +47720,9 @@ async function handleAdmin(
     const auth = await getAdminUser(req);
     if (!auth || !auth.isActive) return error("غير مخول", 401);
     const user = workUserFromAdmin(auth);
-    const access = workAccess(user);
+    // Order types and departments are editable (settings table, not 0126).
+    const catalog = await loadWorkCatalog(db);
+    const access = workAccess(user, catalog);
     const params = req.nextUrl.searchParams;
     const notify = (notice: Parameters<typeof createNotification>[0]) => createNotification(notice);
     const storageShape = await taskStorageShape();
@@ -47720,7 +47733,41 @@ async function handleAdmin(
     try {
       if (parts[2] === "me" && method === "GET") {
         const ready = await workCommandsReady(db);
-        return json({ ready, user: { id: user.id, name: user.name, department: access.department }, access });
+        return json({ ready, user: { id: user.id, name: user.name, department: access.department }, access, catalog });
+      }
+      if (parts[2] === "catalog" && method === "PUT") {
+        const b = await body(req);
+        const saved = await saveWorkCatalog(db, user, { departments: b?.departments, orderTypes: b?.orderTypes });
+        void logAdminActivity(req, "work_commands_catalog_updated", "settings", 0, {
+          departments: saved.departments.map((item) => ({ key: item.key, label: item.label, active: item.active })),
+          orderTypes: saved.orderTypes.map((item) => ({ key: item.key, label: item.label, active: item.active })),
+        });
+        return json({ catalog: saved });
+      }
+      if (parts[2] === "team" && !parts[3] && method === "GET") return json(await workTeam(db, user));
+      if (parts[2] === "team" && parts[4] === "issue" && method === "POST") {
+        const staffId = optionalPositiveId(parts[3]);
+        if (!staffId) return error("معرف الموظف غير صحيح", 400);
+        const b = await body(req);
+        if (typeof b?.allowed !== "boolean") return error("حدد منح الصلاحية أو سحبها", 400);
+        const result = await setIssuePermission(db, user, staffId, b.allowed);
+        void logAdminActivity(req, "staff_permission_changed", "staff", staffId, { permission: "work_orders.issue", allowed: result.allowed, source: "work_commands" });
+        await createNotification({
+          audienceType: "staff",
+          staffId,
+          type: "work_task_permission",
+          title: result.allowed ? "أصبح بإمكانك إصدار أوامر العمل" : "سُحبت صلاحية إصدار أوامر العمل",
+          body: `بواسطة ${user.name}`,
+          href: "/staff?tab=work",
+        });
+        return json(result);
+      }
+      if (parts[2] === "customers" && !parts[3] && method === "GET")
+        return json({ data: await searchWorkCustomers(db, user, String(params.get("q") ?? "")) });
+      if (parts[2] === "customers" && parts[4] === "bookings" && method === "GET") {
+        const customerId = optionalPositiveId(parts[3]);
+        if (!customerId) return error("معرف الزبون غير صحيح", 400);
+        return json({ data: await workCustomerBookings(db, user, customerId) });
       }
       if (parts[2] === "transcription" && method === "GET") return json(TRANSCRIPTION_UNAVAILABLE);
       if (parts[2] === "staff" && method === "GET") {
@@ -47730,7 +47777,7 @@ async function handleAdmin(
           .from(staffTable)
           .where(eq(staffTable.isActive, true))
           .orderBy(asc(staffTable.fullName));
-        return json({ data: rows.map((row) => ({ id: row.id, name: row.fullName || row.username, department: workDepartmentKey(row.department), jobTitle: row.jobTitle ?? null })) });
+        return json({ data: rows.map((row) => ({ id: row.id, name: row.fullName || row.username, department: catalogDepartment(catalog, row.department), jobTitle: row.jobTitle ?? null })) });
       }
       if (parts[2] === "channels") {
         const channelId = parts[3] ? optionalPositiveId(parts[3]) : null;
@@ -47751,6 +47798,22 @@ async function handleAdmin(
           }
         }
         if (!channelId) return error("معرف المحادثة غير صحيح", 400);
+        if (!parts[4] && method === "PATCH") {
+          const b = await body(req);
+          const updated = await updateWorkChannel(db, user, channelId, {
+            title: b?.title ?? null,
+            department: b?.department ?? null,
+            participantStaffIds: Array.isArray(b?.participantStaffIds) ? idList(b.participantStaffIds) : null,
+            aliases: Array.isArray(b?.aliases) ? b.aliases.map(String) : null,
+          });
+          void logAdminActivity(req, "internal_channel_updated", "internal_channel", channelId, { title: updated.title, department: updated.department, members: updated.participantStaffIds.length, source: "work_commands" });
+          return json(updated);
+        }
+        if (parts[4] === "archive" && method === "POST") {
+          const archived = await archiveWorkChannel(db, user, channelId);
+          void logAdminActivity(req, "internal_channel_archived", "internal_channel", channelId, { source: "work_commands" });
+          return json(archived);
+        }
         if (parts[4] === "messages" && method === "GET")
           return json(await listWorkMessages(db, user, channelId, {
             after: Number(params.get("after")) || 0,
@@ -47834,6 +47897,20 @@ async function handleAdmin(
         const taskId = optionalPositiveId(parts[3]);
         if (!taskId) return error("معرف الأمر غير صحيح", 400);
         if (!parts[4] && method === "GET") return json(await workOrderDetails(db, user, taskId));
+        if (!parts[4] && method === "PATCH") {
+          const b = await body(req);
+          const pick = (key: string) => (b && Object.prototype.hasOwnProperty.call(b, key) ? b[key] ?? null : undefined);
+          const edited = await editWorkOrder(db, user, taskId, {
+            title: pick("title"),
+            description: pick("description"),
+            templateKey: pick("templateKey"),
+            department: pick("department"),
+            priority: pick("priority"),
+            dueAt: pick("dueAt"),
+          }, { notify });
+          if (edited.changed.length) void logAdminActivity(req, "work_order_edited", "task", taskId, { changed: edited.changed });
+          return json(edited);
+        }
         if (parts[4] === "actions" && method === "POST") {
           const b = await body(req);
           const action = String(b?.action ?? "") as WorkOrderAction;

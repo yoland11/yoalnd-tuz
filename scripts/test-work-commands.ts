@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { PgDialect } from "drizzle-orm/pg-core";
 import {
+  DEFAULT_WORK_CATALOG,
   allowedActions,
+  catalogDepartment,
+  catalogDepartmentLabel,
+  catalogProblems,
   extractWorkOrderFields,
+  normalizeCatalog,
   isDueSoon,
   isOverdue,
   subtaskProgress,
@@ -67,7 +72,11 @@ type Statement = { sql: string; params: unknown[] };
 
 const FORBIDDEN = /\b(stock_movements|warehouse_stock|financial_transactions|cash_box\w*|payments|sales_invoices|purchase_invoices|inventory\w*|journal\w*|ledger\w*|stock_reservations)\b/i;
 
-function harness(options: { ready?: boolean; orders?: Order[]; idempotent?: number | null; sourceActive?: number | null; evidence?: number; notified?: boolean; lockedStatus?: string } = {}) {
+type HarnessOptions = {
+  ready?: boolean; orders?: Order[]; idempotent?: number | null; sourceActive?: number | null; evidence?: number; notified?: boolean; lockedStatus?: string;
+  catalog?: unknown; booking?: Record<string, unknown> | null; customers?: Record<number, Record<string, unknown>>; openInChannel?: number; staffRows?: Array<Record<string, unknown>>;
+};
+function harness(options: HarnessOptions = {}) {
   const statements: Statement[] = [];
   const orders = new Map((options.orders ?? []).map((order) => [order.id, { ...order }]));
   let nextId = 500;
@@ -92,6 +101,23 @@ function harness(options: { ready?: boolean; orders?: Order[]; idempotent?: numb
     statements.push({ sql: q, params });
     const rows = (value: any[]) => ({ rows: value });
     if (q.includes("information_schema.tables")) return rows([{ ready: options.ready !== false }]);
+    if (q.startsWith("SELECT value FROM settings WHERE key = $1")) return rows(options.catalog ? [{ value: options.catalog }] : []);
+    if (q.startsWith("INSERT INTO settings")) return rows([]);
+    if (/^SELECT id, customer_id, customer_name, phone FROM (kosha_bookings|service_orders) WHERE id = \$1/.test(q))
+      return rows(options.booking === null ? [] : [options.booking ?? { id: params[0], customer_id: 55, customer_name: "أحمد سالم", phone: "07701234567" }]);
+    if (q.startsWith("SELECT id, COALESCE(NULLIF(full_name, ''), NULLIF(name, ''), phone) AS name, phone FROM customers WHERE id"))
+      return rows((options.customers ?? { 55: { id: 55, name: "أحمد سالم", phone: "07701234567" } })[Number(params[0])] ? [(options.customers ?? { 55: { id: 55, name: "أحمد سالم", phone: "07701234567" } })[Number(params[0])]] : []);
+    if (q.startsWith("SELECT id FROM customers WHERE id")) return rows(Number(params[0]) === 55 ? [{ id: 55 }] : []);
+    if (q.startsWith("SELECT c.id, COALESCE(NULLIF(c.full_name, ''), NULLIF(c.name, ''), c.phone) AS name"))
+      return rows([{ id: 55, name: "أحمد سالم", phone: "07701234567", bookings: 2 }]);
+    if (q.startsWith("SELECT * FROM ( SELECT 'kosha_booking' AS type"))
+      return rows([{ type: "kosha_booking", id: 120, tracking_code: null, event_date: "2026-10-25", status: "confirmed", title: "باقة ذهبية" }, { type: "service_order", id: 31, tracking_code: null, event_date: "2026-09-01", status: "completed", title: "تصوير" }]);
+    if (q.startsWith("SELECT COUNT(*)::int AS count FROM work_orders w JOIN tasks t ON t.id = w.task_id WHERE w.channel_id")) return rows([{ count: options.openInChannel ?? 0 }]);
+    if (q.startsWith("SELECT id, role, is_active, COALESCE(NULLIF(full_name, ''), username) AS name FROM staff WHERE id"))
+      return rows((options.staffRows ?? []).filter((row) => row.id === Number(params[0])));
+    if (q.startsWith("SELECT id, COALESCE(NULLIF(full_name, ''), username) AS name, role, department, job_title, permissions FROM staff WHERE is_active = true"))
+      return rows(options.staffRows ?? []);
+    if (q.startsWith("UPDATE staff SET permissions")) return rows([]);
     if (q.startsWith("SELECT * FROM internal_channels WHERE id =")) return rows(channels[Number(params[0])] ? [channels[Number(params[0])]] : []);
     if (q.startsWith("SELECT id, COALESCE(NULLIF(full_name, ''), username) AS name FROM staff WHERE id IN"))
       return rows(params.filter((id) => Number(id) !== 404).map((id) => ({ id, name: `موظف ${id}` })));
@@ -144,7 +170,13 @@ function harness(options: { ready?: boolean; orders?: Order[]; idempotent?: numb
     if (q.startsWith("SELECT 1 FROM notifications")) return rows(options.notified ? [{ "?column?": 1 }] : []);
     if (q.startsWith("SELECT * FROM internal_messages WHERE channel_id = $1 AND client_key")) return rows([{ id: 77, channel_id: 1, sender_id: 7, sender_name: "علي", body: "سابق", message_type: "text", attachments: [], created_at: new Date() }]);
     if (q.startsWith("INSERT INTO internal_messages") && q.includes("RETURNING *")) return rows([{ id: 78, channel_id: params[0], sender_id: params[1], sender_name: params[2], body: params[3], message_type: params[6], attachments: [], created_at: new Date() }]);
-    if (/^(INSERT INTO (internal_messages|entity_timeline|task_checklist_items|task_comments|internal_channel_reads)|UPDATE (tasks|internal_channels|work_orders) SET)/.test(q)) return rows([]);
+    if (q.startsWith("UPDATE tasks SET title =")) {
+      const order = orders.get(Number(params[params.length - 1]))!;
+      order.title = String(params[0]);
+      order.dueAt = (params[params.length - 2] as Date | null) ?? null;
+      return rows([]);
+    }
+    if (/^(INSERT INTO (internal_messages|internal_channels|entity_timeline|task_checklist_items|task_comments|internal_channel_reads)|UPDATE (tasks|internal_channels|work_orders) SET)/.test(q)) return rows([]);
     throw new Error(`Unexpected SQL in work commands test: ${q}`);
   };
   const db = { execute, transaction: async <T,>(work: (tx: any) => Promise<T>) => work({ execute }) };
@@ -211,6 +243,8 @@ async function run() {
     assert.equal(h.statements.filter((statement) => statement.sql.startsWith("INSERT INTO task_checklist_items")).length, 4, "editing template checklist");
     assert.ok(h.statements.some((statement) => statement.sql.startsWith("INSERT INTO entity_timeline")));
     assert.deepEqual(tools.media, [{ taskId: created.order.id, category: "manager_photo", count: 1 }]);
+    const settingsRow = h.statements.find((statement) => statement.sql.startsWith("INSERT INTO work_orders") && !statement.sql.includes("parent_task_id, mandatory"))!;
+    assert.deepEqual([settingsRow.params[5], settingsRow.params[6]], [55, "أحمد سالم"], "the customer comes from the booking record, not typed text");
     assert.deepEqual(tools.notices.map((notice) => [notice.staffId, notice.type]), [[7, "work_task_assigned"], [8, "work_task_assigned"], [8, "work_task_participant"]]);
     assert.ok(tools.notices.every((notice) => notice.href.startsWith("/staff?tab=work&order=")));
     for (const statement of h.statements) assert.doesNotMatch(statement.sql, FORBIDDEN, `work orders never touch finance or stock: ${statement.sql.slice(0, 90)}`);
@@ -327,10 +361,137 @@ async function run() {
     assert.equal(throttled.skipped, true, "request-driven sweeps are throttled");
   }
 
+  // ── Editable catalog, customer links, permissions, channel and order edits ──
+  {
+    // Pure catalog rules.
+    assert.equal(DEFAULT_WORK_CATALOG.departments.length, 8);
+    const custom = normalizeCatalog({
+      departments: [{ key: "general", label: "الإدارة", active: false }, { key: "photography", label: "التصوير", active: false }, { key: "dept_9", label: "الصوتيات", aliases: ["تصوير", "صوت"] }],
+      orderTypes: [{ key: "editing", label: "مونتاج سريع", active: false }, { key: "type_10", label: "تصميم دعوة", department: "dept_9", checklist: ["التصميم", " ", "المراجعة"] }, { key: "BAD KEY", label: "x" }],
+    });
+    assert.equal(custom.departments.find((item) => item.key === "general")?.active, true, "general can never be switched off");
+    assert.equal(custom.departments.find((item) => item.key === "general")?.label, "الإدارة");
+    assert.equal(custom.departments.length, 9, "built-ins stay; one custom department added");
+    assert.equal(custom.orderTypes.find((item) => item.key === "editing")?.active, false);
+    assert.deepEqual(custom.orderTypes.find((item) => item.key === "type_10")?.checklist, ["التصميم", "المراجعة"]);
+    assert.ok(!custom.orderTypes.some((item) => item.key === "BAD KEY"), "malformed keys are dropped");
+    assert.equal(catalogDepartment(custom, "تصوير"), "dept_9", "a manager's assignment beats the built-in alias");
+    assert.equal(catalogDepartment(DEFAULT_WORK_CATALOG, "تصوير"), "photography");
+    assert.equal(catalogDepartment(custom, "الصوتيات"), "dept_9");
+    assert.equal(catalogDepartment(custom, "unknown"), "general");
+    assert.equal(catalogDepartmentLabel(custom, "dept_9"), "الصوتيات");
+    assert.ok(catalogProblems({ departments: [{ key: "general", label: "عام" }, { key: "dept_2", label: "عام" }], orderTypes: [] }).some((problem) => problem.includes("قسم آخر")));
+    assert.ok(catalogProblems({ departments: [{ key: "general", label: "عام" }], orderTypes: [{ key: "type_1", label: "طباعة", department: "missing" }] }).some((problem) => problem.includes("غير موجود")));
+
+    // Saving: managers only; settings row + department channel names in one transaction.
+    await rejects(server.saveWorkCatalog(harness().db as any, editor, { departments: [], orderTypes: [] }), 403, /للإدارة فقط/);
+    await rejects(server.saveWorkCatalog(harness().db as any, manager, { departments: [{ key: "general", label: "ع" }], orderTypes: [] }), 422, /اسم القسم/);
+    const saving = harness();
+    let transactions = 0;
+    const savedCatalog = await server.saveWorkCatalog({ ...saving.db, transaction: async (work: any) => { transactions++; return work({ execute: saving.db.execute }); } } as any, manager, {
+      departments: [...DEFAULT_WORK_CATALOG.departments.map((item) => (item.key === "editing" ? { ...item, label: "المونتاج والتصميم" } : item)), { key: "dept_9", label: "الصوتيات", aliases: [], active: true, builtIn: false }],
+      orderTypes: [...DEFAULT_WORK_CATALOG.orderTypes, { ...DEFAULT_WORK_CATALOG.orderTypes[0], key: "type_10", label: "تصميم دعوة", department: "dept_9", builtIn: false }],
+    });
+    assert.equal(transactions, 1);
+    assert.ok(saving.statements.some((statement) => statement.sql.startsWith("INSERT INTO settings") && statement.sql.includes("ON CONFLICT (key) DO UPDATE")));
+    assert.ok(saving.statements.some((statement) => statement.sql.startsWith("UPDATE internal_channels SET title") && statement.params.includes("المونتاج والتصميم")), "the department channel is renamed with its department");
+    assert.equal(server.workCatalog().departments.find((item) => item.key === "dept_9")?.label, "الصوتيات");
+    assert.equal(savedCatalog.orderTypes.at(-1)?.key, "type_10");
+
+    // A new department gets its channel on the next manager visit.
+    const seeding = harness({ catalog: savedCatalog });
+    await server.listChannels(seeding.db as any, manager).catch(() => undefined);
+    assert.ok(seeding.statements.some((statement) => statement.sql.startsWith("INSERT INTO internal_channels") && statement.params.includes("dept_9")), "custom departments get a channel");
+
+    // Orders reject switched-off types and departments.
+    const switchedOff = normalizeCatalog({ ...savedCatalog, orderTypes: savedCatalog.orderTypes.map((item) => (item.key === "printing" ? { ...item, active: false } : item)), departments: savedCatalog.departments.map((item) => (item.key === "delivery" ? { ...item, active: false } : item)) });
+    await server.loadWorkCatalog(harness({ catalog: switchedOff }).db as any, { fresh: true });
+    await rejects(server.createWorkOrder(harness({ catalog: switchedOff }).db as any, manager, { channelId: 1, title: "طباعة", templateKey: "printing", assigneeIds: [7] }, helpers()), 422, /غير مفعّل/);
+    await rejects(server.createWorkOrder(harness({ catalog: switchedOff }).db as any, manager, { channelId: 1, title: "توصيل", department: "delivery", assigneeIds: [7] }, helpers()), 422, /غير مفعّل/);
+    await rejects(server.createWorkOrder(harness({ catalog: switchedOff }).db as any, manager, { channelId: 1, title: "أمر تجربة", templateKey: "nope", assigneeIds: [7] }, helpers()), 422, /نوع الأمر غير موجود/);
+    // Back to the defaults for the remaining checks.
+    await server.loadWorkCatalog(harness().db as any, { fresh: true });
+  }
+  {
+    // Customer and booking must belong together; the name always comes from the records.
+    const wrongOwner = harness({ booking: { id: 120, customer_id: 99, customer_name: "زبون آخر", phone: "07700000000" } });
+    await rejects(server.createWorkOrder(wrongOwner.db as any, manager, { channelId: 1, title: "مونتاج", assigneeIds: [7], customerId: 55, booking: { type: "kosha_booking", id: 120 } }, helpers()), 422, /لا يخص هذا الزبون/);
+    const legacyBooking = harness({ booking: { id: 120, customer_id: null, customer_name: "أحمد", phone: "+964 770 123 4567" } });
+    assert.deepEqual(await server.resolveOrderCustomer(legacyBooking.db as any, { customerId: 55, booking: { type: "kosha_booking", id: 120 } }), { customerId: 55, customerName: "أحمد" }, "older bookings match the customer by phone");
+    await rejects(server.resolveOrderCustomer(harness({ booking: null }).db as any, { booking: { type: "service_order", id: 9 } }), 422, /الحجز غير موجود/);
+    await rejects(server.resolveOrderCustomer(harness().db as any, { customerId: 404 }), 422, /الزبون غير موجود/);
+    assert.deepEqual(await server.resolveOrderCustomer(harness().db as any, { customerId: 55 }), { customerId: 55, customerName: "أحمد سالم" });
+
+    const found = await server.searchCustomers(harness().db as any, editor, "أحمد").catch((error) => error);
+    assert.equal(found.status, 403, "lookups need the issue permission");
+    const issuer = { ...editor, permissions: ["tasks", "work_orders.issue"] };
+    const customers = await server.searchCustomers(harness().db as any, issuer, "أحمد");
+    assert.deepEqual(customers, [{ id: 55, name: "أحمد سالم", phoneTail: "4567", bookings: 2 }], "only the last digits of a phone are returned");
+    const bookings = await server.customerBookings(harness().db as any, issuer, 55);
+    assert.deepEqual(bookings.map((row) => [row.type, row.id, row.number]), [["kosha_booking", 120, "K-120"], ["service_order", 31, "B-31"]]);
+    await rejects(server.customerBookings(harness().db as any, issuer, 404), 404, /الزبون غير موجود/);
+  }
+  {
+    // Issue permission granted from the command center.
+    assert.equal(server.workAccess({ ...editor, permissions: ["work_orders.issue"] }).canCreate, true);
+    assert.equal(server.workAccess(editor).canGrant, false);
+    const staffRows = [
+      { id: 7, name: "علي حسن", role: "employee", is_active: true, department: "editing", job_title: "مونتير", permissions: ["tasks"] },
+      { id: 8, name: "زينب", role: "employee", is_active: true, department: "تصوير", job_title: null, permissions: ["tasks", "task_create"] },
+      { id: 1, name: "المدير", role: "admin", is_active: true, department: "general", job_title: null, permissions: [] },
+    ];
+    const team = await server.workTeam(harness({ staffRows }).db as any, manager);
+    assert.deepEqual(team.members.map((member) => [member.id, member.canIssue, member.lockedBy]), [[7, false, null], [8, true, "task_create"], [1, true, "manager"]]);
+    assert.deepEqual(team.staffDepartments.map((entry) => [entry.value, entry.department]), [["editing", "editing"], ["تصوير", "photography"], ["general", "general"]]);
+    await rejects(server.setIssuePermission(harness({ staffRows }).db as any, editor, 7, true), 403, /إدارة الموظفين/);
+    await rejects(server.setIssuePermission(harness({ staffRows }).db as any, manager, 1, true), 422, /المدير العام/);
+    const granting = harness({ staffRows });
+    assert.equal((await server.setIssuePermission(granting.db as any, manager, 7, true)).allowed, true);
+    const grantSql = granting.statements.find((statement) => statement.sql.startsWith("UPDATE staff SET permissions"))!;
+    assert.match(grantSql.sql, /\|\| \$1::jsonb WHERE id = \$2 AND NOT \(COALESCE\(permissions, '\[\]'::jsonb\) \? \$3\)/, "added once, never duplicated");
+    const revoking = harness({ staffRows });
+    await server.setIssuePermission(revoking.db as any, { ...editor, permissions: ["staff"] }, 7, false);
+    assert.match(revoking.statements.find((statement) => statement.sql.startsWith("UPDATE staff SET permissions"))!.sql, /- \$1 WHERE id = \$2/);
+  }
+  {
+    // Channel edits: department channels rename their department; archiving keeps history.
+    const editing = harness();
+    const renamed = await server.updateChannel(editing.db as any, manager, 1, { title: "المونتاج والتصميم", participantStaffIds: [8] });
+    assert.equal(renamed.title, "المونتاج والتصميم");
+    assert.ok(editing.statements.some((statement) => statement.sql.startsWith("INSERT INTO settings")), "a department channel's name is the department's name");
+    assert.ok(editing.statements.some((statement) => statement.sql.startsWith("UPDATE internal_channels SET title = $1, department = $2, participant_staff_ids") && statement.params.includes("[8]")));
+    await server.loadWorkCatalog(harness().db as any, { fresh: true });
+    await rejects(server.updateChannel(harness().db as any, editor, 3, { title: "x y" }), 403, /للإدارة فقط/);
+    await rejects(server.updateChannel(harness().db as any, manager, 3, { title: "فريق", participantStaffIds: [404] }), 422, /غير نشط/);
+    await rejects(server.archiveChannel(harness().db as any, manager, 1), 422, /قناة القسم لا تُؤرشف/);
+    await rejects(server.archiveChannel(harness({ openInChannel: 2 }).db as any, manager, 3), 409, /أوامر مفتوحة \(2\)/);
+    const archiving = harness();
+    assert.deepEqual(await server.archiveChannel(archiving.db as any, manager, 3), { id: 3, archived: true });
+    assert.ok(archiving.statements.some((statement) => statement.sql.startsWith("UPDATE internal_channels SET archived_at = now()")));
+    assert.ok(!archiving.statements.some((statement) => /^DELETE/i.test(statement.sql)), "messages are never deleted");
+  }
+  {
+    // Editing an order: manager or issuer, open orders only, logged and announced.
+    await rejects(server.editWorkOrder(harness({ orders: [baseOrder()] }).db as any, editor, 40, { title: "جديد" }, helpers()), 403, /للإدارة أو لمن أصدره/);
+    await rejects(server.editWorkOrder(harness({ orders: [baseOrder({ status: "completed" })] }).db as any, manager, 40, { title: "جديد" }, helpers()), 409, /منجز أو ملغى/);
+    const h = harness({ orders: [baseOrder()] });
+    const tools = helpers();
+    const newDue = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const edited = await server.editWorkOrder(h.db as any, manager, 40, { title: "مونتاج حفلة — نسخة قصيرة", dueAt: newDue, priority: "urgent" }, tools);
+    assert.deepEqual(edited.changed.sort(), ["dueAt", "priority", "title"]);
+    const timelineRow = h.statements.find((statement) => statement.sql.startsWith("INSERT INTO entity_timeline") && statement.params.includes("work_order_edited"))!;
+    assert.ok(timelineRow, "edits are recorded in the order history");
+    assert.ok(h.statements.some((statement) => statement.sql.includes("'system'") && String(statement.params[3] ?? "").includes("عدّل")));
+    assert.deepEqual(tools.notices.map((notice) => [notice.staffId, notice.title]), [[7, "تغيّر موعد أمر عمل"]]);
+    const unchanged = await server.editWorkOrder(harness({ orders: [baseOrder()] }).db as any, manager, 40, { title: "مونتاج حفلة" }, helpers());
+    assert.deepEqual(unchanged.changed, [], "no write when nothing changed");
+    for (const statement of h.statements) assert.doesNotMatch(statement.sql, FORBIDDEN);
+  }
+
   // Transcription boundary: nothing is configured, nothing is sent anywhere.
   assert.equal(server.transcriptionProvider(), null);
   assert.equal(server.TRANSCRIPTION_UNAVAILABLE.available, false);
-  console.log("PASS  work command server: readiness, access, create, idempotency, transitions, evidence, subtasks, extensions, messages, deadlines");
+  console.log("PASS  work command server: readiness, access, create, idempotency, transitions, evidence, subtasks, extensions, messages, deadlines, catalog, customer links, issue permission, channel and order edits");
 }
 
 run().catch((error) => {

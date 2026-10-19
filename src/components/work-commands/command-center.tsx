@@ -24,6 +24,9 @@ import {
   RotateCw,
   Search,
   Send,
+  Settings2,
+  Pencil,
+  Archive,
   Sparkles,
   Square,
   Trash2,
@@ -40,9 +43,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { isSupportedTaskFile, uploadImageWithVariants, uploadTaskFile } from "@/lib/large-image-upload";
 import { queryClient } from "@/lib/query-client";
-import { PRIORITY_LABELS, WORK_DEPARTMENTS, type WorkOrderStatus } from "@/lib/work-commands";
+import { PRIORITY_LABELS, type WorkOrderStatus } from "@/lib/work-commands";
 import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
 import { CreateWorkOrderDialog, StaffPicker, type WorkOrderDefaults } from "./create-order-dialog";
+import { WorkSettingsPanel } from "./settings-panel";
 import { OrderDetailsPanel, WorkOrderCard, bookingHref } from "./order-panel";
 import {
   Empty,
@@ -54,6 +58,7 @@ import {
   formatDay,
   formatTime,
   newClientKey,
+  useWorkCatalog,
   useWorkMe,
   useWorkStaff,
   workKeys,
@@ -64,7 +69,7 @@ import {
   type WorkOrder,
 } from "./shared";
 
-type Tab = "chat" | "board" | "mine" | "search";
+type Tab = "chat" | "board" | "mine" | "search" | "settings";
 type Thread = { messages: Message[]; orders: WorkOrder[]; hasOlder: boolean };
 
 const DEPARTMENT_ICONS: Record<string, typeof Building2> = {
@@ -201,6 +206,7 @@ function ChannelList({
 function CreateChannelDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: (id: number) => void }) {
   const { toast } = useToast();
   const staff = useWorkStaff(open);
+  const departments = useWorkCatalog().departments.filter((item) => item.active);
   const [title, setTitle] = useState("");
   const [department, setDepartment] = useState("general");
   const [members, setMembers] = useState<number[]>([]);
@@ -231,13 +237,97 @@ function CreateChannelDialog({ open, onOpenChange, onCreated }: { open: boolean;
         <div className="space-y-4">
           <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="اسم القناة" aria-label="اسم القناة" className="min-h-11" maxLength={180} />
           <select value={department} onChange={(event) => setDepartment(event.target.value)} className={fieldClass} aria-label="القسم">
-            {WORK_DEPARTMENTS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+            {departments.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
           </select>
           {staff.isError ? <Failure title="تعذر تحميل الموظفين" error={staff.error} /> : <StaffPicker staff={staff.data ?? []} selected={members} onChange={setMembers} label="الأعضاء" />}
         </div>
         <DialogFooter className="gap-2 sm:justify-start">
           <Button type="button" className="min-h-11" disabled={title.trim().length < 2 || create.isPending} onClick={() => create.mutate()}>{create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}إنشاء</Button>
           <Button type="button" variant="outline" className="min-h-11" onClick={() => onOpenChange(false)}>إلغاء</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditChannelDialog({ channel, open, onOpenChange }: { channel: Channel; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { toast } = useToast();
+  const staff = useWorkStaff(open);
+  const departments = useWorkCatalog().departments.filter((item) => item.active || item.key === channel.department);
+  const [title, setTitle] = useState(channel.title);
+  const [department, setDepartment] = useState(channel.department);
+  const [members, setMembers] = useState<number[]>(channel.participantStaffIds);
+  const [confirmArchive, setConfirmArchive] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setTitle(channel.title);
+    setDepartment(channel.department);
+    setMembers(channel.participantStaffIds);
+    setConfirmArchive(false);
+  }, [open, channel]);
+  const done = (message: string) => {
+    void queryClient.invalidateQueries({ queryKey: ["work-commands"] });
+    toast({ title: message });
+    onOpenChange(false);
+  };
+  const save = useMutation({
+    mutationFn: () =>
+      adminFetch(`/admin/work-commands/channels/${channel.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title, participantStaffIds: members, ...(channel.isDepartment ? {} : { department }) }),
+      }),
+    onSuccess: () => done("تم حفظ المحادثة"),
+    onError: (error) => toast({ variant: "destructive", title: "تعذر حفظ المحادثة", description: apiErrorMessage(error) }),
+  });
+  const archive = useMutation({
+    mutationFn: () => adminFetch(`/admin/work-commands/channels/${channel.id}/archive`, { method: "POST" }),
+    onSuccess: () => done("تمت أرشفة القناة"),
+    onError: (error) => toast({ variant: "destructive", title: "تعذر أرشفة القناة", description: apiErrorMessage(error) }),
+  });
+  const busy = save.isPending || archive.isPending;
+  return (
+    <Dialog open={open} onOpenChange={(next) => (busy ? undefined : onOpenChange(next))}>
+      <DialogContent>
+        <DialogHeader className="text-start">
+          <DialogTitle className="text-lg font-extrabold">{channel.isDepartment ? "تعديل قناة القسم" : "تعديل القناة"}</DialogTitle>
+          <DialogDescription className="leading-6">
+            {channel.isDepartment
+              ? "اسم القناة هو اسم القسم في كل النظام. موظفو القسم يرونها تلقائياً؛ أضف هنا أعضاء من أقسام أخرى."
+              : "يرى القناة أعضاؤها وموظفو القسم المختار والإدارة."}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <label className="block space-y-1 text-sm font-bold">{channel.isDepartment ? "اسم القسم" : "اسم القناة"}
+            <Input value={title} onChange={(event) => setTitle(event.target.value)} className="min-h-11 font-normal" maxLength={channel.isDepartment ? 60 : 180} />
+          </label>
+          {channel.isDepartment ? null : (
+            <label className="block space-y-1 text-sm font-bold">القسم
+              <select value={department} onChange={(event) => setDepartment(event.target.value)} className={`${fieldClass} font-normal`}>
+                {departments.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+              </select>
+            </label>
+          )}
+          <div className="space-y-1.5">
+            <p className="text-sm font-bold">{channel.isDepartment ? "أعضاء إضافيون" : "الأعضاء"}</p>
+            {staff.isError ? <Failure title="تعذر تحميل الموظفين" error={staff.error} onRetry={() => void staff.refetch()} /> : <StaffPicker staff={staff.data ?? []} selected={members} onChange={setMembers} label="الأعضاء" />}
+          </div>
+          {channel.isDepartment ? (
+            <p className="text-xs leading-5 text-muted-foreground">لإيقاف القسم أو ربط أقسام الموظفين به: تبويب «الإعدادات».</p>
+          ) : confirmArchive ? (
+            <div className="space-y-2 rounded-xl bg-destructive/10 p-3 text-sm text-destructive">
+              <p className="font-bold">تختفي القناة من القائمة وتبقى رسائلها محفوظة. لا تُؤرشف قناة فيها أوامر مفتوحة.</p>
+              <div className="flex gap-2">
+                <Button type="button" variant="destructive" size="compact" disabled={busy} onClick={() => archive.mutate()}>{archive.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}تأكيد الأرشفة</Button>
+                <Button type="button" variant="outline" size="compact" disabled={busy} onClick={() => setConfirmArchive(false)}>تراجع</Button>
+              </div>
+            </div>
+          ) : (
+            <Button type="button" variant="quiet" size="compact" className="gap-1.5 text-destructive hover:text-destructive" onClick={() => setConfirmArchive(true)}><Archive className="h-3.5 w-3.5" />أرشفة القناة</Button>
+          )}
+        </div>
+        <DialogFooter className="gap-2 sm:justify-start">
+          <Button type="button" className="min-h-11" disabled={busy || title.trim().length < 2} onClick={() => save.mutate()}>{save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}حفظ</Button>
+          <Button type="button" variant="outline" className="min-h-11" disabled={busy} onClick={() => onOpenChange(false)}>إلغاء</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -591,6 +681,7 @@ function ChatPanel({
   const { toast } = useToast();
   const thread = useThread(channel.id);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [editingChannel, setEditingChannel] = useState(false);
   const [orderDialog, setOrderDialog] = useState<{ voice: { messageId: number; url: string } | null; text: string | null } | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -703,12 +794,16 @@ function ChatPanel({
             <span className="inline-flex items-center gap-1"><Users className="h-3 w-3" />نشطون اليوم: {channel.activeEmployees}</span>
           </p>
         </div>
+        {me.access.canCreateChannel ? (
+          <Button type="button" variant="quiet" size="iconSm" aria-label="تعديل المحادثة" title="تعديل المحادثة" onClick={() => setEditingChannel(true)}><Pencil className="h-4 w-4" /></Button>
+        ) : null}
         {me.access.canCreate ? (
           <Button type="button" size="compact" className="gap-1.5" onClick={() => setOrderDialog({ voice: null, text: null })}>
             <ClipboardPlus className="h-4 w-4" /><span className="max-sm:hidden">إصدار أمر عمل</span><span className="sm:hidden">أمر</span>
           </Button>
         ) : null}
       </header>
+      <EditChannelDialog channel={channel} open={editingChannel} onOpenChange={setEditingChannel} />
 
       {openOrders.length ? (
         <div className="flex gap-1.5 overflow-x-auto border-b border-border bg-muted/30 px-3 py-2 [scrollbar-width:thin]" aria-label="أوامر مفتوحة في هذه المحادثة">
@@ -794,6 +889,7 @@ type BoardData = {
 function Board({ onOpenOrder, isWide }: { onOpenOrder: (order: WorkOrder) => void; isWide: boolean }) {
   const [filters, setFilters] = useState({ department: "", staffId: "", priority: "", status: "", from: "", to: "", customer: "", page: 1 });
   const staff = useWorkStaff(true);
+  const catalog = useWorkCatalog();
   const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== "" && value !== null).map(([key, value]) => [key, String(value)]));
   const board = useQuery({
     queryKey: workKeys.dashboard(filters),
@@ -828,7 +924,7 @@ function Board({ onOpenOrder, isWide }: { onOpenOrder: (order: WorkOrder) => voi
       <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <select value={filters.department} onChange={(event) => set({ department: event.target.value })} className={fieldClass} aria-label="القسم">
           <option value="">كل الأقسام</option>
-          {WORK_DEPARTMENTS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+          {catalog.departments.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
         </select>
         <select value={filters.staffId} onChange={(event) => set({ staffId: event.target.value })} className={fieldClass} aria-label="الموظف">
           <option value="">كل الموظفين</option>
@@ -991,10 +1087,11 @@ export function WorkCommandCenter({ mode = "admin" }: { mode?: "admin" | "staff"
   const isWide = useMediaQuery("(min-width: 1280px)");
   const isLarge = useMediaQuery("(min-width: 1024px)");
   const showBoard = Boolean(me.data && (me.data.access.manager || me.data.access.canApprove));
+  const showSettings = Boolean(me.data && (me.data.access.canManageCatalog || me.data.access.canGrant));
   const [tab, setTab] = useState<Tab>(() => {
     if (typeof window === "undefined") return "chat";
     const value = new URLSearchParams(window.location.search).get("view");
-    return value === "board" || value === "mine" || value === "search" ? value : "chat";
+    return value === "board" || value === "mine" || value === "search" || value === "settings" ? value : "chat";
   });
   const [channelId, setChannelId] = useState<number | null>(() => readParam("channel"));
   const [orderId, setOrderId] = useState<number | null>(() => readParam("order"));
@@ -1051,6 +1148,7 @@ export function WorkCommandCenter({ mode = "admin" }: { mode?: "admin" | "staff"
         {showBoard ? <TabButton active={tab === "board"} onClick={() => selectTab("board")} icon={LayoutDashboard}><span className="max-sm:hidden">لوحة </span>المتابعة</TabButton> : null}
         <TabButton active={tab === "mine"} onClick={() => selectTab("mine")} icon={ClipboardList}>أوامري</TabButton>
         <TabButton active={tab === "search"} onClick={() => selectTab("search")} icon={Search}>بحث</TabButton>
+        {showSettings ? <TabButton active={tab === "settings"} onClick={() => selectTab("settings")} icon={Settings2}>الإعدادات</TabButton> : null}
       </div>
 
       {tab === "chat" ? (
@@ -1089,6 +1187,7 @@ export function WorkCommandCenter({ mode = "admin" }: { mode?: "admin" | "staff"
       {tab === "board" && showBoard ? <Board onOpenOrder={openOrder} isWide={isLarge} /> : null}
       {tab === "mine" ? <MyOrders onOpenOrder={openOrder} /> : null}
       {tab === "search" ? <SearchPanel onOpenOrder={openOrder} onOpenChannel={openChannel} /> : null}
+      {tab === "settings" && showSettings ? <WorkSettingsPanel /> : null}
 
       <Sheet open={Boolean(orderId) && !inlineDetails} onOpenChange={(open) => !open && closeOrder()}>
         <SheetContent side={isLarge ? "left" : "bottom"} className={isLarge ? "w-[28rem] overflow-y-auto p-0 sm:max-w-md" : "max-h-[90dvh] overflow-y-auto rounded-t-2xl p-0 pt-4"}>
