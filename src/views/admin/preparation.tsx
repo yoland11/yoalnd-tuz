@@ -17,6 +17,7 @@ import { EmployeeSelect } from "@/components/employee-select";
 import {preparationGroups,preparationItemNeedsAttention} from "@/lib/booking-preparation-groups";
 import {PreparationGroupSummary} from "@/components/preparation-group-summary";
 import {PreparationGroupAction,type PreparationGroupDraft} from "@/components/preparation-group-action";
+import {PREPARATION_DEPARTMENTS as DEPT,preparationDepartmentLabel as deptLabel} from '@/lib/preparation-departments';
 import {Alert,AlertDescription,AlertTitle} from "@/components/ui/alert";
 
 type Rollup = { total: number; ready: number; preparing: number; shortage: number; needsPurchase: number; completed: number; progress: number };
@@ -34,11 +35,6 @@ type PrepItem = {
 };
 type PrepDetail = { source: string; id: number; items: PrepItem[]; rollup: Rollup };
 
-const DEPT: Record<string, string> = {
-  kosha: "الكوشات", lighting: "الإضاءة", sound: "الصوتيات", photography: "التصوير", flowers: "الزهور", rental: "الإيجار", decorations: "الديكور", transportation: "النقل",
-  gifts: "الهدايا والتوزيعات", graduation: "تجهيزات التخرج", invitations: "الدعوات", transport: "النقل", equipment: "المعدات", other: "أخرى",
-};
-const deptLabel = (value: string) => DEPT[value] ?? value;
 
 const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
   ready: { label: "جاهز", color: "#065f46", bg: "#d1fae5" },

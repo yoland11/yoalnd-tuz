@@ -10,12 +10,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { EmployeeAvatar } from "@/components/employee-avatar";
 import { WorkCommandCenter } from "@/components/work-commands/command-center";
+import {StaffPreparationGroups} from "@/components/staff-preparation-groups";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { TaskFileList, TaskFilePicker, TaskPhotoGallery, TaskPhotoPicker, type TaskFile, type TaskPhoto } from "@/components/task-photo-gallery";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/query-client";
 import { getTaskWorkflowStage } from "@/lib/task-workflows";
+import {preparationDepartmentLabel} from '@/lib/preparation-departments';
 // Legacy print helpers stay inert until the historical payroll code is retired.
 // The staff portal no longer exposes a salary tab or calls the payroll endpoint.
 import { salarySlipCss } from "@/views/admin/print-helpers";
@@ -28,7 +30,7 @@ import {
 type Tab = "home" | "tasks" | "work" | "bookings" | "salary" | "notifications" | "account";
 type Task = {
   id: number; taskNo?: string | null; title: string; description: string; customerName?: string | null; status: string; priority: string; dueAt: string | null; startAt: string | null;
-  relatedType: string | null; relatedId: number | null; department?: string | null; location?: string | null; notes?: string; completionNotes?: string; submittedAt?: string | null; completedAt?: string | null;
+  relatedType: string | null; relatedId: number | null; department?: string | null; taskType?:string;assignedStaffIds?:number[];archivedAt?:string|null; location?: string | null; notes?: string; completionNotes?: string; submittedAt?: string | null; completedAt?: string | null;
   managerPhotos?: TaskPhoto[]; employeePhotos?: TaskPhoto[]; employeeFiles?: TaskFile[];
   checklistItems?: Array<{ id: number; title: string; requiredQuantity: number; completedQuantity: number }>;
   comments?: Array<{ id: number; body: string; createdAt: string; staff?: { id?: number; fullName?: string; username?: string; photoUrl?: string | null } | null }>;
@@ -279,6 +281,7 @@ export default function UnifiedStaffPortal() {
         </section>
       </div> : null}
 
+      {tab === "tasks" && dashboard.isSuccess ? <div className="mb-5"><StaffPreparationGroups tasks={tasks} actorId={me.id} busy={taskAction.isPending} onOpen={setSelectedTaskId} onProgress={(task,statusAction)=>taskAction.mutate({task,statusAction})} departmentLabel={preparationDepartmentLabel} statusLabel={statusLabel}/></div> : null}
       {tab === "tasks" && dashboard.isLoading ? <WorkspaceSkeleton /> : null}
       {tab === "tasks" && dashboard.isError ? <Failure title="تعذر تحميل المهام المعيّنة" error={dashboard.error} onRetry={() => void dashboard.refetch()} /> : null}
       {tab === "tasks" && dashboard.isSuccess ? <section className="rounded-2xl border border-border bg-card"><div className="border-b border-border p-5"><SectionTitle action={hasPerm(me, "task_create") ? <a className="text-sm font-bold text-primary" href="/admin/tasks">إسناد وإدارة المهام</a> : undefined}>المهام المعيّنة لك</SectionTitle><p className="mt-1 text-sm text-muted-foreground">تُحفظ كل الإجراءات في سجل المهمة الأصلي.</p><Button type="button" variant="outline" size="compact" className="mt-3 gap-1.5" onClick={() => selectTab("work")}><MessagesSquare className="h-4 w-4" />أوامر العمل ومحادثات القسم</Button></div><div className="divide-y divide-border">{tasks.map((task) => <div key={task.id} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold">{task.title}</h3><span className={`rounded-full px-2 py-0.5 text-xs font-bold ${priorityClass(task.priority)}`}>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "عالية" : task.priority === "low" ? "منخفضة" : "متوسطة"}</span></div>{task.customerName ? <p className="mt-1 text-sm font-bold text-foreground">الزبون: {task.customerName}</p> : null}{task.description ? <p className="mt-1 line-clamp-3 whitespace-pre-line rounded-lg bg-muted/50 px-2.5 py-1.5 text-sm leading-6 text-foreground">{task.description}</p> : null}<p className="mt-2 text-xs text-muted-foreground">{task.dueAt ? `موعد الإنجاز: ${textDate(task.dueAt, true)}` : "بدون موعد محدد"}</p></div><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-muted px-2 py-1 text-xs font-bold text-muted-foreground">{statusLabel(task.status)}</span>{task.status === "new" ? <Button size="sm" className="min-h-10" onClick={() => taskAction.mutate({ task, statusAction: "accept" })} disabled={taskAction.isPending}>استلام</Button> : null}{task.status === "accepted" ? <Button size="sm" className="min-h-10" onClick={() => taskAction.mutate({ task, statusAction: "start" })} disabled={taskAction.isPending}>بدء العمل</Button> : null}<Button size="sm" variant="outline" className="min-h-10" onClick={() => setSelectedTaskId(task.id)}>التفاصيل</Button></div></div>)}{!tasks.length ? <div className="p-5"><Empty>لا توجد مهام معينة لك الآن.</Empty></div> : null}</div></section> : null}

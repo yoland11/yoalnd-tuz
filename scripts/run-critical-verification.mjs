@@ -32,6 +32,7 @@ const steps = [
   ["Booking batch preparation metadata and retry safety", "pnpm", ["run", "test:booking-bulk"]],
   ["Booking preparation task/booking approval consistency", "pnpm", ["run", "test:booking-preparation"]],
   ["Booking preparation groups and truthful preparation evidence", "pnpm", ["run", "test:booking-preparation-groups"]],
+  ["Assigned staff preparation groups and approval-safe progress", "pnpm", ["run", "test:staff-preparation-groups"]],
   ["Booking profitability source and approval isolation", "pnpm", ["run", "test:booking-profitability"]],
   ["Preparation A4 and 80mm printing", "pnpm", ["run", "test:preparation-print"]],
   ["Kosha preparation booking cards", "pnpm", ["run", "test:preparation-cards"]],

@@ -47,3 +47,10 @@ Authorization: owner explicitly requested publishing completed work first, then 
 - Merged actual-component browsers: Booking Center/workspace and loading/original returns at 1440/768/390px, plus 3 scope/in-flight group tests, all exit 0 (`.superpowers/release-completed-20261021-browser.log`).
 - Database integration/save-smoke SKIPPED, not passed; no Production writes or migration. No configured lint script.
 - Exact final SHA push and Vercel readiness remain pending at this committed snapshot; the user-facing handoff must verify them separately.
+
+## Confirmed first release and staff follow-up
+
+- First completed increment pushed as `0bb832dfda97b7821b03c96d97361f5bedb54b25`; exact Vercel status SUCCESS, deployment `7zfEyRudGnMNYv5Q3BtRqfJ26wYc`.
+- Subsequent owner-workstream descendant `46c0f2058` also reports Vercel SUCCESS; read-only health/login/booking/preparation pages returned 200, protected APIs 401 without credentials. No authenticated write smoke.
+- Staff follow-up adds original assigned-task grouping in `/staff?tab=tasks`, actor/source/booking/department separation, original accept/start/details actions and explicit partial-list approval counts. Admin/staff preparation labels shared without task-workflow changes.
+- One Important review finding (wrong generic department labels) fixed RED→GREEN. Minor identical-booking-heading/public-reference enhancement deferred, no raw database ID exposed. Final candidate full critical gate and original admin+staff desktop/tablet/mobile browsers passed; database integration SKIPPED. Follow-up push/deployment must still be verified for its own exact SHA.
