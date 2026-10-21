@@ -69481,6 +69481,24 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
       db.select().from(companyLoansTable).orderBy(desc(companyLoansTable.createdAt)).limit(300),
       db.select().from(companyLoanRepaymentsTable).orderBy(desc(companyLoanRepaymentsTable.createdAt)).limit(1000),
     ]);
+    // Older loans can be out of step with their financial request (a rejection
+    // used to leave them «بانتظار الموافقة»). Show the request's real outcome.
+    const requestIds = loans.map((loan) => Number(loan.receiptTransactionId)).filter((value) => Number.isInteger(value) && value > 0);
+    const requestStatus = new Map<number, string>(
+      requestIds.length
+        ? (await db
+            .select({ id: financialTransactionsTable.id, approvalStatus: financialTransactionsTable.approvalStatus })
+            .from(financialTransactionsTable)
+            .where(inArray(financialTransactionsTable.id, requestIds))).map((row) => [row.id, row.approvalStatus])
+        : [],
+    );
+    const effectiveLoanStatus = (loan: { status: string; receiptTransactionId: number | null }) => {
+      if (loan.status !== "pending") return loan.status;
+      const request = loan.receiptTransactionId ? requestStatus.get(loan.receiptTransactionId) : undefined;
+      if (request === "rejected") return "rejected";
+      if (request === "executed") return "active";
+      return loan.status;
+    };
     const repaymentsByLoan = new Map<number, any[]>();
     for (const repayment of repayments) {
       const list = repaymentsByLoan.get(repayment.loanId) ?? [];
@@ -69490,6 +69508,8 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
     return json({
       loans: loans.map((loan) => ({
         ...loan,
+        status: effectiveLoanStatus(loan),
+        requestStatus: loan.receiptTransactionId ? requestStatus.get(loan.receiptTransactionId) ?? null : null,
         originalAmount: Number(loan.originalAmount),
         totalRepaid: Number(loan.totalRepaid),
         remainingAmount: Number(loan.remainingAmount),
@@ -69655,6 +69675,25 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
         const lockedTransaction = (await tx.execute(
           sql`SELECT id, approval_status FROM financial_transactions WHERE id = ${transactionId} FOR UPDATE`,
         )).rows[0] as any;
+        if (lockedTransaction?.approval_status === "rejected") {
+          // The request was rejected in «الموافقات» but the loan stayed pending:
+          // close it as rejected (the request and its audit stay as they are).
+          const [closed] = await tx.update(companyLoansTable).set({ status: "rejected", updatedAt: new Date() })
+            .where(eq(companyLoansTable.id, id)).returning();
+          await tx.insert(financialAuditLogsTable).values({
+            transactionId,
+            action: "company_loan_closed_after_rejection",
+            actorId: actor.id,
+            actorName: actor.name,
+            oldValues: { loanStatus: lockedLoan.status, approvalStatus: "rejected" },
+            newValues: { loanStatus: "rejected" },
+            reason,
+          });
+          return closed;
+        }
+        if (lockedTransaction?.approval_status === "executed") {
+          throw new Error("هذا القرض معتمد ودخل الصندوق؛ لا يُلغى. حدّث الصفحة لتسديده، أو اعكس حركته من الصندوق الرئيسي.");
+        }
         if (!lockedTransaction || lockedTransaction.approval_status !== "pending") {
           throw new Error("لا يمكن إلغاء القرض بعد اعتماد أو رفض الطلب المالي");
         }
@@ -69710,6 +69749,18 @@ async function handleCompanyLoans(req: NextRequest, parts: string[], section: st
       if (duplicate) return { ...duplicate, alreadySubmitted: true };
       const loan = (await tx.execute(sql`SELECT * FROM company_loans WHERE id = ${id} FOR UPDATE`)).rows[0] as any;
       if (!loan) throw new Error("القرض غير موجود");
+      if (loan.status === "pending") {
+        // Approved before the loan was updated: align it with its executed request.
+        const request = loan.receipt_transaction_id
+          ? (await tx.execute(sql`SELECT approval_status FROM financial_transactions WHERE id = ${loan.receipt_transaction_id}`)).rows[0] as any
+          : null;
+        if (request?.approval_status !== "executed")
+          throw new Error("لا يمكن تسديد قرض قبل اعتماد استلامه في الصندوق الرئيسي");
+        await tx.update(companyLoansTable).set({ status: "active", updatedAt: new Date() }).where(eq(companyLoansTable.id, id));
+        loan.status = "active";
+      }
+      if (["rejected", "cancelled"].includes(String(loan.status)))
+        throw new Error("لا يمكن تسديد قرض مرفوض أو ملغي");
       if (Number(loan.remaining_amount) <= 0) throw new Error("تم سداد القرض بالكامل");
       if (data.amount > Number(loan.remaining_amount)) throw new Error("مبلغ السداد أكبر من المتبقي");
       const [created] = await tx.insert(companyLoanRepaymentsTable).values({
