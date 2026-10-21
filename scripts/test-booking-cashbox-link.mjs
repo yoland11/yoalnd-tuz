@@ -31,4 +31,12 @@ assert.match(workspace, /href="\/admin\/approvals"/);
 assert.match(workspace, /readableDate\(row\.transactionDate \?\? row\.transactionTime\)/);
 assert.match(workspace, /"لم تُرحّل بعد"/);
 
-console.log("PASS  booking cash box link: payment date, receipt vouchers in the booking log, pending notice, Arabic text");
+// 5. A rejected or cancelled payment request never leaves its booking/order shown as paid:
+//    both paths rebuild the document from approved money, like approval does.
+const cash = readFileSync("src/server/master-cash-box.ts", "utf8");
+const cancel = cash.slice(cash.indexOf("export async function cancelFinancialTransactionRequest("), cash.indexOf("/** Roles that may perform the final"));
+assert.match(cancel, /db\.transaction\(async \(tx\) => \{[\s\S]*isPaymentStateSourceType\(existing\.sourceType\)\)\s*await reconcilePaymentState\(tx, \{ sourceType: existing\.sourceType, sourceId: existing\.sourceId \}\)/, "cancel reconciles inside its transaction");
+const reject = cash.slice(cash.indexOf("export async function rejectFinancialTransaction("), cash.indexOf("export async function reverseFinancialTransaction("));
+assert.match(reject, /isPaymentStateSourceType\(existing\.sourceType\)\)\s*await reconcilePaymentState\(tx, \{ sourceType: existing\.sourceType, sourceId: existing\.sourceId \}\)/, "reject reconciles inside its transaction");
+
+console.log("PASS  booking cash box link: payment date, receipt vouchers in the booking log, pending notice, Arabic text, reconcile on reject/cancel");

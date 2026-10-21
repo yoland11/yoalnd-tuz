@@ -523,18 +523,26 @@ export async function cancelFinancialTransactionRequest(
   if (!existing) return null;
   if (existing.approvalStatus === "executed")
     throw new Error("لا يمكن حذف أو إلغاء حركة مالية منفذة");
-  const [saved] = await db
-    .update(financialTransactionsTable)
-    .set({
-      approvalStatus: "rejected",
-      rejectedBy: actor.id,
-      rejectedByName: actor.name,
-      rejectedAt: new Date(),
-      rejectionReason: reason,
-      updatedAt: new Date(),
-    })
-    .where(eq(financialTransactionsTable.id, id))
-    .returning();
+  const saved = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(financialTransactionsTable)
+      .set({
+        approvalStatus: "rejected",
+        rejectedBy: actor.id,
+        rejectedByName: actor.name,
+        rejectedAt: new Date(),
+        rejectionReason: reason,
+        updatedAt: new Date(),
+      })
+      .where(eq(financialTransactionsTable.id, id))
+      .returning();
+    // Some sources (orders, service bookings) project a payment onto the
+    // document before approval. A cancelled request must not leave it paid:
+    // rebuild the snapshot from approved money, exactly as approval does.
+    if (isPaymentStateSourceType(existing.sourceType))
+      await reconcilePaymentState(tx, { sourceType: existing.sourceType, sourceId: existing.sourceId });
+    return row;
+  });
   await addAudit(
     id,
     "cancelled_by_source",
@@ -1257,6 +1265,9 @@ export async function rejectFinancialTransaction(
       );
     }
   }
+  // A rejected payment never stays on the document as paid (see cancel above).
+  if (isPaymentStateSourceType(existing.sourceType))
+    await reconcilePaymentState(tx, { sourceType: existing.sourceType, sourceId: existing.sourceId });
   await tx.insert(financialAuditLogsTable).values({
     transactionId: id, action: "rejected", actorId: actor.id, actorName: actor.name,
     oldValues: snapshot(existing as any), newValues: snapshot(saved as any), reason: cleanReason,
