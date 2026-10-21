@@ -1,6 +1,7 @@
 import { db, koshaManagerInstructionsTable as instructions, koshaBookingChannelReadsTable as reads, koshaInstructionBookingVersionsTable as versions, koshaBookingEventsTable, koshaStaffNotificationsTable, serviceOrdersTable, type KoshaManagerInstruction } from "@workspace/db";
 import { and, desc, eq, isNull, sql, type SQLWrapper } from "drizzle-orm";
 import { instructionBookingHref, KoshaInstructionError, type InstructionScope, type InstructionStore } from "./kosha-instructions";
+import { bookingEvidenceWriteSql } from "./booking-operations-write-guard";
 
 type Connection = Pick<typeof db, "select" | "insert" | "update" | "execute">;
 const identity = (scope: InstructionScope) => and(eq(instructions.bookingSource, scope.source), eq(instructions.bookingId, scope.id), isNull(instructions.archivedAt));
@@ -39,6 +40,7 @@ export function routedKoshaCustomFieldsSql(
   column: SQLWrapper,
   patch: Record<string, unknown>,
   append: RoutedKoshaAppend = {},
+  baselineOperations?:Record<string,any>,
 ) {
   const normalized = mergeRoutedKoshaCustomFields({}, patch);
   const {
@@ -46,7 +48,7 @@ export function routedKoshaCustomFieldsSql(
     koshaPortalMedia: _media,
     ...safePatch
   } = normalized;
-  let merged = sql`coalesce(${column}, '{}'::jsonb) || ${JSON.stringify(safePatch)}::jsonb`;
+  let merged = bookingEvidenceWriteSql(column, safePatch, baselineOperations);
   if (append.media?.length) {
     const media = JSON.stringify(append.media);
     merged = sql`jsonb_set(

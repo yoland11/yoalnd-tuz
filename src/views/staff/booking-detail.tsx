@@ -19,6 +19,7 @@ import {
   type ImageUploadProgress,
 } from "@/lib/large-image-upload";
 import { StaffManagerInstructions } from "./manager-instructions";
+import { StaffBookingLoading } from "@/components/staff-booking-loading";
 
 const PURPOSE_LABEL: Record<string, string> = {
   execution: "التنفيذ", delivery: "التسليم", breakage: "كسر/فقدان", loss: "فقدان", signature: "توقيع",
@@ -549,6 +550,8 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
 
         {/* Booking assets — QR checkout / return */}
         <AssetsSection id={id} source={source} />
+
+        <StaffBookingLoading id={id} source={source} onReturned={()=>void reload()}/>
 
         {/* Damage / loss report — a بلاغ for the manager, never a direct penalty. */}
         <DamageReportSection id={id} source={source} />

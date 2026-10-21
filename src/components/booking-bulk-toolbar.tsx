@@ -1,0 +1,63 @@
+import {useEffect,useRef,useState} from "react";
+import {useMutation,useQuery,useQueryClient} from "@tanstack/react-query";
+import {FileText,ListChecks,Printer} from "lucide-react";
+import {Button} from "./ui/button";
+import {Input} from "./ui/input";
+import {Textarea} from "./ui/textarea";
+import {Checkbox} from "./ui/checkbox";
+import {Label} from "./ui/label";
+import {Field,FieldGroup,FieldLabel} from "./ui/field";
+import {Alert,AlertDescription,AlertTitle} from "./ui/alert";
+import {Dialog,DialogContent,DialogDescription,DialogHeader,DialogTitle} from "./ui/dialog";
+import {Select,SelectContent,SelectGroup,SelectItem,SelectTrigger,SelectValue} from "./ui/select";
+import {adminFetch,apiErrorMessage} from "@/views/admin/_lib";
+import {exportReport} from "@/lib/pdf-report";
+import {EmployeeSelect} from "./employee-select";
+import type {EmployeeIdentity} from "@/lib/employee-identity";
+import {BookingReminderAction} from "./booking-reminder-action";
+import type {PreparationSummary} from "@/server/booking-preparation";
+import type {BookingBulkRequest,runBookingBulkOperation} from "@/server/booking-bulk-operations";
+type Row={source:"kosha"|"service";id:number;number:string;customerName:string};
+type Result=Awaited<ReturnType<typeof runBookingBulkOperation>>;
+const key=(row:Row)=>`${row.source}:${row.id}`;
+type PrepRead={row:Row;data:PreparationSummary|null;error:string|null};
+
+export function BookingBulkToolbar({rows,selected,onSelectionChange,onSummary}:{rows:Row[];selected:Set<string>;onSelectionChange:(keys:Set<string>)=>void;onSummary:(keys:string[])=>void}){
+  const qc=useQueryClient();const chosen=rows.filter(row=>selected.has(key(row)));
+  const auth=useQuery<{user:{id:number;role:string}}>({queryKey:["admin","auth","booking-bulk"],queryFn:()=>adminFetch("/admin/auth/me"),staleTime:60_000});
+  const manager=["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.data?.user.role).toLowerCase());
+  const [open,setOpen]=useState(false),[priority,setPriority]=useState("unchanged"),[deadline,setDeadline]=useState(""),[note,setNote]=useState(""),[confirmed,setConfirmed]=useState(false);
+  const [assignee,setAssignee]=useState("");
+  const staff=useQuery<Array<EmployeeIdentity&{isActive?:boolean}>>({queryKey:["admin","staff","booking-bulk"],queryFn:async()=>{const data=await adminFetch<Array<EmployeeIdentity&{isActive?:boolean}>>("/admin/staff");if(!Array.isArray(data))throw Error("تعذر قراءة قائمة الموظفين");return data.filter(s=>s.isActive!==false)},enabled:open&&manager,staleTime:60_000});
+  const [pending,setPending]=useState<BookingBulkRequest|null>(null),[result,setResult]=useState<Result|null>(null),[failure,setFailure]=useState("");
+  const [reads,setReads]=useState<PrepRead[]|null>(null),[reading,setReading]=useState(false);
+  const submitting=useRef(false),restored=useRef(0);const actorId=auth.data?.user.id;
+  const cacheKey=actorId?`ajn:booking-batch:v1:${actorId}`:null;
+  function savePending(value:BookingBulkRequest|null){setPending(value);try{if(cacheKey){if(value)sessionStorage.setItem(cacheKey,JSON.stringify(value));else sessionStorage.removeItem(cacheKey)}}catch{/* Same server receipt remains durable without browser storage. */}}
+  useEffect(()=>{if(!actorId||restored.current===actorId||!cacheKey)return;restored.current=actorId;try{const value=JSON.parse(sessionStorage.getItem(cacheKey)||"null");if(value?.requestId&&Array.isArray(value.refs)){setPending(value);setOpen(true);setFailure("توجد محاولة غير مؤكدة؛ أعد نفس المحاولة قبل تغيير الحقول.")}}catch{/* Invalid browser cache cannot authorize server writes. */}},[actorId,cacheKey]);
+  const mutation=useMutation({mutationFn:(command:BookingBulkRequest)=>adminFetch<Result>("/admin/booking-operations/bulk",{method:"POST",body:JSON.stringify({...command,confirmation:true})}),
+    onSuccess:value=>{setResult(value);const retry=value.results.some(r=>r.status==="failed"&&(r.httpStatus??500)>=500);if(!retry)savePending(null);setFailure(retry?"بعض الحجوزات لم يتأكد حفظها؛ أعد نفس المحاولة، ولن تتكرر النتائج الناجحة.":"");void qc.invalidateQueries({queryKey:["admin","preparation"]});void qc.invalidateQueries({queryKey:["admin","booking-operations"]});},
+    onError:cause=>{setFailure(apiErrorMessage(cause));const status=(cause as any)?.status;if(status>=400&&status<500)savePending(null)},onSettled:()=>{submitting.current=false}});
+  function send(){if(submitting.current||pending||!manager||!confirmed||!chosen.length||chosen.length>50||assignee&&staff.isError)return;const patch={...(priority!=="unchanged"?{priority}:{}),...(deadline?{deadline}:{}),...(note.trim()?{note:note.trim()}:{}),...(assignee?{assigneeId:Number(assignee)}:{})};if(!Object.keys(patch).length)return;
+    const command={requestId:crypto.randomUUID(),refs:chosen.map(({source,id})=>({source,id})),patch};submitting.current=true;savePending(command);mutation.mutate(command)}
+  async function readPreparation(){if(reading||!chosen.length||chosen.length>50)return;setReading(true);setReads([]);setFailure("");const captured=[...chosen],out:PrepRead[]=[];
+    for(let i=0;i<captured.length;i+=5)out.push(...await Promise.all(captured.slice(i,i+5).map(async row=>{try{const data=await adminFetch<PreparationSummary>(`/admin/booking-operations/${row.source}/${row.id}/preparation`);if(!Array.isArray(data?.items))throw Error("بيانات التجهيز غير صالحة");return {row,data,error:null}}catch(cause){return {row,data:null,error:apiErrorMessage(cause)}}})));
+    setReads(out);setReading(false);
+  }
+  async function printPreparation(){if(!reads?.length||reads.some(r=>r.error))return;try{await exportReport({options:{title:"قوائم تجهيز الحجوزات المحددة",subtitle:"قراءة من عناصر التجهيز الأصلية — دون صرف مخزون",orientation:"landscape"},columns:[{key:"booking",header:"الحجز",width:15},{key:"customer",header:"العميل",width:20},{key:"department",header:"المجموعة",width:15},{key:"name",header:"العنصر",width:30},{key:"required",header:"المطلوب",width:10,kind:"number"},{key:"note",header:"ملاحظات",width:20}],rows:reads.flatMap(({row,data})=>data!.items.map(item=>({booking:row.number,customer:row.customerName,department:item.department,name:item.name,required:item.required,note:item.note??""}))),filename:"AJN-Booking-Preparation",mode:"print"})}catch(cause){setFailure(apiErrorMessage(cause))}}
+  const busy=mutation.isPending||!!pending;
+  return <section dir="rtl" aria-label="الإجراءات الجماعية" className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">الإجراءات الجماعية · {chosen.length} محدد</h3><p className="text-sm text-muted-foreground">حتى 50 حجزاً. لا يغيّر هذا الإجراء مراحل الحجز أو المخزون أو الحسابات.</p></div><Button variant="ghost" disabled={busy||!chosen.length} onClick={()=>onSelectionChange(new Set())}>إلغاء التحديد</Button></div>
+    {auth.isError?<Alert variant="destructive"><AlertTitle>تعذر التحقق من صلاحيات الإدارة</AlertTitle><AlertDescription>{apiErrorMessage(auth.error)}</AlertDescription></Alert>:null}
+    <div className="flex flex-wrap gap-2"><BookingReminderAction rows={chosen} actorId={actorId} canManage={manager} disabled={busy}/></div>
+    <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={!chosen.length||chosen.length>50||busy} onClick={()=>onSummary(chosen.map(key))}><FileText data-icon="inline-start"/>تقرير الحجوزات المحددة</Button><Button variant="outline" disabled={!chosen.length||chosen.length>50||reading||busy} onClick={()=>void readPreparation()}><Printer data-icon="inline-start"/>طباعة قوائم التجهيز</Button><Button disabled={!manager||!chosen.length||chosen.length>50||busy} onClick={()=>{setOpen(true);setConfirmed(false);setResult(null);setFailure("")}}><ListChecks data-icon="inline-start"/>تعديل حقول التجهيز</Button>{pending&&!open?<Button variant="outline" onClick={()=>setOpen(true)}>متابعة المحاولة غير المؤكدة</Button>:null}</div>
+    <Dialog open={open} onOpenChange={value=>{if(!mutation.isPending)setOpen(value)}}><DialogContent dir="rtl" className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>تحديث حقول التجهيز للحجوزات المحددة</DialogTitle><DialogDescription>كل حجز يُراجع ويحفظ مستقلاً. لا تغيير للكميات أو المراحل أو الدفعات. الملاحظة تستبدل ملاحظة التجهيز للعناصر المختارة.</DialogDescription></DialogHeader>
+      <FieldGroup><Field data-disabled={busy}><FieldLabel htmlFor="bulk-prep-assignee">موظف التجهيز (اختياري)</FieldLabel><EmployeeSelect id="bulk-prep-assignee" aria-label="موظف التجهيز (اختياري)" employees={staff.data??[]} value={assignee} onValueChange={setAssignee} disabled={busy||staff.isLoading||staff.isError} placeholder="دون تغيير المسؤول" emptyLabel="دون تغيير المسؤول"/><p className="text-sm text-muted-foreground">يُعيَّن لمهام عناصر التجهيز فقط، وليس لفريق التنفيذ أو حجز وقته.</p></Field><Field data-disabled={busy}><FieldLabel htmlFor="bulk-prep-priority">الأولوية</FieldLabel><Select value={priority} onValueChange={setPriority} disabled={busy}><SelectTrigger id="bulk-prep-priority"><SelectValue/></SelectTrigger><SelectContent><SelectGroup><SelectItem value="unchanged">دون تغيير</SelectItem><SelectItem value="normal">عادي</SelectItem><SelectItem value="important">مهم</SelectItem><SelectItem value="urgent">عاجل</SelectItem></SelectGroup></SelectContent></Select></Field><Field data-disabled={busy}><FieldLabel htmlFor="bulk-prep-deadline">موعد التجهيز (فارغ: دون تغيير)</FieldLabel><Input id="bulk-prep-deadline" type="date" value={deadline} disabled={busy} onChange={e=>setDeadline(e.target.value)}/></Field><Field data-disabled={busy}><FieldLabel htmlFor="bulk-prep-note">ملاحظة التجهيز (فارغ: دون تغيير)</FieldLabel><Textarea id="bulk-prep-note" value={note} maxLength={1000} disabled={busy} onChange={e=>setNote(e.target.value)}/></Field><Field orientation="horizontal" data-disabled={busy}><Checkbox id="bulk-prep-confirm" checked={confirmed} disabled={busy} onCheckedChange={value=>setConfirmed(value===true)}/><FieldLabel htmlFor="bulk-prep-confirm">أؤكد تعديل حقول تجهيز {pending?.refs.length??chosen.length} حجزاً فقط</FieldLabel></Field></FieldGroup>
+      {staff.isError?<Alert variant="destructive"><AlertTitle>تعذر تحميل الموظفين</AlertTitle><AlertDescription>{apiErrorMessage(staff.error)}<Button variant="outline" disabled={staff.isFetching} onClick={()=>void staff.refetch()}>إعادة تحميل الموظفين</Button></AlertDescription></Alert>:null}
+      {failure?<Alert variant="destructive"><AlertTitle>لم تتأكد كل النتائج</AlertTitle><AlertDescription>{failure}</AlertDescription></Alert>:null}
+      {result?<ul aria-label="نتائج كل حجز" className="flex flex-col gap-2 text-sm">{result.results.map(row=><li key={`${row.source}:${row.id}`}><b>{rows.find(r=>key(r)===`${row.source}:${row.id}`)?.number??`${row.source}:${row.id}`}</b> · {row.status==="success"?row.replayed?"تم سابقاً — دون تكرار":"تم تحديث التجهيز":`لم يُحفظ: ${row.message}`}</li>)}</ul>:null}
+      {pending?<Button disabled={mutation.isPending||!manager} onClick={()=>{if(submitting.current)return;submitting.current=true;mutation.mutate(pending)}}>إعادة نفس المحاولة دون تكرار</Button>:<Button disabled={mutation.isPending||!manager||!confirmed||!chosen.length||(priority==="unchanged"&&!deadline&&!note.trim()&&!assignee)||(!!assignee&&staff.isError)} onClick={send}>تأكيد تحديث التجهيز</Button>}
+    </DialogContent></Dialog>
+    <Dialog open={reads!==null} onOpenChange={value=>{if(!value&&!reading)setReads(null)}}><DialogContent dir="rtl" className="max-h-[90vh] max-w-3xl overflow-y-auto"><DialogHeader><DialogTitle>قوائم التجهيز المحددة</DialogTitle><DialogDescription>تُقرأ العناصر من الحجز الأصلي. فشل قراءة أي حجز يمنع طباعة كشف ناقص.</DialogDescription></DialogHeader>{reading?<p role="status">جارٍ قراءة قوائم التجهيز…</p>:reads?.map(({row,data,error})=><section key={key(row)} className="flex flex-col gap-2"><h4 className="font-semibold">{row.number} · {row.customerName}</h4>{error?<Alert variant="destructive"><AlertTitle>تعذر قراءة هذا الحجز</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>:data?.items.length?<ul className="flex flex-col gap-1 text-sm">{data.items.map(item=><li key={item.key}>{item.name} · {item.required} · {item.department}{item.note?` · ${item.note}`:""}</li>)}</ul>:<p className="text-sm text-muted-foreground">لا توجد عناصر تجهيز لهذا الحجز.</p>}</section>)}<Button variant="outline" disabled={reading||!reads?.length||reads.some(r=>!!r.error)} onClick={()=>void printPreparation()}><Printer data-icon="inline-start"/>طباعة الكشف الكامل</Button></DialogContent></Dialog>
+  </section>;
+}

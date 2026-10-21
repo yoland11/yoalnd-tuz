@@ -24,7 +24,7 @@ const output = { exports: {} };
 if (fs.existsSync(filename)) {
   vm.runInNewContext(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
     module: output, exports: output.exports, Date, Map, JSON,
-    require: name => name === '@workspace/db' ? { db, ...schema } : name === './kosha-instructions' ? require(path.resolve('src/server/kosha-instructions.ts')) : require(name),
+    require: name => name === '@workspace/db' ? { db, ...schema } : name === './kosha-instructions' ? require(path.resolve('src/server/kosha-instructions.ts')) : name === './booking-operations-write-guard' ? require(path.resolve('src/server/booking-operations-write-guard.ts')) : require(name),
   }, { filename });
 }
 assert.equal(typeof output.exports.createKoshaInstructionStore, 'function', 'Store must emit scoped instruction/read queries');
@@ -134,7 +134,8 @@ const instruction = { id: 9, kind: 'note', revision: 2, caption: 'New note', med
     const merged = output.exports.mergeRoutedKoshaCustomFields(current, patch);
     assert.deepEqual(JSON.parse(JSON.stringify(merged)), { ...current, ...stalePatch }, `${writer} cannot erase manager audit/staff media written after its read`);
     await db.update(schema.serviceOrdersTable).set({ customFields: output.exports.routedKoshaCustomFieldsSql(schema.serviceOrdersTable.customFields, patch) }).returning();
-    assert.match(queries.at(-1).sql, /coalesce\("service_orders"\."custom_fields", '\{\}'::jsonb\) \|\|/i, `${writer} must merge at the database row boundary`);
+    assert.match(queries.at(-1).sql, /coalesce\("service_orders"\."custom_fields",'\{\}'::jsonb\) AS live/i, `${writer} must read the current database row, not a captured snapshot`);
+    assert.match(queries.at(-1).sql, /w\.live \|\| w\.patch/i, `${writer} must merge at the database row boundary`);
     assert.ok(queries.at(-1).params.includes(JSON.stringify(stalePatch)), `${writer} must not replay stale reserved arrays in SQL parameters`);
   }
 

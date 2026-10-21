@@ -1,6 +1,17 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { loadDailyOperations } from "./booking-daily-operations";
 import { loadBookingReadiness } from "./booking-operational-readiness";
+import { getLoadingView, runLoadingRequest } from "./booking-loading";
+import { BookingProfitabilityError, getBookingProfitability } from "./booking-profitability";
+import { getBookingFinancialSummary } from "./booking-finance";
+import { BookingBulkError, runBookingBulkOperation } from "./booking-bulk-operations";
+import { applyPreparationMetadataPatch } from "./booking-preparation-patch";
+import { PreparationAssignmentError } from "./booking-preparation-assignment";
+import { updatePreparationItems, completePreparationTask } from "./booking-preparation-update";
+import {sendBookingReminders} from "./booking-reminders";
+import {reviewPreparationTask} from "./booking-preparation-review";
+import { bookingEvidenceWriteSql } from "./booking-operations-write-guard";
+import { LoadingError } from "@/lib/booking-loading";
 import { parseDailyOperationsFilters } from "@/lib/booking-daily-operations";
 import { autoTranslate, autoTranslateStatus } from "@/server/translate";
 import { after, NextResponse, type NextRequest } from "next/server";
@@ -3198,13 +3209,22 @@ async function createNotification(input: {
       metadata: input.metadata ?? {},
     })
     .returning();
-  if (notificationTypeEnabled(settings, input.type, audienceType)) {
+  await deliverPersistedNotification(row,settings);
+  return row;
+}
+
+/** Deliver an existing inbox row without inserting a second notification.
+ * Original createNotification callers retain their pre-insert settings read. */
+async function deliverPersistedNotification(row:any,providedSettings?:Awaited<ReturnType<typeof getGlobalNotificationSettings>>){
+  const settings=providedSettings??await getGlobalNotificationSettings();
+  const audienceType=row.audienceType;
+  if (notificationTypeEnabled(settings, row.type, audienceType)) {
     let subscriptions: any[] = [];
-    if (audienceType === "customer" && input.customerId) {
+    if (audienceType === "customer" && row.customerId) {
       subscriptions = await db.query.notificationSubscriptionsTable.findMany({
         where: and(
           eq(notificationSubscriptionsTable.ownerType, "customer"),
-          eq(notificationSubscriptionsTable.customerId, input.customerId),
+          eq(notificationSubscriptionsTable.customerId, row.customerId),
           eq(notificationSubscriptionsTable.isActive, 1),
         ),
       });
@@ -3215,8 +3235,8 @@ async function createNotification(input: {
           sql`${staffTable.role} in ('admin','manager')`,
         ),
       });
-      const staffIds = input.staffId
-        ? [input.staffId]
+      const staffIds = row.staffId
+        ? [row.staffId]
         : managerRows.map((staff) => staff.id);
       subscriptions = staffIds.length
         ? await db.query.notificationSubscriptionsTable.findMany({
@@ -18858,7 +18878,7 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
         };
         await db
           .update(koshaBookingsTable)
-          .set({ bookingDetails: details, updatedAt: new Date() })
+          .set({ bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, details), updatedAt: new Date() })
           .where(eq(koshaBookingsTable.id, koshaBookingId));
         return json({ ok: true, confirmation: details.customerConfirmation });
       }
@@ -21527,11 +21547,11 @@ async function handleAdminKoshas(
           await db
             .update(koshaBookingsTable)
             .set({
-              bookingDetails: {
+              bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, {
                 ...details,
                 storeProductsMeta,
                 storeProductsTotal: subtotal,
-              },
+              }),
               updatedAt: new Date(),
             })
             .where(eq(koshaBookingsTable.id, id));
@@ -21611,11 +21631,11 @@ async function handleAdminKoshas(
           await db
             .update(koshaBookingsTable)
             .set({
-              bookingDetails: {
+              bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, {
                 ...details,
                 productionItems: nextItems,
                 productionStatus: nextStatus,
-              },
+              }),
               updatedAt: new Date(),
             })
             .where(eq(koshaBookingsTable.id, id));
@@ -21789,7 +21809,7 @@ async function handleAdminKoshas(
           await db
             .update(koshaBookingsTable)
             .set({
-              bookingDetails: { ...details, linkedAssets: nextLinked },
+              bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, { ...details, linkedAssets: nextLinked }),
               updatedAt: new Date(),
             })
             .where(eq(koshaBookingsTable.id, id));
@@ -21819,7 +21839,7 @@ async function handleAdminKoshas(
           await db
             .update(koshaBookingsTable)
             .set({
-              bookingDetails: { ...details, linkedAssets: nextLinked },
+              bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, { ...details, linkedAssets: nextLinked }),
               updatedAt: new Date(),
             })
             .where(eq(koshaBookingsTable.id, id));
@@ -21866,7 +21886,7 @@ async function handleAdminKoshas(
         };
         await db
           .update(koshaBookingsTable)
-          .set({ bookingDetails: next, updatedAt: new Date() })
+          .set({ bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, next), updatedAt: new Date() })
           .where(eq(koshaBookingsTable.id, id));
         void logAdminActivity(
           req,
@@ -22312,7 +22332,7 @@ async function handleAdminKoshas(
         }
         let [row] = await db
           .update(koshaBookingsTable)
-          .set(update)
+          .set({ ...update, ...(Object.hasOwn(update, "bookingDetails") ? {bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, (update.bookingDetails ?? {}) as Record<string, any>)} : {}) })
           .where(eq(koshaBookingsTable.id, id))
           .returning();
         if (!row) {
@@ -31113,52 +31133,9 @@ async function applyPreparationPatch(
   productMeta: Record<string, any>,
   patch: { key: string; itemName?: string; department?: string; status?: string; assigneeId?: number | null; assigneeName?: string | null; priority?: string; deadline?: string | null; note?: string | null; purchaseRequested?: boolean },
   auth: AdminUser,
+  connection: {execute(query:any):Promise<any>} = db,
 ): Promise<Record<string, any>> {
-  const meta = { ...productMeta };
-  const existing = (meta[patch.key] ?? {}) as Record<string, any>;
-  const prep = { ...((existing.prep ?? {}) as Record<string, any>) };
-  if (patch.status !== undefined) prep.status = patch.status;
-  if (patch.priority !== undefined) prep.priority = patch.priority;
-  if (patch.deadline !== undefined) prep.deadline = patch.deadline;
-  if (patch.note !== undefined) prep.note = patch.note;
-  if (patch.purchaseRequested !== undefined) {
-    prep.purchaseRequested = patch.purchaseRequested;
-    prep.purchaseRequestedAt = patch.purchaseRequested ? new Date().toISOString() : null;
-  }
-  if (patch.assigneeId !== undefined) {
-    prep.assigneeId = patch.assigneeId ?? null;
-    prep.assigneeName = patch.assigneeId ? (patch.assigneeName ?? null) : null;
-    // Upsert the staff task so it appears under the employee's "مهامي".
-    if (patch.assigneeId) {
-      const title = `تجهيز: ${patch.itemName || patch.key}`;
-      const dueAt = patch.deadline ? new Date(patch.deadline) : null;
-      const priority = patch.priority ?? prep.priority ?? "normal";
-      if (prep.taskId) {
-        await db.update(tasksTable).set({ assignedStaffIds: [patch.assigneeId], title, dueAt: dueAt ?? undefined, priority, updatedAt: new Date() }).where(eq(tasksTable.id, Number(prep.taskId)));
-      } else {
-        const [task] = await db.insert(tasksTable).values({
-          title,
-          taskType: "preparation",
-          department: patch.department ?? null,
-          priority,
-          status: "new",
-          assignedStaffIds: [patch.assigneeId],
-          relatedType: reference.entityType,
-          relatedId: reference.id,
-          dueAt: dueAt ?? undefined,
-          createdBy: auth.id,
-        }).returning();
-        prep.taskId = task.id;
-      }
-    } else if (prep.taskId) {
-      // Unassigned: archive the task (never hard-delete).
-      await db.update(tasksTable).set({ archivedAt: new Date(), updatedAt: new Date() }).where(eq(tasksTable.id, Number(prep.taskId)));
-      prep.taskId = null;
-    }
-  }
-  prep.updatedAt = new Date().toISOString();
-  meta[patch.key] = { ...existing, prep };
-  return meta;
+  return applyPreparationMetadataPatch(connection, reference, productMeta, patch, auth);
 }
 
 function penaltyRowToJson(row: any, paid: number) {
@@ -31266,7 +31243,7 @@ async function saveBookingOperations(
   if (reference.source === "kosha") {
     await connection
       .update(koshaBookingsTable)
-      .set({ bookingDetails: details, updatedAt: new Date() })
+      .set({ bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, details, reference.operations), updatedAt: new Date() })
       .where(eq(koshaBookingsTable.id, reference.id));
   } else {
     await connection
@@ -31275,6 +31252,8 @@ async function saveBookingOperations(
         customFields: routedKoshaCustomFieldsSql(
           serviceOrdersTable.customFields,
           details,
+          {},
+          reference.operations,
         ),
       })
       .where(eq(serviceOrdersTable.id, reference.id));
@@ -31312,7 +31291,7 @@ async function stampBookingSoundDepartment(
   if (reference.source === "kosha") {
     await connection
       .update(koshaBookingsTable)
-      .set({ bookingDetails: details, updatedAt: new Date() })
+      .set({ bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, details), updatedAt: new Date() })
       .where(eq(koshaBookingsTable.id, reference.id));
   } else {
     await connection
@@ -31694,6 +31673,13 @@ async function executeLockedBookingAssetAction(
   // Quantity-based assets keep counters per booking line; the individual
   // lifecycle below (one custody row, same-day conflict) stays unchanged.
   if ((await quantityProfilesFor(db, [input.productId])).has(input.productId)) {
+    if(input.mode==="return"){
+      const manager=["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase());
+      const damage=input.problem==="damaged"||Number(input.damagedQuantity??0)>0;
+      const loss=input.problem==="missing"||Number(input.missingQuantity??0)>0;
+      if((damage||loss)&&!manager&&!hasPermission(auth,"asset_damage_record")&&!hasPermission(auth,"koshat_tasks.report_damage"))throw new IndividualCustodyError("ليس لديك صلاحية تسجيل التلف",403);
+      if(loss&&!manager&&!hasPermission(auth,"asset_damage_approve"))throw new IndividualCustodyError("ليس لديك صلاحية اعتماد الفقدان",403);
+    }
     const result = await executeQuantityBookingAction(db, {
       reference: {
         source: reference.source,
@@ -32539,6 +32525,69 @@ async function handleCustodyGroups(
   return error("إجراء مجموعة العهدة غير مدعوم", 405);
 }
 
+const BookingLoadingRequestSchema = z.discriminatedUnion("type", [
+  z.object({type:z.literal("create"),requestId:z.string().min(8).max(180),responsibleId:z.number().int().positive(),senderId:z.number().int().positive(),receiverId:z.number().int().positive()}).strict(),
+  z.object({type:z.literal("revise"),manifestId:z.string().min(1).max(180),requestId:z.string().min(8).max(180),responsibleId:z.number().int().positive(),senderId:z.number().int().positive(),receiverId:z.number().int().positive(),reason:z.string().trim().min(5).max(1000)}).strict(),
+  z.object({type:z.literal("scan"),manifestId:z.string().min(1).max(180),requestId:z.string().min(8).max(180),lineKey:z.string().min(1).max(180),code:z.string().trim().min(1).max(500),quantity:z.number().finite().positive()}).strict(),
+  z.object({type:z.literal("acknowledge"),manifestId:z.string().min(1).max(180),requestId:z.string().min(8).max(180),role:z.enum(["sender","receiver"])}).strict(),
+  z.object({type:z.literal("confirm"),manifestId:z.string().min(1).max(180),requestId:z.string().min(8).max(180)}).strict(),
+  z.object({type:z.literal("handover"),manifestId:z.string().min(1).max(180),requestId:z.string().min(8).max(180),receiverId:z.number().int().positive(),from:z.string().trim().min(1).max(200),to:z.string().trim().min(1).max(200),condition:z.enum(["good","damaged","missing","maintenance"]),note:z.string().max(1000)}).strict(),
+  z.object({type:z.literal("receive"),manifestId:z.string().min(1).max(180),requestId:z.string().min(8).max(180),handoverId:z.string().min(1).max(180)}).strict(),
+  z.object({type:z.literal("cancel_handover"),manifestId:z.string().min(1).max(180),requestId:z.string().min(8).max(180),handoverId:z.string().min(1).max(180),reason:z.string().trim().min(5).max(1000)}).strict(),
+]);
+
+async function bookingLoadingEndpoint(req:NextRequest,ref:{source:"kosha"|"service";id:number},auth:AdminUser) {
+  if(!["GET","POST"].includes(req.method))return error("الإجراء غير مدعوم",405);
+  const manager=["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase())||hasPermission(auth,"bookings")||hasPermission(auth,"booking_assets_manage");
+  const loadingActor={id:auth.id,name:auth.fullName||auth.username,manager,viewAll:manager||hasPermission(auth,"booking_operations_view")||hasPermission(auth,"orders")};
+  try {
+    let result;
+    if(req.method==="GET")result=await getLoadingView(db,ref,loadingActor);
+    else {
+      const parsed=BookingLoadingRequestSchema.safeParse(await body(req));
+      if(!parsed.success)return validationError("booking.loading",parsed);
+      result=await runLoadingRequest(db,ref,loadingActor,parsed.data);
+    }
+    const response=json(result);response.headers.set("Cache-Control","private, no-store");return response;
+  }catch(cause){
+    if(cause instanceof LoadingError){
+      const requestId=makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN booking loading rejected",{requestId,source:ref.source,bookingId:ref.id,actorId:auth.id,status:cause.status});
+      return error(cause.message,cause.status,{requestId});
+    }
+    throw cause;
+  }
+}
+
+async function bookingBulkEndpoint(req:NextRequest,auth:AdminUser){
+  if(req.method!=="POST")return error("الإجراء غير مدعوم",405);
+  const canManage=["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase());
+  if(!canManage)return error("التعديل الجماعي متاح للإدارة فقط",403);
+  const fields={requestId:z.string().min(8).max(100),confirmation:z.literal(true),refs:z.array(z.object({source:z.enum(["kosha","service"]),id:z.number().int().positive()}).strict()).min(1).max(50)};
+  const schema=z.union([z.object({...fields,patch:z.object({priority:z.enum(["normal","important","urgent"]).optional(),deadline:z.string().max(40).nullable().optional(),note:z.string().max(1000).nullable().optional(),assigneeId:z.number().int().positive().nullable().optional()}).strict().refine(p=>Object.keys(p).length>0)}).strict(),z.object({...fields,action:z.literal("send_reminder"),message:z.string().trim().min(1).max(500)}).strict()]);
+  const parsed=schema.safeParse(await body(req));if(!parsed.success)return validationError("booking.bulk",parsed);
+  try{
+    const actor={id:auth.id,name:auth.fullName||auth.username,canManage};
+    const result="action" in parsed.data?await sendBookingReminders(db,actor,parsed.data,context=>console.error("AJN booking reminder transaction failed",context)):await runBookingBulkOperation(db,actor,parsed.data,{
+      preparation:(tx,ref)=>getBookingPreparationSummary(ref.source,ref.id,tx),
+      patch:(tx,ref,meta,patch)=>applyPreparationPatch(ref as BookingOperationsReference,meta,patch,auth,tx),
+      log:context=>console.error("AJN booking bulk transaction failed",context),
+    });
+    const response=json(result);response.headers.set("Cache-Control","private, no-store");return response;
+  }catch(cause){if(cause instanceof BookingBulkError){const requestId=makeRequestId(req.headers.get("x-request-id"));console.warn("AJN booking bulk rejected",{requestId,actorId:auth.id,status:cause.status});return error(cause.message,cause.status,{requestId})}throw cause}
+}
+
+async function bookingProfitabilityEndpoint(req:NextRequest,ref:{source:"kosha"|"service";id:number},auth:AdminUser){
+  if(req.method!=="GET")return error("الإجراء غير مدعوم",405);
+  if(!["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase())&&!hasPermission(auth,"bookings")&&!hasPermission(auth,"booking_finance_view"))return error("ليس لديك صلاحية عرض مالية الحجز",403);
+  try{
+    const response=json(await getBookingProfitability(db,ref,getBookingFinancialSummary));response.headers.set("Cache-Control","private, no-store");return response;
+  }catch(cause){
+    if(cause instanceof BookingProfitabilityError){const requestId=makeRequestId(req.headers.get("x-request-id"));console.warn("AJN booking profitability rejected",{requestId,source:ref.source,bookingId:ref.id,actorId:auth.id,status:cause.status});return error(cause.message,cause.status,{requestId})}
+    throw cause;
+  }
+}
+
 async function handleBookingOperations(
   req: NextRequest,
   parts: string[],
@@ -32575,6 +32624,7 @@ async function handleBookingOperations(
     "booking_penalty_pay",
     "booking_penalty_reverse",
     "booking_penalty_report",
+    ...(parts[4]==="preparation"?["preparation_view","preparation_manage","preparation_assign"] as Permission[]:[]),
   ]);
   let auth: AdminUser;
   if (isResponse(authResult)) {
@@ -32590,6 +32640,18 @@ async function handleBookingOperations(
     auth.role === "manager" ||
     hasPermission(auth, "bookings") ||
     permissions.some((permission) => hasPermission(auth, permission));
+  if(parts[2]==="bulk"&&parts.length===3)return bookingBulkEndpoint(req,auth);
+  if(parts[4]==="profitability"){
+    const source=parts[2],id=int(parts[3]);
+    if(parts.length!==5||!["kosha","service"].includes(source??"")||!id||!/^\d+$/.test(parts[3]??"")||!Number.isSafeInteger(id))return error("مسار الحجز غير صحيح",400);
+    return bookingProfitabilityEndpoint(req,{source:source as "kosha"|"service",id},auth);
+  }
+  if (parts[4] === "loading") {
+    const source=parts[2],id=int(parts[3]);
+    if(parts.length!==5||!["kosha","service"].includes(source??"")||!id||!/^\d+$/.test(parts[3]??"")||!Number.isSafeInteger(id))return error("مسار الحجز غير صحيح",400);
+    if(!["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase())&&!can("booking_operations_view","booking_assets_manage","warehouse_issue"))return error("ليس لديك صلاحية عرض عمليات المعدات",403);
+    return bookingLoadingEndpoint(req,{source:source as "kosha"|"service",id},auth);
+  }
   if (parts[4] === "readiness") {
     if (req.method !== "GET") return error("الإجراء غير مدعوم", 405);
     const source=parts[2], id=int(parts[3]);
@@ -32723,7 +32785,7 @@ async function handleBookingOperations(
       await db.transaction(async (tx) => {
         if (reference.source === "kosha") {
           await tx.update(koshaBookingsTable)
-            .set({ bookingDetails: nextDetails, assignedStaffId: nextIds[0] ?? null, updatedAt: new Date() })
+            .set({ bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, nextDetails), assignedStaffId: nextIds[0] ?? null, updatedAt: new Date() })
             .where(eq(koshaBookingsTable.id, reference.id));
         } else {
           await tx.update(serviceOrdersTable)
@@ -33333,17 +33395,8 @@ async function handleBookingOperations(
       const parsed = PreparationItemUpdateSchema.safeParse(await body(req));
       if (!parsed.success) return validationError("preparation.item", parsed);
       const d = parsed.data;
-      const nextMeta = await applyPreparationPatch(reference, (reference.operations.productMeta ?? {}) as Record<string, any>, d, auth);
-      await saveBookingOperations(reference, { ...reference.operations, productMeta: nextMeta });
-      await addEntityTimeline({
-        entityType: reference.entityType,
-        entityId: reference.id,
-        type: "preparation_item_updated",
-        title: "تحديث عنصر تجهيز",
-        body: `${d.itemName || d.key}${d.status ? ` · ${d.status}` : ""}${d.assigneeName ? ` · ${d.assigneeName}` : ""}`,
-        actor: erpActorFromAdmin(auth),
-        metadata: { key: d.key, status: d.status ?? null, assigneeId: d.assigneeId ?? null, priority: d.priority ?? null },
-      });
+      try {await updatePreparationItems(db,{source:reference.source as PreparationSource,id:reference.id},{id:auth.id,name:auth.fullName||auth.username},[d.key],d,(tx,ref)=>getBookingPreparationSummary(ref.source,ref.id,tx));}
+      catch(cause){if(cause instanceof PreparationAssignmentError){const requestId=makeRequestId(req.headers.get("x-request-id"));console.warn("AJN preparation update rejected",{requestId,source:reference.source,bookingId:reference.id,actorId:auth.id,status:cause.status});return error(cause.message,cause.status,{requestId})}throw cause}
       void logAdminActivity(req, "preparation_item_updated", reference.entityType, reference.id, { key: d.key });
       return json({ ok: true });
     }
@@ -33352,6 +33405,13 @@ async function handleBookingOperations(
       if (!can("preparation_manage", "preparation_assign"))
         return error("ليس لديك صلاحية تعديل التجهيز", 403);
       const raw = await body(req);
+      if(raw?.action==="group"){
+        const parsed=z.object({action:z.literal("group"),confirmation:z.literal(true),department:z.string().trim().min(1).max(40),command:z.enum(["start","confirm"]),requestId:z.string().min(8).max(100),keys:z.array(z.string().trim().min(1).max(120)).min(1).max(300)}).strict().safeParse(raw);
+        if(!parsed.success)return validationError("preparation.group",parsed);
+        const d=parsed.data;
+        try{return json(await updatePreparationItems(db,{source:reference.source as PreparationSource,id:reference.id},{id:auth.id,name:auth.fullName||auth.username},d.keys,{status:d.command==="start"?"preparing":"ready"},(tx,ref)=>getBookingPreparationSummary(ref.source,ref.id,tx),{department:d.department,command:d.command,requestId:d.requestId}));}
+        catch(cause){if(cause instanceof PreparationAssignmentError){const requestId=makeRequestId(req.headers.get("x-request-id"));console.warn("AJN preparation group rejected",{requestId,source:reference.source,bookingId:reference.id,actorId:auth.id,status:cause.status});return error(cause.message,cause.status,{requestId})}throw cause}
+      }
       if (raw && (raw as any).action === "add-manual") {
         const parsed = PreparationManualAddSchema.safeParse(raw);
         if (!parsed.success) return validationError("preparation.manual", parsed);
@@ -33387,20 +33447,8 @@ async function handleBookingOperations(
       const parsed = PreparationBulkSchema.safeParse(raw);
       if (!parsed.success) return validationError("preparation.bulk", parsed);
       const d = parsed.data;
-      let meta = (reference.operations.productMeta ?? {}) as Record<string, any>;
-      for (const key of d.keys) {
-        meta = await applyPreparationPatch(reference, meta, { key, status: d.status, assigneeId: d.assigneeId, assigneeName: d.assigneeName, priority: d.priority }, auth);
-      }
-      await saveBookingOperations(reference, { ...reference.operations, productMeta: meta });
-      await addEntityTimeline({
-        entityType: reference.entityType,
-        entityId: reference.id,
-        type: "preparation_bulk_updated",
-        title: "تحديث جماعي للتجهيز",
-        body: `${d.keys.length} عنصر${d.status ? ` · ${d.status}` : ""}${d.assigneeName ? ` · ${d.assigneeName}` : ""}`,
-        actor: erpActorFromAdmin(auth),
-        metadata: { count: d.keys.length, status: d.status ?? null, assigneeId: d.assigneeId ?? null },
-      });
+      try {await updatePreparationItems(db,{source:reference.source as PreparationSource,id:reference.id},{id:auth.id,name:auth.fullName||auth.username},d.keys,{status:d.status,assigneeId:d.assigneeId,priority:d.priority},(tx,ref)=>getBookingPreparationSummary(ref.source,ref.id,tx));}
+      catch(cause){if(cause instanceof PreparationAssignmentError){const requestId=makeRequestId(req.headers.get("x-request-id"));console.warn("AJN preparation bulk update rejected",{requestId,source:reference.source,bookingId:reference.id,actorId:auth.id,status:cause.status});return error(cause.message,cause.status,{requestId})}throw cause}
       void logAdminActivity(req, "preparation_bulk_updated", reference.entityType, reference.id, { count: d.keys.length });
       return json({ ok: true, updated: d.keys.length });
     }
@@ -34258,7 +34306,7 @@ async function handleBookingOperations(
           paidAmount: String(payment.deposit),
           remainingAmount: String(payment.remaining),
           paymentStatus: payment.status,
-          bookingDetails: nextFields,
+          bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, nextFields),
           updatedAt: new Date(),
         })
         .where(eq(koshaBookingsTable.id, reference.id));
@@ -45546,7 +45594,7 @@ async function handleAdmin(
       if (!canApproveTasks) return error("لا تملك صلاحية اعتماد المهام", 403);
       const task = id
         ? await db.query.tasksTable.findFirst({
-            columns: { id: true, title: true, status: true, assignedStaffIds: true, archivedAt: true },
+            columns: { id: true, title: true, status: true, assignedStaffIds: true, archivedAt: true, taskType: true },
             where: and(
               eq(tasksTable.id, id!),
               sql`${tasksTable.archivedAt} is null`,
@@ -45563,12 +45611,26 @@ async function handleAdmin(
         return error("إجراء المراجعة غير صالح", 422);
       if (["reject", "return"].includes(action) && reason.length < 3)
         return error("سبب الرفض أو الإرجاع مطلوب", 422);
-      if (action === "reopen" && task.status !== "completed")
+      const preparationReview=task.taskType==="preparation";
+      if (!preparationReview && action === "reopen" && task.status !== "completed")
         return error("يمكن إعادة فتح مهمة مكتملة فقط", 409);
-      if (action !== "reopen" && task.status !== "review")
+      if (!preparationReview && action !== "reopen" && task.status !== "review")
         return error("المهمة ليست بانتظار الاعتماد", 409);
       const nextStatus = action === "approve" ? "completed" : "in_progress";
-      const [updated] = await db
+      let updated:any;
+      let notificationWarning=false;
+      if(preparationReview){
+        try{
+          const result=await reviewPreparationTask(db,id!,{id:auth.id,name:auth.fullName||auth.username,canApprove:canApproveTasks},action as "approve"|"reject"|"return"|"reopen",reason);
+          updated=result.task;
+          if(result.replayed)return json(formatTask(updated));
+          for(const notice of result.notifications){
+            try{await deliverPersistedNotification(notice)}
+            catch(cause){notificationWarning=true;const requestId=makeRequestId(req.headers.get("x-request-id"));console.error("AJN preparation review push delivery failed",{requestId,taskId:id,notificationId:notice.id,errorType:cause instanceof Error?cause.name:"UnknownError"});}
+          }
+        }catch(cause){if(cause instanceof PreparationAssignmentError){const requestId=makeRequestId(req.headers.get("x-request-id"));console.warn("AJN preparation review rejected",{requestId,taskId:id,actorId:auth.id,status:cause.status});return error(cause.message,cause.status,{requestId})}throw cause}
+      }else{
+      [updated] = await db
         .update(tasksTable)
         .set({
           status: nextStatus,
@@ -45580,6 +45642,8 @@ async function handleAdmin(
         })
         .where(eq(tasksTable.id, id!))
         .returning(taskStableReturning);
+      }
+      if(!preparationReview)
       await Promise.all(
         (task.assignedStaffIds ?? []).map((staffId) =>
           createNotification({
@@ -45628,7 +45692,7 @@ async function handleAdmin(
           reason: reason || null,
         },
       );
-      void addEntityTimeline({
+      if(!preparationReview)void addEntityTimeline({
         entityType: "task",
         entityId: id!,
         type:
@@ -45650,7 +45714,7 @@ async function handleAdmin(
         body: reason || null,
         actor: erpActorFromAdmin(auth),
       });
-      return json(formatTask(updated));
+      return json({...formatTask(updated),...(notificationWarning?{notificationWarning:"تم الحفظ والإشعار داخل البوابة؛ تعذر تأكيد التنبيه الخارجي"}:{})});
     }
 
     if (
@@ -60352,7 +60416,7 @@ async function handleCollections(
           paidAmount: before.source.paidAmount,
           remainingAmount: before.source.remainingAmount,
           paymentStatus: before.source.paymentStatus,
-          bookingDetails: before.source.bookingDetails,
+          bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, before.source.bookingDetails),
           updatedAt: new Date(),
         })
         .where(eq(koshaBookingsTable.id, data.sourceId));
@@ -66455,6 +66519,15 @@ async function handleStaffPortal(
   const resource = parts[2]; // dashboard | bookings | notifications | reports | payment-requests | preparation
   const id = parts[3] ? int(parts[3]) : null;
   const action = parts[4];
+  if(resource === "loading") {
+    const source=req.nextUrl.searchParams.get("source")??"kosha";
+    if(parts.length!==4||!id||!Number.isSafeInteger(id)||!/^\d+$/.test(parts[3]??"")||!["kosha","service"].includes(source))return error("هوية الحجز غير صحيحة",400);
+    const loadingAuth=await requirePermission(req,"koshas");
+    if(isResponse(loadingAuth))return loadingAuth;
+    const authorized=await authorizeKoshaPortalBooking(loadingAuth,id,source as KoshaPortalSource);
+    if("response" in authorized)return authorized.response;
+    return bookingLoadingEndpoint(req,{source:source as "kosha"|"service",id},loadingAuth);
+  }
   await ensureKoshaStaffTables();
 
   if (resource === "passport") {
@@ -66924,22 +66997,8 @@ async function handleStaffPortal(
     if (method === "POST") {
       const parsed = z.object({ taskId: z.coerce.number().int().positive() }).safeParse(await body(req));
       if (!parsed.success) return validationError("staff.preparation.done", parsed);
-      const task = await db.query.tasksTable.findFirst({ where: eq(tasksTable.id, parsed.data.taskId) });
-      if (!task || task.taskType !== "preparation") return error("المهمة غير موجودة", 404);
-      const mine = Array.isArray(task.assignedStaffIds) && (task.assignedStaffIds as number[]).includes(myId);
-      if (!mine && auth.role !== "admin" && auth.role !== "manager") return error("هذه المهمة غير مسندة إليك", 403);
-      await db.update(tasksTable).set({ status: "completed", completedBy: myId, completedAt: new Date(), updatedAt: new Date() }).where(eq(tasksTable.id, task.id));
-      const source = (task.relatedType === "kosha_booking" ? "kosha" : "service") as string;
-      const reference = task.relatedId ? await loadBookingOperationsReference(source, task.relatedId) : null;
-      if (reference) {
-        const meta = { ...((reference.operations.productMeta ?? {}) as Record<string, any>) };
-        for (const [k, v] of Object.entries(meta)) {
-          if ((v as any)?.prep?.taskId === task.id) meta[k] = { ...(v as any), prep: { ...(v as any).prep, status: "completed", completedAt: new Date().toISOString() } };
-        }
-        await saveBookingOperations(reference, { ...reference.operations, productMeta: meta });
-        await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "preparation_item_done", title: "تم تجهيز عنصر (الكادر)", body: task.title, actor: erpActorFromAdmin(auth), metadata: { taskId: task.id, staffId: myId } });
-      }
-      return json({ ok: true });
+      try {return json(await completePreparationTask(db,parsed.data.taskId,{id:myId,name:auth.fullName||auth.username,manager:auth.role==="admin"||auth.role==="manager"}));}
+      catch(cause){if(cause instanceof PreparationAssignmentError){const requestId=makeRequestId(req.headers.get("x-request-id"));console.warn("AJN staff preparation completion rejected",{requestId,taskId:parsed.data.taskId,actorId:myId,status:cause.status});return error(cause.message,cause.status,{requestId})}throw cause}
     }
     return error("إجراء التجهيز غير مدعوم", 405);
   }
@@ -68008,13 +68067,13 @@ async function handleStaffPortal(
           ),
         ),
         problem:
-          payload?.problem === "broken"
+          payload?.problem === "broken" || payload?.problem === "damaged"
             ? "damaged"
-            : payload?.problem === "lost"
+            : payload?.problem === "lost" || payload?.problem === "missing"
               ? "missing"
               : "none",
-        description: payload?.note,
-        estimatedCost: Math.max(0, Number(payload?.cost ?? 0)),
+        description: payload?.description ?? payload?.note,
+        estimatedCost: Math.max(0, Number(payload?.estimatedCost ?? payload?.cost ?? 0)),
         managerApproval: payload?.managerApproval === true,
         scannedCode: payload?.code,
         photoUrls: [],
@@ -68398,14 +68457,14 @@ async function handleStaffPortal(
           executionStage: toStage,
           status: bookingStatusForKoshaStage(toStage),
           trackingStatus: trackingStatusForKoshaStage(toStage),
-          bookingDetails: {
+          bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, {
             ...nativeDetails,
             bookingOperations: {
               ...(nativeDetails.bookingOperations ?? {}),
               bookingStage,
               bookingStageUpdatedAt: new Date().toISOString(),
             },
-          },
+          }),
           updatedAt: new Date(),
         })
         .where(
@@ -68884,7 +68943,7 @@ async function handleStaffPortal(
     }
     await db
       .update(koshaBookingsTable)
-      .set(patch)
+      .set({ ...patch, ...(Object.hasOwn(patch, "bookingDetails") ? {bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, (patch.bookingDetails ?? {}) as Record<string, any>)} : {}) })
       .where(eq(koshaBookingsTable.id, id));
     return json(await loadKoshaBookingDetail(id, auth));
   }

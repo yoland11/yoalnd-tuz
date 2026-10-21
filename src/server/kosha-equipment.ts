@@ -8,6 +8,7 @@ import {
   type KoshaEquipmentLine,
 } from "@/lib/kosha-equipment";
 import { routedKoshaCustomFieldsSql } from "./kosha-instruction-store";
+import { bookingEvidenceWriteSql } from "./booking-operations-write-guard";
 import { bucketsOf, quantityAvailability, quantityProfilesFor } from "./quantity-assets";
 
 export class KoshaEquipmentError extends Error {
@@ -346,7 +347,7 @@ export async function bookingKoshaEquipment(
     };
     if (native)
       await tx.execute(
-        sql`update kosha_bookings set booking_details=${JSON.stringify(next)}::jsonb,updated_at=now() where id=${booking.id}`,
+        sql`update kosha_bookings set booking_details=${bookingEvidenceWriteSql(sql.raw("booking_details"),next)},updated_at=now() where id=${booking.id}`,
       );
     else
       await tx.execute(

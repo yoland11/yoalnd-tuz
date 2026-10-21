@@ -1,0 +1,28 @@
+import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createLoading, executeLoadingRequest, loadingReturnSummary } from "../src/lib/booking-loading";
+(globalThis as any).React=React;
+assert.ok(existsSync("src/components/booking-loading-panel.tsx"),"booking loading UI is missing");
+const { LoadingPanelView, LegacyWorkOrderReturnForm }=await import("../src/components/booking-loading-panel");
+const facts:any={source:"kosha",id:12,status:"confirmed",vehicle:{id:8,name:"مركبة التجهيز",active:true},staff:[{id:1,name:"علي"},{id:2,name:"أحمد"}],blockers:[],lines:[{key:"asset:10",kind:"asset",productId:10,variantId:null,tracking:"individual",required:1,issued:1,prepared:1,origin:"custody:100",name:"عمود ذهبي",unit:"قطعة",codes:["SECRET-QR"],returnedGood:0,damaged:0,missing:0,maintenance:0}]};
+const record=createLoading(facts,{id:"manifest-12",responsibleId:1,senderId:1,receiverId:2},{id:1,name:"علي"},"2026-10-19T09:00:00Z");
+const view:any={facts:{...facts,lines:facts.lines.map(({codes,...line}:any)=>line)},record,blockers:[],actorId:1,canManage:true,canAct:true,returns:null};
+let html=renderToStaticMarkup(<LoadingPanelView view={view} busy={false} onAction={()=>{}} onReturn={()=>{}} />);
+assert.match(html,/تحميل المركبة/);assert.match(html,/عمود ذهبي/);assert.match(html,/مركبة التجهيز/);assert.match(html,/المستهلك/);assert.doesNotMatch(html,/SECRET-QR/);
+assert.match(html,/إقراري بالتسليم/);assert.doesNotMatch(html,/إقراري بالاستلام/,'sender cannot impersonate receiver');
+html=renderToStaticMarkup(<LoadingPanelView view={{...view,record:null,blockers:["أكمل الصرف الأصلي"]}} busy={false} onAction={()=>{}} />);
+assert.match(html,/أكمل الصرف الأصلي/);assert.match(html,/disabled/);
+html=renderToStaticMarkup(<LoadingPanelView view={view} busy={true} onAction={()=>{}} />);assert.match(html,/disabled/);
+let confirmed=record;
+for(const [actor,command] of [[1,{type:"scan",lineKey:"asset:10",code:"SECRET-QR",quantity:1}],[1,{type:"acknowledge",role:"sender"}],[2,{type:"acknowledge",role:"receiver"}],[1,{type:"confirm"}]] as any[]){confirmed=executeLoadingRequest(confirmed,facts,{id:actor,name:"موظف"},{...command,manifestId:confirmed.id,requestId:crypto.randomUUID()},"2026-10-19T10:00:00Z","unused").record}
+confirmed=executeLoadingRequest(confirmed,facts,{id:2,name:"أحمد"},{type:"handover",manifestId:confirmed.id,requestId:"handover-ui",receiverId:1,from:"المركبة",to:"الموقع",condition:"good",note:""},"2026-10-19T11:00:00Z","unused").record;
+html=renderToStaticMarkup(<LoadingPanelView view={{...view,record:confirmed,returns:loadingReturnSummary(confirmed,facts),actorId:2}} busy={false} onAction={()=>{}} />);
+assert.match(html,/إلغاء التسليم المعلق/);assert.match(html,/عمود ذهبي.*1/s);
+confirmed=executeLoadingRequest(confirmed,facts,{id:2,name:"أحمد"},{type:"cancel_handover",manifestId:confirmed.id,requestId:"cancel-ui",handoverId:"handover-ui",reason:"تغيير جهة الاستلام"},"2026-10-19T12:00:00Z","unused").record;
+html=renderToStaticMarkup(<LoadingPanelView view={{...view,record:confirmed,returns:loadingReturnSummary(confirmed,facts),actorId:2}} busy={false} onAction={()=>{}} />);
+assert.match(html,/تسليم ملغى/);assert.match(html,/تغيير جهة الاستلام/);assert.match(html,/تسليم المعدات المتبقية/);assert.doesNotMatch(html,/إقراري باستلام العهدة الحالية/);
+html=renderToStaticMarkup(<LegacyWorkOrderReturnForm note="" onNote={()=>{}} busy={false} onConfirm={()=>{}}/>);
+assert.match(html,/إرجاع سليم فقط/);assert.doesNotMatch(html,/<select|value="missing"|value="damaged"|value="maintenance"/,'legacy return must not misclassify problem equipment as healthy stock');
+console.log("PASS actual loading RTL UI: scoped equipment, readable loading state, personal acknowledgement, blockers and duplicate-submit disabled state");

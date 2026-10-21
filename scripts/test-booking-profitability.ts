@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+const {deriveBookingProfitability}=await import("../src/lib/booking-profitability");
+const summary={finalTotal:200000,paid:50000,remaining:150000,paymentStatus:"partial"};
+const cost={key:"transaction:10",label:"أجرة النقل",amount:30000,status:"executed",category:"operating",kind:"expense"};
+let result=deriveBookingProfitability({summary,attributionAvailable:true,costs:[cost,{...cost,label:"نفس أجرة المركبة"},{key:"pending:4",label:"تركيب",amount:4000,status:"pending",category:"operating",kind:"expense"},{key:"purchase:5",label:"معدات مشتركة",amount:80000,status:"estimated",category:"investment",kind:"purchase"}],recognizedRevenue:null,reasons:[]});
+assert.equal(result.contractValue,200000);assert.equal(result.collected,50000);assert.equal(result.receivable,150000);assert.equal(result.approvedOperatingCost,30000);assert.equal(result.provisionalOperatingCost,4000);assert.equal(result.capitalInvestment,80000);assert.equal(result.actualProfit,null);assert.equal(result.recognizedRevenue,null);assert.equal(result.estimatedMargin,166000);
+result=deriveBookingProfitability({summary:{...summary,paid:200000,remaining:0},attributionAvailable:true,costs:[{...cost,amount:10000}],recognizedRevenue:null,reasons:[]});assert.equal(result.approvedOperatingCost,10000);assert.equal(result.actualProfit,null,'cash collection is NOT revenue recognition');
+result=deriveBookingProfitability({summary,attributionAvailable:false,costs:[],recognizedRevenue:null,reasons:["تكاليف حجوزات الخدمة غير مرتبطة بهذه الجداول"]});assert.equal(result.approvedOperatingCost,null);assert.equal(result.estimatedMargin,null,'unknown attributed costs cannot be zero');
+assert.throws(()=>deriveBookingProfitability({summary,attributionAvailable:true,costs:[cost,{...cost,amount:31000}],recognizedRevenue:null,reasons:[]}),/متعارض/);
+assert.throws(()=>deriveBookingProfitability({summary,attributionAvailable:true,costs:[{...cost,amount:NaN}],recognizedRevenue:null,reasons:[]}),/قيمة/);
+console.log("PASS booking profitability: contract vs collection, canonical deduplication, net cost, approval-first, shared investment separate and unavailable actual profit");

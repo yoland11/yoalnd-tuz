@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "@workspace/db";
+import {normalizeQuantityLine} from "../lib/quantity-assets";
 
 /**
  * قائمة التجهيز — the ONE read-only preparation view over EXISTING data. It never
@@ -49,6 +50,9 @@ export type PreparationItem = {
   available: number;
   shortfall: number;
   status: PreparationStatus;
+  /** Explicit checklist/physical evidence, NOT inferred stock availability. */
+  preparationState?: string | null;
+  stockIssued?: boolean;
   assigneeId: number | null;
   assigneeName: string | null;
   priority: PreparationPriority;
@@ -125,9 +129,9 @@ function computeStatus(input: {
 }): PreparationStatus {
   const { required, available, totalStock, reservationStatus, prepStatus } = input;
   // Manual/lifecycle overrides win.
-  if (prepStatus === "completed" || reservationStatus === "consumed") return "completed";
   if (prepStatus === "damaged") return "damaged";
   if (prepStatus === "lost") return "lost";
+  if (prepStatus === "completed" || reservationStatus === "consumed") return "completed";
   if (prepStatus === "ready") return "ready";
   if (prepStatus === "preparing") return "preparing";
   if (required <= 0) return "ready";
@@ -216,6 +220,8 @@ export async function getBookingPreparationSummary(
       available,
       shortfall: Math.max(0, round2(required - available)),
       status,
+      preparationState:["damaged","lost"].includes(prep.prepStatus??"")?prep.prepStatus:row.reservation_status==="consumed"?"completed":prep.prepStatus,
+      stockIssued:row.reservation_status==="consumed",
       assigneeId: prep.assigneeId,
       assigneeName: prep.assigneeName,
       priority: prep.priority,
@@ -248,14 +254,15 @@ export async function getBookingPreparationSummary(
     for (const row of nameRows) if (row?.name) assetNames.set(Number(row.id), String(row.name));
   }
   for (const asset of assets) {
+    const physical=normalizeQuantityLine(asset);
     const productId = asset?.productId != null ? Number(asset.productId) : null;
     const key = `asset:${productId ?? asset?.id ?? Math.random().toString(36).slice(2)}`;
     const stage = String(asset?.stage ?? "linked");
     const prep = readPrep(productMeta, key);
     const status: PreparationStatus =
-      prep.prepStatus === "damaged" || asset?.problem === "damaged"
+      prep.prepStatus === "damaged" || asset?.problem === "damaged" || physical.returnedDamagedQty > 0
         ? "damaged"
-        : prep.prepStatus === "lost" || asset?.problem === "missing"
+        : prep.prepStatus === "lost" || asset?.problem === "missing" || physical.missingQty > 0
           ? "lost"
           : ["out", "returned", "inspection", "completed"].includes(stage)
             ? "completed"
@@ -284,6 +291,7 @@ export async function getBookingPreparationSummary(
       available: 1,
       shortfall: 0,
       status,
+      preparationState:["damaged","lost"].includes(status)?status:physical.requiredQty>0&&physical.preparedQty>=physical.requiredQty?(["out","returned","inspection","completed"].includes(stage)?"completed":"ready"):prep.prepStatus==="preparing"?"preparing":null,
       assigneeId: prep.assigneeId,
       assigneeName: prep.assigneeName,
       priority: prep.priority,
@@ -324,6 +332,7 @@ export async function getBookingPreparationSummary(
       available: 0,
       shortfall: 0,
       status,
+      preparationState:prep.prepStatus,
       assigneeId: prep.assigneeId,
       assigneeName: prep.assigneeName,
       priority: prep.priority,

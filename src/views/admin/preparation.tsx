@@ -14,6 +14,10 @@ import { buildPreparationThermalHtml } from "@/lib/preparation-thermal-print";
 import { adminFetch, apiErrorMessage } from "./_lib";
 import { EmptyState } from "./_layout";
 import { EmployeeSelect } from "@/components/employee-select";
+import {preparationGroups,preparationItemNeedsAttention} from "@/lib/booking-preparation-groups";
+import {PreparationGroupSummary} from "@/components/preparation-group-summary";
+import {PreparationGroupAction,type PreparationGroupDraft} from "@/components/preparation-group-action";
+import {Alert,AlertDescription,AlertTitle} from "@/components/ui/alert";
 
 type Rollup = { total: number; ready: number; preparing: number; shortage: number; needsPurchase: number; completed: number; progress: number };
 type PrepCard = {
@@ -26,7 +30,7 @@ type PrepItem = {
   key: string; kind: "product" | "asset" | "manual"; productId: number | null; name: string; sku: string | null; department: string;
   required: number; totalStock: number; reservedByOthers: number; available: number; shortfall: number; status: string;
   assigneeName: string | null; assigneeId?: number | null; priority: string; deadline: string | null; note: string | null; purchaseRequested: boolean; evidenceCount: number;
-  manual?: boolean; infoOnly?: boolean;
+  manual?: boolean; infoOnly?: boolean; preparationState?:string|null;stockIssued?:boolean;
 };
 type PrepDetail = { source: string; id: number; items: PrepItem[]; rollup: Rollup };
 
@@ -72,12 +76,12 @@ const MANUAL_STATUS_OPTIONS: Array<[string, string]> = [
   ["completed", "مكتمل"],
 ];
 
-function PreparationDetail({ card }: { card: PrepCard }) {
+export function PreparationDetail({ card }: { card: Pick<PrepCard,"source"|"id"> }) {
   const queryClient = useQueryClient();
   const base = `/admin/booking-operations/${card.source}/${card.id}`;
   const detail = useQuery<PrepDetail>({
     queryKey: ["admin", "preparation-detail", card.source, card.id],
-    queryFn: () => adminFetch(`${base}/preparation`),
+    queryFn: async () => {const value=await adminFetch<PrepDetail>(`${base}/preparation`);if(!Array.isArray(value?.items))throw Error("بيانات قائمة التجهيز غير صالحة؛ أعد تحميلها");return value},
     staleTime: 10_000,
   });
   const staff = useQuery<{ eligibleStaff: Array<{ id: number; name: string; photoUrl?: string | null; department?: string | null; jobTitle?: string | null }> }>({
@@ -88,17 +92,20 @@ function PreparationDetail({ card }: { card: PrepCard }) {
   const staffList = staff.data?.eligibleStaff ?? [];
   const staffName = (id: number) => staffList.find((s) => s.id === id)?.name ?? "";
   const [selected, setSelected] = useState<string[]>([]);
+  const [missingGroups,setMissingGroups]=useState<Set<string>>(new Set()),[groupDraft,setGroupDraft]=useState<PreparationGroupDraft|null>(null),[groupBusy,setGroupBusy]=useState(false);
+  const auth=useQuery<{user:{id:number;role:string;permissions:string[]}}>({queryKey:["admin","auth","preparation-groups"],queryFn:()=>adminFetch("/admin/auth/me"),staleTime:60_000});
+  const canManage=!!auth.data?.user&&(["admin","manager","main_admin","super_admin","main_manager"].includes(auth.data.user.role)||auth.data.user.permissions?.some(p=>["bookings","preparation_manage","preparation_assign"].includes(p)));
 
-  const refresh = () => { void detail.refetch(); queryClient.invalidateQueries({ queryKey: ["admin", "preparation"] }); };
+  const refresh = () => { void detail.refetch(); void queryClient.invalidateQueries({ queryKey: ["admin", "preparation"] });void queryClient.invalidateQueries({queryKey:["admin","booking-workspace"]});void queryClient.invalidateQueries({queryKey:["admin","booking-center"]}); };
   const update = useMutation({
     mutationFn: (payload: Record<string, unknown>) => adminFetch(`${base}/preparation`, { method: "PATCH", body: JSON.stringify(payload) }),
     onSuccess: refresh,
-    onError: () => toast.error("تعذّر تحديث العنصر"),
+    onError: error => toast.error("تعذّر تحديث العنصر",{description:apiErrorMessage(error)}),
   });
   const bulk = useMutation({
     mutationFn: (payload: Record<string, unknown>) => adminFetch(`${base}/preparation`, { method: "POST", body: JSON.stringify(payload) }),
     onSuccess: () => { setSelected([]); refresh(); toast.success("تم التحديث الجماعي"); },
-    onError: () => toast.error("تعذّر التحديث الجماعي"),
+    onError: error => toast.error("تعذّر التحديث الجماعي",{description:apiErrorMessage(error)}),
   });
   const addItem = useMutation({
     mutationFn: (payload: Record<string, unknown>) => adminFetch(`${base}/preparation`, { method: "POST", body: JSON.stringify({ action: "add-manual", ...payload }) }),
@@ -113,15 +120,17 @@ function PreparationDetail({ card }: { card: PrepCard }) {
   const [showAdd, setShowAdd] = useState(false);
 
   if (detail.isLoading) return <div className="p-3"><Skeleton className="h-24 w-full" /></div>;
-  if (detail.isError) return <p className="p-3 text-xs text-status-danger">تعذّر تحميل عناصر التجهيز.</p>;
+  if (detail.isError) return <Alert variant="destructive"><AlertTitle>تعذّر تحميل عناصر التجهيز</AlertTitle><AlertDescription>{apiErrorMessage(detail.error)}<Button variant="outline" onClick={()=>void detail.refetch()}>إعادة المحاولة</Button></AlertDescription></Alert>;
   const items = detail.data?.items ?? [];
-  const groups = new Map<string, PrepItem[]>();
-  for (const item of items) { if (!groups.has(item.department)) groups.set(item.department, []); groups.get(item.department)!.push(item); }
+  const groups = preparationGroups(items);
   const toggle = (key: string) => setSelected((current) => current.includes(key) ? current.filter((k) => k !== key) : [...current, key]);
   const cell = "rounded-md border border-border/40 bg-background px-2 py-1 text-xs";
 
   return (
-    <div className="space-y-3 border-t border-border/30 bg-background/30 p-3">
+    <div className="flex flex-col gap-3 border-t border-border/30 bg-background/30 p-3">
+      <p className="text-sm text-muted-foreground">النسبة تعكس التجهيز المسجّل، لا مجرد توفر المخزون. التأكيد لا يصرف مخزوناً ولا يغيّر الحسابات.</p>
+      {auth.isError?<Alert variant="destructive"><AlertTitle>تعذر التحقق من صلاحية تجهيز المجموعات</AlertTitle><AlertDescription>{apiErrorMessage(auth.error)}<Button variant="outline" onClick={()=>void auth.refetch()}>إعادة التحقق</Button></AlertDescription></Alert>:null}
+      <PreparationGroupAction endpoint={`${base}/preparation`} actorId={auth.data?.user.id} canManage={canManage} draft={groupDraft} onClose={()=>setGroupDraft(null)} onDone={refresh} onBusyChange={setGroupBusy} labelForDepartment={deptLabel}/>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 text-xs font-bold text-primary"><ClipboardList className="h-3.5 w-3.5" /> عناصر التجهيز <span className="text-muted-foreground">({items.length})</span></div>
         <Button size="sm" variant={showAdd ? "secondary" : "outline"} onClick={() => setShowAdd((v) => !v)}>{showAdd ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />} {showAdd ? "إغلاق" : "إضافة عنصر"}</Button>
@@ -139,9 +148,10 @@ function PreparationDetail({ card }: { card: PrepCard }) {
         </div>
       ) : null}
       {staff.isError ? <div role="alert" className="text-xs text-destructive">تعذر تحميل الموظفين. <Button type="button" size="sm" variant="ghost" onClick={() => void staff.refetch()}>إعادة المحاولة</Button></div> : null}
-      {[...groups.entries()].map(([dept, deptItems]) => (
+      {groups.map(group => {const dept=group.department,onlyMissing=missingGroups.has(dept),deptItems=onlyMissing?group.items.filter(preparationItemNeedsAttention):group.items;return (
         <div key={dept}>
-          <div className="mb-1 flex items-center gap-2 text-xs font-bold text-primary"><Package className="h-3.5 w-3.5" /> {deptLabel(dept)} <span className="text-muted-foreground">({deptItems.length})</span></div>
+          <PreparationGroupSummary group={group} label={deptLabel(dept)} busy={groupBusy||update.isPending||bulk.isPending} canManage={canManage} onlyMissing={onlyMissing} onSelect={()=>setSelected(current=>[...new Set([...current,...group.items.filter(i=>!i.infoOnly).map(i=>i.key)])])} onToggleMissing={()=>setMissingGroups(current=>{const next=new Set(current);if(next.has(dept))next.delete(dept);else next.add(dept);return next})} onAction={command=>setGroupDraft({department:dept,command,label:deptLabel(dept),keys:group.items.filter(i=>!i.infoOnly&&(command!=="start"||!["ready","completed"].includes(i.preparationState??""))).map(i=>i.key)})}/>
+          {onlyMissing&&!deptItems.length?<p className="text-sm text-muted-foreground">لا توجد نواقص مسجلة في هذه المجموعة.</p>:null}
           <div className="overflow-x-auto rounded-lg border border-border/30">
             <table className="w-full min-w-[760px] text-right text-xs">
               <thead className="bg-muted/40 text-muted-foreground">
@@ -181,7 +191,7 @@ function PreparationDetail({ card }: { card: PrepCard }) {
             </table>
           </div>
         </div>
-      ))}
+      )})}
     </div>
   );
 }

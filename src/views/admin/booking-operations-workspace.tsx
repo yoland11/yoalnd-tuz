@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy,Suspense,useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { EmployeeAvatar } from "@/components/employee-avatar";
@@ -6,8 +6,11 @@ import { IssueWorkOrderButton } from "@/components/work-commands/create-order-di
 import { KoshaEquipmentImport } from "./kosha-equipment-import";
 import { QuantityBookingAssetDialog, type QuantityBookingTarget } from "./quantity-booking-asset-dialog";
 import { BookingReadinessPanel, BookingReadinessStatus, type ReadinessDisplay } from "@/components/booking-readiness-panel";
+import { BookingLoadingPanel } from "@/components/booking-loading-panel";
+import { BookingProfitabilityPanel } from "@/components/booking-profitability-panel";
 import { PhotographyProductionPanel } from "./photography-production-shared";
 import { EmployeeSelect } from "@/components/employee-select";
+const BookingPreparationDetail=lazy(()=>import("./preparation").then(module=>({default:module.PreparationDetail})));
 import { employeeMatchesSearch } from "@/lib/employee-identity";
 import {
   AlertTriangle,
@@ -246,6 +249,7 @@ const TAB_LABELS: Array<[string, string, typeof Boxes]> = [
   ["depreciation", "الإهلاك", ArchiveRestore],
   ["inventory", "حركات المخزون", Boxes],
   ["finance", "الملخص المالي", CircleDollarSign],
+  ["profitability", "ربحية الحجز", CircleDollarSign],
   ["tasks", "المهام", ListChecks],
   ["documents", "المستندات", FileText],
   ["activity", "النشاط والتايملاين", History],
@@ -548,6 +552,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
       <TabsContent value="depreciation"><DepreciationTab base={base} queryKey={key} /></TabsContent>
       <TabsContent value="inventory"><InventoryTab base={base} queryKey={key} /></TabsContent>
       <TabsContent value="finance"><FinanceTab base={base} queryKey={key} booking={booking} invoiceUrl={invoiceUrl} paymentUrl={paymentUrl} /></TabsContent>
+      <TabsContent value="profitability"><BookingProfitabilityPanel endpoint={`${base}/profitability`} queryKey={key}/></TabsContent>
       <TabsContent value="tasks"><TasksTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       <TabsContent value="documents"><DocumentsTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       <TabsContent value="activity"><ActivityTab base={base} queryKey={key} /></TabsContent>
@@ -734,6 +739,7 @@ function AssetsTab({ base, queryKey }: { base: string; queryKey: unknown[] }) {
   const mutation = useMutation({ mutationFn: (input: Record<string, any>) => adminFetch(`${base}/assets`, { method: "POST", body: JSON.stringify({ ...input, confirmation: true }) }), onSuccess: () => { setReturning(null); queryClient.invalidateQueries({ queryKey }); toast({ title: "تم تحديث الأصل" }); }, onError: (error: any) => toast({ title: "تعذر تحديث الأصل", description: error?.message, variant: "destructive" }) });
   const act = (row: AssetRow, mode: string) => mutation.mutate({ mode, productId: row.productId, quantity: row.quantity });
   const [quantityTarget, setQuantityTarget] = useState<QuantityBookingTarget | null>(null);
+  const [loadingReturnTarget,setLoadingReturnTarget]=useState<QuantityBookingTarget|null>(null);
   const quantityTargetFor = (row: AssetRow): QuantityBookingTarget => ({
     productId: row.productId,
     name: row.name,
@@ -754,12 +760,21 @@ function AssetsTab({ base, queryKey }: { base: string; queryKey: unknown[] }) {
     <div className="ajn-op-section-head"><div><PackageCheck /><span><small>دورة حياة الأصل</small><h2>أصول الحجز</h2></span></div><div className="ajn-op-actions"><Badge variant="outline">{assets.data?.assets.length ?? 0} أصل</Badge><Button className="ajn-op-import is-asset" onClick={() => document.getElementById("booking-asset-search")?.focus()}><PackageCheck /> إضافة أصل</Button><Button variant="outline" asChild><Link href="/admin/assets">فتح إدارة الأصول</Link></Button></div></div>
     <KoshaEquipmentImport base={base} queryKey={queryKey} />
     <FixedCustodyPanel base={base} queryKey={queryKey} />
+    <section aria-label="مجموعات التجهيز" className="flex min-w-0 flex-col gap-3"><h3 className="font-semibold">مجموعات التجهيز</h3><Suspense fallback={<Skeleton className="h-28"/>}><BookingPreparationDetail card={{source:base.includes("/kosha/")?"kosha":"service",id:Number(base.split("/").at(-1))}}/></Suspense></section>
     <div className="ajn-op-picker"><Search /><Input id="booking-asset-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث عن أصل بالاسم أو الباركود" /><div className="ajn-op-picker-results">{catalog.data?.data.filter((item) => item.isAsset).slice(0, 8).map((item) => <Button variant="ghost" key={item.id} type="button" onClick={() => {
       const linked = assets.data?.assets.find((row) => row.productId === item.id);
       if (item.trackingMode === "quantity") setQuantityTarget(linked ? quantityTargetFor(linked) : { productId: item.id, name: item.name, unit: item.unitOfMeasure, available: item.available, quantity: 1 });
       else mutation.mutate({ mode: "link", productId: item.id, quantity: 1 });
     }} disabled={mutation.isPending || ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(String(item.profileStatus))}><span><b>{item.name}</b><small>{item.trackingMode === "quantity" ? `متعدد الكمية · ${item.unitOfMeasure ?? "قطعة"}` : item.barcode || "أصل تشغيلي"}</small></span><span><strong>{item.available}</strong><small>{item.trackingMode === "quantity" ? "متاح بتاريخ الحجز" : "متاح"}</small></span><Plus /></Button>)}</div></div>
     <QueryState loading={assets.isLoading} error={assets.error} empty={!assets.data?.assets.length}><div className="ajn-op-table-wrap"><table className="ajn-op-table ajn-op-assets-table"><thead><tr><th>الأصل</th><th>QR</th><th>الموظف المسؤول</th><th>وقت التسليم</th><th>وقت الإرجاع</th><th>المستودع</th><th>الكمية</th><th>المتاح</th><th>المحجوز</th><th>الخارج</th><th>المرتجع</th><th>الصحة</th><th>القيمة الحالية</th><th>الحالة</th><th>الإجراء</th></tr></thead><tbody>{assets.data?.assets.map((row) => <tr key={row.productId}><td><b>{row.name}</b><small>{row.assetCode}{row.serialNumber ? ` · ${row.serialNumber}` : ""}{row.trackingMode === "quantity" ? " · متعدد الكمية" : ""}</small></td><td><span className="ajn-op-qr-cell"><QrCode /> {row.qrToken ? "مسجل" : "—"}</span></td><td>{row.responsibleStaffName ? <b>عهدة {row.responsibleStaffName}</b> : "—"}</td><td className="whitespace-nowrap">{row.checkoutAt ? readableDate(row.checkoutAt) : "—"}</td><td className="whitespace-nowrap">{row.returnedAt ? readableDate(row.returnedAt) : "—"}</td><td>{row.warehouse || row.location || "المستودع الرئيسي"}</td>{row.trackingMode === "quantity" ? <><td><b>{row.quantity}</b><small>{row.unit ?? "قطعة"} · مجهّز {row.prepared ?? 0}</small></td><td>{row.available}<small>يبقى {row.availableAfterBooking ?? 0}</small></td><td>{row.reserved}</td><td>{row.out}<small>من {row.checkedOutTotal ?? 0}</small></td><td>{row.returned}{row.damaged || row.missing ? <small className="text-destructive">تالف {row.damaged} · مفقود {row.missing}</small> : null}</td></> : <><td>{row.quantity}</td><td>{row.available}</td><td>{row.reserved}</td><td>{row.out}</td><td>{row.returned}</td></>}<td><span className={row.healthScore < 60 ? "ajn-op-health is-low" : "ajn-op-health"}>{row.healthScore}%</span></td><td>{money(row.currentValue)}</td><td><OperationStatus value={row.stage} /></td><td><div className="ajn-op-table-actions">{row.trackingMode === "quantity" ? <>{row.stage !== "completed" && <Button size="sm" onClick={() => setQuantityTarget(quantityTargetFor(row))}><Barcode /> إدارة الكمية</Button>}{(row.checkedOutTotal ?? 0) > 0 && (row.outstanding ?? 0) === 0 && row.stage !== "completed" && <Button size="sm" variant="outline" onClick={() => mutation.mutate({ mode: "inspect", productId: row.productId, quantity: Math.max(1, row.checkedOutTotal ?? 1) })}><ClipboardCheck /> فحص</Button>}</> : <>{row.stage === "linked" && <Button size="sm" onClick={() => act(row, "reserve")}>حجز</Button>}{row.stage === "reserved" && <Button size="sm" onClick={() => act(row, "pick")}><Barcode /> تجهيز</Button>}{row.stage === "picked" && <Button size="sm" onClick={() => act(row, "checkout")}><QrCode /> إخراج</Button>}{row.stage === "out" && <Button size="sm" onClick={() => { setReturning(row); setReturnForm({ problem: "none", description: "", estimatedCost: "", usageHours: "", managerApproval: false }); }}><RotateCcw /> إرجاع</Button>}{row.stage === "returned" && <Button size="sm" onClick={() => mutation.mutate({ mode: "inspect", productId: row.productId, quantity: row.quantity, usageHours: Number(returnForm.usageHours || 0), problem: row.problem || "none" })}><ClipboardCheck /> فحص</Button>}</>}<DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`المزيد للأصل ${row.name}`}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem asChild><Link href={`/admin/products?focus=${row.productId}`}><PackageCheck /> جواز الأصل</Link></DropdownMenuItem>{!row.out && !(row.trackingMode === "quantity" && (row.checkedOutTotal ?? 0) > 0) && <DropdownMenuItem onSelect={() => act(row, "unlink")} className="text-destructive"><RotateCcw /> إزالة من الحجز</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu></div></td></tr>)}</tbody></table></div></QueryState>
+    <BookingLoadingPanel endpoint={`${base}/loading`} queryKey={queryKey} onReturn={(line)=>{
+      if(line.origin.startsWith("work-order:")){window.location.assign(`/staff/koshas/work-orders/${line.origin.split(":")[1]}`);return}
+      const row=assets.data?.assets.find(asset=>asset.productId===line.productId);
+      if(!row||assets.isError){toast({title:"حدّث قائمة الأصول الأصلية قبل الإرجاع",variant:"destructive"});return}
+      if(row.trackingMode==="quantity")setLoadingReturnTarget(quantityTargetFor(row));
+      else{setReturning(row);setReturnForm({problem:"none",description:"",estimatedCost:"",usageHours:"",managerApproval:false});}
+    }}/>
+    <QuantityBookingAssetDialog endpoint={`${base}/assets`} target={loadingReturnTarget} initialMode="return" allowedModes={["return"]} onClose={()=>setLoadingReturnTarget(null)} onDone={()=>queryClient.invalidateQueries({queryKey})}/>
     <QuantityBookingAssetDialog endpoint={`${base}/assets`} target={quantityTarget} onClose={() => setQuantityTarget(null)} onDone={() => queryClient.invalidateQueries({ queryKey })} />
     {returning && <section className="ajn-op-return-panel"><div><RotateCcw /><span><small>فحص الإرجاع</small><h3>{returning.name}</h3></span><Button variant="ghost" onClick={() => setReturning(null)}>إغلاق</Button></div><div className="ajn-op-return-grid"><div><Label htmlFor="asset-problem">هل يوجد تلف أو نقص؟</Label><select id="asset-problem" value={returnForm.problem} onChange={(event) => setReturnForm({ ...returnForm, problem: event.target.value })}><option value="none">لا، الأصل سليم</option><option value="damaged">نعم، يوجد تلف</option><option value="missing">نعم، يوجد نقص / فقدان</option></select></div><div><Label htmlFor="asset-hours">ساعات الاستخدام</Label><Input id="asset-hours" type="number" min={0} value={returnForm.usageHours} onChange={(event) => setReturnForm({ ...returnForm, usageHours: event.target.value })} /></div>{returnForm.problem !== "none" && <><div className="sm:col-span-2"><Label htmlFor="asset-description">وصف الحالة *</Label><Textarea id="asset-description" value={returnForm.description} onChange={(event) => setReturnForm({ ...returnForm, description: event.target.value })} placeholder="اكتب تفاصيل التلف أو الجزء المفقود" /></div><div><Label htmlFor="asset-cost">التكلفة التقديرية</Label><Input id="asset-cost" type="number" min={0} value={returnForm.estimatedCost} onChange={(event) => setReturnForm({ ...returnForm, estimatedCost: event.target.value })} /></div>{returnForm.problem === "missing" && <label className="ajn-op-check"><input type="checkbox" checked={returnForm.managerApproval} onChange={(event) => setReturnForm({ ...returnForm, managerApproval: event.target.checked })} /> اعتماد المدير على تسجيل النقص</label>}</>}</div><Button className="ajn-op-primary" disabled={mutation.isPending || (returnForm.problem !== "none" && !returnForm.description.trim())} onClick={() => mutation.mutate({ mode: "return", productId: returning.productId, custodyId: returning.custodyId ?? undefined, quantity: returning.quantity, problem: returnForm.problem, description: returnForm.description, estimatedCost: Number(returnForm.estimatedCost || 0), managerApproval: returnForm.managerApproval })}>تأكيد الإرجاع وإرسال الأصل للفحص</Button></section>}
   </div>;
@@ -1315,7 +1330,7 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
   const assetRental = Number(booking.raw?.assetRentalAmount ?? booking.raw?.equipmentRentalAmount ?? 0);
   const pricing = (booking.source === "kosha" ? booking.raw?.bookingDetails : booking.raw?.customFields)?.pricing;
   const discount = Number(pricing?.discountAmount ?? booking.raw?.discountAmount ?? booking.raw?.discount ?? 0);
-  const summary = [["إجمالي الحجز", data?.finalAmount ?? booking.total], ["المنتجات", data?.productCharges ?? 0], ["تأجير الأصول", assetRental], ["الخصم", discount], ["المدفوع", data?.paid ?? booking.paid], ["المتبقي", data?.remaining ?? booking.remaining], ["الربح التقديري", data?.estimatedProfit ?? 0]];
+  const summary = [["إجمالي الحجز", data?.finalAmount ?? booking.total], ["المنتجات", data?.productCharges ?? 0], ["تأجير الأصول", assetRental], ["الخصم", discount], ["المدفوع", data?.paid ?? booking.paid], ["المتبقي", data?.remaining ?? booking.remaining]];
   // One booking = one payment source. The inline collector posts an
   // approval-first receipt against it — no duplicate ledger, no navigating away.
   const sourceType = booking.source === "kosha" ? "kosha_booking" : "service_order";

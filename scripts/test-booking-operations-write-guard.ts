@@ -1,0 +1,14 @@
+import assert from "node:assert/strict";
+import {PgDialect} from "drizzle-orm/pg-core";
+import {sql} from "drizzle-orm";
+const {mergeBookingOperationalEvidence,bookingEvidenceWriteSql}=await import("../src/server/booking-operations-write-guard");
+const before={bookingOperations:{productMeta:{'10:0':{unitPrice:100,prep:{priority:'normal',note:'old',status:'preparing'}}}}};
+const live={newRoot:'preserve',bookingOperations:{loading:{id:'manifest',receipts:[{id:'scan-once'}],handovers:[{id:'holder'}]},productMeta:{'10:0':{unitPrice:100,prep:{priority:'urgent',note:'batch',status:'preparing'}}}}};
+const staleTransport={...before,bookingOperations:{...before.bookingOperations,transportation:{mode:'ajn'}}};
+let result=mergeBookingOperationalEvidence(live,staleTransport);assert.deepEqual(result.bookingOperations.loading,live.bookingOperations.loading);assert.equal(result.bookingOperations.productMeta['10:0'].prep.note,'batch');assert.equal(result.newRoot,'preserve');
+const edit={...before,bookingOperations:{...before.bookingOperations,productMeta:{'10:0':{unitPrice:100,prep:{priority:'normal',note:'manager edit',status:'preparing'}}}}};
+result=mergeBookingOperationalEvidence(live,edit,before.bookingOperations);assert.equal(result.bookingOperations.productMeta['10:0'].prep.note,'manager edit');assert.equal(result.bookingOperations.productMeta['10:0'].prep.priority,'urgent','unmodified stale priority cannot erase a batch');
+const price={bookingOperations:{productMeta:{'10:0':{unitPrice:200}}}};result=mergeBookingOperationalEvidence(live,price);assert.equal(result.bookingOperations.productMeta['10:0'].unitPrice,200);assert.equal(result.bookingOperations.productMeta['10:0'].prep.note,'batch');
+result=mergeBookingOperationalEvidence({bookingOperations:{}},{bookingOperations:{loading:live.bookingOperations.loading}});assert.equal(result.bookingOperations.loading,undefined,'old snapshots must not resurrect a manifest not stored on this booking');
+const query=new PgDialect().sqlToQuery(bookingEvidenceWriteSql(sql.raw('booking_details'),edit,before.bookingOperations));assert.match(query.sql,/booking_details/);assert.match(query.sql,/jsonb_each/);assert.match(query.sql,/'loading'/);assert.ok(query.params.includes(JSON.stringify({'10:0':{note:'manager edit'}})),'SQL applies only changed preparation leaves');
+console.log('PASS operational evidence write guard: stale transport/price saves preserve committed manifest/receipts and batch prep; explicit prep edits affect changed leaves only');

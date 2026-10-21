@@ -49,6 +49,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { BookingBulkToolbar } from "@/components/booking-bulk-toolbar";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -859,6 +861,7 @@ function BookingDashboard() {
   const [serviceFilter, setServiceFilter] = useState<ServiceKey | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
   const [reportFor, setReportFor] = useState<ServiceKey | "all" | null>(null);
+  const [selectedBookings,setSelectedBookings]=useState<Set<string>>(new Set());
   const centralBookingsQuery = useQuery({ queryKey: ["admin", "booking-center"], queryFn: () => adminFetch<any[]>("/admin/booking-center?readiness=1") });
   // §15 — unresolved damage/penalty flags per booking for the list indicator.
   const penaltyIndicators = useQuery<{ indicators: Record<string, { remaining: number; pendingReview: number; count: number }> }>({
@@ -1027,6 +1030,7 @@ function BookingDashboard() {
           <div><span>العمل الجاري</span><h2>{serviceFilter === "all" ? "كل الحجوزات" : SERVICE_META.find((item) => item.key === serviceFilter)?.label}</h2></div>
           <div className="relative w-full sm:w-80"><Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} className="pr-10" placeholder="رقم الحجز، العميل، الهاتف أو القاعة" /></div>
         </div>
+        {!centralBookingsQuery.isLoading&&!centralBookingsQuery.isError?<BookingBulkToolbar rows={bookings.filter((b):b is UnifiedBooking&{source:"kosha"|"service"}=>b.source==="kosha"||b.source==="service")} selected={selectedBookings} onSelectionChange={setSelectedBookings} onSummary={keys=>printStandaloneDocument(buildBookingReport({type:"summary",department:"all",from:"",to:""},bookings.filter(b=>keys.includes(`${b.source}:${b.id}`))))}/>:null}
         {centralBookingsQuery.isLoading ? (
           <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-48 rounded-xl" />)}</div>
         ) : centralBookingsQuery.isError ? (
@@ -1040,7 +1044,7 @@ function BookingDashboard() {
           <div className="ajn-empty"><CalendarDays /><h3>لا توجد حجوزات مطابقة</h3><p>غيّر البحث أو أنشئ أول حجز موحّد لهذه الخدمة.</p></div>
         ) : (
           <div className="ajn-booking-grid">
-            {filtered.map((booking) => <BookingPreview key={`${booking.source}-${booking.id}`} booking={booking} penalty={penaltyIndicators.data?.indicators?.[`${booking.source === "kosha" ? "kosha_booking" : "service_order"}:${booking.id}`]} onDelete={requestBookingDeletion} deleting={bookingDeleteMutation.isPending && bookingDeleteMutation.variables?.id === booking.id} />)}
+            {filtered.map((booking) => <BookingPreview key={`${booking.source}-${booking.id}`} booking={booking} selected={selectedBookings.has(`${booking.source}:${booking.id}`)} onSelect={booking.source==="kosha"||booking.source==="service"?checked=>setSelectedBookings(current=>{const next=new Set(current),key=`${booking.source}:${booking.id}`;if(checked){if(next.size>=50){toast({title:"يمكن تحديد 50 حجزاً في كل عملية",variant:"destructive"});return current}next.add(key)}else next.delete(key);return next}):undefined} penalty={penaltyIndicators.data?.indicators?.[`${booking.source === "kosha" ? "kosha_booking" : "service_order"}:${booking.id}`]} onDelete={requestBookingDeletion} deleting={bookingDeleteMutation.isPending && bookingDeleteMutation.variables?.id === booking.id} />)}
           </div>
         )}
       </section>
@@ -1054,7 +1058,7 @@ function groupAttendeeCount(booking: UnifiedBooking): number {
   return Array.isArray(ops?.groupAttendees) ? ops.groupAttendees.length : 0;
 }
 
-function BookingPreview({ booking, penalty, onDelete, deleting = false }: { booking: UnifiedBooking; penalty?: { remaining: number; pendingReview: number; count: number }; onDelete: (booking: UnifiedBooking) => void; deleting?: boolean }) {
+function BookingPreview({ booking, penalty, onDelete, deleting = false,selected,onSelect }: { booking: UnifiedBooking; penalty?: { remaining: number; pendingReview: number; count: number }; onDelete: (booking: UnifiedBooking) => void; deleting?: boolean;selected?:boolean;onSelect?:(checked:boolean)=>void }) {
   const readiness = getReadiness(booking);
   const transport = transportationSummary(booking);
   const attendees = groupAttendeeCount(booking);
@@ -1068,7 +1072,7 @@ function BookingPreview({ booking, penalty, onDelete, deleting = false }: { book
     <article className="ajn-booking-preview">
       <div className="flex items-start justify-between gap-3">
         <div><small>{booking.number}</small><h3>{booking.customerName}</h3><p>{booking.eventDate || "الموعد غير محدد"} {booking.eventTime && `· ${booking.eventTime}`}</p></div>
-        <StatusBadge status={booking.status} />
+        <div className="flex items-center gap-3"><StatusBadge status={booking.status} />{onSelect?<Checkbox aria-label={`تحديد الحجز ${booking.number}`} checked={selected??false} onCheckedChange={value=>onSelect(value===true)}/>:null}</div>
       </div>
       {penalty ? (
         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 6, borderRadius: 999, border: "1px solid #f59e0b", background: "rgba(245,158,11,.12)", color: "#b45309", padding: "2px 10px", fontSize: 12, fontWeight: 700 }} title="توجد غرامة/تلفيات غير محلولة على هذا الحجز">

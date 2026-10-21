@@ -49,6 +49,7 @@ assert.deepEqual(
   "asset rows show the real name with the AJN asset code (fallback only when the product is gone)",
 );
 assert.equal(queries.filter((q) => q.includes("FROM products WHERE id IN")).length, 1, "no per-row queries");
+assert.deepEqual(assets.map(item=>item.preparationState),[null,'ready',null],'reserved/linked equipment is not physically prepared; the original picked stage is evidence');
 
 const html = buildPreparationThermalHtml({
   bookingNumber: "B-124-3977",

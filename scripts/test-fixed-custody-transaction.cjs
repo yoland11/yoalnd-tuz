@@ -26,6 +26,8 @@ const javascript = ts.transpileModule(`${declarations.join("\n")}\nasync functio
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 const dialect = new PgDialect();
+const protection={exports:{}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/server/booking-operations-write-guard.ts','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports:protection.exports,module:protection,require});
 const table = (name, fields) => Object.assign({ name }, Object.fromEntries(fields.map((field) => [field, `${name}.${field}`])));
 const tables = {
   productsTable: table("products", ["id"]),
@@ -135,7 +137,11 @@ function harness(initial = fixture(), settings = {}) {
         } };
       } }),
       update: (target) => ({ set: (values) => ({ where: async (where) => {
-        if (target.name === "booking") { draft.booking.bookingDetails = structuredClone(values.bookingDetails); return; }
+        if (target.name === "booking") {
+          if(values.bookingDetails?.getSQL){const query=dialect.sqlToQuery(values.bookingDetails);const patch=JSON.parse(query.params.find(value=>typeof value==='string'&&value.startsWith('{')));draft.booking.bookingDetails=structuredClone(protection.exports.mergeBookingOperationalEvidence(draft.booking.bookingDetails,patch));}
+          else draft.booking.bookingDetails = structuredClone(values.bookingDetails);
+          return;
+        }
         for (const row of draft[target.name].filter((row) => matches(row, where))) { requireLock(row.productId); Object.assign(row, structuredClone(values)); }
       } }) }),
     };
@@ -166,7 +172,7 @@ function harness(initial = fixture(), settings = {}) {
   };
   class IndividualCustodyError extends Error { constructor(message, status = 422) { super(message); this.status = status; } }
   const context = {
-    ...tables, db, sql, Date, IndividualCustodyError,
+    ...tables, db, sql, Date, IndividualCustodyError,bookingEvidenceWriteSql:protection.exports.bookingEvidenceWriteSql,
     eq: compare, and: (...and) => ({ and }), desc: (value) => value,
     ensureCustodyGroupTables: async () => {}, hasPermission: (auth, permission) => auth.role === "admin" || auth.permissions.includes(permission),
     body: async (req) => req.payload, int: Number,

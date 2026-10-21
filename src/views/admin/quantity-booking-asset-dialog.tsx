@@ -16,6 +16,8 @@ import { adminFetch, apiErrorMessage } from "./_lib";
 /** Quantity fields returned by the booking assets API for a quantity-based asset. */
 export type QuantityBookingTarget = {
   productId: number;
+  custodyId?:number|null;
+  trackingMode?:"individual"|"quantity";
   name: string;
   unit?: string | null;
   /** Units this booking can hold in total for its date (other bookings excluded). */
@@ -55,6 +57,7 @@ export function QuantityBookingAssetDialog({
   onClose,
   onDone,
   scannedCode,
+  allowedModes,
 }: {
   /** The booking assets endpoint, e.g. /admin/booking-operations/kosha/125/assets */
   endpoint: string;
@@ -63,6 +66,7 @@ export function QuantityBookingAssetDialog({
   onClose: () => void;
   onDone: () => void;
   scannedCode?: string;
+  allowedModes?: Mode[];
 }) {
   const { toast } = useToast();
   const unit = target?.unit || "قطعة";
@@ -103,7 +107,7 @@ export function QuantityBookingAssetDialog({
     mutationFn: (payload: Record<string, unknown>) =>
       adminFetch<{ ok: boolean; replayed?: boolean; warning?: string | null }>(endpoint, {
         method: "POST",
-        body: JSON.stringify({ ...payload, productId: target?.productId, requestId, confirmation: true, scannedCode }),
+        body: JSON.stringify({ ...payload, productId: target?.productId, custodyId:target?.custodyId??undefined, requestId, confirmation: true, scannedCode }),
       }),
     onSuccess: (result) => {
       toast({
@@ -162,7 +166,7 @@ export function QuantityBookingAssetDialog({
       <DialogContent dir="rtl" className="max-w-lg">
         <DialogHeader>
           <DialogTitle>{target?.name ?? ""}</DialogTitle>
-          <DialogDescription>أصل متعدد الكمية — أدخل الكمية بدلاً من مسح كل قطعة. يتحقق النظام من التوفر في تاريخ الحجز قبل الحفظ.</DialogDescription>
+          <DialogDescription>{target?.trackingMode==="individual"?"إرجاع الأصل إلى عهدته الأصلية؛ تُراجع هوية الصرف وحالة الإرجاع قبل الحفظ.":"أصل متعدد الكمية — أدخل الكمية بدلاً من مسح كل قطعة. يتحقق النظام من التوفر في تاريخ الحجز قبل الحفظ."}</DialogDescription>
         </DialogHeader>
         {target ? (
           <div className="space-y-3 text-sm">
@@ -174,7 +178,7 @@ export function QuantityBookingAssetDialog({
                 ["الخارج", target.outstanding],
                 ["مرتجع سليم", target.returnedGood],
                 ["تالف / مفقود", Number(target.damaged ?? 0) + Number(target.missing ?? 0)],
-              ].map(([label, value]) => (
+              ].filter(([label])=>!(allowedModes?.length===1&&allowedModes[0]==="return")||["الخارج","مرتجع سليم","تالف / مفقود"].includes(String(label))).map(([label, value]) => (
                 <div key={String(label)} className="rounded-lg border border-border/40 bg-background/60 p-2">
                   <p className="text-[10px] text-muted-foreground">{label}</p>
                   <p className="font-bold tabular-nums">{n(value)}</p>
@@ -182,7 +186,7 @@ export function QuantityBookingAssetDialog({
               ))}
             </div>
             <div className="flex flex-wrap gap-1" role="tablist" aria-label="نوع الإجراء">
-              {MODES.map(({ value, label, icon: Icon }) => (
+              {MODES.filter(item=>!allowedModes||allowedModes.includes(item.value)).map(({ value, label, icon: Icon }) => (
                 <Button
                   key={value}
                   type="button"

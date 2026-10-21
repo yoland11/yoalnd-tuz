@@ -1,0 +1,12 @@
+import assert from "node:assert/strict";
+import React from "react";
+import {renderToStaticMarkup} from "react-dom/server";
+import {deriveBookingProfitability} from "../src/lib/booking-profitability";
+(globalThis as any).React=React;
+const {BookingProfitabilityView}=await import("../src/components/booking-profitability-panel");
+const data={...deriveBookingProfitability({summary:{finalTotal:200000,paid:50000,remaining:150000,paymentStatus:"partial"},attributionAvailable:true,costs:[{key:"transaction:1",label:"أجرة نقل معتمدة",amount:20000,status:"executed",category:"operating",kind:"expense"}],recognizedRevenue:null,reasons:[]}),source:"kosha" as const,id:12,generatedAt:"2026-10-19T12:00:00Z"};
+let html=renderToStaticMarkup(<BookingProfitabilityView data={data}/>);
+assert.match(html,/ربحية الحجز/);assert.match(html,/قيمة العقد/);assert.match(html,/التحصيل النقدي/);assert.match(html,/الإيراد المعترف به/);assert.match(html,/الربح الفعلي/);assert.match(html,/غير متاح/);assert.match(html,/أجرة نقل معتمدة/);assert.doesNotMatch(html,/transaction:1/);
+html=renderToStaticMarkup(<BookingProfitabilityView data={{...data,approvedOperatingCost:null,provisionalOperatingCost:null,capitalInvestment:null,estimatedMargin:null}}/>);
+assert.match(html,/غير متاح/);assert.doesNotMatch(html,/ربح فعلي مؤكد/);
+console.log("PASS actual profitability UI: separated money concepts, incomplete actual profit explicit, no internal IDs and unknown costs not fabricated zeros");

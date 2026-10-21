@@ -1,0 +1,12 @@
+import assert from "node:assert/strict";
+import React from "react";
+import {renderToStaticMarkup} from "react-dom/server";
+import {createRequire} from "node:module";
+const {QueryClient,QueryClientProvider}=createRequire(import.meta.url)("@tanstack/react-query");
+(globalThis as any).React=React;
+const {BookingBulkToolbar}=await import("../src/components/booking-bulk-toolbar");
+const client=new QueryClient();client.setQueryData(["admin","auth","booking-bulk"],{user:{id:1,role:"admin"}});
+const html=renderToStaticMarkup(<QueryClientProvider client={client}><BookingBulkToolbar rows={[{source:"kosha",id:12,number:"AJN-12",customerName:"أحمد"}]} selected={new Set(["kosha:12"])} onSelectionChange={()=>{}} onSummary={()=>{}}/></QueryClientProvider>);
+assert.match(html,/>إرسال تذكير تشغيلي</,"manager must be able to send a bounded operational reminder from the original batch toolbar");
+assert.doesNotMatch(html,/إرسال واتساب|اعتماد دفعات/);
+console.log("PASS original batch toolbar exposes operational reminder without external message/financial actions");

@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {preparationGroups} from '../src/lib/booking-preparation-groups';
+(globalThis as any).React=React;
+const mod=await import('../src/components/preparation-group-summary').catch(()=>null);
+assert.equal(typeof mod?.PreparationGroupSummary,'function','the original preparation list needs usable group controls');
+const group=preparationGroups([{key:'10:0',department:'flowers',status:'ready',preparationState:null,shortfall:0,assigneeName:'أحمد'},{key:'11:0',department:'flowers',status:'shortage',preparationState:null,shortfall:2}])[0];
+const Summary=mod!.PreparationGroupSummary;
+const html=renderToStaticMarkup(<Summary group={group} label="الزهور" busy={false} canManage={true} onlyMissing={false} onSelect={()=>{}} onAction={()=>{}} onToggleMissing={()=>{}}/>);
+assert.match(html,/تجهيز مسجّل: 0 من 2/);assert.match(html,/أحمد/);assert.match(html,/تحديد المجموعة/);assert.match(html,/بدء تجهيز المجموعة/);assert.match(html,/تأكيد تجهيز المجموعة/);assert.match(html,/عرض النواقص/);
+assert.match(html,/aria-valuenow="0"/,'available stock must not render as prepared');
+console.log('PASS real preparation group header: truthful progress/responsibility, bounded selection, start/confirm and shortage filter controls');

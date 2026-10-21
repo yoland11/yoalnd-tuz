@@ -22,6 +22,7 @@ const loadModule = filename => {
 };
 const instructions = loadModule('src/server/kosha-instructions.ts');
 const operations = loadModule('src/server/kosha-operations.ts');
+const evidence = loadModule('src/server/booking-operations-write-guard.ts');
 const stageRoute = declaration('handleStaffPortal').body.statements.find(node =>
   ts.isIfStatement(node) && /action === "stage"/.test(node.expression.getText(tree)),
 );
@@ -125,6 +126,9 @@ async function runCase(bookingSource, actor, assignment, outcome) {
     findRoutedKoshaServiceBooking: async () => ({ order: row, service: {} }),
     persistRoutedKoshaServiceMedia: async () => [],
     routedKoshaCustomFieldsSql: (_, patch, append) => ({ patch, append }),
+    // SQL projection itself is exercised at the real Drizzle boundary in the
+    // write-guard/instruction tests; this fixture models the stored JSON value.
+    bookingEvidenceWriteSql: (_, patch) => evidence.mergeBookingOperationalEvidence(row.bookingDetails, patch),
     json: payload => plain(payload), error: (message, status) => ({ error: message, status }),
     logAdminActivity: async () => {}, addKoshaNotification: async () => {}, createNotification: async () => {},
     KOSHA_EXECUTION_STAGES: operations.KOSHA_STAGES,
