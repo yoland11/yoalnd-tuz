@@ -15492,7 +15492,7 @@ async function mediaResponseFromValue(req: NextRequest, value: unknown) {
         );
         if (!upstream.ok)
           return error(
-            "ØªØ¹Ø°Ø± ØªØ­Ù…ÙŠÙ„ Ø§Ù„ØµÙˆØ±Ø©",
+            "تعذر تحميل الصورة",
             upstream.status === 404 ? 404 : 502,
           );
         return new NextResponse(await upstream.arrayBuffer(), {
@@ -34433,10 +34433,28 @@ async function handleBookingOperations(
   if (resource === "finance" && method === "GET") {
     if (!can("booking_finance_view"))
       return error("ليس لديك صلاحية عرض مالية الحجز", 403);
+    // Collections recorded as a receipt voucher (سند قبض) post under the
+    // voucher, not the booking; list them here too (read-only, no new entries).
+    const voucherResult: any = await db.execute(sql`
+      SELECT v.id FROM receipt_vouchers v
+      WHERE ${reference.entityType === "kosha_booking" ? sql`v.kosha_booking_id = ${reference.id}` : reference.entityType === "service_order" ? sql`v.booking_id = ${reference.id}` : sql`false`}
+      UNION
+      SELECT a.receipt_voucher_id FROM receipt_voucher_allocations a
+      WHERE a.source_type = ${reference.entityType} AND a.source_id = ${reference.id}
+    `);
+    const voucherIds = ((voucherResult.rows ?? voucherResult ?? []) as any[]).map((row) => String(row.id));
     const transactions = await db.query.financialTransactionsTable.findMany({
-      where: and(
-        eq(financialTransactionsTable.sourceType, reference.entityType),
-        eq(financialTransactionsTable.sourceId, String(reference.id)),
+      where: or(
+        and(
+          eq(financialTransactionsTable.sourceType, reference.entityType),
+          eq(financialTransactionsTable.sourceId, String(reference.id)),
+        ),
+        voucherIds.length
+          ? and(
+              eq(financialTransactionsTable.sourceType, "receipt_voucher"),
+              inArray(financialTransactionsTable.sourceId, voucherIds),
+            )
+          : undefined,
       ),
       orderBy: [desc(financialTransactionsTable.transactionTime)],
       limit: 300,
@@ -59760,7 +59778,9 @@ async function syncOrderFinancialPayment(
       sourceEvent: "payment",
       targetAmount: targetPaid,
       normalDirection: "revenue",
-      transactionDate: order.createdAt.toISOString().slice(0, 10),
+      // The cash box lists and totals by this date: a later payment or
+      // correction belongs to the day it happens, not the booking's creation day.
+      transactionDate: baghdadToday(),
       department: "store",
       transactionType: isRental ? "rental_order" : "store_order",
       description: `${isRental ? "دفعة حجز إيجار" : "دفعة طلب"} ${order.trackingCode}`,
@@ -59792,7 +59812,9 @@ async function syncServiceOrderFinancialPayment(
       sourceEvent: "payment",
       targetAmount: targetPaid,
       normalDirection: "revenue",
-      transactionDate: order.createdAt.toISOString().slice(0, 10),
+      // The cash box lists and totals by this date: a later payment or
+      // correction belongs to the day it happens, not the booking's creation day.
+      transactionDate: baghdadToday(),
       department: serviceDepartment(service),
       transactionType: "service_booking",
       description: `دفعة حجز ${order.trackingCode ?? `#${order.id}`}`,
@@ -59831,7 +59853,9 @@ async function syncKoshaFinancialPayment(
       sourceEvent: "payment",
       targetAmount: targetPaid,
       normalDirection: "revenue",
-      transactionDate: order.createdAt.toISOString().slice(0, 10),
+      // The cash box lists and totals by this date: a later payment or
+      // correction belongs to the day it happens, not the booking's creation day.
+      transactionDate: baghdadToday(),
       department: "koshas",
       transactionType: "kosha_booking",
       description: `دفعة حجز كوشة #${order.id}`,
@@ -60000,7 +60024,9 @@ async function syncRentalFinancialPayment(
       sourceEvent: "payment",
       targetAmount: targetPaid,
       normalDirection: "revenue",
-      transactionDate: order.createdAt.toISOString().slice(0, 10),
+      // The cash box lists and totals by this date: a later payment or
+      // correction belongs to the day it happens, not the booking's creation day.
+      transactionDate: baghdadToday(),
       department: "store",
       transactionType: "rental_order",
       description: `دفعة حجز إيجار ${order.orderNo}`,
@@ -60453,7 +60479,7 @@ async function handleCollections(
       financialTransaction = await approveAndExecuteFinancialTransaction(
         financialTransaction.id,
         financialActor(currentUser),
-        "ØªØ­ØµÙŠÙ„ Ù…Ø¨Ø§Ø´Ø± Ù…Ù† Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©",
+        "تحصيل مباشر من الإدارة",
       );
       createdFinancial = financialTransaction;
     }

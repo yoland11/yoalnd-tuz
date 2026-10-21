@@ -1361,11 +1361,20 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
       {/* 4) Movement log — one row per canonical financial_transaction of this booking. */}
       <section className="ajn-op-ledger mt-4">
         <h3><Landmark /> سجل الحركات المالية</h3>
+        {(() => {
+          const waiting = (data?.transactions ?? []).filter((row: any) => ["pending", "draft"].includes(row.approvalStatus) && row.direction === "revenue");
+          const amount = waiting.reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0);
+          return waiting.length ? (
+            <div role="status" className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-amber-900 dark:text-amber-200">
+              <b>دفعة بانتظار الاعتماد: {money(amount)}</b> — لا تظهر في الصندوق الرئيسي حتى يعتمدها المدير الرئيسي من <Link href="/admin/approvals" className="font-bold underline underline-offset-4">الموافقات</Link>.
+            </div>
+          ) : null;
+        })()}
         {data?.transactions?.length ? (
           <div className="overflow-x-auto rounded-lg border border-border/30">
             <table className="w-full min-w-[720px] text-right text-xs">
               <thead className="bg-muted/40 text-muted-foreground">
-                <tr>{["النوع", "المرجع", "المبلغ", "الحالة", "التاريخ", "الصندوق", "أنشأ الطلب", "اعتمد"].map((head) => <th key={head} className="p-2 font-semibold">{head}</th>)}</tr>
+                <tr>{["النوع", "المرجع", "المبلغ", "الحالة", "تاريخ القيد", "الصندوق", "أنشأ الطلب", "اعتمد"].map((head) => <th key={head} className="p-2 font-semibold">{head}</th>)}</tr>
               </thead>
               <tbody>
                 {data.transactions.map((row: any) => <tr key={row.id} className="border-t border-border/20">
@@ -1373,8 +1382,8 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
                   <td className="p-2 tabular-nums" dir="ltr">{row.transactionNo || row.referenceNo || `#${row.id}`}</td>
                   <td className="p-2">{money(Number(row.amount))}</td>
                   <td className="p-2"><OperationStatus value={row.approvalStatus} label={FINANCIAL_STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus} /></td>
-                  <td className="p-2">{readableDate(row.transactionTime)}</td>
-                  <td className="p-2">الصندوق الرئيسي</td>
+                  <td className="p-2">{readableDate(row.transactionDate ?? row.transactionTime)}</td>
+                  <td className="p-2">{row.approvalStatus === "executed" ? "الصندوق الرئيسي" : ["pending", "draft"].includes(row.approvalStatus) ? "لم تُرحّل بعد" : "—"}</td>
                   <td className="p-2">{row.requestedByName || "—"}</td>
                   <td className="p-2">{row.approvedByName || row.executedByName || "—"}</td>
                 </tr>)}
