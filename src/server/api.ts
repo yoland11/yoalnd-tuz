@@ -12756,14 +12756,18 @@ async function syncProductStockFromVariants(productId: number): Promise<void> {
 }
 
 // Reserved quantity per variant AND product-level (variant_id null) for one product.
+type StockSourceRef = { type: string; id: number };
+
 async function loadReservedForProduct(
   productId: number,
+  excludeSource?: StockSourceRef,
 ): Promise<{ productLevel: number; byVariant: Map<number, number> }> {
   await ensureVariantTables();
   const res: any = await db.execute(sql`
     select variant_id, coalesce(sum(quantity),0) as qty
     from stock_reservations
     where product_id = ${productId} and status = 'reserved'
+      ${excludeSource ? sql`and not (source_type = ${excludeSource.type} and source_id = ${excludeSource.id})` : sql``}
     group by variant_id
   `);
   const rows = res.rows ?? res ?? [];
@@ -12777,13 +12781,41 @@ async function loadReservedForProduct(
   return { productLevel, byVariant };
 }
 
+/**
+ * Product-level holds on a shared-stock pool: the stock owner plus every
+ * product linked to it (directly or through a chain). For a product without
+ * links this is just its own product-level holds.
+ */
+async function loadPoolReserved(ownerId: number, excludeSource?: StockSourceRef): Promise<number> {
+  const res: any = await db.execute(sql`
+    with recursive pool as (
+      select id from products where id = ${ownerId}
+      union
+      select p.id from products p join pool on p.shared_stock_product_id = pool.id
+    )
+    select coalesce(sum(r.quantity), 0) as qty
+    from stock_reservations r
+    where r.status = 'reserved' and r.variant_id is null and r.product_id in (select id from pool)
+      ${excludeSource ? sql`and not (r.source_type = ${excludeSource.type} and r.source_id = ${excludeSource.id})` : sql``}
+  `);
+  return Number((res.rows ?? res ?? [])[0]?.qty ?? 0);
+}
+
 // Full stock summary for a product: total / reserved / available, plus variant breakdown.
 // When variants exist, total stock = sum of variant stocks (inventory managed per variant).
-async function getProductStockSummary(product: any) {
+// A product that shares stock with another draws on the stock owner's quantity
+// (its own `stock` is kept at 0), and every product in that pool counts against it.
+// `excludeSource` leaves one booking/order's own holds out, e.g. "available for this booking".
+async function getProductStockSummary(product: any, options: { excludeSource?: StockSourceRef } = {}) {
   const productId = Number(product.id);
-  const [variantRows, reserved] = await Promise.all([
+  const owner = productSharedStockId(product)
+    ? ((await getStockOwnerProduct(productId))?.stockProduct ?? product)
+    : product;
+  const ownerId = Number(owner.id);
+  const [variantRows, reserved, poolReserved] = await Promise.all([
     loadVariantRows(productId),
-    loadReservedForProduct(productId),
+    loadReservedForProduct(productId, options.excludeSource),
+    loadPoolReserved(ownerId, options.excludeSource),
   ]);
   const hasVariants = variantRows.length > 0;
   const variants = variantRows.map((v) =>
@@ -12795,13 +12827,16 @@ async function getProductStockSummary(product: any) {
   );
   const totalStock = hasVariants
     ? variants.reduce((s, v) => s + v.stock, 0)
-    : Number(product.stock ?? 0);
+    : Number(owner.stock ?? 0);
+  const productLevelReserved = hasVariants ? reserved.productLevel : poolReserved;
   const reservedRounded =
-    Math.round((reserved.productLevel + variantReservedTotal) * 1000) / 1000;
+    Math.round((productLevelReserved + variantReservedTotal) * 1000) / 1000;
   const available = Math.max(0, totalStock - reservedRounded);
-  const minStock = Number(product.minStock ?? product.min_stock ?? 0);
+  const minStock = Number(owner.minStock ?? owner.min_stock ?? product.minStock ?? product.min_stock ?? 0);
   return {
     productId,
+    stockOwnerId: ownerId,
+    stockOwnerName: ownerId !== productId ? String(owner.nameAr || owner.name || `#${ownerId}`) : null,
     hasVariants,
     totalStock,
     reserved: reservedRounded,
@@ -13028,6 +13063,12 @@ async function checkAvailability(
     requested: number;
     available: number;
   }> = [];
+  const excludeSource =
+    opts.ignoreSourceType && opts.ignoreSourceId
+      ? { type: opts.ignoreSourceType, id: opts.ignoreSourceId }
+      : undefined;
+  // Quantity already requested from each shared pool earlier in this check.
+  const requestedFromPool = new Map<number, number>();
   for (const it of items) {
     const productId = Number(it.productId);
     const variantId = it.variantId != null ? Number(it.variantId) : null;
@@ -13048,9 +13089,17 @@ async function checkAvailability(
       const p = await db.query.productsTable.findFirst({
         where: eq(productsTable.id, productId),
       });
-      const summary = p ? await getProductStockSummary(p) : null;
-      stock = summary?.totalStock ?? 0;
+      const summary = p ? await getProductStockSummary(p, { excludeSource }) : null;
       name = p?.nameAr || p?.name || name;
+      if (summary && !summary.hasVariants) {
+        const already = requestedFromPool.get(summary.stockOwnerId) ?? 0;
+        const available = Math.max(0, summary.available - already);
+        requestedFromPool.set(summary.stockOwnerId, already + requested);
+        if (requested > available)
+          shortages.push({ productId, variantId, name, requested, available });
+        continue;
+      }
+      stock = summary?.totalStock ?? 0;
     }
     // Reserved for this product/variant, excluding the source being (re)checked.
     const rres: any = await db.execute(sql`
@@ -31342,7 +31391,10 @@ async function bookingOperationProducts(reference: BookingOperationsReference) {
         where: eq(productsTable.id, productId),
       });
       if (product)
-        summaries.set(productId, await getProductStockSummary(product));
+        summaries.set(productId, {
+          ...(await getProductStockSummary(product, { excludeSource: { type: reference.entityType, id: reference.id } })),
+          category: product.category ?? null,
+        });
     }),
   );
   return rows.map((row: any) => {
@@ -31372,8 +31424,24 @@ async function bookingOperationProducts(reference: BookingOperationsReference) {
       warehouseId: line.warehouseId ?? null,
       note: line.note ?? null,
       status: row.status,
+      // Available for this booking (its own holds excluded); reserved = others' holds + this booking's.
       available: Number(variant?.available ?? stock?.available ?? 0),
-      reserved: Number(variant?.reserved ?? stock?.reserved ?? 0),
+      reserved:
+        Number(variant?.reserved ?? stock?.reserved ?? 0) +
+        rows
+          .filter((other: any) => Number(other.product_id) === productId && (other.variant_id == null ? null : Number(other.variant_id)) === variantId && other.status === "reserved")
+          .reduce((sum: number, other: any) => sum + Number(other.quantity ?? 0), 0),
+      stockOwnerName: stock?.stockOwnerName ?? null,
+      category: stock?.category ?? null,
+      // The line's own variants, so the picker works without the store search.
+      variants: (stock?.variants ?? []).map((item: any) => ({
+        id: item.id,
+        color: item.color ?? null,
+        size: item.size ?? null,
+        available: item.available,
+        reserved: item.reserved,
+        stock: item.stock,
+      })),
       barcode: row.barcode ?? null,
     };
   });
@@ -32910,7 +32978,7 @@ async function handleBookingOperations(
           isRental: Boolean(product.isRental),
           isAsset: Boolean(profileMap.get(product.id) || product.isRental),
           profileStatus: profileMap.get(product.id)?.status ?? null,
-          ...(await getProductStockSummary(product)),
+          ...(await getProductStockSummary(product, { excludeSource: { type: reference.entityType, id: reference.id } })),
           trackingMode: quantityProfile ? "quantity" : "individual",
           unitOfMeasure: quantityProfile?.unit ?? null,
           // Date-aware for this booking's day; replaces the plain stock figure.

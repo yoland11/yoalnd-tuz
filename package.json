@@ -58,6 +58,7 @@
     "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs",
     "test:product-insights": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-product-insights.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-product-details-ui.tsx",
     "test:report-pdf": "node ./scripts/test-report-pdf-download.mjs",
+    "test:booking-stock": "node ./scripts/test-booking-shared-stock.mjs",
     "test:work-commands": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-work-commands.ts && node ./scripts/test-work-commands-wiring.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-work-commands-ui.tsx",
     "test:asset-list": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-asset-list-thumbnails.tsx",
     "test:quantity-assets": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-quantity-assets.ts && node ./scripts/test-quantity-assets-wiring.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-quantity-assets-ui.tsx",
