@@ -25,7 +25,7 @@ const order = {
   id: 40, orderNo: "TSK-000040", title: "مونتاج حفلة أحمد", description: "النسخة الطويلة مع الأغنية", taskStatus: "new", status: "new", statusLabel: "جديد",
   priority: "high", department: "editing", departmentLabel: "المونتاج", dueAt: new Date(now.getTime() + 3 * 3_600_000).toISOString(), overdue: false, dueSoon: false,
   assignedStaffIds: [7], assigneeNames: "علي حسن", createdBy: 1, createdByName: "المدير", createdAt: now.toISOString(), completedAt: null, approvedAt: null, returnReason: null,
-  booking: { type: "kosha_booking", id: 120 }, channelId: 1, parentId: null, mandatory: true, templateKey: "editing", requiresApproval: true, evidenceRequired: true,
+  booking: { type: "kosha_booking", id: 120 }, channelId: 1, parentId: null, mandatory: true, templateKey: "editing", templateLabel: "أمر مونتاج", requiresApproval: true, evidenceRequired: true,
   customer: { id: null, name: "أحمد" }, product: null, source: null, pendingExtension: null,
 };
 const channel = {
@@ -39,7 +39,7 @@ const thread = {
   hasOlder: false,
   orders: [order],
   messages: [
-    message(1, { senderId: 8, senderName: "زينب", body: "تم رفع الملفات على الدرايف" }),
+    message(1, { senderId: 8, senderName: "زينب", senderPhotoUrl: "https://cdn.example.com/zainab.jpg", body: "تم رفع الملفات على الدرايف" }),
     message(2, { type: "work_order", body: order.title, taskId: 40 }),
     message(3, { type: "voice", voiceUrl: "https://cdn.example.com/v.webm", voiceDuration: 12, senderId: 7, senderName: "علي حسن", readBy: 2, replyTo: { id: 1, senderName: "زينب", body: "تم رفع الملفات على الدرايف" } }),
     message(4, { type: "system", body: "استلم علي حسن الأمر TSK-000039", taskId: 39 }),
@@ -51,15 +51,23 @@ const details = {
   attachments: [], comments: [], checklist: [{ id: 1, title: "استلام الملفات", done: true }, { id: 2, title: "المونتاج", done: false }],
 };
 
-function render(me: unknown, actions: string[] = details.actions) {
+function render(me: unknown, actions: string[] = details.actions, orderPatch: Record<string, unknown> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchInterval: false } } });
   client.setQueryData(["work-commands", "me"], me);
   client.setQueryData(["work-commands", "channels"], [channel]);
   client.setQueryData(["work-commands", "messages", 1], thread);
-  client.setQueryData(["work-commands", "order", 40], { ...details, actions });
+  client.setQueryData(["work-commands", "order", 40], { ...details, actions, order: { ...details.order, ...orderPatch } });
+  client.setQueryData(["work-commands", "team"], {
+    canGrant: true,
+    staffDepartments: [{ value: "editing", department: "editing" }, { value: "تصوير", department: "photography" }],
+    members: [
+      { id: 7, name: "علي حسن", role: "employee", jobTitle: "مونتير", staffDepartment: "editing", departmentLabel: "المونتاج", canIssue: false, explicit: false, lockedBy: null },
+      { id: 8, name: "زينب كريم", role: "employee", jobTitle: null, staffDepartment: "تصوير", departmentLabel: "التصوير", canIssue: true, explicit: false, lockedBy: "task_create" },
+    ],
+  });
   return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(Router, { ssrPath: "/admin/work-commands" }, createElement(WorkCommandCenter, { mode: "admin" }))));
 }
-const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove: manager, canCreateChannel: manager, department: "editing" });
+const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove: manager, canCreateChannel: manager, canManageCatalog: manager, canGrant: manager, department: "editing" });
 
 // Employee assigned to the order.
 {
@@ -67,19 +75,62 @@ const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove:
   for (const text of ["المحادثات", "أوامري", "المونتاج", "تم رفع الملفات على الدرايف", "مونتاج حفلة أحمد", "TSK-000040", "جديد", "استلام الأمر", "أوامر مفتوحة", "سجل الأمر", "تم إصدار أمر العمل", "قائمة التحقق", "يتطلب اعتماد", "رسالة صوتية", "استلم علي حسن الأمر"])
     assert.ok(html.includes(text), `employee view shows «${text}»`);
   assert.doesNotMatch(html, /لوحة <\/span>المتابعة/, "the follow-up board is for managers");
+  assert.ok(html.includes("كل الأوامر"), "every employee gets the shared list of all orders");
   assert.ok(!html.includes(">إصدار أمر عمل<") && !html.includes("aria-label=\"إصدار أمر عمل\""), "employees without permission cannot issue orders");
   assert.ok(!html.includes("اعتماد الإنجاز"), "approval is not offered to the assignee");
-  assert.match(html, /href="\/admin\/bookings\/kosha\/120"/, "order links to its booking");
+  assert.ok(!html.includes(">الإعدادات<") && !html.includes("تعديل المحادثة") && !html.includes("تعديل الأمر"), "settings and edits are for managers");
+  assert.doesNotMatch(html, /href="\/admin\/bookings\/kosha\/120"/, "employees see the booking number without an admin link");
+  assert.match(html, /<bdi dir="ltr">#<!-- -->120<\/bdi>|<bdi dir="ltr">#120<\/bdi>/, "the booking number is shown");
   assert.match(html, /<audio[^>]+src="https:\/\/cdn\.example\.com\/v\.webm"/);
   assert.match(html, /aria-label="2 غير مقروءة"/);
+  assert.ok(html.includes("تعليمات المدير") && html.includes("النسخة الطويلة مع الأغنية"), "the management's written instructions reach the employee");
+  assert.ok(html.includes("الزبون: <!-- -->أحمد") || html.includes("الزبون: أحمد"), "the customer name reaches the employee");
+  assert.match(html, /<img src="https:\/\/cdn\.example\.com\/zainab\.jpg" alt="زينب"/, "the sender's photo is shown beside their message");
+  assert.match(html, /role="img" aria-label="المدير"/, "without a photo, the sender's initials are shown");
+}
+
+// An order without written instructions says so instead of showing nothing.
+{
+  const html = render({ ready: true, user: { id: 7, name: "علي حسن", department: "editing" }, access: access(false) }, details.actions, { description: null, notes: null });
+  assert.ok(html.includes("لم تُكتب تعليمات لهذا الأمر."), "an empty instructions section is explicit");
+  const withNotes = render({ ready: true, user: { id: 7, name: "علي حسن", department: "editing" }, access: access(false) }, details.actions, { notes: "اتصل بالزبون قبل التسليم" });
+  assert.ok(withNotes.includes("اتصل بالزبون قبل التسليم"), "management notes reach the employee");
 }
 
 // Manager.
 {
   const html = render({ ready: true, user: { id: 1, name: "المدير", department: "general" }, access: access(true) }, ["reassign", "cancel"]);
   assert.match(html, /لوحة <\/span>المتابعة/, "manager sees the follow-up board tab");
-  for (const text of ["إصدار أمر عمل", "قناة", "تحويل إلى أمر عمل", "تغيير المسؤول", "إلغاء الأمر"]) assert.ok(html.includes(text), `manager view shows «${text}»`);
+  for (const text of ["إصدار أمر عمل", "قناة", "تحويل إلى أمر عمل", "تغيير المسؤول", "إلغاء الأمر", "الإعدادات", "تعديل المحادثة", "تعديل الأمر", "نوع الأمر", "أمر مونتاج"]) assert.ok(html.includes(text), `manager view shows «${text}»`);
   assert.ok(!html.includes(">استلام الأمر<"), "only the assignee acknowledges");
+  assert.match(html, /href="\/admin\/bookings\/kosha\/120"/, "managers get the link to the booking");
+}
+
+// Settings: editable order types, departments (with their staff departments) and the issue permission.
+{
+  (globalThis as any).window.location.search = "?view=settings";
+  const html = render({
+    ready: true,
+    user: { id: 1, name: "المدير", department: "general" },
+    access: access(true),
+    catalog: {
+      departments: [
+        { key: "general", label: "الإدارة العامة", aliases: [], active: true, builtIn: true },
+        { key: "editing", label: "المونتاج", aliases: [], active: true, builtIn: true },
+        { key: "photography", label: "التصوير", aliases: [], active: false, builtIn: true },
+        { key: "dept_9", label: "الصوتيات", aliases: ["تصوير"], active: true, builtIn: false },
+      ],
+      orderTypes: [
+        { key: "editing", label: "أمر مونتاج", department: "editing", title: "مونتاج فيديو", priority: "high", estimatedMinutes: 480, checklist: [], evidenceRequired: true, evidenceHint: "", requiresApproval: true, needsBooking: true, active: true, builtIn: true },
+        { key: "type_10", label: "تصميم دعوة", department: "dept_9", title: "تصميم دعوة", priority: "medium", estimatedMinutes: 60, checklist: [], evidenceRequired: false, evidenceHint: "", requiresApproval: false, needsBooking: false, active: false, builtIn: false },
+      ],
+    },
+  });
+  for (const text of ["أنواع الأوامر", "نوع جديد", "أمر مونتاج", "تصميم دعوة", "الأقسام", "قسم جديد", "الصوتيات", "من يستطيع إصدار الأوامر", "علي حسن", "زينب كريم", "مفعّلة عبر صلاحية «إنشاء مهام الموظفين»"])
+    assert.ok(html.includes(text), `settings show «${text}»`);
+  assert.match(html, /aria-label="صلاحية إصدار الأوامر لـ علي حسن"/, "a switch grants the issue permission");
+  assert.ok(html.includes("متوقف"), "switched-off entries stay listed");
+  (globalThis as any).window.location.search = "?channel=1&order=40";
 }
 
 // Before migration 0126: an explicit state, not an empty inbox.
@@ -89,4 +140,4 @@ const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove:
   assert.ok(!html.includes("لا توجد محادثات"), "never presented as 'no data'");
 }
 
-console.log("PASS  work command center UI: employee/manager views, order card, details, voice, unread, pre-migration state");
+console.log("PASS  work command center UI: employee/manager views, order card, details, voice, unread, settings, pre-migration state");

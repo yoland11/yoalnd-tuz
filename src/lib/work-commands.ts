@@ -152,7 +152,7 @@ export function transitionProblem(action: WorkOrderAction, context: ActionContex
 export type WorkOrderTemplate = {
   key: string;
   label: string;
-  department: WorkDepartment;
+  department: string;
   title: string;
   priority: "low" | "medium" | "high" | "urgent";
   estimatedMinutes: number;
@@ -265,4 +265,162 @@ export function extractWorkOrderFields(
   }
   if (!result.assigneeIds.length) result.notes.push("لم يُعرف الموظف من النص؛ اختره يدوياً.");
   return result;
+}
+
+// ─── Editable catalog: order types and departments ──────────────────────────
+// Built-ins above are the defaults. Managers can rename, re-map, deactivate
+// and add entries; built-ins are never removed so older orders keep a label.
+
+export type WorkDepartmentConfig = { key: string; label: string; aliases: string[]; active: boolean; builtIn: boolean };
+export type WorkOrderTypeConfig = WorkOrderTemplate & { active: boolean; builtIn: boolean };
+export type WorkCatalog = { departments: WorkDepartmentConfig[]; orderTypes: WorkOrderTypeConfig[] };
+
+const foldText = (value: unknown) =>
+  String(value ?? "").trim().toLowerCase().replace(/[إأآ]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه").replace(/\s+/g, " ");
+
+export const DEFAULT_WORK_CATALOG: WorkCatalog = {
+  // Built-in aliases (DEPARTMENT_ALIASES) apply automatically; `aliases` holds
+  // only the staff departments a manager assigned, which take precedence.
+  departments: WORK_DEPARTMENTS.map((item) => ({ key: item.key, label: item.label, aliases: [], active: true, builtIn: true })),
+  orderTypes: WORK_ORDER_TEMPLATES.map((item) => ({ ...item, checklist: [...item.checklist], active: true, builtIn: true })),
+};
+
+const CATALOG_KEY = /^[a-z][a-z0-9_]{1,39}$/;
+const PRIORITY_VALUES = new Set(["low", "medium", "high", "urgent"]);
+const clip = (value: unknown, max: number) => String(value ?? "").trim().slice(0, max);
+
+/** Problems with a catalog a manager submitted, in Arabic; empty when valid. */
+export function catalogProblems(input: { departments?: unknown; orderTypes?: unknown }) {
+  const problems: string[] = [];
+  const departments = (Array.isArray(input.departments) ? input.departments : []) as any[];
+  const orderTypes = (Array.isArray(input.orderTypes) ? input.orderTypes : []) as any[];
+  const departmentKeys = new Set<string>();
+  const labels = new Set<string>();
+  for (const raw of departments) {
+    const key = clip(raw?.key, 40);
+    const label = clip(raw?.label, 60);
+    if (!CATALOG_KEY.test(key)) problems.push(`رمز القسم «${label || key}» غير صالح`);
+    if (label.length < 2) problems.push("اسم القسم مطلوب (حرفان على الأقل)");
+    if (departmentKeys.has(key)) problems.push(`القسم «${label}» مكرر`);
+    if (labels.has(foldText(label))) problems.push(`يوجد قسم آخر باسم «${label}»`);
+    departmentKeys.add(key);
+    labels.add(foldText(label));
+  }
+  if (departments.length > 40) problems.push("الحد الأقصى 40 قسماً");
+  const typeKeys = new Set<string>();
+  const typeLabels = new Set<string>();
+  for (const raw of orderTypes) {
+    const key = clip(raw?.key, 40);
+    const label = clip(raw?.label, 60);
+    if (!CATALOG_KEY.test(key)) problems.push(`رمز نوع الأمر «${label || key}» غير صالح`);
+    if (label.length < 2) problems.push("اسم نوع الأمر مطلوب (حرفان على الأقل)");
+    if (typeKeys.has(key)) problems.push(`نوع الأمر «${label}» مكرر`);
+    if (typeLabels.has(foldText(label))) problems.push(`يوجد نوع أمر آخر باسم «${label}»`);
+    if (departments.length && !departmentKeys.has(clip(raw?.department, 40))) problems.push(`قسم نوع الأمر «${label}» غير موجود`);
+    typeKeys.add(key);
+    typeLabels.add(foldText(label));
+  }
+  if (orderTypes.length > 60) problems.push("الحد الأقصى 60 نوعاً");
+  return [...new Set(problems)];
+}
+
+/**
+ * Stored overrides merged over the built-ins. Malformed entries are dropped;
+ * built-ins always remain (possibly inactive) and "general" stays active.
+ */
+export function normalizeCatalog(stored: unknown): WorkCatalog {
+  const source = (stored && typeof stored === "object" ? stored : {}) as { departments?: unknown; orderTypes?: unknown };
+  const byKey = (list: unknown) =>
+    new Map<string, any>(
+      (Array.isArray(list) ? list : [])
+        .filter((item: any) => CATALOG_KEY.test(clip(item?.key, 40)))
+        .map((item: any) => [clip(item.key, 40), item]),
+    );
+  const storedDepartments = byKey(source.departments);
+  const aliasList = (value: unknown) => (Array.isArray(value) ? value.map((alias) => clip(alias, 60)).filter(Boolean) : []);
+  const departments: WorkDepartmentConfig[] = DEFAULT_WORK_CATALOG.departments.map((base) => {
+    const override = storedDepartments.get(base.key);
+    storedDepartments.delete(base.key);
+    return {
+      ...base,
+      label: clip(override?.label, 60) || base.label,
+      aliases: [...new Set(aliasList(override?.aliases))],
+      active: base.key === "general" ? true : override?.active !== false,
+    };
+  });
+  for (const [key, item] of storedDepartments) {
+    const label = clip(item?.label, 60);
+    if (label.length >= 2) departments.push({ key, label, aliases: aliasList(item.aliases), active: item.active !== false, builtIn: false });
+  }
+  const departmentKeys = new Set(departments.map((item) => item.key));
+  const storedTypes = byKey(source.orderTypes);
+  const orderType = (base: Partial<WorkOrderTemplate> & { key: string }, override: any, builtIn: boolean): WorkOrderTypeConfig | null => {
+    const label = clip(override?.label, 60) || base.label || "";
+    if (label.length < 2) return null;
+    const department = clip(override?.department, 40) || base.department || "general";
+    const minutes = Math.round(Number(override?.estimatedMinutes ?? base.estimatedMinutes ?? 0));
+    return {
+      key: base.key,
+      label,
+      department: departmentKeys.has(department) ? department : "general",
+      title: clip(override?.title, 120) || base.title || label,
+      priority: (PRIORITY_VALUES.has(String(override?.priority)) ? override.priority : base.priority ?? "medium") as WorkOrderTemplate["priority"],
+      estimatedMinutes: Number.isFinite(minutes) && minutes > 0 ? Math.min(minutes, 100_000) : 0,
+      checklist: Array.isArray(override?.checklist) ? override.checklist.map((item: unknown) => clip(item, 300)).filter(Boolean).slice(0, 30) : [...(base.checklist ?? [])],
+      evidenceRequired: typeof override?.evidenceRequired === "boolean" ? override.evidenceRequired : base.evidenceRequired ?? false,
+      evidenceHint: clip(override?.evidenceHint, 120) || base.evidenceHint || "صورة أو ملف أو رابط عند الإنجاز",
+      requiresApproval: typeof override?.requiresApproval === "boolean" ? override.requiresApproval : base.requiresApproval ?? false,
+      needsBooking: typeof override?.needsBooking === "boolean" ? override.needsBooking : base.needsBooking ?? false,
+      active: override?.active !== false,
+      builtIn,
+    };
+  };
+  const orderTypes: WorkOrderTypeConfig[] = [];
+  for (const base of DEFAULT_WORK_CATALOG.orderTypes) {
+    const merged = orderType(base, storedTypes.get(base.key), true);
+    storedTypes.delete(base.key);
+    if (merged) orderTypes.push(merged);
+  }
+  for (const [key, item] of storedTypes) {
+    const merged = orderType({ key }, item, false);
+    if (merged) orderTypes.push(merged);
+  }
+  return { departments, orderTypes };
+}
+
+/** Department key for a stored or typed value (key, label or alias); unknown → general. */
+const FOLDED_ALIASES = new Map(Object.entries(DEPARTMENT_ALIASES).map(([alias, key]) => [foldText(alias), key]));
+
+/** The built-in department a staff department value maps to without any manager choice. */
+export function defaultDepartmentFor(value: unknown): string | null {
+  return FOLDED_ALIASES.get(foldText(value)) ?? null;
+}
+
+export function catalogDepartment(catalog: WorkCatalog, value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "general";
+  const direct = catalog.departments.find((item) => item.key === raw);
+  if (direct) return direct.key;
+  const folded = foldText(raw);
+  // A manager's assignment (or a department's own name) wins over the built-in aliases.
+  const assigned = catalog.departments.find((item) => item.aliases.some((alias) => foldText(alias) === folded) || foldText(item.label) === folded);
+  if (assigned) return assigned.key;
+  const builtIn = defaultDepartmentFor(raw);
+  return builtIn && catalog.departments.some((item) => item.key === builtIn) ? builtIn : "general";
+}
+
+export function catalogDepartmentLabel(catalog: WorkCatalog, value: unknown) {
+  const key = catalogDepartment(catalog, value);
+  return catalog.departments.find((item) => item.key === key)?.label ?? "الإدارة العامة";
+}
+
+export function catalogOrderType(catalog: WorkCatalog, key: unknown) {
+  return catalog.orderTypes.find((item) => item.key === key) ?? null;
+}
+
+/** A new unique key for a custom entry, e.g. "dept_9" / "type_10". */
+export function newCatalogKey(prefix: "dept" | "type", existing: string[]) {
+  let index = existing.length + 1;
+  while (existing.includes(`${prefix}_${index}`)) index++;
+  return `${prefix}_${index}`;
 }

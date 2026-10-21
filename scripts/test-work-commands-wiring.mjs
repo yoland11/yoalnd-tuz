@@ -27,10 +27,30 @@ assert.match(schema, /export const internalChannelReadsTable = pgTable\("interna
 // The server module stays out of finance, stock and bookings.
 assert.doesNotMatch(
   server.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ""),
-  /\b(?:stock_movements|warehouse_stock|financial_transactions|cash_box\w*|payments|sales_invoices|purchase_invoices|journal_entries|kosha_bookings|service_orders)\b/,
-  "work orders never write financial, inventory or booking records",
+  /\b(?:stock_movements|warehouse_stock|financial_transactions|cash_box\w*|payments|sales_invoices|purchase_invoices|journal_entries)\b/,
+  "work orders never touch financial or inventory records",
 );
+// Bookings and customers are only read (to link an order to a customer's booking).
+assert.doesNotMatch(
+  server,
+  /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:kosha_bookings|service_orders|customers)\b/i,
+  "work orders never write bookings or customers",
+);
+assert.match(server, /export async function resolveOrderCustomer/, "the booking's own customer is resolved on the server");
+// Editable order types and departments live in the existing settings table.
+assert.match(server, /INSERT INTO settings \(key, value, updated_at\) VALUES \(\$\{CATALOG_SETTING\}/);
+assert.doesNotMatch(read("lib/db/migrations/0126_work_command_center.sql"), /work_departments|work_order_types/, "no new tables for the catalog");
+// The issue permission is part of the normal permission catalog on both sides.
+assert.match(api, /"task_approve",\s*"work_orders\.issue",/);
+assert.match(read("src/views/admin/_lib.ts"), /"task_approve",\s*"work_orders\.issue",/);
+assert.match(read("src/views/admin/_lib.ts"), /"work_orders\.issue": "مركز أوامر العمل: إصدار أوامر"/);
+assert.match(server, /canGrant: role === "admin" \|\| has\("staff"\)/, "granting follows the staff screen's permission rule");
 assert.match(server, /FOR UPDATE/, "transitions lock the task row");
+assert.match(read("src/components/work-commands/command-center.tsx"), /onSend\(\{ body: text\.trim\(\), attachments: draft\.attachments, voice: await blobToDataUrl/, "a voice note is sent together with the typed text and attachments");
+assert.match(read("src/components/work-commands/create-order-dialog.tsx"), /description: description\.trim\(\) \|\| sourceText\.trim\(\)/, "a message typed in the extraction box is saved as the instructions");
+assert.doesNotMatch(server, /canAccessOrder|لوحة المتابعة للإدارة فقط/, "every employee may read every order");
+assert.match(server, /const problem = transitionProblem\(input\.action, actionContext\(before, user\)\)/, "acting still requires being the assignee or management");
+assert.match(server, /sp\.photo_url AS sender_photo[\s\S]{0,400}LEFT JOIN staff sp ON sp\.id = m\.sender_id/, "messages carry the sender's staff photo");
 assert.match(server, /ON CONFLICT \(channel_id, client_key\) WHERE client_key IS NOT NULL DO NOTHING/, "message sends are idempotent");
 assert.match(server, /return null;\s*\}\s*\n\s*export \{ ACTIVE_TASK_STATUSES \}/, "no transcription provider is wired");
 
@@ -38,6 +58,16 @@ assert.match(server, /return null;\s*\}\s*\n\s*export \{ ACTIVE_TASK_STATUSES \}
 const section = api.slice(api.indexOf('if (section === "work-commands") {'), api.indexOf('if (section === "product-insights") {'));
 assert.ok(section.length > 500, "work-commands section exists");
 assert.match(section, /cause instanceof WorkCommandError\) return error\(cause\.message, cause\.status\)/);
+for (const route of [
+  /parts\[2\] === "catalog" && method === "PUT"/,
+  /parts\[2\] === "team" && parts\[4\] === "issue" && method === "POST"/,
+  /parts\[2\] === "customers" && parts\[4\] === "bookings"/,
+  /!parts\[4\] && method === "PATCH"[\s\S]{0,120}updateWorkChannel/,
+  /parts\[4\] === "archive" && method === "POST"/,
+  /!parts\[4\] && method === "PATCH"[\s\S]{0,400}editWorkOrder/,
+])
+  assert.match(section, route);
+assert.match(section, /"staff_permission_changed", "staff", staffId/, "permission changes are audited");
 assert.match(section, /throw cause;/, "unknown failures reach the global handler with a request id");
 assert.match(section, /voiceUrl\.startsWith\("data:"\)\) return error\("تعذر حفظ الرسالة الصوتية في التخزين، أعد المحاولة", 503/, "a failed upload is never saved inline");
 
@@ -64,6 +94,9 @@ assert.match(api, /sweepWorkOrderDeadlines\(db, \(notice\) => createNotification
 assert.match(routes, /<Route path="\/admin\/work-commands">/);
 assert.match(layout, /href: "\/admin\/work-commands"/);
 assert.match(portal, /\{tab === "work" \? <WorkCommandCenter mode="staff" \/> : null\}/);
+assert.match(portal, /\{task\.customerName \? <p className="mt-1 text-sm font-bold text-foreground">الزبون: \{task\.customerName\}<\/p> : null\}/, "«مهامي» shows the customer");
+assert.match(api, /customerName: customerByTask\.get\(task\.id\) \?\? null/, "the portal dashboard returns each task's customer");
+assert.match(api, /LEFT JOIN kosha_bookings kb ON t\.related_type = 'kosha_booking' AND kb\.id = t\.related_id/);
 assert.match(read("src/views/admin/booking-operations-workspace.tsx"), /<IssueWorkOrderButton defaults=\{\{ booking:/);
 assert.match(read("src/views/admin/product-details.tsx"), /<CreateWorkOrderDialog/);
 

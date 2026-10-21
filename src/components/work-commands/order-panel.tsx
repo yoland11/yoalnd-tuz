@@ -4,6 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   CalendarClock,
   CheckCircle2,
+  Contact,
   Clock3,
   ExternalLink,
   FileText,
@@ -12,6 +13,7 @@ import {
   Link2,
   ListChecks,
   Loader2,
+  Pencil,
   MessageSquareText,
   PlayCircle,
   RotateCcw,
@@ -34,8 +36,11 @@ import {
   PriorityChip,
   StatusChip,
   dueText,
+  fieldClass,
   formatDateTime,
   fromLocalInput,
+  toLocalInput,
+  useWorkCatalog,
   useWorkMe,
   useWorkStaff,
   viewerActions,
@@ -280,6 +285,13 @@ export function WorkOrderCard({ order, onOpen, actionLimit = 2 }: { order: WorkO
         <span className={`inline-flex items-center gap-1 ${order.overdue ? "font-bold text-destructive" : order.dueSoon ? "font-bold text-amber-700 dark:text-amber-300" : ""}`}><Clock3 className="h-3.5 w-3.5" />{dueText(order)}</span>
         <PriorityChip priority={order.priority} />
       </div>
+      <CustomerLine order={order} className="mt-1.5" />
+      {order.description ? (
+        <div className="mt-2 rounded-lg bg-muted/60 px-2.5 py-2">
+          <p className="text-[11px] font-bold text-muted-foreground">تعليمات {order.createdByName || "الإدارة"}</p>
+          <p className="line-clamp-3 whitespace-pre-line text-sm leading-6 text-foreground">{order.description}</p>
+        </div>
+      ) : null}
       {order.status === "needs_rework" && order.returnReason ? <p className="mt-2 rounded-lg bg-destructive/10 px-2.5 py-1.5 text-xs leading-5 text-destructive">سبب الإرجاع: {order.returnReason}</p> : null}
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
         <ActionButtons order={order} actions={actions} onDialog={setDialog} compact limit={actionLimit} />
@@ -287,6 +299,18 @@ export function WorkOrderCard({ order, onOpen, actionLimit = 2 }: { order: WorkO
       </div>
       <OrderActionDialog order={order} action={dialog} onClose={() => setDialog(null)} />
     </article>
+  );
+}
+
+/** «الزبون: … · حجز #…» from the customer/booking the order was issued for. */
+function CustomerLine({ order, className = "" }: { order: WorkOrder; className?: string }) {
+  if (!order.customer?.name && !order.booking) return null;
+  return (
+    <p className={`flex flex-wrap items-center gap-x-1.5 text-xs font-bold text-foreground ${className}`}>
+      <Contact className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      الزبون: {order.customer?.name || "غير محدد"}
+      {order.booking ? <span className="font-normal text-muted-foreground">· حجز <bdi dir="ltr">#{order.booking.id}</bdi></span> : null}
+    </p>
   );
 }
 
@@ -299,6 +323,87 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
+/** Change an open order's title, type, department, priority, deadline or details. */
+export function EditOrderDialog({ order, open, onClose }: { order: WorkOrder; open: boolean; onClose: () => void }) {
+  const { toast } = useToast();
+  const catalog = useWorkCatalog();
+  const [form, setForm] = useState({ title: "", description: "", templateKey: "", department: "", priority: "medium", dueAt: "" });
+  useEffect(() => {
+    if (open)
+      setForm({
+        title: order.title,
+        description: order.description ?? "",
+        templateKey: order.templateKey ?? "",
+        department: order.department,
+        priority: order.priority,
+        dueAt: toLocalInput(order.dueAt),
+      });
+  }, [open, order]);
+  const save = useMutation({
+    mutationFn: () =>
+      adminFetch<{ order: WorkOrder; changed: string[] }>(`/admin/work-commands/orders/${order.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title: form.title,
+          description: form.description,
+          templateKey: form.templateKey || null,
+          department: form.department,
+          priority: form.priority,
+          dueAt: fromLocalInput(form.dueAt),
+        }),
+      }),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["work-commands"] });
+      toast({ title: result.changed.length ? "تم تعديل الأمر" : "لا توجد تغييرات", description: `${result.order.orderNo} · ${result.order.title}` });
+      onClose();
+    },
+    onError: (error) => toast({ variant: "destructive", title: "تعذر تعديل الأمر", description: apiErrorMessage(error) }),
+  });
+  const types = catalog.orderTypes.filter((item) => item.active || item.key === order.templateKey);
+  const departments = catalog.departments.filter((item) => item.active || item.key === order.department);
+  const set = (patch: Partial<typeof form>) => setForm((current) => ({ ...current, ...patch }));
+  return (
+    <Dialog open={open} onOpenChange={(next) => (!next && !save.isPending ? onClose() : undefined)}>
+      <DialogContent className="w-[min(calc(100%-2rem),36rem)]">
+        <DialogHeader className="text-start">
+          <DialogTitle className="text-lg font-extrabold">تعديل الأمر</DialogTitle>
+          <DialogDescription className="leading-6">{order.orderNo}. يُسجّل التعديل في سجل الأمر ويصل إشعار للموظف إذا تغيّر الموعد أو المطلوب.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <label className="block space-y-1 text-sm font-bold">العنوان<Input value={form.title} onChange={(event) => set({ title: event.target.value })} className="min-h-11 font-normal" maxLength={500} /></label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block space-y-1 text-sm font-bold">نوع الأمر
+              <select value={form.templateKey} onChange={(event) => {
+                const type = catalog.orderTypes.find((item) => item.key === event.target.value);
+                set({ templateKey: event.target.value, ...(type ? { department: type.department } : {}) });
+              }} className={`${fieldClass} font-normal`}>
+                <option value="">عام</option>
+                {types.map((item) => <option key={item.key} value={item.key}>{item.label}{item.active ? "" : " (متوقف)"}</option>)}
+              </select>
+            </label>
+            <label className="block space-y-1 text-sm font-bold">القسم
+              <select value={form.department} onChange={(event) => set({ department: event.target.value })} className={`${fieldClass} font-normal`}>
+                {departments.map((item) => <option key={item.key} value={item.key}>{item.label}{item.active ? "" : " (متوقف)"}</option>)}
+              </select>
+            </label>
+            <label className="block space-y-1 text-sm font-bold">الأولوية
+              <select value={form.priority} onChange={(event) => set({ priority: event.target.value })} className={`${fieldClass} font-normal`}>
+                {Object.entries(PRIORITY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <label className="block space-y-1 text-sm font-bold">موعد الإنجاز<Input type="datetime-local" value={form.dueAt} onChange={(event) => set({ dueAt: event.target.value })} className="min-h-11 font-normal" dir="ltr" /></label>
+          </div>
+          <label className="block space-y-1 text-sm font-bold">تعليمات للموظف<Textarea value={form.description} onChange={(event) => set({ description: event.target.value })} rows={3} className="font-normal" /></label>
+        </div>
+        <DialogFooter className="gap-2 sm:justify-start">
+          <Button type="button" className="min-h-11 gap-2" disabled={save.isPending || form.title.trim().length < 2} onClick={() => save.mutate()}>{save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}حفظ التعديل</Button>
+          <Button type="button" variant="outline" className="min-h-11" disabled={save.isPending} onClick={onClose}>رجوع</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { orderId: number; onOpenOrder?: (id: number) => void; onOpenChannel?: (channelId: number) => void }) {
   const details = useQuery({
     queryKey: workKeys.order(orderId),
@@ -306,6 +411,8 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
     refetchInterval: 20_000,
   });
   const [dialog, setDialog] = useState<WorkOrderAction | null>(null);
+  const [editing, setEditing] = useState(false);
+  const me = useWorkMe();
 
   if (details.isLoading)
     return (
@@ -318,7 +425,9 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
   if (details.isError) return <div className="p-4"><Failure title="تعذر تحميل أمر العمل" error={details.error} onRetry={() => void details.refetch()} /></div>;
   const data = details.data!;
   const { order } = data;
-  const managerMedia = data.attachments.filter((item) => !item.category.startsWith("employee_"));
+  const isAudio = (item: OrderDetails["attachments"][number]) => item.mediaType.startsWith("audio");
+  const voiceNotes = data.attachments.filter((item) => !item.category.startsWith("employee_") && isAudio(item));
+  const managerMedia = data.attachments.filter((item) => !item.category.startsWith("employee_") && !isAudio(item));
   const evidence = data.attachments.filter((item) => item.category.startsWith("employee_"));
   const asPhoto = (item: OrderDetails["attachments"][number]) => ({ url: item.url, thumbnailUrl: item.thumbnailUrl, fileName: item.fileName, mediaType: item.mediaType, caption: null });
   const isImage = (item: OrderDetails["attachments"][number]) => item.mediaType === "image" || item.mediaType.startsWith("image/");
@@ -335,7 +444,18 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
         {data.parent ? (
           <Button type="button" variant="link" size="flush" className="border-transparent text-xs" onClick={() => onOpenOrder?.(data.parent!.id)}>جزء من: {data.parent.title}</Button>
         ) : null}
+        <CustomerLine order={order} className="pt-1 text-sm" />
       </header>
+
+      <section className="space-y-1.5 rounded-xl bg-muted/60 px-3 py-2.5" aria-label="تعليمات الأمر">
+        <h3 className="flex items-center gap-1.5 text-xs font-extrabold text-muted-foreground"><FileText className="h-3.5 w-3.5" />تعليمات {order.createdByName || "الإدارة"}</h3>
+        {order.description ? <p className="whitespace-pre-line text-sm leading-7 text-foreground">{order.description}</p> : null}
+        {order.notes ? <p className="whitespace-pre-line text-sm leading-7 text-foreground"><b>ملاحظات: </b>{order.notes}</p> : null}
+        {voiceNotes.map((item) => <audio key={item.url} controls preload="none" src={item.url} className="h-10 w-full" aria-label="رسالة صوتية من الإدارة" />)}
+        {!order.description && !order.notes && !voiceNotes.length ? (
+          <p className="text-sm text-muted-foreground">لم تُكتب تعليمات لهذا الأمر.{me.data && (me.data.access.canApprove || order.createdBy === me.data.user.id) ? " أضفها من «تعديل الأمر»." : ""}</p>
+        ) : null}
+      </section>
 
       {order.status === "needs_rework" && order.returnReason ? (
         <div className="rounded-xl bg-destructive/10 px-3 py-2.5 text-sm leading-6 text-destructive"><b>يحتاج تعديل:</b> {order.returnReason}</div>
@@ -346,7 +466,12 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
         </div>
       ) : null}
 
-      <ActionButtons order={order} actions={data.actions} onDialog={setDialog} />
+      <div className="flex flex-wrap items-start gap-1.5">
+        <ActionButtons order={order} actions={data.actions} onDialog={setDialog} />
+        {me.data && (me.data.access.canApprove || order.createdBy === me.data.user.id) && !["completed", "cancelled"].includes(order.taskStatus) ? (
+          <Button type="button" variant="outline" size="compact" className="gap-1.5" onClick={() => setEditing(true)}><Pencil className="h-3.5 w-3.5" />تعديل الأمر</Button>
+        ) : null}
+      </div>
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-border p-3">
         <Fact label="المسؤول">{order.assigneeNames || "—"}</Fact>
@@ -354,21 +479,23 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
         <Fact label="موعد الإنجاز"><span className={order.overdue ? "text-destructive" : undefined}>{formatDateTime(order.dueAt)}</span><span className="block text-xs font-semibold text-muted-foreground">{dueText(order)}</span></Fact>
         <Fact label="الأولوية">{PRIORITY_LABELS[order.priority] ?? order.priority}</Fact>
         <Fact label="القسم">{order.departmentLabel}</Fact>
+        {order.templateLabel ? <Fact label="نوع الأمر">{order.templateLabel}</Fact> : null}
         <Fact label="الاعتماد">{order.requiresApproval ? "يتطلب اعتماد" : "بدون اعتماد"}{order.evidenceRequired ? " · دليل إنجاز" : ""}</Fact>
-        {order.booking ? <Fact label="الحجز"><Link href={bookingHref(order.booking)} className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline">#{order.booking.id}<ExternalLink className="h-3 w-3" /></Link></Fact> : null}
+        {order.booking ? (
+          <Fact label="الحجز">
+            {me.data?.access.manager ? (
+              <Link href={bookingHref(order.booking)} className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"><bdi dir="ltr">#{order.booking.id}</bdi><ExternalLink className="h-3 w-3" /></Link>
+            ) : (
+              <bdi dir="ltr">#{order.booking.id}</bdi>
+            )}
+          </Fact>
+        ) : null}
         {order.customer?.name ? <Fact label="الزبون">{order.customer.name}</Fact> : null}
         {order.product ? <Fact label="المنتج / الأصل"><Link href={`/admin/products/${order.product.id}`} className="text-primary underline-offset-4 hover:underline">{order.product.name ?? `#${order.product.id}`}</Link></Fact> : null}
         <Fact label="تاريخ الإصدار">{formatDateTime(order.createdAt)}</Fact>
       </dl>
       {order.channelId && onOpenChannel ? (
         <Button type="button" variant="outline" size="compact" className="gap-1.5" onClick={() => onOpenChannel(order.channelId!)}><MessageSquareText className="h-3.5 w-3.5" />عرض المحادثة</Button>
-      ) : null}
-
-      {order.description ? (
-        <section className="space-y-1.5">
-          <h3 className="flex items-center gap-1.5 text-sm font-extrabold"><FileText className="h-4 w-4 text-muted-foreground" />التفاصيل</h3>
-          <p className="whitespace-pre-line text-sm leading-7 text-foreground/90">{order.description}</p>
-        </section>
       ) : null}
 
       {data.subtasks.length ? (
@@ -462,6 +589,7 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
       </section>
 
       <OrderActionDialog order={order} action={dialog} onClose={() => setDialog(null)} />
+      <EditOrderDialog order={order} open={editing} onClose={() => setEditing(false)} />
     </div>
   );
 }

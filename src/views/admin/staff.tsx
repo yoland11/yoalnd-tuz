@@ -156,7 +156,7 @@ const ROLE_PRESETS: Record<string, string[]> = {
     "whatsapp",
     "accounting",
     "tasks",
-    "task_create", "task_edit", "task_delete", "task_assign", "task_approve",
+    "task_create", "task_edit", "task_delete", "task_assign", "task_approve", "work_orders.issue",
     "photography",
     "graduation",
     "graduation_production",

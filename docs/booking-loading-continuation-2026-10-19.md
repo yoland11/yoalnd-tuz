@@ -135,3 +135,13 @@ Blast radius / caller audit: `getBookingPreparationSummary` is read by original 
 - No lint script configured. Isolated database integration/save-smoke/concurrency: **SKIPPED**, not passed. No changes to Production data, schema, accounting/stock/payment formulas or protected A4 design.
 - All four Important review findings fixed in one regression-backed pass; no Critical/Minor findings reported. The reviewer’s pre-fix verdict is not represented as a post-fix formal approval.
 - Still LOCAL and UNCOMMITTED on `codex/custody-lock-safety`; no commit, push, deployment or automatic release performed. Broader remaining scope is explicitly listed above.
+
+## Owner-approved completed increment release
+
+The owner subsequently requested publishing the completed increment first, then continuing the backlog. This explicitly supersedes the earlier all-five-phases publication hold; it does not broaden data-write or verification authority. Release scope/exclusions/rollback/read-only smoke plan are documented in `docs/release-2026-10-21-booking-operations.md`.
+
+- Candidate committed as `44dec3ff4` after fresh full critical verification exit 0.
+- Integrated latest `origin/main` `8313456b7` without conflict, preserving five published work-command commits. Primary checkout and unrelated graduation changes untouched.
+- Fresh merged-tree full critical verification (typecheck/build/payment-state/all critical regressions) exit 0. Actual-component browser flows for center/workspace/loading/original returns at 1440/768/390px and group scope/in-flight cases 3/3 passed.
+- No schema/Production data changes, test DB creation or dependency update. Full database writes/concurrency/save-smoke remain SKIPPED, never passed.
+- Push will use the existing mandatory pre-push gate and connected Vercel Git deployment. At this recorded snapshot push/Production readiness are not yet asserted. Continue the explicitly excluded backlog only after checking deployment.

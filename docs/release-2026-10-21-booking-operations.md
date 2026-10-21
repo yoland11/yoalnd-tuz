@@ -42,4 +42,8 @@ Authorization: owner explicitly requested publishing completed work first, then 
 
 ## Release evidence
 
-Pending fresh candidate verification, integration verification, exact Git SHA push and Vercel status. This document does not assert successful deployment before those are confirmed.
+- Candidate `44dec3ff4`: fresh `verify:critical` exit 0 (`.superpowers/release-completed-20261021-candidate.log`).
+- Merged working tree includes `8313456b7`: fresh `verify:critical` exit 0 (`.superpowers/release-completed-20261021-merged.log`), including typecheck, production build, payment-state and all critical suites. No conflicts.
+- Merged actual-component browsers: Booking Center/workspace and loading/original returns at 1440/768/390px, plus 3 scope/in-flight group tests, all exit 0 (`.superpowers/release-completed-20261021-browser.log`).
+- Database integration/save-smoke SKIPPED, not passed; no Production writes or migration. No configured lint script.
+- Exact final SHA push and Vercel readiness remain pending at this committed snapshot; the user-facing handoff must verify them separately.

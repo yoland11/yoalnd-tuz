@@ -4,15 +4,18 @@ import { AlertTriangle, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { adminFetch } from "@/views/admin/_lib";
 import {
+  DEFAULT_WORK_CATALOG,
   PRIORITY_LABELS,
   WORK_ORDER_STATUS_LABELS,
   allowedActions,
+  catalogDepartmentLabel,
+  type WorkCatalog,
   type WorkOrderAction,
   type WorkOrderStatus,
 } from "@/lib/work-commands";
 
-export type WorkAccess = { manager: boolean; canCreate: boolean; canApprove: boolean; canCreateChannel: boolean; department: string };
-export type WorkMe = { ready: boolean; user: { id: number; name: string; department: string }; access: WorkAccess };
+export type WorkAccess = { manager: boolean; canCreate: boolean; canApprove: boolean; canCreateChannel: boolean; canManageCatalog?: boolean; canGrant?: boolean; department: string };
+export type WorkMe = { ready: boolean; user: { id: number; name: string; department: string }; access: WorkAccess; catalog?: WorkCatalog };
 export type WorkStaff = { id: number; name: string; department: string; jobTitle: string | null };
 export type Attachment = { url: string; thumbnailUrl?: string | null; fileName?: string | null; mediaType: string; caption?: string | null };
 
@@ -21,12 +24,14 @@ export type WorkOrder = {
   orderNo: string;
   title: string;
   description: string | null;
+  notes?: string | null;
   taskStatus: string;
   status: WorkOrderStatus;
   statusLabel: string;
   priority: string;
   department: string;
   departmentLabel: string;
+  templateLabel?: string | null;
   dueAt: string | null;
   overdue: boolean;
   dueSoon: boolean;
@@ -73,6 +78,7 @@ export type Message = {
   channelId: number;
   senderId: number | null;
   senderName: string;
+  senderPhotoUrl?: string | null;
   body: string | null;
   type: string;
   voiceUrl: string | null;
@@ -89,6 +95,9 @@ export type Message = {
 export const workKeys = {
   me: ["work-commands", "me"] as const,
   staff: ["work-commands", "staff"] as const,
+  team: ["work-commands", "team"] as const,
+  customers: (q: string) => ["work-commands", "customers", q] as const,
+  customerBookings: (id: number) => ["work-commands", "customer-bookings", id] as const,
   channels: ["work-commands", "channels"] as const,
   messages: (channelId: number) => ["work-commands", "messages", channelId] as const,
   order: (id: number) => ["work-commands", "order", id] as const,
@@ -99,6 +108,16 @@ export const workKeys = {
 
 export function useWorkMe() {
   return useQuery({ queryKey: workKeys.me, queryFn: () => adminFetch<WorkMe>("/admin/work-commands/me"), staleTime: 60_000 });
+}
+
+/** Editable order types and departments (built-ins until the server answers). */
+export function useWorkCatalog(): WorkCatalog {
+  return useWorkMe().data?.catalog ?? DEFAULT_WORK_CATALOG;
+}
+
+export function useDepartmentLabel() {
+  const catalog = useWorkCatalog();
+  return (value: unknown) => catalogDepartmentLabel(catalog, value);
 }
 
 export function useWorkStaff(enabled: boolean) {
