@@ -32,6 +32,7 @@ const summary: QuantitySummary = {
   totalValue: 1_500_000,
   lowAvailability: false,
   reconciliation: { outstandingInBookings: 30, matches: true },
+  warehouse: { id: 1, name: "المستودع الرئيسي" },
   bookings: [
     { source: "kosha_booking", bookingId: 125, day: "2026-10-20", status: "confirmed", customerName: "حجز القاعة الملكية", required: 20, reserved: 20, prepared: 20, checkedOut: 20, outstanding: 0, returnedGood: 15, damaged: 3, missing: 2, returned: 20, stage: "returned" },
     { source: "service_order", bookingId: 126, day: "2026-10-20", status: "confirmed", customerName: "حفل تخرج", required: 30, reserved: 30, prepared: 30, checkedOut: 30, outstanding: 30, returnedGood: 0, damaged: 0, missing: 0, returned: 0, stage: "out" },
@@ -48,16 +49,22 @@ const markup = renderToStaticMarkup(
     createElement(
       Router,
       { ssrPath: "/admin/assets/new" },
-      createElement("main", { className: "mx-auto max-w-6xl space-y-6 p-4", dir: "rtl" }, createElement(QuantityAssetPanel, { productId: 369 })),
+      createElement("main", { className: "mx-auto max-w-6xl space-y-6 p-4", dir: "rtl" }, createElement(QuantityAssetPanel, { productId: 369, assetName: "عمود ملكي" })),
     ),
   ),
 );
-for (const label of ["إدارة الكميات", "إجمالي الكمية", "المتوفر", "المحجوز", "الخارج", "التالف", "الصيانة", "المفقود", "إضافة كمية", "تعديل جرد", "عرض حركات الكمية", "طباعة QR", "الحجوزات المرتبطة", "تحويل بين المستودعات", "تسجيل تلف", "تسجيل فقدان"])
+// The action menu and its dialogs open in a portal; the closed page shows the
+// totals, the menu button, history, QR and the availability/bookings block.
+for (const label of ["إدارة الكميات", "الكمية الإجمالية", "المتوفر", "المحجوز", "الخارج", "التالف", "الصيانة", "المفقود", "سجل الحركات", "طباعة QR", "الحجوزات المرتبطة", "فحص التوفر بتاريخ", "لا يمكن تعديل الكمية الإجمالية مباشرة"])
   assert.ok(markup.includes(label), `panel renders ${label}`);
+assert.match(markup, /aria-haspopup="menu"[^>]*>[\s\S]{0,1500}إدارة الكميات/, "«إدارة الكميات» opens a menu");
+const cards = ["الكمية الإجمالية", "المتوفر", "المحجوز", "الخارج", "التالف", "المفقود", "الصيانة"].map((label) => markup.indexOf(`>${label}</p>`));
+assert.ok(cards.every((at, index) => at > 0 && (index === 0 || at > cards[index - 1])), "seven cards in the requested order");
+assert.match(markup, /100 × [^=]+ = /, "value line uses the authoritative total");
 assert.match(markup, /65 \+ خارج 30 \+ تالف 3 \+ صيانة 0 \+ مفقود 2 = 100/, "mutually exclusive states add up to the total");
 assert.match(markup, /#126/);
 assert.match(markup, /href="\/admin\/bookings\/service\/126"/);
 assert.match(markup, /dir="rtl"/);
 assert.doesNotMatch(markup, /لا تطابق مجموع الحجوزات/, "no reconciliation warning when counters match");
 if (process.env.AJN_QUANTITY_UI_HTML) writeFileSync(process.env.AJN_QUANTITY_UI_HTML, markup);
-console.log("PASS  quantity panel renders RTL cards, exclusive-state sum, bookings and actions");
+console.log("PASS  quantity panel renders RTL cards in order, the «إدارة الكميات» menu button, exclusive-state sum and bookings");

@@ -42956,7 +42956,15 @@ async function handleAdmin(
         return json(summary);
       }
       if (method === "GET" && quantityAction === "movements") {
-        return json({ data: await quantityMovements(db, productId) });
+        const params = req.nextUrl.searchParams;
+        return json(
+          await quantityMovements(db, productId, {
+            from: params.get("from"),
+            to: params.get("to"),
+            page: Number(params.get("page")) || 1,
+            pageSize: Number(params.get("pageSize")) || 50,
+          }),
+        );
       }
       if (method === "POST" && quantityAction === "tracking") {
         const parsed = z
@@ -42999,6 +43007,10 @@ async function handleAdmin(
             reason: z.string().trim().min(3, "اكتب سبب التعديل").max(1000),
             relatedType: z.string().trim().max(40).nullable().optional(),
             relatedId: z.coerce.number().int().positive().nullable().optional(),
+            notes: z.string().trim().max(2000).nullable().optional(),
+            responsibleStaffId: z.coerce.number().int().positive().nullable().optional(),
+            photos: z.array(z.string().trim().max(4000)).max(10).optional(),
+            additionalToReturn: z.boolean().optional(),
             requestId: z.string().trim().min(8).max(80),
           })
           .safeParse(await body(req));
@@ -43022,6 +43034,10 @@ async function handleAdmin(
               reason: input.reason,
               relatedType: input.relatedType ?? null,
               relatedId: input.relatedId ?? null,
+              notes: input.notes ?? null,
+              responsibleStaffId: input.responsibleStaffId ?? null,
+              photos: input.photos ?? [],
+              additionalToReturn: input.additionalToReturn === true,
               requestId: input.requestId,
               actor: quantityActor,
             }),

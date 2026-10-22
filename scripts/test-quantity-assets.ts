@@ -20,6 +20,7 @@ import {
   executeQuantityBookingAction,
   quantityAssetSummary,
   quantityListFigures,
+  quantityMovements,
   quantityProfilesFor,
   peakCommitment,
   QuantityAssetError,
@@ -119,6 +120,15 @@ function createDatabase() {
       [400, { purchase_price: "900000", current_value: "900000", status: "active", deleted_at: null }],
     ]),
     passports: new Map<number, any>([[369, { warehouse_id: 1 }]]),
+    purchaseInvoices: new Map<number, any>([
+      [12, { id: 12, status: "active" }],
+      [13, { id: 13, status: "deleted" }],
+      [77, { id: 77, status: "active" }],
+    ]),
+    staff: [
+      { id: 7, name: "أحمد المخزن", is_active: true },
+      { id: 8, name: "موظف سابق", is_active: false },
+    ],
     bookings: [
       { source: "kosha_booking", id: 125, day: EVENT_DAY, status: "confirmed", customer: "حجز 125", details: { bookingOperations: { assets: [] } } },
       { source: "kosha_booking", id: 126, day: EVENT_DAY, status: "confirmed", customer: "حجز 126", details: { bookingOperations: { assets: [] } } },
@@ -156,6 +166,47 @@ function createDatabase() {
       return rows(state.assetProfiles.has(Number(p[0])) ? [state.assetProfiles.get(Number(p[0]))] : []);
     if (q.startsWith("select warehouse_id from asset_passports"))
       return rows(state.passports.has(Number(p[0])) ? [state.passports.get(Number(p[0]))] : []);
+    if (q.startsWith("select w.id, w.name from asset_passports ap join warehouses w")) {
+      const passport = state.passports.get(Number(p[0]));
+      return rows(passport?.warehouse_id ? [{ id: passport.warehouse_id, name: "المستودع الرئيسي" }] : []);
+    }
+    if (q.startsWith("select id, status from purchase_invoices where id"))
+      return rows(state.purchaseInvoices.has(Number(p[0])) ? [state.purchaseInvoices.get(Number(p[0]))] : []);
+    if (q.includes("as from_invoice") && q.includes("from stock_movements")) {
+      const mine = state.movements.filter((m) => Number(m.source_id ?? m.product_id) === Number(p[0]) && m.related_type === "purchase_invoice" && Number(m.related_id) === Number(p[1]));
+      return rows([{
+        from_invoice: mine.filter((m) => String(m.reason).startsWith("purchase_invoice")).reduce((sum, m) => sum + Number(m.quantity_change), 0),
+        manual: mine.filter((m) => m.reason === "quantity_asset_add").length,
+      }]);
+    }
+    if (q.startsWith("select id, coalesce(nullif(full_name, ''), username) as name from staff where id"))
+      return rows(state.staff.filter((member) => member.id === Number(p[0]) && member.is_active).map(({ id, name }) => ({ id, name })));
+    if (q.startsWith("select coalesce(sum((metadata->>'quantity')::numeric), 0) as qty from stock_movements")) {
+      const [productId, action, bookingType, bookingId] = p;
+      const recorded = state.movements.filter(
+        (m) => Number(m.source_id ?? m.product_id) === Number(productId) && m.metadata?.action === action && m.metadata?.bookingType === bookingType && String(m.metadata?.bookingId) === String(bookingId),
+      );
+      return rows([{ qty: recorded.reduce((sum, m) => sum + Number(m.metadata.quantity ?? 0), 0) }]);
+    }
+    if (q.startsWith("select m.id, m.quantity_change") || q.startsWith("select count(*)::int as total from stock_movements m")) {
+      let index = 1;
+      const from = q.includes("::date >=") ? String(p[index++]) : null;
+      const to = q.includes("::date <=") ? String(p[index++]) : null;
+      const baghdad = (value: Date) => new Date(value.getTime() + 3 * 3600_000).toISOString().slice(0, 10);
+      const matching = state.movements
+        .filter((m) => Number(m.source_id ?? m.product_id) === Number(p[0]))
+        .filter((m) => (!from || baghdad(m.created_at) >= from) && (!to || baghdad(m.created_at) <= to))
+        .sort((a, b) => b.created_at - a.created_at || b.id - a.id);
+      if (q.startsWith("select count(*)")) return rows([{ total: matching.length }]);
+      const [limit, offset] = [Number(p[index]), Number(p[index + 1])];
+      return rows(
+        matching.slice(offset, offset + limit).map((m) => ({
+          ...m,
+          movement_type: "quantity_asset",
+          warehouse_name: m.warehouse_id === 1 ? "المستودع الرئيسي" : null,
+        })),
+      );
+    }
     if (q.includes("from kosha_bookings b cross join lateral jsonb_array_elements")) {
       const ids = new Set(p.map(String));
       return rows(
@@ -509,7 +560,7 @@ async function run() {
   // the total is derived from it, so the quantity grows exactly once.
   const beforePurchase = (await quantityAssetSummary(db as any, 369))!.total;
   db.state.products.get(369).stock += 50;
-  db.state.movements.push({ id: 999, product_id: 369, source_id: 369, quantity_change: 50, reason: "purchase_invoice_stock_increased", idempotency_key: "purchase-invoice-stock:12:1", metadata: {}, created_at: new Date() });
+  db.state.movements.push({ id: 999, product_id: 369, source_id: 369, quantity_change: 50, reason: "purchase_invoice_stock_increased", related_type: "purchase_invoice", related_id: 12, idempotency_key: "purchase-invoice-stock:12:1", metadata: {}, created_at: new Date() });
   assert.equal((await quantityAssetSummary(db as any, 369))!.total, beforePurchase + 50);
 
   // Store-product holds and list figures.
@@ -566,9 +617,78 @@ async function run() {
   );
   assert.equal(db.state.quantity.get(369).tracking_mode, "quantity", "failed conversion keeps the mode");
 
+  // «إدارة الكميات» guards. A purchase invoice is received once: its own lines
+  // already added stock (#12), a manual add already used it (#77), or it is deleted (#13).
+  const beforeGuards = db.state.movements.length;
+  const addFrom = (relatedId: number) =>
+    db.transaction((executor) => adjustQuantityAsset(executor as any, { productId: 369, kind: "add", quantity: 50, reason: "شراء جديد", relatedType: "purchase_invoice", relatedId, requestId: nextRequest(), actor }));
+  await expectError(() => addFrom(12), /فاتورة الشراء #12 \(50\) استُلمت تلقائياً/, 409);
+  await expectError(() => addFrom(77), /أُضيفت كمية من فاتورة الشراء #77 لهذا الأصل سابقاً/, 409);
+  await expectError(() => addFrom(13), /#13 غير موجودة/, 422);
+  await expectError(() => addFrom(404), /#404 غير موجودة/, 422);
+  // Damage/loss already recorded at booking 125's return is not recorded again.
+  const report = (extra: Record<string, unknown>) =>
+    db.transaction((executor) => adjustQuantityAsset(executor as any, { productId: 369, kind: "damage", quantity: 1, reason: "كسر اكتُشف لاحقاً", requestId: nextRequest(), actor, ...extra } as any));
+  await expectError(() => report({ relatedType: "kosha_booking", relatedId: 125 }), /سُجّل تلف 3 عند إرجاع هذا الحجز/, 409);
+  await expectError(() => report({ kind: "loss", relatedType: "kosha_booking", relatedId: 125 }), /سُجّل فقدان 2 عند إرجاع هذا الحجز/, 409);
+  await expectError(() => report({ responsibleStaffId: 8 }), /غير موجود أو غير نشط/, 422);
+  await expectError(() => report({ photos: ["javascript:alert(1)"] }), /مرفوعة إلى التخزين/, 422);
+  await expectError(() => report({ photos: Array.from({ length: 11 }, (_, i) => `/api/media/${i}.jpg`) }), /10 صور/, 422);
+  assert.equal(db.state.movements.length, beforeGuards, "refused quantity actions write nothing");
+  // Damage found after the return is recorded once, marked additional, with its evidence.
+  const damagedBefore = db.state.quantity.get(369).quantity_damaged;
+  await report({ relatedType: "kosha_booking", relatedId: 125, additionalToReturn: true, notes: "ظهر عند التنظيف", responsibleStaffId: 7, photos: ["/api/media/crack.jpg"] });
+  const extraRow = db.state.movements.at(-1);
+  assert.deepEqual(
+    [extraRow.reason, extraRow.related_type, extraRow.related_id, extraRow.metadata.responsible, extraRow.metadata.photos, extraRow.metadata.notes, extraRow.metadata.additionalToReturn],
+    ["quantity_asset_damage", "kosha_booking", 125, { id: 7, name: "أحمد المخزن" }, ["/api/media/crack.jpg"], "ظهر عند التنظيف", true],
+  );
+  assert.equal(db.state.quantity.get(369).quantity_damaged, damagedBefore + 1);
+  // A booking whose return recorded no damage needs no flag.
+  await report({ relatedType: "service_order", relatedId: 127 });
+  assert.equal(db.state.quantity.get(369).quantity_damaged, damagedBefore + 2);
+
+  // Expected result: a zero-unit asset receives 100 units through «إضافة كمية»:
+  // one movement, every figure updated, nothing written to accounting or the cash box.
+  const fresh = createDatabase();
+  fresh.state.quantity.set(369, { product_id: 369, tracking_mode: "quantity", unit_of_measure: "قطعة", quantity_checked_out: 0, quantity_damaged: 0, quantity_maintenance: 0, quantity_missing: 0 });
+  Object.assign(fresh.state.assetProfiles.get(369), { purchase_price: "0", current_value: "0" });
+  assert.equal((await quantityAssetSummary(fresh as any, 369))!.total, 0);
+  fresh.state.log.length = 0;
+  const hundred = await fresh.transaction((executor) =>
+    adjustQuantityAsset(executor as any, { productId: 369, kind: "add", quantity: 100, unitCost: 15000, reason: "شراء جديد", notes: "إضافة كمية أولية من المشتريات", requestId: nextRequest(), actor }),
+  );
+  assert.deepEqual([(hundred as any).totalBefore, (hundred as any).totalAfter], [0, 100]);
+  assert.equal(fresh.state.movements.length, 1, "exactly one stock movement");
+  assert.equal(fresh.state.movements[0].reason, "quantity_asset_add");
+  assert.equal(fresh.state.movements[0].metadata.notes, "إضافة كمية أولية من المشتريات");
+  assert.equal(fresh.state.products.get(369).stock, 100);
+  assert.equal(fresh.state.assetProfiles.get(369).purchase_price, "1500000", "acquisition value grows by 100 x 15,000");
+  assert.ok(
+    !fresh.state.log.some((q) => /financial_transactions|journal|cash_box|purchase_invoices|expenses/i.test(q)),
+    "no accounting, cash box or purchase records",
+  );
+  const after100 = (await quantityAssetSummary(fresh as any, 369))!;
+  assert.deepEqual(
+    [after100.total, after100.inWarehouse, after100.available, after100.totalValue, after100.warehouse],
+    [100, 100, 100, 1_500_000, { id: 1, name: "المستودع الرئيسي" }],
+  );
+  // Movement history: date range and pages.
+  await fresh.transaction((executor) => adjustQuantityAsset(executor as any, { productId: 369, kind: "reduce", quantity: 10, reason: "بيع القطع", requestId: nextRequest(), actor }));
+  await fresh.transaction((executor) => adjustQuantityAsset(executor as any, { productId: 369, kind: "count", quantity: 0, countedQuantity: 88, reason: "جرد دوري", responsibleStaffId: 7, requestId: nextRequest(), actor }));
+  const page1 = await quantityMovements(fresh as any, 369, { page: 1, pageSize: 2 });
+  const page2 = await quantityMovements(fresh as any, 369, { page: 2, pageSize: 2 });
+  assert.deepEqual([page1.total, page1.totalPages, page1.data.length, page2.data.length], [3, 2, 2, 1]);
+  assert.equal(page1.data[0].warehouseName, "المستودع الرئيسي");
+  assert.deepEqual(page1.data.map((m) => m.metadata.totalAfter), [88, 90], "newest first with totals before/after");
+  assert.equal((await quantityMovements(fresh as any, 369, { from: today, to: today })).total, 3);
+  assert.equal((await quantityMovements(fresh as any, 369, { from: addDays(today, 1) })).total, 0);
+  assert.equal((await quantityMovements(fresh as any, 369, { from: "not-a-day" })).total, 3, "invalid dates are ignored, not injected");
+
   console.log("PASS  quantity bookings: reserve 20+30, overbooking, overlap, checkout, partial return 15/3/2, idempotency");
   console.log("PASS  quantity adjustments: maintenance, write-off, add, count, commitment guard, purchase derivation, rollback");
   console.log("PASS  tracking-mode conversion restrictions for historical individual assets");
+  console.log("PASS  quantity manager: purchase invoice received once, no double return damage/loss, evidence, add 100 -> one movement, history pages");
 }
 
 run().catch((error) => {

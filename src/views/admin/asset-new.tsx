@@ -68,7 +68,8 @@ import {
   recordLabelPrint,
   type LabelData,
 } from "./label-helpers";
-import { QuantityAssetPanel, type QuantitySummary } from "./quantity-asset-panel";
+import { QuantityAvailability, type QuantitySummary } from "./quantity-asset-panel";
+import { QuantityManager } from "./quantity-manager";
 import { DEFAULT_QUANTITY_UNIT, TRACKING_MODE_LABELS, type TrackingMode } from "@/lib/quantity-assets";
 
 const STATUSES: [string, string][] = [
@@ -478,6 +479,18 @@ export default function AssetNewPage() {
 
   const quantityMode = form.trackingMode === "quantity";
   const savedTracking: TrackingMode = assetEditQuery.data?.trackingMode === "quantity" ? "quantity" : "individual";
+  // A quantity movement changes the total and the acquisition value on the server;
+  // refresh those form fields so «تحديث الأصل» never writes the old values back.
+  const syncQuantityFields = async () => {
+    const fresh = (await assetEditQuery.refetch()).data;
+    if (!fresh) return;
+    setForm((current) => ({
+      ...current,
+      totalQuantity: fresh.quantity ? String(fresh.quantity.total) : current.totalQuantity,
+      purchaseCost: fresh.profile?.purchasePrice != null ? String(fresh.profile.purchasePrice) : current.purchaseCost,
+      currentValue: fresh.profile?.currentValue != null ? String(fresh.profile.currentValue) : current.currentValue,
+    }));
+  };
   const totalQuantityValue = Math.max(0, Math.floor(num(form.totalQuantity)));
   const quantityTotalValue = totalQuantityValue * num(form.unitCost);
 
@@ -876,8 +889,6 @@ export default function AssetNewPage() {
         </div>
       )}
 
-      {isEditMode && savedTracking === "quantity" ? <QuantityAssetPanel productId={editProductId} /> : null}
-
       <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
         {/* ── Left: form ─────────────────────────────────────────── */}
         <div className="space-y-4">
@@ -1036,21 +1047,24 @@ export default function AssetNewPage() {
                   <Field label="وحدة القياس">
                     <input className={inputCls} value={form.unitOfMeasure} maxLength={40} onChange={(e) => set("unitOfMeasure", e.target.value)} placeholder="قطعة" />
                   </Field>
-                  <Field label="الكمية الإجمالية">
-                    <input
-                      type="number"
-                      min={1}
-                      step={1}
-                      inputMode="numeric"
-                      className={inputCls}
-                      value={form.totalQuantity}
-                      disabled={isEditMode}
-                      onChange={(e) => set("totalQuantity", e.target.value)}
-                    />
-                    {isEditMode ? (
-                      <span className="mt-1 block text-[11px] leading-5">تُعدّل من «إدارة الكميات» (إضافة كمية / تعديل جرد) حتى تبقى الحركات مسجلة.</span>
-                    ) : null}
-                  </Field>
+                  {/* After the first save the total changes only through «إدارة الكميات» movements. */}
+                  {isEditMode && savedTracking === "quantity" ? null : (
+                    <Field label="الكمية الإجمالية">
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        inputMode="numeric"
+                        className={inputCls}
+                        value={form.totalQuantity}
+                        disabled={isEditMode}
+                        onChange={(e) => set("totalQuantity", e.target.value)}
+                      />
+                      {isEditMode ? (
+                        <span className="mt-1 block text-[11px] leading-5">تُحدد بعد حفظ التحويل، ثم تُعدّل من «إدارة الكميات».</span>
+                      ) : null}
+                    </Field>
+                  )}
                   <Field label="تكلفة القطعة">
                     <input type="number" min={0} className={inputCls} value={form.unitCost} onChange={(e) => set("unitCost", e.target.value)} />
                   </Field>
@@ -1063,6 +1077,12 @@ export default function AssetNewPage() {
                 </>
               ) : null}
             </Grid>
+            {isEditMode && savedTracking === "quantity" ? (
+              <div className="mt-4 space-y-4 border-t border-border/30 pt-4" id="quantities">
+                <QuantityManager productId={editProductId} assetName={form.nameAr.trim() || form.name.trim()} onChanged={syncQuantityFields} />
+                <QuantityAvailability productId={editProductId} />
+              </div>
+            ) : null}
           </Section>
 
           <Section title="بيانات الشراء">
