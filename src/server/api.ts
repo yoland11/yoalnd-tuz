@@ -4,6 +4,7 @@ import { loadBookingReadiness } from "./booking-operational-readiness";
 import { findBookingPhysicalConflict,findBookingStaffConflict,BookingResourceConflictError } from "./booking-resource-availability";
 import { readResourceBooking,saveBookingResourceWindow,resourceWindowView,lockBookingExecutionTeam } from "./booking-resource-period";
 import { saveBookingDispatch } from "./booking-dispatch";
+import { normalizeRepeatedBookingDetails } from "@/lib/booking-repeat";
 import { readBookingResourceWindow,bookingResourceOccupancy,BookingResourceWindowError } from "@/lib/booking-resource-window";
 import { getLoadingView, runLoadingRequest } from "./booking-loading";
 import { BookingProfitabilityError, getBookingProfitability } from "./booking-profitability";
@@ -25406,6 +25407,8 @@ async function handleEnterpriseAdmin(
         ),
       });
       if (!current) return error("حجز الخدمة غير موجود", 404);
+      const repeatedDetails=normalizeRepeatedBookingDetails(current.customFields);
+      if(!repeatedDetails.ok)return error(repeatedDetails.message,422);
       const service = await db.query.servicesTable.findFirst({
         where: eq(servicesTable.id, current.serviceId),
       });
@@ -25416,7 +25419,7 @@ async function handleEnterpriseAdmin(
         eventDate,
         eventLocation: current.eventLocation,
         notes: current.notes,
-        customFields: current.customFields,
+        customFields: repeatedDetails.value,
         totalAmount: current.totalAmount,
         depositAmount: "0",
         remainingAmount: current.totalAmount,
@@ -25460,6 +25463,8 @@ async function handleEnterpriseAdmin(
         ),
       });
       if (!current) return error("حجز الكوشة غير موجود", 404);
+      const repeatedDetails=normalizeRepeatedBookingDetails(current.bookingDetails);
+      if(!repeatedDetails.ok)return error(repeatedDetails.message,422);
       const duplicate = await db.query.koshaBookingsTable.findFirst({
         where: and(
           eq(koshaBookingsTable.koshaId, current.koshaId ?? 0),
@@ -25503,7 +25508,7 @@ async function handleEnterpriseAdmin(
           selectedAccessories: current.selectedAccessories,
           venueImages: current.venueImages,
           bookingDetails: {
-            ...current.bookingDetails,
+            ...repeatedDetails.value,
             repeatedFrom: current.id,
           },
           notes: current.notes,
@@ -25567,8 +25572,8 @@ async function handleEnterpriseAdmin(
           eventName: current.eventName,
           eventDate,
           location: current.location,
-          assignedStaffId: current.assignedStaffId,
-          assignedStaffName: current.assignedStaffName,
+          assignedStaffId: null,
+          assignedStaffName: "",
           status: "active",
           createdBy: auth.id,
         })
