@@ -541,6 +541,12 @@ export async function cancelFinancialTransactionRequest(
     // rebuild the snapshot from approved money, exactly as approval does.
     if (isPaymentStateSourceType(existing.sourceType))
       await reconcilePaymentState(tx, { sourceType: existing.sourceType, sourceId: existing.sourceId });
+    // A cancelled loan (or repayment) request leaves «بانتظار الموافقة» too.
+    const loanSourceId = Number(existing.sourceId);
+    if (existing.sourceType === "company_loan" && Number.isInteger(loanSourceId))
+      await tx.execute(sql`UPDATE company_loans SET status = 'cancelled', updated_at = now() WHERE id = ${loanSourceId} AND status = 'pending'`);
+    if (existing.sourceType === "company_loan_repayment" && Number.isInteger(loanSourceId))
+      await tx.execute(sql`UPDATE company_loan_repayments SET status = 'rejected', updated_at = now() WHERE id = ${loanSourceId} AND status = 'pending'`);
     return row;
   });
   await addAudit(
@@ -1262,6 +1268,15 @@ export async function rejectFinancialTransaction(
     } else if (existing.sourceType === "payment_voucher") {
       await tx.execute(
         sql`UPDATE payment_vouchers SET approval_status = 'rejected' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
+      );
+    } else if (existing.sourceType === "company_loan") {
+      // A rejected loan request never becomes a liability: the loan leaves «بانتظار الموافقة».
+      await tx.execute(
+        sql`UPDATE company_loans SET status = 'rejected', updated_at = now() WHERE id = ${sourceId} AND status = 'pending'`,
+      );
+    } else if (existing.sourceType === "company_loan_repayment") {
+      await tx.execute(
+        sql`UPDATE company_loan_repayments SET status = 'rejected', updated_at = now() WHERE id = ${sourceId} AND status = 'pending'`,
       );
     }
   }
