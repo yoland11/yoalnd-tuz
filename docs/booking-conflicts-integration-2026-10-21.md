@@ -1,0 +1,76 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-10-21-resource-conflict-integration.md
+
+Baseline: `1627279261c4cc9b82bc10d02c8cfe82b002922e`, verified remote main and Production Ready. Existing isolated branch `codex/custody-lock-safety`; primary checkout and every old worktree left untouched.
+
+## Before-change audit
+
+- Current `assetConflictForBooking` reads at most 200 native + 200 service bookings on the same calendar day. Called by `executeLockedBookingAssetAction` for individual reserve/pick/checkout, reached by original admin and staff adapters. Product and source booking are already locked, but cross-day conflicts are invisible.
+- `bookingKoshaEquipment` has its own same-day physical guard and quantity-profile availability call under original source/product locks. Template writes never deduct stock. Reuse its current shared-stock and quantity policies, not the old mixed implementation wholesale.
+- `quantityAvailability` / `quantityCommitmentRows` are shared by original quantity booking mutations, template import, asset catalog/list/summary and adjustment guards. Current commitments use event-day rules; partial outstanding returns and original buckets must be preserved when extending periods. No change without dedicated regression coverage.
+- Staff identities exist in native direct assignee, original booking JSON, work-order members and photography crew; transportation also has driver IDs. Dispatch persists crew/vehicle in `dispatch_assignments`, not in a duplicate reservation table.
+- Dispatch POST currently upserts then changes crew/vehicle status outside one transaction; original transportation and staff writers have separate contracts. Competing-writer integration must be audited explicitly before claiming universal resource protection.
+- Original fixed-employee custody has `start_at`/`end_at`; its Booking Center adapter currently invents an 8-hour period. Replace only after explicit period form and validation are available.
+- Prior unmerged `booking-resource-window`, pure conflict evaluator and availability reader exist in the old equipment worktree. Its SQL photography fields/membership filters differ from current published schema and its vehicle reader omits current dispatch assignments. Do not copy the server adapter unreviewed.
+- Current `bookingEvidenceWriteSql` protects live loading/preparation evidence for full-form native/routed saves. A canonical resource-window writer needs the same stale-snapshot protection before enabling timing edits.
+
+## Plan rulings
+
+Ruling: owner's detailed approved Phase 1 spec and latest explicit instruction to implement/release sequentially are the execution brief; do not restart a design questionnaire — costs: conservative choices are documented, not treated as separate owner decisions.
+
+Ruling: reuse the existing isolated workspace and durable versioned ledger rather than recreate a worktree or use a Bash-only scratch helper on this PowerShell host — costs: one extra durable ledger; no source/branch reset.
+
+Pre-flight: interval core feeds canonical resource readers and original resource-window form. Readers must never treat the old core as reservation confirmation; original transactional writers/resource locks stay authoritative.
+
+## Task 1 evidence
+
+- New independent regression first failed for absent integrated module. After reusing the previously inspected pure files, it reproduced a real bug: an unreturned checked-out asset with expired planned return was reported fully available (15 instead of 11). This is RED on actual evaluator behavior, not a mock.
+- No Production data, schema or inventory write. No commit/push/deploy of this unfinished slice.
+
+## Continued implementation — local, not released
+
+- Pure interval, quantity adapters, physical source guard, staff assignment and canonical period store/route passed focused controlled-IO tests. Missing actual PostgreSQL integration remains SKIPPED; these tests are not race certification.
+- Koshah template import reproduced cross-day preparation/return overlap (RED: missing expected rejection), then reused the original physical guard under existing booking/product locks; all `test:kosha-equipment` passed.
+- Quantity pick and checkout within an existing reservation reproduced a later overlap bypass, then revalidated the full-period hold before original writes; all `test:quantity-assets` passed.
+- Original assets tab now has four explicit Baghdad times, original date read-only, expected-snapshot save, view-only permissions, preserved failed-save draft and original source+ID isolation. Actual component browser checks passed at 1440/768/390px, including duplicate submit, source switch during request and read failure/retry. Screenshots inspected; no horizontal overflow. No Production write test.
+- `custodyAvailability` callers: `custodyPreview` and the Booking Center locked checkout branch only. `custodyPreview` callers: Booking Center GET, set-employees preview and reserve only. No standalone custody mutation caller uses either helper. The next change replaces only Booking Center's invented eight-hour period, keeps original release/return/retry semantics and checks JSON/work-manifest physical holds under the same product locks.
+- Ruling: legacy bookings without explicit operating periods may still release or return existing custody, but cannot make a new fixed-custody reservation — missing timing cannot prove availability. Cost: an operator must fill four times before a new reservation; no historical movement is rewritten.
+
+- Fixed custody RED reproduced an invented start (`2026-10-18T05:00Z`) instead of actual preparation (`2026-10-17T17:00Z`). The original locked branch now uses explicit preparation/return, checks other JSON/work-manifest holds, and retains original return/release ownership. Full `test:custody-safety` GREEN. The real panel explicitly reports read failure and blocks a new reservation while timing is incomplete.
+- First full `verify:critical` reached SQL-array safety and correctly BLOCKED three new `ANY` expressions. Replaced them with the existing individually bound `IN(sql.join(...))` convention; full resource-period suite plus SQL-array safety GREEN afterwards. No rule was bypassed. Full final gate/build remains pending after further implementation.
+- Dispatch caller audit: only enterprise `section=dispatch`, `POST` saves `dispatch_assignments`; GET and suggestion reads remain untouched. Existing source type/ID unique upsert and original fleet/crew statuses reused. Actual handler RED showed a dispatch insert outside its resource-status transaction. New `saveBookingDispatch` locks the original booking then source dispatch identity and sorted vehicle/crew rows, checks full periods, writes original upsert/status/timeline atomically, and skips duplicate post-commit notification on identical retry. Controlled real-handler tests GREEN for overlap refusal, missing timing, resource-write rollback and duplicate retry. Native booking vehicle writers and original work-order/photo writers still need integration; universal coverage is NOT complete.
+- No database schema, Production record, financial formula or protected A4 change. No current-slice commit, push or deploy.
+
+- Original work-order create and leader-reassign actual-handler tests first reproduced busy-employee acceptance (RED missing expected rejection). Both original transactions now call the shared execution-team guard under source booking and sorted staff locks; reassign also verifies the locked live work order. GREEN. Original native primary/assistant assignment likewise reproduced the bypass and now uses the same guard plus live booking details instead of its stale snapshot; GREEN. No duplicate team table or task record.
+- The second full critical run (including build/payment-state) exited 0 with isolated database tests SKIPPED. This ran before the later work-order/direct-team guard additions, so it is not the final gate for the current diff; rerun required.
+- Finance skill and actual native CRUD reviewed: vehicle/date updates are coupled to original booking pricing and post-update reconciliation. No financial formula was changed. Remaining caller integration is native create/edit vehicle/driver/Koshah scheduling, service/photography original assignment/schedule writers, and the final conflict assessment projection. Existing readiness must remain incomplete until that coverage is finished. Do NOT publish this as universal resource protection.
+
+## Resume checkpoint
+
+- New controlled suites registered in `test:booking-resource-period` and the mandatory critical runner: pure interval/quantity, original quantity reader, physical reader/writer, staff/vehicle/crew, canonical period store/route, actual dispatch handler/store, work-order create/reassign, direct legacy team route, real form/fixed-custody UI. Browser script registered separately as `test:booking-resource-period-browser` and passed at 1440/768/390px with screenshots inspected.
+- Latest full gate log: `.superpowers/resource-period-critical.log` (do not assume PASS until the current process exits 0). No isolated TEST database exists/configured; write smoke and real PostgreSQL race/integration tests remain SKIPPED, never passed. Historical checkout without a new window is explicitly covered by a successful original fixed-custody return test.
+- No commit/push/deploy in this continuation. Parent/current HEAD remains the previously published baseline. Do not publish the current partially integrated writer coverage. Next code work: native booking vehicle/date/Koshah mutations and original service/photography assignment/schedule paths; then complete read-only conflict assessment, final independent review and fresh full gate before release.
+
+### Latest verified checkpoint — 2026-10-22
+
+- Full `pnpm run verify:critical` on the latest dispatch/work-order/direct-team diff exited **0**, including TypeScript, payment-state, all registered critical suites, production build and Git whitespace. Log `.superpowers/resource-period-critical.log` ends `AJN SAFETY CHECK PASSED`. DB integration/save-smoke remains **SKIPPED**, not PASS. No current command is running.
+- Remaining native callers inspected (not modified): public Kosha creation has calendar-day-only vehicle lookup and one original insert; native PATCH has the same pre-read day guard and later booking update followed by existing product/financial reconciliation. Any extension must keep those original amounts and canonical reconciliation unchanged and put resource validation/locks around the original source write, not invent another reservation.
+- Additional competing caller found: enterprise `event_repeated` clones native `bookingDetails` and service `customFields` wholesale. These may carry old operating windows, assets, staff and loading/preparation evidence. Do not treat cloned snapshots as new authoritative custody/movements. Needs a dedicated copy-destination regression and minimal safe normalization without touching the source booking or financial formulas; do not silently rewrite history.
+- Current work remains **unfinished and uncommitted/unpushed/undeployed**. Final independent whole-branch review has not been run because writer coverage is still incomplete. Last published commit remains `1627279261c4cc9b82bc10d02c8cfe82b002922e`.
+
+## Scoped incremental release decision — 2026-10-22 (supersedes checkpoint release hold)
+
+- Owner explicitly requested publishing the completed independent increment first, then continuing remaining writers. Scope: explicit four-time operating-period editor; canonical period persistence; interval readers; guards in existing assets/template/fixed-custody/team/work-order/dispatch adapters. This is NOT universal resource-conflict coverage or completion of all five phases.
+- Independent whole-candidate review: no Critical finding, two Important findings. Both reproduced before fixing: stock reduction/count ignored cross-day interval peak; emitted period SQL failed to normalize JSON null. Fixes protect original inventory adjustments using interval peak with conservative unknown holds, and normalize legacy root/nested JSON null in both source UPDATEs. Original financial formulas, protected A4 and schema unchanged.
+- Regression evidence: overlap refuses reduce/count without stock movement; adjacent half-open periods allow the original adjustment once; mixed unknown timing and actual out units remain protected. Both-source SQL-boundary legacy tests cover missing/null/object operations and unrelated-field preservation. These are controlled-IO tests, NOT real PostgreSQL certification.
+- Existing quantity-suite readiness probe moved before schema-ready fixtures: the module's existing readiness cache otherwise made the missing-schema assertion order-dependent. No production cache behavior changed.
+- Full critical gate must be fresh after fixes and again after integrating remote changes. Browser period and actual workspace suites passed at 1440/768/390. Isolated database smoke/integration remains SKIPPED, never PASS; no TEST database created and no Production write tests.
+- Preserve remote loan fix `fbf70f277170f0b50db0758c1ac8fbd56d07d171` when merging. Known Production rollback baseline observed Ready: deployment `EW1aKLFvR4XRCgZJZKnxtLUw35To`, same SHA, domain `alijan-koshat.vercel.app`. Before push recheck latest remote; non-forced gated push only.
+- Rollback criteria: build/deploy error, health/auth boundary regression, or new resource-save regression. Use existing Vercel Instant Rollback to the verified previous Ready deployment; no schema rollback (none added). Do not mutate Production records to diagnose.
+
+### Next independently scoped work (not claimed released)
+
+Release checkpoint: independent narrow follow-up confirmed both Important findings resolved. Fresh `pnpm run verify:critical` exited **0** after fixes (TypeScript, payment-state, registered suites, build, whitespace); `.superpowers/resource-period-critical-final.log`. No isolated DB tests passed or attempted. Merge/push/deployment verification still pending at this checkpoint. Pre-release health 200; protected unauthenticated APIs 401; admin pages redirect to login. Vercel current Ready remains `fbf70f2`; recent 30-minute Logs showed Error 0/Fatal 0, while the separate six-hour aggregate displayed 15.7% (not classified or claimed clean). No production mutation used for verification.
+
+1. Native/routed create/date/vehicle/Koshah writers and photography schedule/crew: same locks and authoritative periods. Date changes need an atomic proposed-date + four-times workflow, not a circular requirement to save tomorrow's period against today's event date.
+2. Native linked-assets competing writer, standalone photography occupancy and repeat-booking destination normalization. Never copy original custody/loading evidence into a newly created booking.
+3. Complete read-only resource-conflict assessment projection and end-to-end coverage. Readiness must remain explicitly incomplete where evidence or writer coverage is missing.

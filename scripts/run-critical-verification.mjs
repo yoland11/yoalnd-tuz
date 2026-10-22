@@ -28,6 +28,7 @@ const steps = [
   ["Calendar read preflight", "pnpm", ["run", "test:calendar-read"]],
   ["Daily booking operations read model and permissions", "pnpm", ["run", "test:booking-daily-operations"]],
   ["Booking Center operational readiness evidence and permissions", "pnpm", ["run", "test:booking-readiness"]],
+  ["Booking resource periods, source identity and original reservation guards", "pnpm", ["run", "test:booking-resource-period"]],
   ["Booking loading, QR, original returns and custody evidence", "pnpm", ["run", "test:booking-loading"]],
   ["Booking batch preparation metadata and retry safety", "pnpm", ["run", "test:booking-bulk"]],
   ["Booking preparation task/booking approval consistency", "pnpm", ["run", "test:booking-preparation"]],

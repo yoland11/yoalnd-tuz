@@ -28,6 +28,7 @@ type State = {
   missingColumn: boolean;
   quantityTracked: boolean;
   otherQuantityHold: number;
+  periodConflicts: any[];
 };
 function fixture() {
   let state: State = {
@@ -56,6 +57,7 @@ function fixture() {
     missingColumn: false,
     quantityTracked: false,
     otherQuantityHold: 0,
+    periodConflicts: [],
   };
   const database: any = {
     transaction: async (fn: any) => {
@@ -66,6 +68,8 @@ function fixture() {
           const q = built.sql.replace(/\s+/g, " ").trim();
           const p = built.params;
           const rows = (value: any[]) => ({ rows: value });
+          if (q.startsWith("WITH bookings AS"))
+            return rows(draft.periodConflicts.length ? draft.periodConflicts : draft.conflict ? [{ source: "service", id: 8, event_date: "2026-10-20", details: {} }] : []);
           if (q.startsWith("select id from koshas")) return rows([{ id: 1 }]);
           if (q.includes("information_schema.columns"))
             return rows(draft.missingColumn ? [] : [{ exists: 1 }]);
@@ -206,6 +210,27 @@ function fixture() {
 }
 const who = { id: 1, name: "manager" };
 async function run() {
+  const crossDay = fixture();
+  const window = {
+    preparationStart: "2026-10-20T08:00:00+03:00",
+    eventStart: "2026-10-20T18:00:00+03:00",
+    eventEnd: "2026-10-20T22:00:00+03:00",
+    returnEnd: "2026-10-21T12:00:00+03:00",
+  };
+  crossDay.read().details.bookingOperations.resourceWindow = window;
+  crossDay.edit({ periodConflicts: [{ source: "service", id: 8, event_date: "2026-10-21", details: { bookingOperations: { resourceWindow: {
+    preparationStart: "2026-10-21T10:00:00+03:00",
+    eventStart: "2026-10-21T18:00:00+03:00",
+    eventEnd: "2026-10-21T22:00:00+03:00",
+    returnEnd: "2026-10-22T12:00:00+03:00",
+  } } } }] });
+  await assert.rejects(
+    () => bookingKoshaEquipment({ source: "kosha", id: 7 }, "confirm", [equipment], who, crossDay.database),
+    /غير متاحة/,
+    "template import must reject equipment occupied by the next day's preparation",
+  );
+  assert.equal(crossDay.read().details.bookingOperations.assets.length, 0);
+  assert.equal(crossDay.read().timeline.length, 0);
   const f = fixture();
   await saveKoshaEquipment(1, [equipment], 1, f.database);
   assert.equal(f.read().stock, 10, "template save never deducts stock");

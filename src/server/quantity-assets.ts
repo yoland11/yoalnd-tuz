@@ -1,5 +1,8 @@
 import { db } from "@workspace/db";
 import { sql, type SQL } from "drizzle-orm";
+import { quantityPeriodAvailability, type PeriodCommitment } from "@/lib/quantity-asset-period";
+import { readBookingResourceWindow,bookingResourceOccupancy } from "@/lib/booking-resource-window";
+import { resourceOccupancyTimestamps, type ResourceOccupancy } from "@/lib/booking-resource-conflicts";
 import {
   CLOSED_LINE_STAGES,
   DEFAULT_QUANTITY_UNIT,
@@ -187,7 +190,7 @@ export async function lockQuantityAsset(executor: Executor, productId: number): 
   };
 }
 
-export type QuantityCommitmentRow = CommitmentRow & { productId: number; customerName: string | null };
+export type QuantityCommitmentRow = PeriodCommitment & { productId: number; customerName: string | null };
 
 const assetsArray = (column: SQL) =>
   sql`(case when jsonb_typeof(${column}->'bookingOperations'->'assets') = 'array' then ${column}->'bookingOperations'->'assets' else '[]'::jsonb end)`;
@@ -198,20 +201,24 @@ export async function quantityCommitmentRows(executor: Executor, productIds: num
   const map = new Map<number, QuantityCommitmentRow[]>();
   if (!ids.length) return map;
   const result = await executor.execute(sql`
-    select 'kosha_booking' as source, b.id as booking_id, b.event_date::text as day, b.status, b.customer_name, a.value as line
+    select 'kosha_booking' as source, b.id as booking_id, b.event_date::text as day, b.status, b.customer_name, a.value as line,
+      b.booking_details->'bookingOperations'->'resourceWindow' as resource_window
     from kosha_bookings b
     cross join lateral jsonb_array_elements(${assetsArray(sql`b.booking_details`)}) as a(value)
     where b.archived_at is null and a.value->>'productId' in (${textIdList(ids)})
     union all
-    select 'service_order', s.id, s.event_date::text, s.status, s.customer_name, a.value
+    select 'service_order', s.id, s.event_date::text, s.status, s.customer_name, a.value,
+      s.custom_fields->'bookingOperations'->'resourceWindow'
     from service_orders s
     cross join lateral jsonb_array_elements(${assetsArray(sql`s.custom_fields`)}) as a(value)
     where s.archived_at is null and a.value->>'productId' in (${textIdList(ids)})
   `);
-  for (const row of rowsOf(result)) {
+  if (!Array.isArray(result?.rows)) throw new Error("Invalid quantity commitment database response");
+  for (const row of result.rows as any[]) {
     const line = row.line ?? {};
     const productId = Number(line.productId);
     if (!productId) continue;
+    const window = readBookingResourceWindow({resourceWindow:row.resource_window}, row.day);
     map.set(productId, [
       ...(map.get(productId) ?? []),
       {
@@ -222,6 +229,8 @@ export async function quantityCommitmentRows(executor: Executor, productIds: num
         status: String(row.status ?? ""),
         customerName: row.customer_name ?? null,
         line,
+        interval: window ? {start:window.preparationStart,end:window.returnEnd} : null,
+        hasResourceWindow: row.resource_window != null,
       },
     ]);
   }
@@ -235,11 +244,34 @@ async function otherStockHolds(executor: Executor, productId: number, exclude?: 
       ? sql`select coalesce(sum(quantity), 0) as quantity from stock_reservations where product_id = ${productId} and status = 'reserved' and not (source_type = ${exclude.source} and source_id = ${exclude.bookingId})`
       : sql`select coalesce(sum(quantity), 0) as quantity from stock_reservations where product_id = ${productId} and status = 'reserved'`,
   );
-  return whole(rowsOf(result)[0]?.quantity);
+  if (!Array.isArray(result?.rows) || !result.rows.length) throw new Error("Invalid quantity stock hold database response");
+  return whole(result.rows[0].quantity);
 }
 
-/** Highest commitment on today or any upcoming booking day; drives the reduction guard. */
-export function peakCommitment(rows: CommitmentRow[], buckets: QuantityBuckets, today: string, otherHolds = 0) {
+/** Peak demand for administrative reductions. Preserve all-legacy day scheduling;
+ * once periods exist, unknown legacy holds overlap conservatively. Physical out
+ * units stay committed until returned, independent of a planned return date. */
+export function peakCommitment(rows: (CommitmentRow & {interval?:ResourceOccupancy|null;hasResourceWindow?:boolean})[], buckets: QuantityBuckets, today: string, otherHolds = 0) {
+  if(rows.some(row=>row.hasResourceWindow||row.interval)){
+    const floor=Date.parse(`${today}T00:00:00+03:00`);
+    const events:{at:number;delta:number}[]=[];
+    let unknown=0,out=0;
+    for(const row of rows){
+      const line=normalizeQuantityLine(row.line);
+      out+=lineOutstanding(line);
+      const reserved=lineReservedNotOut(line,row.status);
+      if(!reserved)continue;
+      const period=resourceOccupancyTimestamps(row.interval??null);
+      if(!period){unknown+=reserved;continue;}
+      if(period[1]<=floor)continue;
+      events.push({at:Math.max(floor,period[0]),delta:reserved},{at:period[1],delta:-reserved});
+    }
+    events.sort((a,b)=>a.at-b.at||a.delta-b.delta);
+    // Do not hide unmatched real checkout evidence or count it twice.
+    let current=Math.max(out,buckets.checkedOut)+unknown+otherHolds,peak=current;
+    for(const event of events){current+=event.delta;peak=Math.max(peak,current);}
+    return peak;
+  }
   const days = new Set<string>([today]);
   for (const row of rows) if (row.day && row.day >= today) days.add(row.day);
   let peak = 0;
@@ -250,13 +282,20 @@ export function peakCommitment(rows: CommitmentRow[], buckets: QuantityBuckets, 
 
 export async function quantityAvailability(
   executor: Executor,
-  input: { productId: number; day: string | null; exclude?: { source: string; bookingId: number } | null; buckets: QuantityBuckets },
+  input: { productId: number; day: string | null; exclude?: { source: string; bookingId: number } | null; buckets: QuantityBuckets; interval?:ResourceOccupancy|null },
 ) {
   const [rowsMap, holds] = await Promise.all([
     quantityCommitmentRows(executor, [input.productId]),
     otherStockHolds(executor, input.productId, input.exclude),
   ]);
   const rows = rowsMap.get(input.productId) ?? [];
+  if (input.interval !== undefined) {
+    const source=input.exclude?.source === "kosha_booking" ? "kosha" : input.exclude?.source === "service_order" ? "service" : null;
+    if(!source || !input.exclude)throw new QuantityAssetError("يلزم تحديد الحجز الأصلي لفحص فترة المعدات",422);
+    const result=quantityPeriodAvailability({booking:{source,id:input.exclude.bookingId},buckets:input.buckets,rows,interval:input.interval,otherHolds:holds});
+    if(!result.complete || !result.availability)throw new QuantityAssetError("لا يمكن تأكيد التوفر: راجع فترات الحجوزات المرتبطة وتطابق الكميات الخارجة قبل الحجز",409);
+    return {rows,otherHolds:holds,availability:result.availability};
+  }
   const today = baghdadDay();
   return {
     rows,
@@ -445,6 +484,7 @@ export async function executeQuantityBookingAction(
   const quantity = whole(action.quantity);
   const day = bookingDay(reference.eventDate);
   const today = baghdadDay();
+  const interval = bookingResourceOccupancy(reference.operations,reference.eventDate);
   const buckets = { ...locked.buckets };
   let warning: string | null = null;
   let stockDelta = 0;
@@ -459,6 +499,7 @@ export async function executeQuantityBookingAction(
       day,
       exclude: bookingRef,
       buckets,
+      interval,
     });
     if (holdNeeded > availability.available)
       throw new QuantityAssetError(insufficientQuantityMessage(availability.available, holdNeeded, unit), 409, {
@@ -494,6 +535,7 @@ export async function executeQuantityBookingAction(
           409,
         );
       next.preparedQty = Math.max(quantity, line.checkedOutQty);
+      if (interval !== undefined) await availabilityFor(ownHold(next, bookingStatus));
       break;
     }
     case "checkout": {
@@ -509,8 +551,9 @@ export async function executeQuantityBookingAction(
         next.reservedQty = next.checkedOutQty;
         next.requiredQty = Math.max(next.requiredQty, next.reservedQty);
         next.stage = quantityLineStage(next);
-        await availabilityFor(ownHold(next, bookingStatus));
       }
+      if (next.checkedOutQty > line.reservedQty || interval !== undefined)
+        await availabilityFor(ownHold(next, bookingStatus));
       next.preparedQty = Math.max(next.preparedQty, next.checkedOutQty);
       stockDelta = -quantity;
       buckets.inWarehouse -= quantity;

@@ -21,6 +21,7 @@ import {
   quantityAssetSummary,
   quantityListFigures,
   quantityProfilesFor,
+  peakCommitment,
   QuantityAssetError,
   type QuantityBookingInput,
 } from "../src/server/quantity-assets";
@@ -93,6 +94,16 @@ const NEXT_DAY = addDays(today, 5);
   console.log("PASS  quantity rules: states, overlap, partial returns, adjustments, valuation");
 }
 
+{
+  const buckets={inWarehouse:10,checkedOut:2,damaged:0,maintenance:0,missing:0};
+  const line={trackingMode:"quantity",quantity:6,reservedQty:6,stage:"reserved"};
+  const timed={source:"kosha_booking",bookingId:1,day:EVENT_DAY,status:"confirmed",line,interval:{start:`${EVENT_DAY}T12:00:00+03:00`,end:`${NEXT_DAY}T12:00:00+03:00`}};
+  const unknown={...timed,bookingId:2,day:NEXT_DAY,interval:null};
+  assert.equal(peakCommitment([timed,unknown],buckets,today,1),15,"unknown legacy hold, real out bucket and global store hold are protected once");
+  assert.equal(peakCommitment([{...timed,line:{...line,reservedQty:8,checkedOutQty:2,stage:"out"}}],buckets,today,1),9,"out counters are not added twice to reserved-not-out demand");
+  assert.equal(peakCommitment([{...timed,interval:{start:`${addDays(today,-2)}T12:00:00+03:00`,end:`${addDays(today,-1)}T12:00:00+03:00`}}],buckets,today),2,"expired reserved intervals do not free actual unreturned inventory");
+}
+
 // ── 2. In-memory database ────────────────────────────────────────────────────
 type Booking = { source: "kosha_booking" | "service_order"; id: number; day: string; status: string; customer: string; details: any };
 function createDatabase() {
@@ -158,6 +169,7 @@ function createDatabase() {
               status: booking.status,
               customer_name: booking.customer,
               line: structuredClone(line),
+              resource_window: structuredClone(booking.details.bookingOperations?.resourceWindow),
             })),
         ),
       );
@@ -297,6 +309,47 @@ const expectError = async (work: () => Promise<unknown>, pattern: RegExp, status
 };
 
 async function run() {
+  // Exercise the uncached readiness probe before any schema-ready fixture.
+  const db = createDatabase();
+  db.state.ready = false;
+  assert.equal((await quantityProfilesFor(db as any, [369])).size, 0);
+  assert.ok(!db.state.log.some((q) => q.includes("from asset_quantity_profiles")), "no query against a missing table");
+  db.state.ready = true;
+  // A stock reduction must protect the full operating peak, not only event days.
+  for (const kind of ["reduce", "count"] as const) {
+    const overlapping = createDatabase();
+    overlapping.state.products.get(369).stock = 12;
+    overlapping.state.quantity.set(369, { product_id: 369, tracking_mode: "quantity", unit_of_measure: "قطعة", quantity_checked_out: 0, quantity_damaged: 0, quantity_maintenance: 0, quantity_missing: 0 });
+    const first = overlapping.state.bookings.find(b => b.id === 125)!;
+    const second = overlapping.state.bookings.find(b => b.id === 128)!;
+    first.details.bookingOperations = { resourceWindow: { preparationStart: `${EVENT_DAY}T12:00:00+03:00`, eventStart: `${EVENT_DAY}T18:00:00+03:00`, eventEnd: `${NEXT_DAY}T01:00:00+03:00`, returnEnd: `${NEXT_DAY}T12:00:00+03:00` }, assets: [{ productId: 369, trackingMode: "quantity", quantity: 6, reservedQty: 6, stage: "reserved" }] };
+    second.details.bookingOperations = { resourceWindow: { preparationStart: `${EVENT_DAY}T15:00:00+03:00`, eventStart: `${NEXT_DAY}T18:00:00+03:00`, eventEnd: `${NEXT_DAY}T22:00:00+03:00`, returnEnd: `${NEXT_DAY}T23:00:00+03:00` }, assets: [{ productId: 369, trackingMode: "quantity", quantity: 6, reservedQty: 6, stage: "reserved" }] };
+    await expectError(() => overlapping.transaction(executor => adjustQuantityAsset(executor as any, { productId: 369, kind, quantity: kind === "reduce" ? 6 : 0, countedQuantity: kind === "count" ? 6 : undefined, reason: "جرد محكوم", requestId: nextRequest(), actor })), /الالتزامات الحالية/, 409);
+    assert.equal(overlapping.state.products.get(369).stock, 12, "overlapping commitments survive rejected reduction/count");
+    assert.equal(overlapping.state.movements.length, 0, "rejected reduction creates no inventory or valuation movement");
+    overlapping.state.bookings.find(b=>b.id===128)!.details.bookingOperations.resourceWindow.preparationStart=`${NEXT_DAY}T12:00:00+03:00`;
+    await overlapping.transaction(executor => adjustQuantityAsset(executor as any, { productId: 369, kind, quantity: kind === "reduce" ? 6 : 0, countedQuantity: kind === "count" ? 6 : undefined, reason: "جرد فترات متجاورة", requestId: nextRequest(), actor }));
+    assert.equal(overlapping.state.products.get(369).stock,6,"adjacent half-open periods reuse stock rather than summing reservations");
+    assert.equal(overlapping.state.movements.length,1,"accepted adjustment uses the original movement once");
+  }
+  const periodDb=createDatabase();
+  periodDb.state.products.get(369).stock=15;
+  periodDb.state.quantity.set(369,{product_id:369,tracking_mode:"quantity",unit_of_measure:"قطعة",quantity_checked_out:0,quantity_damaged:0,quantity_maintenance:0,quantity_missing:0});
+  const periodOwn=periodDb.state.bookings.find(b=>b.id===125)!;
+  const periodOther=periodDb.state.bookings.find(b=>b.id===128)!;
+  periodOwn.details.bookingOperations.resourceWindow={preparationStart:`${EVENT_DAY}T12:00:00+03:00`,eventStart:`${EVENT_DAY}T18:00:00+03:00`,eventEnd:`${NEXT_DAY}T01:00:00+03:00`,returnEnd:`${NEXT_DAY}T12:00:00+03:00`};
+  periodOther.details.bookingOperations={resourceWindow:{preparationStart:`${EVENT_DAY}T15:00:00+03:00`,eventStart:`${NEXT_DAY}T18:00:00+03:00`,eventEnd:`${NEXT_DAY}T22:00:00+03:00`,returnEnd:`${NEXT_DAY}T23:00:00+03:00`},assets:[{productId:369,trackingMode:"quantity",quantity:8,reservedQty:8,stage:"reserved"}]};
+  await expectError(()=>bookingAction(periodDb,125,{mode:"reserve",quantity:10}),/المتاح 7 قطعة، والمطلوب 10 قطعة/,409);
+  assert.deepEqual(periodOwn.details.bookingOperations.assets,[],"cross-day refusal rolls back original booking line");
+  assert.equal(periodDb.state.products.get(369).stock,15);
+  assert.equal(periodDb.state.movements.length,0,"cross-day reservation rejection never creates a movement");
+  console.log("PASS original quantity mutation rejects cross-day preparation shortage without stock movement");
+  for (const mode of ["pick", "checkout"] as const) {
+    periodDb.state.bookings.find(b => b.id === 125)!.details.bookingOperations.assets = [{ productId: 369, trackingMode: "quantity", quantity: 10, reservedQty: 10, preparedQty: 10, checkedOutQty: 0, stage: "reserved" }];
+    await expectError(() => bookingAction(periodDb, 125, { mode, quantity: mode === "pick" ? 10 : 5 }), /المتاح 7 قطعة، والمطلوب 10 قطعة/, 409);
+    assert.equal(periodDb.state.products.get(369).stock, 15, "revalidation failure never checks inventory out");
+    assert.equal(periodDb.state.movements.length, 0);
+  }
   // The individual adapter was extracted from api.ts. Verify its real guard,
   // not the old location/exact wording of an Arabic error message.
   const custodyReads: string[] = [];
@@ -322,14 +375,6 @@ async function run() {
   }), (cause: unknown) => cause instanceof IndividualCustodyError && cause.status === 409);
   assert.equal(custodyReads.length, 1, "quantity asset refused before individual custody writes");
   console.log("PASS  quantity asset cannot bypass its original engine through individual custody");
-  const db = createDatabase();
-
-  // Schema not applied yet: the feature is inert, legacy assets keep working.
-  db.state.ready = false;
-  assert.equal((await quantityProfilesFor(db as any, [369])).size, 0);
-  assert.ok(!db.state.log.some((q) => q.includes("from asset_quantity_profiles")), "no query against a missing table");
-  db.state.ready = true;
-
   // (1)(2)(3) Create: an individual asset stays individual; the master asset with
   // 100 units is one product row whose initial stock came from the product API.
   db.state.products.get(369).stock = 100;

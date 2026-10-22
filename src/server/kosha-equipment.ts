@@ -10,6 +10,8 @@ import {
 import { routedKoshaCustomFieldsSql } from "./kosha-instruction-store";
 import { bookingEvidenceWriteSql } from "./booking-operations-write-guard";
 import { bucketsOf, quantityAvailability, quantityProfilesFor } from "./quantity-assets";
+import { bookingResourceOccupancy } from "@/lib/booking-resource-window";
+import { findBookingPhysicalConflict } from "./booking-resource-availability";
 
 export class KoshaEquipmentError extends Error {
   constructor(
@@ -179,6 +181,7 @@ export async function bookingKoshaEquipment(
           day: /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null,
           exclude: { source: sourceType, bookingId: booking.id },
           buckets: bucketsOf(quantityProfile, products.get(line.productId)?.stock),
+          interval:bookingResourceOccupancy(ops,row.event_date),
         });
         const available = blocked ? 0 : availability.available;
         const info = template.find((l) => equipmentKey(l) === equipmentKey(line));
@@ -217,22 +220,16 @@ export async function bookingKoshaEquipment(
           "sold",
           "disposed",
         ].includes(String(profile.rows[0]?.status));
-        const conflicts = await tx.execute(sql`
-          select count(*) as quantity from (
-            select 'kosha_booking' as source,id,booking_details as details from kosha_bookings where archived_at is null and status not in ('cancelled','completed','deleted') and (${day}='' or event_date::text like ${day + "%"})
-            union all
-            select 'service_order',id,custom_fields from service_orders where archived_at is null and status not in ('cancelled','completed','delivered','deleted') and (${day}='' or event_date like ${day + "%"})
-          ) b cross join lateral jsonb_array_elements(
-            (case when jsonb_typeof(b.details->'bookingOperations'->'assets')='array' then b.details->'bookingOperations'->'assets' else '[]'::jsonb end)
-            || (case when jsonb_typeof(b.details->'linkedAssets')='array' then b.details->'linkedAssets' else '[]'::jsonb end)
-          ) a
-          where not(b.source=${sourceType} and b.id=${booking.id}) and a->>'productId'=${String(line.productId)} and coalesce(a->>'stage','linked') not in ('released','completed')
-        `);
+        const conflict = await findBookingPhysicalConflict(
+          { source: native ? "kosha" : "service", id: booking.id, operations: ops, eventDate: row.event_date },
+          line.productId,
+          tx,
+        );
         // Include physical holds even for a consumable template line. A second
         // template cannot bypass an existing asset reservation by changing policy.
         // Existing asset workflow treats one product as a physical asset identity,
         // not independently reservable variants. Keep its conservative overlap guard.
-        if (Number(conflicts.rows[0].quantity) > 0) blocked = true;
+        if (conflict) blocked = true;
         const custody = await tx.execute(
           sql`select coalesce(sum(quantity),0) as quantity from equipment_custody where product_id=${line.productId} and status='issued'`,
         );

@@ -1,6 +1,10 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { loadDailyOperations } from "./booking-daily-operations";
 import { loadBookingReadiness } from "./booking-operational-readiness";
+import { findBookingPhysicalConflict,findBookingStaffConflict,BookingResourceConflictError } from "./booking-resource-availability";
+import { readResourceBooking,saveBookingResourceWindow,resourceWindowView,lockBookingExecutionTeam } from "./booking-resource-period";
+import { saveBookingDispatch } from "./booking-dispatch";
+import { readBookingResourceWindow,bookingResourceOccupancy,BookingResourceWindowError } from "@/lib/booking-resource-window";
 import { getLoadingView, runLoadingRequest } from "./booking-loading";
 import { BookingProfitabilityError, getBookingProfitability } from "./booking-profitability";
 import { getBookingFinancialSummary } from "./booking-finance";
@@ -21917,7 +21921,6 @@ async function handleAdminKoshas(
       // Booking crew — Primary + Assistant employee, stored in bookingDetails (no new table).
       if (parts[3] === "employees" && method === "POST") {
         const b = await body(req);
-        const details = (existing.bookingDetails ?? {}) as Record<string, any>;
         const primaryId = optionalPositiveId(b?.primaryEmployeeId);
         const assistantId = optionalPositiveId(b?.assistantEmployeeId);
         const [primary, assistant] = await Promise.all([
@@ -21932,21 +21935,21 @@ async function handleAdminKoshas(
               })
             : Promise.resolve(null),
         ]);
-        const next = {
-          ...details,
-          primaryEmployeeId: primaryId ?? null,
-          primaryEmployeeName: primary
-            ? primary.fullName || primary.username
-            : null,
-          assistantEmployeeId: assistantId ?? null,
-          assistantEmployeeName: assistant
-            ? assistant.fullName || assistant.username
-            : null,
-        };
-        await db
-          .update(koshaBookingsTable)
-          .set({ bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, next), updatedAt: new Date() })
-          .where(eq(koshaBookingsTable.id, id));
+        const next = await db.transaction(async tx => {
+          const live=await lockBookingExecutionTeam(tx,{source:"kosha",id},[primaryId,assistantId].filter((staffId):staffId is number=>!!staffId));
+          const next = {
+            ...live.details,
+            primaryEmployeeId: primaryId ?? null,
+            primaryEmployeeName: primary ? primary.fullName || primary.username : null,
+            assistantEmployeeId: assistantId ?? null,
+            assistantEmployeeName: assistant ? assistant.fullName || assistant.username : null,
+          };
+          await tx
+            .update(koshaBookingsTable)
+            .set({ bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, next), updatedAt: new Date() })
+            .where(eq(koshaBookingsTable.id, id));
+          return next;
+        });
         void logAdminActivity(
           req,
           "kosha_booking_employees_set",
@@ -23784,39 +23787,8 @@ async function handleEnterpriseAdmin(
       if (!parsed.success)
         return validationError("enterprise.dispatch.create", parsed);
       const data = parsed.data;
-      const [row] = await db
-        .insert(dispatchAssignmentsTable)
-        .values({
-          ...data,
-          score: String(data.score),
-          assignedBy: auth.id,
-          assignedByName: auth.fullName || auth.username,
-        })
-        .onConflictDoUpdate({
-          target: [
-            dispatchAssignmentsTable.entityType,
-            dispatchAssignmentsTable.entityId,
-          ],
-          set: {
-            ...data,
-            score: String(data.score),
-            assignedBy: auth.id,
-            assignedByName: auth.fullName || auth.username,
-            status: "assigned",
-            updatedAt: new Date(),
-          },
-        })
-        .returning();
-      if (data.crewId)
-        await db
-          .update(crewsTable)
-          .set({ status: "busy", updatedAt: new Date() })
-          .where(eq(crewsTable.id, data.crewId));
-      if (data.vehicleId)
-        await db
-          .update(fleetVehiclesTable)
-          .set({ status: "outside", updatedAt: new Date() })
-          .where(eq(fleetVehiclesTable.id, data.vehicleId));
+      const {row,replayed}=await saveBookingDispatch(db,data,{id:auth.id,name:auth.fullName||auth.username});
+      if (!replayed) {
       await recordEnterpriseMutation(
         req,
         auth,
@@ -23840,6 +23812,7 @@ async function handleEnterpriseAdmin(
         entityId: data.entityId,
         href: "/admin/command-center",
       });
+      }
       return json({ ...row, score: Number(row.score) }, 201);
     }
   }
@@ -31533,6 +31506,7 @@ async function bookingOperationAssets(reference: BookingOperationsReference) {
       day: bookingDay(reference.eventDate),
       exclude: { source: reference.entityType, bookingId: reference.id },
       buckets,
+      interval:bookingResourceOccupancy(reference.operations,reference.eventDate),
     });
     const raw = linked.find((item) => item.productId === productId);
     const summary = quantityLineSummary(raw);
@@ -31649,53 +31623,9 @@ async function bookingOperationAssets(reference: BookingOperationsReference) {
 async function assetConflictForBooking(
   reference: BookingOperationsReference,
   productId: number,
-  connection: Pick<typeof db, "query"> = db,
+  connection: Pick<typeof db, "execute"> = db,
 ) {
-  const day = String(reference.eventDate ?? "").slice(0, 10);
-  if (!day) return null;
-  const [koshaRows, serviceRows] = await Promise.all([
-    connection.query.koshaBookingsTable.findMany({
-      where: sql`${koshaBookingsTable.archivedAt} is null and ${koshaBookingsTable.status} not in ('cancelled','completed') and ${koshaBookingsTable.eventDate}::text like ${`${day}%`}`,
-      limit: 200,
-    }),
-    connection.query.serviceOrdersTable.findMany({
-      where: sql`${serviceOrdersTable.archivedAt} is null and ${serviceOrdersTable.status} not in ('cancelled','completed','delivered') and ${serviceOrdersTable.eventDate} like ${`${day}%`}`,
-      limit: 200,
-    }),
-  ]);
-  const rows = [
-    ...koshaRows.map((row) => ({
-      source: "kosha",
-      id: row.id,
-      details: row.bookingDetails as any,
-    })),
-    ...serviceRows.map((row) => ({
-      source: "service",
-      id: row.id,
-      details: row.customFields as any,
-    })),
-  ];
-  return (
-    rows.find((candidate) => {
-      if (
-        candidate.source === reference.source &&
-        candidate.id === reference.id
-      )
-        return false;
-      const details = candidate.details ?? {};
-      const opsAssets = Array.isArray(details.bookingOperations?.assets)
-        ? details.bookingOperations.assets
-        : [];
-      const legacyAssets = Array.isArray(details.linkedAssets)
-        ? details.linkedAssets
-        : [];
-      return [...opsAssets, ...legacyAssets].some(
-        (item: any) =>
-          Number(item?.productId) === productId &&
-          !["released", "completed"].includes(String(item?.stage ?? "")),
-      );
-    }) ?? null
-  );
+  return findBookingPhysicalConflict(reference, productId, connection);
 }
 
 async function executeBookingAssetAction(
@@ -31831,7 +31761,7 @@ async function executeLockedBookingAssetAction(
       );
       if (conflict)
         return error(
-          `الأصل محجوز في حجز آخر بنفس التاريخ (#${conflict.id})`,
+          conflict.timingIncomplete ? "يلزم مراجعة فترة تشغيل الحجز المرتبط بهذه المعدة قبل تأكيد التوفر" : `الأصل مشغول في حجز آخر خلال التجهيز أو النقل أو المناسبة أو الإرجاع (#${conflict.id})`,
           409,
         );
       const profile = await db.query.assetProfilesTable.findFirst({
@@ -32349,11 +32279,12 @@ async function custodyAvailability(
 
 async function custodyPreview(
   staffIds: number[],
-  startAt: Date,
-  endAt: Date,
+  startAt: Date | null,
+  endAt: Date | null,
   bookingType?: string,
   bookingId?: number,
   connection: Pick<typeof db, "execute"> = db,
+  resourceReference?: Parameters<typeof findBookingPhysicalConflict>[0],
 ) {
   if (!staffIds.length) return [];
   const result: any = await connection.execute(sql`
@@ -32365,8 +32296,17 @@ async function custodyPreview(
     join products p on p.id=a.product_id left join asset_profiles ap on ap.product_id=p.id
     left join asset_passports pass on pass.product_id=p.id
     where g.status='active' and g.staff_id in (${sql.join(staffIds.map((id) => sql`${id}`), sql`, `)}) order by s.full_name,g.id,asset_name`);
+  if (!Array.isArray(result.rows)) throw new Error("Invalid custody group assets database response");
   return Promise.all(
-    (result.rows ?? []).map(async (row: any) => ({
+    result.rows.map(async (row: any) => {
+      let availability: { available: boolean; reason: string | null; conflictBooking?: string; timingIncomplete?: boolean } = startAt && endAt
+        ? await custodyAvailability(Number(row.product_id), startAt, endAt, bookingType, bookingId, connection)
+        : { available: false, reason: "حدد فترة تشغيل الموارد قبل حجز عهدة الموظف", timingIncomplete: true };
+      if (availability.available && resourceReference) {
+        const conflict = await findBookingPhysicalConflict(resourceReference, Number(row.product_id), connection);
+        if (conflict) availability = { available: false, reason: conflict.timingIncomplete ? "فترة حجز المعدة الآخر غير مكتملة" : "المعدة مشغولة خلال فترة التجهيز والإرجاع", conflictBooking: `${conflict.source} #${conflict.id}`, timingIncomplete: conflict.timingIncomplete };
+      }
+      return {
       groupId: Number(row.group_id),
       groupName: row.group_name,
       groupType: row.group_type,
@@ -32379,15 +32319,9 @@ async function custodyPreview(
       qrCode: row.qr_token ?? row.barcode ?? null,
       serialNumber: row.serial_number ?? null,
       condition: row.asset_status ?? "active",
-      ...(await custodyAvailability(
-        Number(row.product_id),
-        startAt,
-        endAt,
-        bookingType,
-        bookingId,
-        connection,
-      )),
-    })),
+      ...availability,
+    };
+    }),
   );
 }
 
@@ -32731,6 +32665,21 @@ async function handleBookingOperations(
     if(!["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase())&&!can("booking_operations_view","booking_assets_manage","warehouse_issue"))return error("ليس لديك صلاحية عرض عمليات المعدات",403);
     return bookingLoadingEndpoint(req,{source:source as "kosha"|"service",id},auth);
   }
+  if(parts[4]==="resource-window"){
+    const source=parts[2],id=int(parts[3]);
+    if(parts.length!==5||!["kosha","service"].includes(source??"")||!id||!/^\d+$/.test(parts[3]??"")||!Number.isSafeInteger(id))return error("مسار الحجز غير صحيح",400);
+    const manager=["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase());
+    const ref={source:source as "kosha"|"service",id};
+    if(req.method==="GET"){
+      if(!manager&&!can("booking_operations_view","orders"))return error("ليس لديك صلاحية عرض موارد الحجز",403);
+      const response=json({...resourceWindowView(await readResourceBooking(db,ref)),canEdit:manager||hasPermission(auth,"booking_edit")});
+      response.headers.set("Cache-Control","private, no-store");return response;
+    }
+    if(req.method!=="PUT")return error("الإجراء غير مدعوم",405);
+    if(!manager&&!hasPermission(auth,"booking_edit"))return error("ليس لديك صلاحية تعديل فترة موارد الحجز",403);
+    const payload=await body(req);
+    return json(await saveBookingResourceWindow(db,ref,payload?.window,payload?.expectedWindow,{id:auth.id,name:auth.fullName||auth.username}));
+  }
   if (parts[4] === "readiness") {
     if (req.method !== "GET") return error("الإجراء غير مدعوم", 405);
     const source=parts[2], id=int(parts[3]);
@@ -32829,8 +32778,6 @@ async function handleBookingOperations(
       if (unavailable.length)
         return error("أحد الموظفين المحددين غير نشط أو غير مخول لهذا النوع من الحجز", 422);
       const currentIds = previous.ids;
-      if (currentIds.length === nextIds.length && currentIds.every((staffId) => nextIds.includes(staffId)))
-        return json({ ok: true, assignedStaff, duplicate: true });
 
       const nextStaff = nextIds.map((staffId) => eligibleById.get(staffId)!);
       const nextAssignments = nextStaff.map((staff) => ({
@@ -32839,12 +32786,11 @@ async function handleBookingOperations(
         role: staff.jobTitle || staff.role,
         department: staff.department,
       }));
-      const removedIds = currentIds.filter((staffId) => !nextIds.includes(staffId));
-      const addedIds = nextIds.filter((staffId) => !currentIds.includes(staffId));
-      const beforeNames = assignedStaff.map((staff: any) => staff.name);
+      let removedIds = currentIds.filter((staffId) => !nextIds.includes(staffId));
+      let addedIds = nextIds.filter((staffId) => !currentIds.includes(staffId));
+      let beforeNames = assignedStaff.map((staff: any) => staff.name);
       const afterNames = nextAssignments.map((staff) => staff.name);
-      const nextDetails = {
-        ...reference.details,
+      const assignmentPatch = {
         assignedStaffIds: nextIds,
         bookingStaffAssignments: nextAssignments,
         primaryEmployeeId: null,
@@ -32855,13 +32801,32 @@ async function handleBookingOperations(
         // in sync means a newly assigned crew member sees the booking immediately.
         assignedEmployees: afterNames,
       };
+      let nextDetails={...reference.details,...assignmentPatch};
       const href = reference.source === "kosha"
         ? `/staff/koshas/booking/${reference.id}`
         : types.some((type) => type === "kosha" || type === "sound")
           ? `/staff/koshas/booking/${reference.id}?source=service`
           : `/admin/bookings/service/${reference.id}`;
 
-      await db.transaction(async (tx) => {
+      const changed=await db.transaction(async (tx) => {
+        const live=await readResourceBooking(tx,{source:reference.source,id:reference.id},true);
+        if(["cancelled","canceled","deleted","completed","delivered","closed"].includes(live.status.toLowerCase()))throw new BookingResourceConflictError("لا يمكن إسناد فريق لحجز ملغي أو مكتمل",409);
+        const liveIds=[...new Set([...bookingAssignedStaff(live.details).ids,...(live.assignedStaffId?[live.assignedStaffId]:[])])];
+        if(liveIds.length===nextIds.length&&liveIds.every(staffId=>nextIds.includes(staffId)))return false;
+        const lockIds=[...new Set([...liveIds,...nextIds])].sort((a,b)=>a-b);
+        if(lockIds.length){
+        const locked=await tx.execute(sql`SELECT id,is_active,role,department,permissions FROM staff WHERE id IN (${sql.join(lockIds.map(id=>sql`${id}`),sql`, `)}) ORDER BY id FOR UPDATE`);
+          if(!Array.isArray(locked.rows))throw Error("Invalid staff resource database response");
+          for(const staffId of nextIds){const member=(locked.rows as any[]).find(row=>Number(row.id)===staffId);if(!member||member.is_active!==true||!staffMatchesBookingAssignment(member,types))throw new BookingResourceConflictError("تغيّرت أهلية أحد الموظفين؛ حدّث قائمة الفريق",422)}
+        }
+        if(nextIds.length){
+          if(!readBookingResourceWindow(live.operations,live.eventDate))throw new BookingResourceConflictError("حدد فترة تشغيل الموارد من بداية التجهيز حتى اكتمال الإرجاع قبل إسناد الفريق",409);
+          if(await findBookingStaffConflict(live,nextIds,tx))throw new BookingResourceConflictError("أحد الموظفين مشغول أو فترة حجزه الآخر غير مكتملة؛ اختر موظفاً آخر أو راجع المواعيد",409);
+        }
+        removedIds=liveIds.filter(staffId=>!nextIds.includes(staffId));
+        addedIds=nextIds.filter(staffId=>!liveIds.includes(staffId));
+        beforeNames=liveIds.map(staffId=>staffRows.find(staff=>staff.id===staffId)?.fullName||staffRows.find(staff=>staff.id===staffId)?.username||"موظف معيّن");
+        nextDetails={...live.details,...assignmentPatch};
         if (reference.source === "kosha") {
           await tx.update(koshaBookingsTable)
             .set({ bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, nextDetails), assignedStaffId: nextIds[0] ?? null, updatedAt: new Date() })
@@ -32913,7 +32878,9 @@ async function handleBookingOperations(
             })));
           }
         }
+        return true;
       });
+      if(!changed)return json({ok:true,assignedStaff:nextAssignments,duplicate:true});
       reference.details = nextDetails;
       await logAdminActivity(req, "booking_staff_assignment_changed", reference.entityType, reference.id, {
         before: beforeNames,
@@ -32966,6 +32933,7 @@ async function handleBookingOperations(
                 day: bookingDay(reference.eventDate),
                 exclude: { source: reference.entityType, bookingId: reference.id },
                 buckets: bucketsOf(quantityProfile, product.stock),
+                interval:bookingResourceOccupancy(reference.operations,reference.eventDate),
               })
             ).availability
           : null;
@@ -33199,16 +33167,9 @@ async function handleBookingOperations(
       auth.role === "manager" ||
       hasPermission(auth, "products") ||
       permissions.some((p) => hasPermission(auth, p));
-    const eventTime = String(
-      reference.details.eventTime ??
-        reference.details.event_time ??
-        reference.operations.eventTime ??
-        "08:00",
-    ).slice(0, 5);
-    const eventStart = reference.eventDate
-      ? new Date(`${String(reference.eventDate).slice(0, 10)}T${eventTime}:00`)
-      : new Date();
-    const eventEnd = new Date(eventStart.getTime() + 8 * 60 * 60 * 1000);
+    const resourceWindow = readBookingResourceWindow(reference.operations, reference.eventDate);
+    const eventStart = resourceWindow ? new Date(resourceWindow.preparationStart) : null;
+    const eventEnd = resourceWindow ? new Date(resourceWindow.returnEnd) : null;
     const savedEmployeeIds = Array.isArray(
       reference.operations.custodyEmployeeIds,
     )
@@ -33228,16 +33189,19 @@ async function handleBookingOperations(
         eventEnd,
         reference.entityType,
         reference.id,
+        db,
+        reference,
       );
       const reservations: any = await db.execute(
         sql`select * from employee_custody_reservations where booking_type=${reference.entityType} and booking_id=${reference.id} and status in ('reserved','checked_out') order by id`,
       );
       return json({
         employeeIds,
-        startAt: eventStart.toISOString(),
-        endAt: eventEnd.toISOString(),
+        startAt: eventStart?.toISOString() ?? null,
+        endAt: eventEnd?.toISOString() ?? null,
+        timingIncomplete: !resourceWindow,
         assets,
-        reservations: reservations.rows ?? [],
+        reservations: (() => { if (!Array.isArray(reservations.rows)) throw new Error("Invalid fixed custody reservations database response"); return reservations.rows; })(),
       });
     }
     if (method !== "POST") return error("إجراء عهدة الحجز غير مدعوم", 405);
@@ -33269,10 +33233,9 @@ async function handleBookingOperations(
       const ref = { ...reference, row: fresh, details, operations: bookingOperationsState(details), eventDate: fresh.eventDate };
       const savedIds: number[] = Array.isArray(ref.operations.custodyEmployeeIds) ? ref.operations.custodyEmployeeIds.map(Number).filter((id: number) => Number.isSafeInteger(id) && id > 0) : [];
       const employeeIds: number[] = Array.isArray(data?.employeeIds) ? [...new Set<number>(data.employeeIds.map(Number))] : savedIds;
-      const time = String(details.eventTime ?? details.event_time ?? ref.operations.eventTime ?? "08:00").slice(0, 5);
-      const start = ref.eventDate ? new Date(String(ref.eventDate).slice(0, 10) + "T" + time + ":00") : new Date();
-      const end = new Date(start.getTime() + 8 * 60 * 60 * 1000);
-      if (!Number.isFinite(start.getTime())) reject("تاريخ أو وقت الحجز غير صحيح");
+      const window = readBookingResourceWindow(ref.operations, ref.eventDate);
+      const start = window ? new Date(window.preparationStart) : null;
+      const end = window ? new Date(window.returnEnd) : null;
       const reservationsResult = await db.execute(sql`select r.*,g.name as group_name,s.full_name,s.username from employee_custody_reservations r join employee_custody_groups g on g.id=r.group_id join staff s on s.id=r.staff_id where r.booking_type=${ref.entityType} and r.booking_id=${ref.id} order by r.id`);
       const reservations = reservationsResult.rows as any[];
       const candidates = employeeIds.length
@@ -33310,7 +33273,7 @@ async function handleBookingOperations(
         await logCustodyAudit({ bookingType: ref.entityType, bookingId: ref.id, action: "reservation_released", previous: { employeeIds: savedIds }, next: { employeeIds }, auth }, db);
         await save(preserveOut(operationsAssets), { custodyEmployeeIds: employeeIds });
         effects.push({ entityType: ref.entityType, entityId: ref.id, type: "custody_employee_changed", title: "تغيير موظف عهدة الحجز", body: employeeIds.join(", ") || "بدون موظف", actor: erpActorFromAdmin(auth), metadata: { previous: savedIds, next: employeeIds } });
-        return json({ ok: true, assets: await custodyPreview(employeeIds, start, end, ref.entityType, ref.id, db) });
+        return json({ ok: true, assets: await custodyPreview(employeeIds, start, end, ref.entityType, ref.id, db, ref), timingIncomplete: !window });
       }
       if (action === "release") {
         if (!canCustody("asset_release")) reject("ليس لديك صلاحية تحرير معدات العهدة", 403);
@@ -33322,8 +33285,9 @@ async function handleBookingOperations(
       }
       if (action === "reserve") {
         if (!canCustody("custody_groups_reserve", "asset_reserve")) reject("ليس لديك صلاحية حجز معدات العهدة", 403);
+        if (!start || !end) throw new IndividualCustodyError("حدد فترة تشغيل الموارد من بداية التجهيز حتى اكتمال الإرجاع قبل حجز العهدة", 409);
         if (out.length) reject("يجب إرجاع المعدات التي خرجت قبل إعادة حجزها", 409);
-        const preview = await custodyPreview(employeeIds, start, end, ref.entityType, ref.id, db);
+        const preview = await custodyPreview(employeeIds, start, end, ref.entityType, ref.id, db, ref);
         if (preview.some((item) => !lockIds.includes(item.productId))) reject("تغيرت معدات الموظف أثناء الحجز؛ أعد المحاولة", 409);
         if (preview.some((item) => reservations.some((row) => Number(row.product_id) === item.productId && ["returned", "missing"].includes(row.status))))
           reject("عهدة سابقة مغلقة؛ لا يمكن إعادة كتابة تاريخ صرف وإرجاع الحجز", 409);
@@ -33357,8 +33321,10 @@ async function handleBookingOperations(
             continue;
           }
           if (issues.length) reject("المعدة خرجت بعهدة أخرى", 409);
+          if (!start || !end) throw new IndividualCustodyError("حدد فترة تشغيل الموارد قبل صرف عهدة الموظف", 409);
           const availability = await custodyAvailability(productId, start, end, ref.entityType, ref.id, db);
           if (!availability.available) reject("المعدة غير متاحة: " + availability.reason, 409);
+          if (await findBookingPhysicalConflict(ref, productId, db)) reject("المعدة غير متاحة خلال فترة تشغيل الحجز أو مواعيد الحجز الآخر غير مكتملة", 409);
           const detail = requestedAssets.find((item) => Number(item.productId) === productId) ?? {};
           const [issue] = await db.insert(equipmentCustodyTable).values({ productId, staffId: Number(row.staff_id), quantity: 1, status: "issued", issuedBy: auth.id, signatureUrl: nullableText(detail.signatureUrl), notes: sourcePrefix + row.group_name }).returning();
           if (!issue) throw new Error("Custody insert returned no row");
@@ -38618,6 +38584,7 @@ async function handleKoshaWorkOrders(
     let created: any;
     try {
       await db.transaction(async (tx) => {
+        await lockBookingExecutionTeam(tx,{source:"kosha",id:bookingId},[leaderId,...memberIds],staff=>Array.isArray(staff.permissions)&&staff.permissions.includes("koshas"));
         const result: any =
           await tx.execute(sql`insert into kosha_work_orders (work_order_no, booking_id, leader_id, status, priority, required_arrival_at, event_start_at, expected_dismantle_at, special_instructions, require_acknowledgment, assigned_at, created_by)
           values (${koshatWorkOrderNumber(bookingId)}, ${bookingId}, ${leaderId}, 'ASSIGNED', ${String(payload.priority ?? "normal")}, ${payload.requiredArrivalAt || null}::timestamp, ${payload.eventStartAt || null}::timestamp, ${payload.expectedDismantleAt || null}::timestamp, ${nullableText(payload.specialInstructions)}, ${payload.requireAcknowledgment === true}, now(), ${auth.id}) returning id`);
@@ -38767,6 +38734,10 @@ async function handleKoshaWorkOrders(
         422,
       );
     await db.transaction(async (tx) => {
+      await lockBookingExecutionTeam(tx,{source:"kosha",id:workOrder.bookingId},[nextLeaderId],staff=>Array.isArray(staff.permissions)&&staff.permissions.includes("koshas"));
+      const current=await tx.execute(sql`SELECT id,booking_id,leader_id,status FROM kosha_work_orders WHERE id=${id} FOR UPDATE`);
+      if(!Array.isArray(current.rows)||!current.rows[0])throw new BookingResourceConflictError("أمر التنفيذ غير موجود",404);
+      if(Number(current.rows[0].booking_id)!==workOrder.bookingId||Number(current.rows[0].leader_id)!==workOrder.leaderId||["COMPLETED","CANCELLED"].includes(String(current.rows[0].status)))throw new BookingResourceConflictError("تغيّر أمر التنفيذ؛ حدّث الصفحة قبل إعادة الإسناد",409);
       await tx.execute(
         sql`update kosha_work_order_members set role='MEMBER', removed_at=now(), status='REASSIGNED' where work_order_id=${id} and staff_id=${workOrder.leaderId}`,
       );
@@ -75177,6 +75148,16 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
+    if(err instanceof BookingResourceWindowError){
+      const requestId=makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN resource window rejected",{requestId,path:req.nextUrl.pathname});
+      return error(err.message,422,{requestId,code:"VALIDATION_ERROR",retryable:false});
+    }
+    if(err instanceof BookingResourceConflictError){
+      const requestId=makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN resource operation rejected",{requestId,path:req.nextUrl.pathname,status:err.status});
+      return error(err.message,err.status,{requestId,retryable:false});
+    }
     if (err instanceof IndividualCustodyError)
       return individualCustodyErrorResponse(req, err);
     if (err instanceof ProductionEnvironmentError) {

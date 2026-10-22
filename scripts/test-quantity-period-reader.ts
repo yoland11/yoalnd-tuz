@@ -1,0 +1,20 @@
+import assert from "node:assert/strict";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { quantityAvailability } from "../src/server/quantity-assets";
+const dialect=new PgDialect();
+const period={start:"2026-10-22T12:00:00+03:00",end:"2026-10-23T12:00:00+03:00"};
+const resource_window={preparationStart:"2026-10-23T10:00:00+03:00",eventStart:"2026-10-23T18:00:00+03:00",eventEnd:"2026-10-23T23:00:00+03:00",returnEnd:"2026-10-24T09:00:00+03:00"};
+let fail=false,invalid=false;
+const connection={execute:async(query:any)=>{
+  if(fail)throw Error("database unavailable");
+  const built=dialect.sqlToQuery(query),text=built.sql;
+  if(text.includes("from kosha_bookings b"))return invalid?{}:{rows:[{product_id:20,source:"service_order",booking_id:7,day:"2026-10-23",status:"confirmed",customer_name:"عميل",line:{productId:20,trackingMode:"quantity",quantity:8,reservedQty:8,stage:"reserved"},resource_window}]};
+  if(text.includes("from stock_reservations"))return {rows:[{quantity:0}]};
+  throw Error("Unexpected read "+text);
+}};
+const input={productId:20,day:"2026-10-22",exclude:{source:"kosha_booking",bookingId:7},buckets:{inWarehouse:15,checkedOut:0,damaged:0,maintenance:0,missing:0},interval:period};
+assert.equal((await quantityAvailability(connection as any,input)).availability.available,7,"actual reader must see preparation on preceding day, not filter only event day");
+assert.equal((await quantityAvailability(connection as any,{...input,interval:undefined})).availability.available,15,"legacy no-period callers retain original day contract");
+invalid=true;await assert.rejects(()=>quantityAvailability(connection as any,input),/Invalid/);invalid=false;
+fail=true;await assert.rejects(()=>quantityAvailability(connection as any,input),/database unavailable/);
+console.log("PASS original quantity reader cross-day period integration, legacy compatibility and failure propagation");

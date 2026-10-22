@@ -28,6 +28,14 @@ const javascript = ts.transpileModule(`${declarations.join("\n")}\nasync functio
 const dialect = new PgDialect();
 const protection={exports:{}};
 vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/server/booking-operations-write-guard.ts','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports:protection.exports,module:protection,require});
+function loadModule(file, dependencies = {}) {
+  const module = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, { exports: module.exports, module, require: name => dependencies[name] ?? require(name), Date, Intl });
+  return module.exports;
+}
+const conflictCore = loadModule('src/lib/booking-resource-conflicts.ts');
+const windows = loadModule('src/lib/booking-resource-window.ts', { './booking-resource-conflicts': conflictCore });
+const resources = loadModule('src/server/booking-resource-availability.ts', { '@/lib/booking-resource-window': windows, '@/lib/booking-resource-conflicts': conflictCore });
 const table = (name, fields) => Object.assign({ name }, Object.fromEntries(fields.map((field) => [field, `${name}.${field}`])));
 const tables = {
   productsTable: table("products", ["id"]),
@@ -45,9 +53,10 @@ function matches(row, where) {
   return row[where.field] === where.value;
 }
 const day = "2026-10-18T08:00:00";
+const period = { preparationStart: "2026-10-17T20:00:00+03:00", eventStart: "2026-10-18T08:00:00+03:00", eventEnd: "2026-10-18T16:00:00+03:00", returnEnd: "2026-10-19T02:00:00+03:00" };
 function fixture() {
   return {
-    booking: { id: 7, eventDate: "2026-10-18", status: "confirmed", bookingDetails: { privateNote: "preserve fresh fields", bookingOperations: { custodyEmployeeIds: [5], assets: [{ productId: 90, quantity: 1, stage: "reserved" }] } } },
+    booking: { id: 7, eventDate: "2026-10-18", status: "confirmed", bookingDetails: { privateNote: "preserve fresh fields", bookingOperations: { resourceWindow: period, custodyEmployeeIds: [5], assets: [{ productId: 90, quantity: 1, stage: "reserved" }] } } },
     reservations: [{ id: 1, group_id: 2, group_name: "Camera kit", product_id: 10, staff_id: 5, full_name: "Crew", username: "crew", booking_type: "kosha_booking", booking_id: 7, status: "reserved", start_at: new Date(day), end_at: new Date(new Date(day).getTime() + 8 * 3600000), checkout_at: null, returned_at: null, depreciation_applied_at: null }],
     candidates: [{ group_id: 2, group_name: "Camera kit", group_type: "general", staff_id: 5, full_name: "Crew", username: "crew", department: null, product_id: 10, asset_name: "Camera", barcode: null, serial_number: null, asset_status: "active", qr_token: null, warehouse_id: null, shelf_code: null, metadata: {} }],
     products: [{ id: 10, name: "Camera", isActive: true, isAsset: true, costPrice: "100" }, { id: 20, name: "Lens", isActive: true, isAsset: true, costPrice: "50" }, { id: 90, name: "Other", isActive: true, isAsset: true }],
@@ -68,6 +77,7 @@ function harness(initial = fixture(), settings = {}) {
       execute: async (statement) => {
         const { sql: text, params } = dialect.sqlToQuery(statement);
         const normalized = text.replace(/\s+/g, " ").trim();
+        if (normalized.startsWith('WITH bookings AS')) { requireLock(params[0]); return { rows: settings.periodConflicts ?? [] }; }
         if (/^select .*from (kosha_bookings|service_orders).*for update/i.test(normalized)) {
           events.push("booking-lock");
           return { rows: [{ id: 7 }] };
@@ -173,6 +183,7 @@ function harness(initial = fixture(), settings = {}) {
   class IndividualCustodyError extends Error { constructor(message, status = 422) { super(message); this.status = status; } }
   const context = {
     ...tables, db, sql, Date, IndividualCustodyError,bookingEvidenceWriteSql:protection.exports.bookingEvidenceWriteSql,
+    readBookingResourceWindow: windows.readBookingResourceWindow, findBookingPhysicalConflict: resources.findBookingPhysicalConflict,
     eq: compare, and: (...and) => ({ and }), desc: (value) => value,
     ensureCustodyGroupTables: async () => {}, hasPermission: (auth, permission) => auth.role === "admin" || auth.permissions.includes(permission),
     body: async (req) => req.payload, int: Number,
@@ -211,6 +222,19 @@ function harness(initial = fixture(), settings = {}) {
 }
 
 (async () => {
+  const fullPeriod = harness();
+  await fullPeriod.run({ action: "reserve", employeeIds: [5] });
+  assert.equal(fullPeriod.state.reservations[0].start_at.toISOString(), new Date(period.preparationStart).toISOString(), "fixed custody starts at preparation, not an invented event start");
+  assert.equal(fullPeriod.state.reservations[0].end_at.toISOString(), new Date(period.returnEnd).toISOString(), "fixed custody includes dismantling and return, not a default eight hours");
+  const noPeriod = fixture(); delete noPeriod.booking.bookingDetails.bookingOperations.resourceWindow;
+  const unknownPeriod = harness(noPeriod);
+  await assert.rejects(() => unknownPeriod.run({ action: "reserve" }), /فترة تشغيل/);
+  assert.equal(unknownPeriod.state.audits.length, 0);
+  const overlap = harness(fixture(), { periodConflicts: [{ source: "service", id: 8, event_date: "2026-10-19", details: { bookingOperations: { resourceWindow: { preparationStart: "2026-10-19T01:00:00+03:00", eventStart: "2026-10-19T10:00:00+03:00", eventEnd: "2026-10-19T20:00:00+03:00", returnEnd: "2026-10-20T02:00:00+03:00" } } } }] });
+  await assert.rejects(() => overlap.run({ action: "reserve" }), /متاحة|مشغولة/);
+  assert.equal(overlap.state.audits.length, 0);
+  await assert.rejects(() => overlap.run({ action: "checkout" }), /متاحة|مشغولة/);
+  assert.equal(overlap.state.custody.length, 0);
   const checkout = harness();
   await checkout.run({ action: "checkout" });
   assert.deepEqual(checkout.events.filter((event) => event.includes("lock")), ["booking-lock", "product-lock:10", "product-lock:90"]);
@@ -237,6 +261,11 @@ function harness(initial = fixture(), settings = {}) {
   await returned.run({ action: "return", assets: [{ productId: 10, condition: "good" }] });
   assert.equal(returned.state.profiles[0].usageCount, 3, "return retry cannot depreciate twice");
   assert.equal(returned.state.audits.length, 2, "return retry cannot duplicate audit");
+  const legacyReturnState = structuredClone(checkout.state);
+  delete legacyReturnState.booking.bookingDetails.bookingOperations.resourceWindow;
+  const legacyReturn = harness(legacyReturnState);
+  await legacyReturn.run({ action: "return", assets: [{ productId: 10, condition: "good" }] });
+  assert.equal(legacyReturn.state.custody[0].status, "returned", "missing new timing must not strand an existing historical checkout");
 
   const foreignState = structuredClone(checkout.state); foreignState.custody[0].notes = "kosha_booking #700";
   const foreign = harness(foreignState);

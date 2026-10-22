@@ -1,0 +1,16 @@
+import assert from "node:assert/strict";
+import { findBookingPhysicalConflict } from "../src/server/booking-resource-availability";
+const window={preparationStart:"2026-10-22T12:00:00+03:00",eventStart:"2026-10-22T20:00:00+03:00",eventEnd:"2026-10-23T01:00:00+03:00",returnEnd:"2026-10-23T12:00:00+03:00"};
+const ref={source:"kosha" as const,id:7,eventDate:"2026-10-22",operations:{resourceWindow:window}};
+const candidate={source:"service",id:7,event_date:"2026-10-23",details:{bookingOperations:{resourceWindow:{...window,preparationStart:"2026-10-23T10:00:00+03:00",eventStart:"2026-10-23T18:00:00+03:00",eventEnd:"2026-10-23T21:00:00+03:00",returnEnd:"2026-10-23T23:00:00+03:00"}}},still_out:false};
+const db=(bookings:any[],custody:any[]=[])=>({execute:async()=>({rows:bookings.map(r=>({...r}))}),queryCustody:custody});
+assert.equal((await findBookingPhysicalConflict(ref,20,db([candidate])))?.id,7,"cross-day same-numbered service reservation is still another booking");
+assert.equal(await findBookingPhysicalConflict(ref,20,db([{...candidate,source:"kosha",id:7}])),null,"exact own identity is never a competing booking");
+assert.equal(await findBookingPhysicalConflict(ref,20,db([{...candidate,details:{bookingOperations:{resourceWindow:{...candidate.details.bookingOperations.resourceWindow,preparationStart:window.returnEnd}}}}])),null,"exact return boundary releases resource");
+assert.equal((await findBookingPhysicalConflict(ref,20,db([{...candidate,details:{}}])))?.timingIncomplete,true,"legacy resource without actual interval is not free");
+assert.equal((await findBookingPhysicalConflict(ref,20,db([{...candidate,still_out:true,details:{bookingOperations:{resourceWindow:{...window,preparationStart:"2026-10-19T10:00:00+03:00",eventStart:"2026-10-19T18:00:00+03:00",eventEnd:"2026-10-19T20:00:00+03:00",returnEnd:"2026-10-20T12:00:00+03:00"}}},event_date:"2026-10-19"}])))?.still_out,true,"issued asset is held beyond planned return, including a completed source");
+assert.equal(await findBookingPhysicalConflict(ref,20,db([])),null);
+await assert.rejects(()=>findBookingPhysicalConflict(ref,20,{execute:async()=>({})}),/Invalid/);
+await assert.rejects(()=>findBookingPhysicalConflict(ref,20,{execute:async()=>{throw Error("storage unavailable")}}),/storage unavailable/);
+await assert.rejects(()=>findBookingPhysicalConflict(ref,20,db(Array.from({length:501},()=>candidate))),/كثيرة/);
+console.log("PASS physical cross-day occupancy, source identity, true return, unknown legacy timing and database failure boundaries");
