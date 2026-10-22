@@ -209,6 +209,7 @@ export default function AssetNewPage() {
   const [deletingCategory, setDeletingCategory] = useState(false);
   const [conversionPrompt, setConversionPrompt] = useState<number | null>(null);
   const [confirmingConversion, setConfirmingConversion] = useState(false);
+  const [converting, setConverting] = useState(false);
 
   // Live QR + barcode preview (reuses the label engine; keyed off the serial).
   const [qrPreview, setQrPreview] = useState("");
@@ -455,6 +456,8 @@ export default function AssetNewPage() {
   function flash(kind: "ok" | "err", msg: string) {
     setNotice({ kind, msg });
     if (kind === "ok") window.setTimeout(() => setNotice(null), 5000);
+    // The banner sits at the top of a long form; an error must also show where the user is.
+    else toast({ title: "لم يُحفظ", description: msg, variant: "destructive" });
   }
 
   async function pickImage(onDone: (dataUrl: string) => void, files: FileList | null) {
@@ -532,6 +535,30 @@ export default function AssetNewPage() {
       toast({ title: "تعذّر التحويل", description: apiErrorMessage(error), variant: "destructive" });
     } finally {
       setConfirmingConversion(false);
+    }
+  }
+
+  // Converts only the tracking mode through its guarded endpoint, so an older asset
+  // whose other fields would not pass the full form save (e.g. a retired category)
+  // can still become a quantity asset. Other unsaved form edits are left as they are.
+  async function convertToQuantity() {
+    if (!editProductId) return;
+    setConverting(true);
+    try {
+      const status = await adminFetch<{ ready: boolean }>("/admin/assets/quantity/status");
+      if (!status.ready) {
+        flash("err", "الأصول متعددة الكمية تحتاج تطبيق ترقية قاعدة البيانات أولاً؛ لم يُحفظ أي شيء.");
+        return;
+      }
+      await applyTracking(editProductId, false);
+      await syncQuantityFields();
+      await queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
+      toast({ title: "تم تحويل الأصل إلى أصل متعدد الكمية", description: "استخدم «إدارة الكميات ← إضافة كمية» لإضافة القطع." });
+    } catch (error) {
+      if ((error as any)?.data?.requiresConfirmation) setConversionPrompt(editProductId);
+      else flash("err", apiErrorMessage(error, "تعذّر تغيير طريقة التتبع"));
+    } finally {
+      setConverting(false);
     }
   }
 
@@ -1085,13 +1112,13 @@ export default function AssetNewPage() {
             ) : isEditMode ? (
               // The manager needs a saved quantity asset; say how to get there instead of hiding it.
               <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-primary/35 bg-primary/[0.04] p-3" id="quantities">
-                <Button type="button" className="min-h-11 gap-2 px-5" disabled={!quantityMode || saving} onClick={() => handleSave("save")}>
-                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Boxes className="h-4 w-4" />}
+                <Button type="button" className="min-h-11 gap-2 px-5" disabled={!quantityMode || converting || saving} onClick={() => void convertToQuantity()}>
+                  {converting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Boxes className="h-4 w-4" />}
                   {quantityMode ? "حفظ التحويل وفتح إدارة الكميات" : "إدارة الكميات"}
                 </Button>
                 <p className="min-w-0 flex-1 basis-60 text-xs leading-5 text-muted-foreground">
                   {quantityMode
-                    ? "يُحفظ الأصل كأصل متعدد الكمية مع باقي تعديلات النموذج، ثم تظهر هنا بطاقات الكميات وقائمة الإضافة والتخفيض والجرد والتلف والفقدان."
+                    ? "يُحوّل الأصل إلى أصل متعدد الكمية (تبقى كميته الحالية وسجله كما هو)، ثم تظهر هنا بطاقات الكميات وقائمة الإضافة والتخفيض والجرد والتلف والفقدان."
                     : "إدارة الكميات للأصل متعدد الكمية. هذا الأصل محفوظ «أصل فردي»؛ اختر «أصل متعدد الكمية» من القائمة أعلاه لتفعيلها."}
                 </p>
               </div>

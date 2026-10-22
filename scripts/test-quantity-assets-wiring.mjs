@@ -78,7 +78,14 @@ assert.match(assetForm, /onChanged=\{syncQuantityFields\}/, "«تحديث الأ
 assert.match(assetForm, /purchaseCost: fresh\.profile\?\.purchasePrice != null/);
 assert.doesNotMatch(assetForm, /<QuantityAssetPanel/, "no second quantity panel above the form");
 // An asset saved as individual still shows the button and how to enable it; one click converts it.
-assert.match(assetForm, /disabled=\{!quantityMode \|\| saving\} onClick=\{\(\) => handleSave\("save"\)\}/);
+assert.match(assetForm, /disabled=\{!quantityMode \|\| converting \|\| saving\} onClick=\{\(\) => void convertToQuantity\(\)\}/);
+// Conversion uses only the guarded tracking endpoint, so an older asset with a retired
+// category (which the full form save refuses) can still be converted.
+const convert = assetForm.slice(assetForm.indexOf("async function convertToQuantity()"), assetForm.indexOf("Save orchestration"));
+assert.match(convert, /await applyTracking\(editProductId, false\);\s*await syncQuantityFields\(\);/);
+assert.match(convert, /requiresConfirmation\) setConversionPrompt\(editProductId\)/);
+assert.doesNotMatch(convert, /persist\(|handleSave\(/, "conversion does not run the full form save");
+assert.match(assetForm, /else toast\(\{ title: "لم يُحفظ", description: msg, variant: "destructive" \}\);/, "save errors are visible wherever the user is");
 assert.ok(assetForm.includes("حفظ التحويل وفتح إدارة الكميات") && assetForm.includes("اختر «أصل متعدد الكمية» من القائمة أعلاه لتفعيلها"));
 assert.match(api, /parts\[3\] === "status"\)\s*return json\(\{ ready: await quantityAssetsSchemaReady\(db\) \}\)/);
 assert.ok(
