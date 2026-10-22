@@ -12,6 +12,11 @@ assert.deepEqual(quantityPeriodAvailability(input).availability,{usable:15,reser
 assert.equal(quantityPeriodAvailability({...input,booking:{source:"service",id:2}}).availability?.available,4,"only exact source may exclude its own reservation");
 assert.equal(quantityPeriodAvailability({...input,rows:[...rows,{...rows[1],bookingId:5,interval:null}]}).complete,false,"active legacy timing is incomplete, not free");
 assert.equal(quantityPeriodAvailability({...input,buckets:{...buckets,checkedOut:5}}).complete,false,"unreconciled checkout counter is not proof of availability");
+// A date-only reservation whose day passed with nothing taken out has lapsed; a current one stays unknown.
+const lapsed={...rows[1],bookingId:6,day:"2026-10-16",status:"pending",interval:null};
+assert.deepEqual(quantityPeriodAvailability({...input,rows:[...rows,lapsed],today:"2026-10-22"}).availability,quantityPeriodAvailability(input).availability,"lapsed date-only reservation holds nothing");
+assert.equal(quantityPeriodAvailability({...input,rows:[...rows,{...lapsed,day:"2026-10-22"}],today:"2026-10-22"}).complete,false,"today's date-only reservation is still unknown timing");
+assert.equal(quantityPeriodAvailability({...input,rows:[...rows,lapsed]}).complete,false,"without a day the engine stays conservative");
 assert.equal(quantityPeriodAvailability({...input,interval:null}).complete,false);
 assert.equal(quantityPeriodAvailability({...input,rows:rows.map(r=>({...r,line:{...r.line,returnedGoodQty:r.bookingId===1?2:0}})),buckets:{...buckets,inWarehouse:13,checkedOut:2}}).availability?.available,4,"partial return frees only actual healthy returned units");
 console.log("PASS full-period quantity availability: original buckets/lines, peak demand, sources, partial return, unknown timing and reconciliation");

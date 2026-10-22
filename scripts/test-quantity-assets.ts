@@ -101,6 +101,8 @@ const NEXT_DAY = addDays(today, 5);
   const timed={source:"kosha_booking",bookingId:1,day:EVENT_DAY,status:"confirmed",line,interval:{start:`${EVENT_DAY}T12:00:00+03:00`,end:`${NEXT_DAY}T12:00:00+03:00`}};
   const unknown={...timed,bookingId:2,day:NEXT_DAY,interval:null};
   assert.equal(peakCommitment([timed,unknown],buckets,today,1),15,"unknown legacy hold, real out bucket and global store hold are protected once");
+  assert.equal(peakCommitment([timed,{...unknown,day:addDays(today,-6)}],buckets,today,1),9,"a lapsed date-only reservation (day passed, nothing out) holds nothing");
+  assert.equal(peakCommitment([timed,{...unknown,day:addDays(today,-6),line:{...line,checkedOutQty:2,stage:"out"}}],buckets,today,1),13,"a past booking with units still out is not lapsed: its open reservation stays held");
   assert.equal(peakCommitment([{...timed,line:{...line,reservedQty:8,checkedOutQty:2,stage:"out"}}],buckets,today,1),9,"out counters are not added twice to reserved-not-out demand");
   assert.equal(peakCommitment([{...timed,interval:{start:`${addDays(today,-2)}T12:00:00+03:00`,end:`${addDays(today,-1)}T12:00:00+03:00`}}],buckets,today),2,"expired reserved intervals do not free actual unreturned inventory");
 }
@@ -608,7 +610,7 @@ async function run() {
   db.state.custodyIssued = 0;
   await expectError(
     () => db.transaction((executor) => configureQuantityTracking(executor as any, { productId: 369, trackingMode: "individual", confirmConversion: true, isManager: true, actor })),
-    /مرتبط بحجوزات نشطة \(#126\)/,
+    /مرتبط بحجوزات نشطة \(#126 بتاريخ \d{4}-\d{2}-\d{2}\)/,
   );
   await bookingAction(db, 126, { mode: "unlink" });
   await expectError(
@@ -687,7 +689,40 @@ async function run() {
 
   console.log("PASS  quantity bookings: reserve 20+30, overbooking, overlap, checkout, partial return 15/3/2, idempotency");
   console.log("PASS  quantity adjustments: maintenance, write-off, add, count, commitment guard, purchase derivation, rollback");
+  // An individual asset left «محجوز» in bookings whose date passed (nothing taken out)
+  // converts; the bookings are not changed and the lapsed lines hold no units.
+  const legacy = createDatabase();
+  const pastLine = () => ({ productId: 400, quantity: 1, stage: "reserved", reservedAt: "2026-08-07T14:34:12.558Z" });
+  legacy.state.bookings.push(
+    { source: "service_order", id: 18, day: addDays(today, -76), status: "processing", customer: "زبون فاتورة مبيعات", details: { bookingOperations: { assets: [pastLine()] } } },
+    { source: "service_order", id: 121, day: addDays(today, -6), status: "pending", customer: "دنيا علي", details: { bookingOperations: { assets: [pastLine()] } } },
+  );
+  const before = JSON.stringify(legacy.state.bookings);
+  const needsManager = await expectError(
+    () => legacy.transaction((executor) => configureQuantityTracking(executor as any, { productId: 400, trackingMode: "quantity", confirmConversion: false, isManager: true, actor })),
+    /تأكيداً صريحاً/,
+  );
+  assert.equal((needsManager as QuantityAssetError).extra.requiresConfirmation, true, "past bookings still count as history");
+  const convertedLegacy = await legacy.transaction((executor) =>
+    configureQuantityTracking(executor as any, { productId: 400, trackingMode: "quantity", confirmConversion: true, isManager: true, actor }),
+  );
+  assert.equal(convertedLegacy.changed, true);
+  assert.equal(JSON.stringify(legacy.state.bookings), before, "bookings are left exactly as they were");
+  const legacySummary = (await quantityAssetSummary(legacy as any, 400, EVENT_DAY))!;
+  assert.deepEqual([legacySummary.total, legacySummary.available], [1, 1], "lapsed reservations do not hold the unit");
+  // A booking that is today or later, or a piece still out, keeps blocking.
+  for (const [day, line] of [[today, pastLine()], [addDays(today, 3), pastLine()], [addDays(today, -6), { productId: 400, quantity: 1, reservedQty: 1, checkedOutQty: 1, stage: "out" }]] as const) {
+    const blocked = createDatabase();
+    blocked.state.bookings.push({ source: "service_order", id: 81, day, status: "pending", customer: "مصطفى", details: { bookingOperations: { assets: [line] } } });
+    await expectError(
+      () => blocked.transaction((executor) => configureQuantityTracking(executor as any, { productId: 400, trackingMode: "quantity", confirmConversion: true, isManager: true, actor })),
+      new RegExp(`مرتبط بحجوزات نشطة \\(#81 بتاريخ ${day}\\)`),
+    );
+    assert.equal(blocked.state.quantity.has(400), false, "a refused conversion writes nothing");
+  }
+
   console.log("PASS  tracking-mode conversion restrictions for historical individual assets");
+  console.log("PASS  lapsed reservations (past day, nothing out) do not block conversion or hold units; current/out ones do");
   console.log("PASS  quantity manager: purchase invoice received once, no double return damage/loss, evidence, add 100 -> one movement, history pages");
 }
 

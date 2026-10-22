@@ -159,6 +159,18 @@ const dayOf = (value: unknown) => {
 };
 
 /**
+ * A reservation without a saved period whose booking day has passed while
+ * nothing was taken out: the event is over, so it no longer holds units (the
+ * date-only rule in commitmentFor already ignores it). Rows with a saved period
+ * are judged by that period; units still out always count.
+ */
+export function lapsedLegacyReservation(row: CommitmentRow & { interval?: unknown }, today: string) {
+  if (row.interval) return false;
+  const day = dayOf(row.day);
+  return Boolean(day && day < today && lineOutstanding(normalizeQuantityLine(row.line)) === 0);
+}
+
+/**
  * How many units another booking line holds against `targetDay`.
  * - Reserved-but-not-out units count only when the booking is on the same day
  *   (bookings without a date are treated as overlapping, conservatively).

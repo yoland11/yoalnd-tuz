@@ -11,6 +11,7 @@ import {
   adjustQuantityValuation,
   availabilityForDay,
   insufficientQuantityMessage,
+  lapsedLegacyReservation,
   lineOutstanding,
   lineReservedNotOut,
   lowAvailability,
@@ -262,7 +263,7 @@ export function peakCommitment(rows: (CommitmentRow & {interval?:ResourceOccupan
       const reserved=lineReservedNotOut(line,row.status);
       if(!reserved)continue;
       const period=resourceOccupancyTimestamps(row.interval??null);
-      if(!period){unknown+=reserved;continue;}
+      if(!period){if(!lapsedLegacyReservation(row,today))unknown+=reserved;continue;}
       if(period[1]<=floor)continue;
       events.push({at:Math.max(floor,period[0]),delta:reserved},{at:period[1],delta:-reserved});
     }
@@ -292,7 +293,7 @@ export async function quantityAvailability(
   if (input.interval !== undefined) {
     const source=input.exclude?.source === "kosha_booking" ? "kosha" : input.exclude?.source === "service_order" ? "service" : null;
     if(!source || !input.exclude)throw new QuantityAssetError("يلزم تحديد الحجز الأصلي لفحص فترة المعدات",422);
-    const result=quantityPeriodAvailability({booking:{source,id:input.exclude.bookingId},buckets:input.buckets,rows,interval:input.interval,otherHolds:holds});
+    const result=quantityPeriodAvailability({booking:{source,id:input.exclude.bookingId},buckets:input.buckets,rows,interval:input.interval,otherHolds:holds,today:baghdadDay()});
     if(!result.complete || !result.availability)throw new QuantityAssetError("لا يمكن تأكيد التوفر: راجع فترات الحجوزات المرتبطة وتطابق الكميات الخارجة قبل الحجز",409);
     return {rows,otherHolds:holds,availability:result.availability};
   }
@@ -893,14 +894,22 @@ export async function configureQuantityTracking(
 
   const rowsMap = await quantityCommitmentRows(executor, [input.productId]);
   const lines = rowsMap.get(input.productId) ?? [];
+  const today = baghdadDay();
+  const now = Date.now();
   const activeLines = lines.filter((row) => {
     const line = normalizeQuantityLine(row.line);
-    return lineOutstanding(line) > 0 || lineReservedNotOut(line, row.status) > 0 ||
+    if (lineOutstanding(line) > 0) return true;
+    // The booking's date (or saved period) passed and nothing was taken out: the
+    // reservation lapsed. It holds no units, so it does not block the conversion;
+    // the booking itself is left exactly as it is.
+    const period = resourceOccupancyTimestamps(row.interval ?? null);
+    if (period ? period[1] <= now : lapsedLegacyReservation(row, today)) return false;
+    return lineReservedNotOut(line, row.status) > 0 ||
       (!CLOSED_LINE_STAGES.includes(line.stage) && !INACTIVE_BOOKING_STATUSES.includes(row.status.toLowerCase()));
   });
   if (activeLines.length)
     throw new QuantityAssetError(
-      `الأصل مرتبط بحجوزات نشطة (${activeLines.map((row) => `#${row.bookingId}`).join("، ")})؛ أكمل أو حرر الحجز قبل تغيير طريقة التتبع`,
+      `الأصل مرتبط بحجوزات نشطة (${activeLines.map((row) => `#${row.bookingId}${row.day ? ` بتاريخ ${row.day}` : ""}`).join("، ")})؛ أكمل أو حرر الحجز قبل تغيير طريقة التتبع`,
       409,
     );
 

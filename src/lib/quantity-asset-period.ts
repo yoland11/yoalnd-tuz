@@ -1,6 +1,6 @@
 import { evaluateResourceConflict, type ResourceOccupancy, type ResourceReservation } from "./booking-resource-conflicts";
 import type { BookingOperationRef } from "./booking-operational-readiness";
-import { lineOutstanding, lineReservedNotOut, normalizeQuantityLine, usableQuantity, type Availability, type CommitmentRow, type QuantityBuckets } from "./quantity-assets";
+import { lapsedLegacyReservation, lineOutstanding, lineReservedNotOut, normalizeQuantityLine, usableQuantity, type Availability, type CommitmentRow, type QuantityBuckets } from "./quantity-assets";
 
 export type PeriodCommitment = CommitmentRow & { interval: ResourceOccupancy | null; hasResourceWindow?:boolean };
 
@@ -8,7 +8,7 @@ export type PeriodCommitment = CommitmentRow & { interval: ResourceOccupancy | n
  * Store holds remain global: consumable stock is not automatically replenished.
  * Missing periods or mismatched original checkout evidence are not availability.
  */
-export function quantityPeriodAvailability(input:{booking:BookingOperationRef;buckets:QuantityBuckets;rows:PeriodCommitment[];interval:ResourceOccupancy|null;otherHolds:number}):{complete:boolean;availability:Availability|null} {
+export function quantityPeriodAvailability(input:{booking:BookingOperationRef;buckets:QuantityBuckets;rows:PeriodCommitment[];interval:ResourceOccupancy|null;otherHolds:number;/** Baghdad day; lets lapsed date-only reservations stop holding units. */today?:string}):{complete:boolean;availability:Availability|null} {
   const reservations:ResourceReservation[]=[];
   let allOut=0,otherOut=0;
   for(const row of input.rows){
@@ -19,7 +19,7 @@ export function quantityPeriodAvailability(input:{booking:BookingOperationRef;bu
     allOut+=out;
     if(source!==input.booking.source||booking.id!==input.booking.id)otherOut+=out;
     if(out)reservations.push({id:`${row.source}:${row.bookingId}:out`,booking,resource:"quantity",quantity:out,status:"checked_out",interval:null});
-    if(reserved)reservations.push({id:`${row.source}:${row.bookingId}:reserved`,booking,resource:"quantity",quantity:reserved,status:"reserved",interval:row.interval});
+    if(reserved&&!(input.today&&lapsedLegacyReservation(row,input.today)))reservations.push({id:`${row.source}:${row.bookingId}:reserved`,booking,resource:"quantity",quantity:reserved,status:"reserved",interval:row.interval});
   }
   if(allOut!==input.buckets.checkedOut)return {complete:false,availability:null};
   const usable=usableQuantity(input.buckets),holds=input.otherHolds;

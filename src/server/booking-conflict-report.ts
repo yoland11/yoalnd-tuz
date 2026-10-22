@@ -5,6 +5,7 @@ import {readBookingResourceWindow, bookingResourceOccupancy} from "@/lib/booking
 import {quantityPeriodAvailability, type PeriodCommitment} from "@/lib/quantity-asset-period";
 import {lineOutstanding,lineReservedNotOut,normalizeQuantityLine} from "@/lib/quantity-assets";
 import {resourceOccupancyTimestamps} from "@/lib/booking-resource-conflicts";
+import {baghdadDay} from "@/lib/kosha-manager";
 import {readResourceBooking} from "./booking-resource-period";
 import {BookingResourceConflictError, resourceRows, findBookingPhysicalConflict, findBookingStaffConflict, findBookingVehicleConflict, findBookingCrewConflict, findBookingKoshaConflict, type ResourceExecutor} from "./booking-resource-availability";
 
@@ -118,7 +119,7 @@ export async function loadBookingConflictReport(tx:ResourceExecutor,ref:BookingO
         return !target||!occupied||target[0]<occupied[1]&&occupied[0]<target[1];
       });
       const booking:BookingOperationRef|undefined=related?{source:related.source==="kosha_booking"?"kosha":"service",id:related.bookingId}:undefined;
-      const result=quantityPeriodAvailability({booking:ref,buckets,rows,interval,otherHolds:holds.get(productId)??0});
+      const result=quantityPeriodAvailability({booking:ref,buckets,rows,interval,otherHolds:holds.get(productId)??0,today:baghdadDay()});
       if(!result.complete||!result.availability)return {...base,state:"incomplete",reason:"مواعيد أو كميات الإرجاع غير متطابقة؛ يلزم مراجعة سجل المعدات",quantities,booking};
       const available=result.availability.available,missing=Math.max(0,required-available);
       return {...base,state:missing>0?"conflict":"no_conflict",reason:missing>0?`تعارض بالمعدات — ناقص ${missing}`:"الكميات تكفي ضمن الإشغال المسجل",quantities:{...quantities,available,reserved:result.availability.committed,missing},...(missing>0?{booking}:{})};
