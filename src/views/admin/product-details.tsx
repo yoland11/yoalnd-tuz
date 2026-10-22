@@ -924,7 +924,7 @@ export default function ProductDetailsPage() {
 
         {data.asset ? (
           <TabsContent value="asset" className="space-y-4">
-            {kind === "quantity_asset" ? <QuantityAssetPanel productId={product.id} /> : null}
+            {kind === "quantity_asset" ? <QuantityAssetPanel productId={product.id} assetName={product.name} /> : null}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <Kpi label="الحالة" value={data.asset.status} />
               <Kpi label="مرات الاستخدام" value={`${qty(data.asset.usageCount)}${data.asset.expectedLifeUses ? ` / ${qty(data.asset.expectedLifeUses)}` : ""}`} />

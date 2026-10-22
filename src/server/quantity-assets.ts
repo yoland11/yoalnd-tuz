@@ -738,6 +738,12 @@ export async function adjustQuantityAsset(
     reason: string;
     relatedType?: string | null;
     relatedId?: number | null;
+    /** Free notes, the employee responsible (count, damage, loss) and evidence photos. */
+    notes?: string | null;
+    responsibleStaffId?: number | null;
+    photos?: string[];
+    /** Damage/loss found after the booking's return was already recorded. */
+    additionalToReturn?: boolean;
     requestId: string;
     actor: Actor;
   },
@@ -754,6 +760,7 @@ export async function adjustQuantityAsset(
   ]);
   const today = baghdadDay();
   const peak = peakCommitment(rowsMap.get(input.productId) ?? [], locked.buckets, today, holds);
+  const guards = await adjustmentGuards(executor, input);
   const plan = planQuantityAdjustment({
     buckets: locked.buckets,
     kind: input.kind,
@@ -791,6 +798,10 @@ export async function adjustQuantityAsset(
     writeOffFrom: input.kind === "write_off" ? (input.writeOffFrom ?? "damaged") : null,
     reason: input.reason,
     document: input.relatedType && input.relatedId ? { type: input.relatedType, id: input.relatedId } : null,
+    notes: input.notes?.trim() || null,
+    responsible: guards.responsible,
+    photos: guards.photos,
+    additionalToReturn: input.additionalToReturn === true,
     before: plan.before,
     after: plan.after,
     totalBefore: plan.totalBefore,
@@ -982,6 +993,89 @@ export function describeLines(rows: QuantityCommitmentRow[]) {
     .sort((a, b) => String(b.day ?? "").localeCompare(String(a.day ?? "")));
 }
 
+const PHOTO_URL = /^(https:\/\/|\/api\/media\/)/i;
+
+/**
+ * Checks that keep a manual adjustment from counting something twice:
+ * stock from a purchase invoice is received with the invoice, and damage or
+ * loss recorded at a booking's return is already in the buckets.
+ */
+async function adjustmentGuards(
+  executor: Executor,
+  input: {
+    productId: number;
+    kind: QuantityAdjustmentKind;
+    relatedType?: string | null;
+    relatedId?: number | null;
+    responsibleStaffId?: number | null;
+    photos?: string[];
+    additionalToReturn?: boolean;
+  },
+) {
+  const photos = (input.photos ?? []).map((url) => String(url).trim()).filter(Boolean);
+  if (photos.length > 10) throw new QuantityAssetError("الحد الأقصى 10 صور", 422);
+  if (photos.some((url) => !PHOTO_URL.test(url) || url.length > 4000))
+    throw new QuantityAssetError("الصور يجب أن تكون مرفوعة إلى التخزين", 422);
+  let responsible: { id: number; name: string } | null = null;
+  if (input.responsibleStaffId) {
+    const staff = rowsOf(
+      await executor.execute(
+        sql`select id, coalesce(nullif(full_name, ''), username) as name from staff where id = ${input.responsibleStaffId} and is_active = true`,
+      ),
+    )[0];
+    if (!staff) throw new QuantityAssetError("الموظف المسؤول غير موجود أو غير نشط", 422);
+    responsible = { id: Number(staff.id), name: String(staff.name) };
+  }
+  if (input.kind === "add" && input.relatedType === "purchase_invoice" && input.relatedId) {
+    const invoice = rowsOf(await executor.execute(sql`select id, status from purchase_invoices where id = ${input.relatedId}`))[0];
+    if (!invoice || invoice.status === "deleted") throw new QuantityAssetError(`فاتورة الشراء #${input.relatedId} غير موجودة`, 422);
+    // The invoice's own lines receive stock when it is saved (net of edits);
+    // a manual add may reference an invoice only once and only if it received nothing.
+    const received = rowsOf(
+      await executor.execute(sql`
+        select
+          coalesce(sum(quantity_change::numeric) filter (where reason like 'purchase_invoice%'), 0) as from_invoice,
+          count(*) filter (where reason = 'quantity_asset_add') as manual
+        from stock_movements
+        where coalesce(stock_source_product_id, product_id) = ${input.productId}
+          and related_type = 'purchase_invoice' and related_id = ${input.relatedId}
+      `),
+    )[0];
+    if (Number(received?.manual ?? 0) > 0)
+      throw new QuantityAssetError(`أُضيفت كمية من فاتورة الشراء #${input.relatedId} لهذا الأصل سابقاً؛ لا تُضاف مرة ثانية`, 409);
+    if (Number(received?.from_invoice ?? 0) > 0)
+      throw new QuantityAssetError(
+        `كمية فاتورة الشراء #${input.relatedId} (${Number(received.from_invoice)}) استُلمت تلقائياً عند حفظها؛ لا تُضاف مرة ثانية`,
+        409,
+      );
+  }
+  if (
+    (input.kind === "damage" || input.kind === "loss") &&
+    (input.relatedType === "kosha_booking" || input.relatedType === "service_order") &&
+    input.relatedId &&
+    !input.additionalToReturn
+  ) {
+    const action = input.kind === "damage" ? "return_damaged" : "return_missing";
+    const recorded = Number(
+      rowsOf(
+        await executor.execute(sql`
+          select coalesce(sum((metadata->>'quantity')::numeric), 0) as qty from stock_movements
+          where coalesce(stock_source_product_id, product_id) = ${input.productId}
+            and metadata->>'action' = ${action}
+            and metadata->>'bookingType' = ${input.relatedType}
+            and metadata->>'bookingId' = ${String(input.relatedId)}
+        `),
+      )[0]?.qty ?? 0,
+    );
+    if (recorded > 0)
+      throw new QuantityAssetError(
+        `سُجّل ${input.kind === "damage" ? "تلف" : "فقدان"} ${recorded} عند إرجاع هذا الحجز. إذا كان ما تسجله إضافياً غير المسجل عند الإرجاع فحدد «إضافي» حتى لا يُحسب مرتين.`,
+        409,
+      );
+  }
+  return { responsible, photos };
+}
+
 export async function quantityAssetSummary(executor: Executor, productId: number, day?: string | null) {
   const profiles = await quantityProfilesFor(executor, [productId]);
   const profile = profiles.get(productId);
@@ -1005,10 +1099,16 @@ export async function quantityAssetSummary(executor: Executor, productId: number
   const outstandingInLines = rows.reduce((sum, row) => sum + lineOutstanding(normalizeQuantityLine(row.line)), 0);
   const total = totalQuantity(buckets);
   const unitCost = Number(product?.cost_price ?? 0);
+  const warehouse = rowsOf(
+    await executor.execute(sql`
+      select w.id, w.name from asset_passports ap join warehouses w on w.id = ap.warehouse_id where ap.product_id = ${productId} limit 1
+    `),
+  )[0];
   return {
     productId,
     trackingMode: "quantity" as const,
     unit: profile.unit,
+    warehouse: warehouse ? { id: Number(warehouse.id), name: String(warehouse.name) } : null,
     total,
     inWarehouse: buckets.inWarehouse,
     checkedOut: buckets.checkedOut,
@@ -1031,15 +1131,34 @@ export async function quantityAssetSummary(executor: Executor, productId: number
   };
 }
 
-export async function quantityMovements(executor: Executor, productId: number, limit = 200) {
-  const result = await executor.execute(sql`
-    select id, quantity_change, reason, movement_type, related_type, related_id, warehouse_id, metadata, created_by_name, created_at
-    from stock_movements
-    where coalesce(stock_source_product_id, product_id) = ${productId}
-    order by created_at desc, id desc
-    limit ${Math.max(1, Math.min(500, limit))}
-  `);
-  return rowsOf(result).map((row) => ({
+export async function quantityMovements(
+  executor: Executor,
+  productId: number,
+  options: { from?: string | null; to?: string | null; page?: number; pageSize?: number } = {},
+) {
+  const day = (value: unknown) => (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null);
+  const from = day(options.from);
+  const to = day(options.to);
+  const pageSize = Math.max(1, Math.min(200, Math.floor(options.pageSize ?? 50)));
+  const page = Math.max(1, Math.floor(options.page ?? 1));
+  const where = sql`
+    coalesce(m.stock_source_product_id, m.product_id) = ${productId}
+    ${from ? sql`and (m.created_at + interval '3 hours')::date >= ${from}::date` : sql``}
+    ${to ? sql`and (m.created_at + interval '3 hours')::date <= ${to}::date` : sql``}
+  `;
+  const [result, counted] = await Promise.all([
+    executor.execute(sql`
+      select m.id, m.quantity_change, m.reason, m.movement_type, m.related_type, m.related_id, m.warehouse_id, w.name as warehouse_name,
+             m.metadata, m.created_by_name, m.created_at
+      from stock_movements m left join warehouses w on w.id = m.warehouse_id
+      where ${where}
+      order by m.created_at desc, m.id desc
+      limit ${pageSize} offset ${(page - 1) * pageSize}
+    `),
+    executor.execute(sql`select count(*)::int as total from stock_movements m where ${where}`),
+  ]);
+  const total = Number(rowsOf(counted)[0]?.total ?? 0);
+  const data = rowsOf(result).map((row) => ({
     id: Number(row.id),
     quantityChange: Number(row.quantity_change ?? 0),
     reason: String(row.reason ?? ""),
@@ -1047,10 +1166,12 @@ export async function quantityMovements(executor: Executor, productId: number, l
     relatedType: row.related_type ?? null,
     relatedId: row.related_id == null ? null : Number(row.related_id),
     warehouseId: row.warehouse_id == null ? null : Number(row.warehouse_id),
+    warehouseName: row.warehouse_name ?? null,
     metadata: row.metadata ?? {},
     actorName: row.created_by_name ?? "",
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at ?? ""),
   }));
+  return { data, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
 }
 
 /** List-page figures for many assets with one profile query and one booking scan. */
