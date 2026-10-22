@@ -1082,6 +1082,19 @@ export default function AssetNewPage() {
                 <QuantityManager productId={editProductId} assetName={form.nameAr.trim() || form.name.trim()} onChanged={syncQuantityFields} />
                 <QuantityAvailability productId={editProductId} />
               </div>
+            ) : isEditMode ? (
+              // The manager needs a saved quantity asset; say how to get there instead of hiding it.
+              <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-primary/35 bg-primary/[0.04] p-3" id="quantities">
+                <Button type="button" className="min-h-11 gap-2 px-5" disabled={!quantityMode || saving} onClick={() => handleSave("save")}>
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Boxes className="h-4 w-4" />}
+                  {quantityMode ? "حفظ التحويل وفتح إدارة الكميات" : "إدارة الكميات"}
+                </Button>
+                <p className="min-w-0 flex-1 basis-60 text-xs leading-5 text-muted-foreground">
+                  {quantityMode
+                    ? "يُحفظ الأصل كأصل متعدد الكمية مع باقي تعديلات النموذج، ثم تظهر هنا بطاقات الكميات وقائمة الإضافة والتخفيض والجرد والتلف والفقدان."
+                    : "إدارة الكميات للأصل متعدد الكمية. هذا الأصل محفوظ «أصل فردي»؛ اختر «أصل متعدد الكمية» من القائمة أعلاه لتفعيلها."}
+                </p>
+              </div>
             ) : null}
           </Section>
 

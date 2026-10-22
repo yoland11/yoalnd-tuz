@@ -77,6 +77,9 @@ assert.match(assetForm, /isEditMode && savedTracking === "quantity" \? null : \(
 assert.match(assetForm, /onChanged=\{syncQuantityFields\}/, "«تحديث الأصل» never writes stale totals back");
 assert.match(assetForm, /purchaseCost: fresh\.profile\?\.purchasePrice != null/);
 assert.doesNotMatch(assetForm, /<QuantityAssetPanel/, "no second quantity panel above the form");
+// An asset saved as individual still shows the button and how to enable it; one click converts it.
+assert.match(assetForm, /disabled=\{!quantityMode \|\| saving\} onClick=\{\(\) => handleSave\("save"\)\}/);
+assert.ok(assetForm.includes("حفظ التحويل وفتح إدارة الكميات") && assetForm.includes("اختر «أصل متعدد الكمية» من القائمة أعلاه لتفعيلها"));
 assert.match(api, /parts\[3\] === "status"\)\s*return json\(\{ ready: await quantityAssetsSchemaReady\(db\) \}\)/);
 assert.ok(
   assetForm.indexOf('"/admin/assets/quantity/status"') < assetForm.indexOf("const result = await persist(mode)"),
