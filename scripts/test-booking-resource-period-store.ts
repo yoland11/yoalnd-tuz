@@ -33,6 +33,29 @@ function fixture(initialDetails?:any){
   return {state,database};
 }
 const first=fixture();
+// The source reader must see assignments before photography synchronization;
+// otherwise a period edit bypasses the same staff conflict recognized by SQL.
+for(const source of ["kosha","service"] as const){
+  const assigned=fixture({assignedStaffId:"2"});
+  assert.deepEqual((await readResourceBooking(assigned.database,{source,id:7})).staffIds,[2],"bare original JSON assignee participates in the same resource check");
+}
+for(const fields of [
+  {assignedPhotographerId:"2"},{photographerId:2},
+  {photographyAssignments:[{employeeId:2}]},
+  {photographers:[{staffId:"2"}]},
+  {assignedPhotographers:[{id:2}]},
+]){
+  const unsynced=fixture(fields);
+  assert.deepEqual((await readResourceBooking(unsynced.database,ref)).staffIds,[2],"saved photographer identity must not depend on a later crew sync");
+  unsynced.state.conflicts=[{source:"kosha",id:99,event_date:"2026-10-22",details:{bookingOperations:{resourceWindow:period}}}];
+  await assert.rejects(()=>saveBookingResourceWindow(unsynced.database,ref,period,null,actor),/الفريق|السائق/);
+  assert.equal(unsynced.state.timeline.length,0,"busy unsynced photographer blocks period save before any audit/write");
+  assert.ok(!unsynced.state.queries.some(q=>q.q.startsWith("UPDATE")));
+}
+const mixed=fixture({assignedStaffId:3,assignedPhotographerId:2,photographerId:3,photographyAssignments:[{employeeId:4},{staffId:2},{id:5},null],photographers:null,assignedPhotographers:[]});
+mixed.state.members=[{staff_id:6},{staff_id:2}];
+assert.deepEqual((await readResourceBooking(mixed.database,ref)).staffIds,[2,3,4,5,6],"original aliases and synced crew deduplicate into stable lock order");
+assert.deepEqual((await readResourceBooking(fixture({photographerId:2}).database,{source:"kosha",id:7})).staffIds,[],"photography-only aliases do not invent a native Kosha assignment");
 for(const source of ["kosha","service"] as const)for(const details of [null,{existing:"preserve"},{existing:"preserve",bookingOperations:null}]){
   const legacy=fixture(details);
   await saveBookingResourceWindow(legacy.database,{source,id:7},period,null,actor);

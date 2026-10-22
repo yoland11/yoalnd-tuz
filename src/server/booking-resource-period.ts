@@ -36,7 +36,16 @@ export async function readResourceBooking(tx:ResourceExecutor,ref:Ref,lock=false
   const transport=object(operations.transportation??details.transportation),mode=transport.mode??b.transportation_mode;
   const driverId=mode==="customer"?null:id(transport.driverId??details.transportationDriverId??b.transportation_driver_id);
   const vehicleId=id(dispatch[0]?.vehicle_id)??(mode==="customer"?null:id(transport.vehicleId??details.transportationVehicleId??b.transportation_vehicle_id));
-  const staffIds=[...new Set([...dailyAssignedStaffIds({details,assignedStaffId:id(b.assigned_staff_id),executionStaffIds:members.map(m=>id(m.staff_id)).filter((v):v is number=>v!==null)}),...(driverId?[driverId]:[])])].sort((a,b)=>a-b);
+  // Read original saved assignments even before a photography crew sync. Match
+  // the aliases recognized by the conflict reader without changing their writer.
+  const photographerIds=ref.source==="service"?[
+    id(details.assignedPhotographerId),id(details.photographerId),
+    ...[details.photographyAssignments,details.photographers,details.assignedPhotographers]
+      .flatMap(value=>Array.isArray(value)?value:[])
+      .flatMap(entry=>[id(entry?.employeeId),id(entry?.staffId),id(entry?.id)]),
+  ]:[];
+  const executionIds=[...members.map(m=>id(m.staff_id)),id(details.assignedStaffId),...photographerIds].filter((v):v is number=>v!==null);
+  const staffIds=[...new Set([...dailyAssignedStaffIds({details,assignedStaffId:id(b.assigned_staff_id),executionStaffIds:executionIds}),...(driverId?[driverId]:[])])].sort((a,b)=>a-b);
   const assets=new Map<number,any>();
   for(const line of [...list(details.linkedAssets),...list(operations.assets)]){const productId=id(line?.productId);if(!productId)throw new BookingResourceConflictError("مرجع إحدى المعدات غير صالح",422);assets.set(productId,{...assets.get(productId),...line,productId})}
   if(staffIds.length>100||members.length>100||assets.size>100)throw new BookingResourceConflictError("موارد الحجز كثيرة؛ يلزم مراجعتها قبل الحفظ",422);
