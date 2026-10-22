@@ -5,6 +5,7 @@ import { EmployeeAvatar } from "@/components/employee-avatar";
 import { IssueWorkOrderButton } from "@/components/work-commands/create-order-dialog";
 import { KoshaEquipmentImport } from "./kosha-equipment-import";
 import { BookingResourceWindowPanel } from "./booking-resource-window-panel";
+import { BookingConflictReportPanel } from "./booking-conflict-report-panel";
 import { QuantityBookingAssetDialog, type QuantityBookingTarget } from "./quantity-booking-asset-dialog";
 import { BookingReadinessPanel, BookingReadinessStatus, type ReadinessDisplay } from "@/components/booking-readiness-panel";
 import { BookingLoadingPanel } from "@/components/booking-loading-panel";
@@ -765,6 +766,7 @@ function AssetsTab({ base, queryKey }: { base: string; queryKey: unknown[] }) {
   return <div className="ajn-op-tab-panel ajn-op-assets-panel">
     <div className="ajn-op-section-head"><div><PackageCheck /><span><small>دورة حياة الأصل</small><h2>أصول الحجز</h2></span></div><div className="ajn-op-actions"><Badge variant="outline">{assets.data?.assets.length ?? 0} أصل</Badge><Button className="ajn-op-import is-asset" onClick={() => document.getElementById("booking-asset-search")?.focus()}><PackageCheck /> إضافة أصل</Button><Button variant="outline" asChild><Link href="/admin/assets">فتح إدارة الأصول</Link></Button></div></div>
     <BookingResourceWindowPanel base={base} queryKey={queryKey} />
+    <BookingConflictReportPanel base={base} queryKey={queryKey} />
     <KoshaEquipmentImport base={base} queryKey={queryKey} />
     <FixedCustodyPanel base={base} queryKey={queryKey} />
     <section aria-label="مجموعات التجهيز" className="flex min-w-0 flex-col gap-3"><h3 className="font-semibold">مجموعات التجهيز</h3><Suspense fallback={<Skeleton className="h-28"/>}><BookingPreparationDetail card={{source:base.includes("/kosha/")?"kosha":"service",id:Number(base.split("/").at(-1))}}/></Suspense></section>

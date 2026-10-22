@@ -30,6 +30,7 @@ const steps = [
   ["Booking Center operational readiness evidence and permissions", "pnpm", ["run", "test:booking-readiness"]],
   ["Booking resource periods, source identity and original reservation guards", "pnpm", ["run", "test:booking-resource-period"]],
   ["Repeated booking destination operational isolation", "pnpm", ["run", "test:booking-repeat"]],
+  ["Read-only booking conflict report, permissions and RTL UI", "pnpm", ["run", "test:booking-conflicts"]],
   ["Booking loading, QR, original returns and custody evidence", "pnpm", ["run", "test:booking-loading"]],
   ["Booking batch preparation metadata and retry safety", "pnpm", ["run", "test:booking-bulk"]],
   ["Booking preparation task/booking approval consistency", "pnpm", ["run", "test:booking-preparation"]],

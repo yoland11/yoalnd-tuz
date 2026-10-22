@@ -5,6 +5,7 @@ import { findBookingPhysicalConflict,findBookingStaffConflict,BookingResourceCon
 import { readResourceBooking,saveBookingResourceWindow,resourceWindowView,lockBookingExecutionTeam } from "./booking-resource-period";
 import { saveBookingDispatch } from "./booking-dispatch";
 import { normalizeRepeatedBookingDetails } from "@/lib/booking-repeat";
+import { loadBookingConflictReport } from "./booking-conflict-report";
 import { readBookingResourceWindow,bookingResourceOccupancy,BookingResourceWindowError } from "@/lib/booking-resource-window";
 import { getLoadingView, runLoadingRequest } from "./booking-loading";
 import { BookingProfitabilityError, getBookingProfitability } from "./booking-profitability";
@@ -32669,6 +32670,14 @@ async function handleBookingOperations(
     if(parts.length!==5||!["kosha","service"].includes(source??"")||!id||!/^\d+$/.test(parts[3]??"")||!Number.isSafeInteger(id))return error("مسار الحجز غير صحيح",400);
     if(!["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase())&&!can("booking_operations_view","booking_assets_manage","warehouse_issue"))return error("ليس لديك صلاحية عرض عمليات المعدات",403);
     return bookingLoadingEndpoint(req,{source:source as "kosha"|"service",id},auth);
+  }
+  if(parts[4]==="conflicts"){
+    const source=parts[2],id=int(parts[3]);
+    if(parts.length!==5||!["kosha","service"].includes(source??"")||!id||!/^\d+$/.test(parts[3]??"")||!Number.isSafeInteger(id))return error("مسار الحجز غير صحيح",400);
+    if(req.method!=="GET")return error("الإجراء غير مدعوم",405);
+    if(!["admin","manager","main_admin","super_admin","main_manager"].includes(String(auth.role).toLowerCase())&&!can("booking_operations_view","orders"))return error("ليس لديك صلاحية عرض موارد الحجز",403);
+    const response=json(await loadBookingConflictReport(db,{source:source as "kosha"|"service",id}));
+    response.headers.set("Cache-Control","private, no-store");return response;
   }
   if(parts[4]==="resource-window"){
     const source=parts[2],id=int(parts[3]);

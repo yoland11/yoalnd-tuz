@@ -47,6 +47,7 @@ try{
       if(path.endsWith("/auth/me"))return route.fulfill({json:{user:{id:1,role:"admin",username:"fixture",fullName:"مدير الاختبار",isActive:true,permissions:[]}}});
       if(path.endsWith('/loading'))return route.fulfill({json:{facts:{source:'kosha',id:12,status:'confirmed',vehicle:null,staff:[],lines:[],blockers:['أكمل الصرف الأصلي']},record:null,blockers:['أكمل الصرف الأصلي'],actorId:1,canManage:true,canAct:true,returns:null}});
       if(path.endsWith('/assets'))return route.fulfill({json:{assets:[]}});
+      if(path.endsWith('/conflicts'))return route.fulfill({json:{source:'kosha',id:12,checkedAt:now.toISOString(),timingComplete:false,coverage:'partial',rows:[]}});
       if(path.endsWith('/catalog'))return route.fulfill({json:{data:[]}});
       if(path.endsWith('/kosha-equipment'))return route.fulfill({json:{koshaId:null,items:[]}});
       if(path.endsWith('/custody'))return route.fulfill({json:{employeeIds:[],assets:[],reservations:[]}});
