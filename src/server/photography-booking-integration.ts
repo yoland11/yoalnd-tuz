@@ -27,8 +27,12 @@ import {
 import { ensurePhotographyIntegrationTables } from "./photography-integration-schema";
 import { normalizeShootStage, SHOOT_STAGE_LABELS } from "./photography-shoots";
 import { routedKoshaCustomFieldsSql } from "./kosha-instruction-store";
+import { guardBookingResourceWrite,lockBookingExecutionTeam,readResourceBooking } from "./booking-resource-period";
+import {readPhotographyResource} from "./photography-resource-period";
+import {BookingResourceConflictError,resourceRows} from "./booking-resource-availability";
 
 type JsonMap = Record<string, any>;
+export type PhotographySyncExecutor=Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type PhotographySyncActor = {
   id?: number | null;
   name?: string | null;
@@ -149,10 +153,11 @@ function photographyItemArrays(fields: JsonMap): JsonMap[] {
 /** Identifier-first classification; localized names are only a legacy fallback. */
 export async function detectPhotographyBooking(
   orderOrId: ServiceOrder | number,
+  connection:Pick<typeof db,"query">=db,
 ): Promise<PhotographyDetection> {
   const order =
     typeof orderOrId === "number"
-      ? await db.query.serviceOrdersTable.findFirst({
+      ? await connection.query.serviceOrdersTable.findFirst({
           where: eq(serviceOrdersTable.id, orderOrId),
         })
       : orderOrId;
@@ -168,15 +173,15 @@ export async function detectPhotographyBooking(
   }
 
   const fields = mapObject(order.customFields);
-  const service = await db.query.servicesTable.findFirst({
+  const service = await connection.query.servicesTable.findFirst({
     where: eq(servicesTable.id, order.serviceId),
   });
   const allItems = photographyItemArrays(fields);
   const productIds = [...new Set(allItems.map(itemProductId).filter((id): id is number => id !== null))];
   const [categories, products] = await Promise.all([
-    db.query.categoriesTable.findMany(),
+    connection.query.categoriesTable.findMany(),
     productIds.length
-      ? db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) })
+      ? connection.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) })
       : Promise.resolve([]),
   ]);
   const categoryIds = resolveDepartmentCategoryIds(categories, "photography");
@@ -315,8 +320,9 @@ async function writeSyncAudit(
   action: string,
   actor: PhotographySyncActor,
   metadata: Record<string, unknown>,
+  connection:Pick<typeof db,"insert">=db,
 ) {
-  await db.insert(adminActivityLogsTable).values({
+  await connection.insert(adminActivityLogsTable).values({
     staffId: actor.id ?? null,
     userName: actor.name ?? "system",
     action,
@@ -331,13 +337,17 @@ async function writeSyncAudit(
 export async function syncCentralBookingToPhotography(
   bookingId: number,
   actor: PhotographySyncActor = {},
+  connection?:PhotographySyncExecutor,
+  options: {resourceWindowChanged?:boolean} = {},
 ) {
-  await ensurePhotographyIntegrationTables();
-  const order = await db.query.serviceOrdersTable.findFirst({
+  if(!connection)await ensurePhotographyIntegrationTables();
+  const run=async(tx:PhotographySyncExecutor)=>{
+  await tx.execute(sql`SELECT id FROM service_orders WHERE id=${bookingId} FOR UPDATE`);
+  const order = await tx.query.serviceOrdersTable.findFirst({
     where: eq(serviceOrdersTable.id, bookingId),
   });
   if (!order) return { linked: false, reason: "booking_not_found" } as const;
-  const detection = await detectPhotographyBooking(order);
+  const detection = await detectPhotographyBooking(order,tx);
   const fields = mapObject(order.customFields);
   // A dispatcher may assign a sound booking to a photographer. This is an
   // explicit routing decision, not a keyword guess, and the existing event /
@@ -371,7 +381,7 @@ export async function syncCentralBookingToPhotography(
     ),
   ];
   const assignmentStaff = assignmentIds.length
-    ? await db.query.staffTable.findMany({ where: inArray(staffTable.id, assignmentIds) })
+    ? await tx.query.staffTable.findMany({ where: inArray(staffTable.id, assignmentIds) })
     : [];
   const staffById = new Map(assignmentStaff.map((row) => [row.id, row]));
   const stage = eventStatus(order) === "cancelled"
@@ -379,18 +389,45 @@ export async function syncCentralBookingToPhotography(
     : assignmentIds.length
       ? "crew_assigned"
       : initialStage(order, fields);
-  const result = await db.transaction(async (tx) => {
+  const result = await (async () => {
     await tx.execute(sql`select pg_advisory_xact_lock(734721, ${bookingId})`);
     let event = await tx.query.photographyEventsTable.findFirst({
       where: eq(photographyEventsTable.bookingId, bookingId),
     });
+    if(!event){
+      const linked=resourceRows(await tx.execute(sql`WITH linked AS (
+        SELECT id AS event_id FROM photography_events WHERE booking_id=${bookingId}
+        UNION SELECT event_id FROM photography_shoots WHERE booking_id=${bookingId}
+        UNION SELECT sh.event_id FROM photography_shoot_crew c JOIN photography_shoots sh ON sh.id=c.shoot_id WHERE c.booking_id=${bookingId}
+      ) SELECT event_id FROM linked LIMIT 2`));
+      if(linked.length>1)throw new BookingResourceConflictError("الحجز مرتبط بأكثر من مناسبة تصوير؛ راجع الربط قبل المزامنة",409);
+      if(linked.length){
+        const eventId=positiveId(linked[0].event_id);
+        if(!eventId)throw new BookingResourceConflictError("مرجع مناسبة التصوير المرتبطة غير صحيح",409);
+        event=await tx.query.photographyEventsTable.findFirst({where:eq(photographyEventsTable.id,eventId)});
+        if(!event)throw new BookingResourceConflictError("مناسبة التصوير المرتبطة غير موجودة",409);
+      }
+    }
+    if(event){
+      const original=await readPhotographyResource(tx,event.id,true);
+      if(original.reference.source!=="service"||original.reference.id!==bookingId)throw new BookingResourceConflictError("ربط مناسبة التصوير بالحجز غير متطابق",409);
+    }
     const scheduleChanged = Boolean(
       event &&
-        (event.eventDate !== date ||
+        (options.resourceWindowChanged === true || event.eventDate !== date ||
           (event.eventStartTime ?? null) !== startTime ||
           (event.eventEndTime ?? null) !== endTime),
     );
+    // Existing central aliases already reserve these staff identities. A portal
+    // backfill/unchanged refresh is not a second allocation. Actual source
+    // assignment writers validate before commit; a moved existing event checks
+    // the entire current crew again under the same staff mutex.
+    if(scheduleChanged&&eventStatus(order)!=="cancelled"){
+      const reference=await readResourceBooking(tx,{source:"service",id:bookingId},true);
+      await lockBookingExecutionTeam(tx,{source:"service",id:bookingId},[...new Set([...reference.staffIds,...assignmentIds])].sort((a,b)=>a-b));
+    }
     const eventValues = {
+      bookingId,
       bookingCode: code,
       groomName: order.customerName,
       eventName: String(fields.eventType ?? fields.eventName ?? "تصوير مناسبة"),
@@ -436,6 +473,10 @@ export async function syncCentralBookingToPhotography(
     let shoot = await tx.query.photographyShootsTable.findFirst({
       where: eq(photographyShootsTable.bookingId, bookingId),
     });
+    if(!shoot){
+      shoot=await tx.query.photographyShootsTable.findFirst({where:eq(photographyShootsTable.eventId,event.id)});
+      if(shoot?.bookingId&&shoot.bookingId!==bookingId)throw new BookingResourceConflictError("مهمة التصوير مرتبطة بحجز مختلف",409);
+    }
     if (!shoot) {
       [shoot] = await tx
         .insert(photographyShootsTable)
@@ -456,6 +497,7 @@ export async function syncCentralBookingToPhotography(
       [shoot] = await tx
         .update(photographyShootsTable)
         .set({
+          bookingId,
           eventId: event.id,
           venue: order.eventLocation || null,
           eventTime: startTime,
@@ -607,7 +649,7 @@ export async function syncCentralBookingToPhotography(
       .where(eq(serviceOrdersTable.id, bookingId));
 
     return { event, shoot, created, scheduleChanged };
-  });
+  })();
 
   await writeSyncAudit(
     bookingId,
@@ -619,8 +661,11 @@ export async function syncCentralBookingToPhotography(
       shootId: result.shoot.id,
       scheduleChanged: result.scheduleChanged,
     },
+    tx,
   );
   return { linked: true, ...result, detection } as const;
+  };
+  return connection?run(connection):db.transaction(run);
 }
 
 const CENTRAL_STATUS_BY_STAGE: Record<string, string> = {
@@ -641,16 +686,20 @@ export async function syncPhotographyStageToCentralBooking(
   bookingId: number,
   stageValue: string,
   actor: PhotographySyncActor = {},
+  connection?: PhotographySyncExecutor,
+  options: {staffOverrideReason?:string|null;staffOverrideIds?:number[]} = {},
 ) {
-  await ensurePhotographyIntegrationTables();
+  if (!connection) await ensurePhotographyIntegrationTables();
   const stage = normalizeShootStage(stageValue);
-  const order = await db.query.serviceOrdersTable.findFirst({
+  const run = (tx: PhotographySyncExecutor) => guardBookingResourceWrite(tx, {source:"service",id:bookingId}, async () => {
+  await tx.execute(sql`SELECT id FROM service_orders WHERE id=${bookingId} FOR UPDATE`);
+  const order = await tx.query.serviceOrdersTable.findFirst({
     where: eq(serviceOrdersTable.id, bookingId),
   });
-  if (!order) return { updated: false, reason: "booking_not_found" } as const;
+  if (!order) throw new BookingResourceConflictError("الحجز المرتبط بالتصوير غير موجود",404);
   const fields = mapObject(order.customFields);
   const centralStatus = CENTRAL_STATUS_BY_STAGE[stage] ?? order.status;
-  await db.transaction(async (tx) => {
+  if (order.status===centralStatus && fields.photographyWorkflowStatus===stage && fields.photographyCustomerStatus===CUSTOMER_STATUS[stage]) return {updated:false,duplicate:true,status:centralStatus,stage} as const;
     await tx
       .update(serviceOrdersTable)
       .set({
@@ -683,13 +732,14 @@ export async function syncPhotographyStageToCentralBooking(
       actorName: actor.name ?? "system",
       metadata: { photographyStage: stage, centralStatus },
     });
-  });
   await writeSyncAudit(bookingId, "photography_status_changed", actor, {
     oldValue: order.status,
     newValue: centralStatus,
     photographyStage: stage,
-  });
+  },tx);
   return { updated: true, status: centralStatus, stage } as const;
+  },options);
+  return connection?run(connection):db.transaction(run);
 }
 
 export async function findPhotographerConflict(input: {

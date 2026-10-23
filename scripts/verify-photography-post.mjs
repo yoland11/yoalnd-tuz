@@ -2,12 +2,14 @@
 // Run: node scripts/verify-photography-post.mjs
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const { build } = require("../node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js");
+const esbuildPackage = readdirSync(join(process.cwd(), "node_modules", ".pnpm")).find(name=>name.startsWith("esbuild@"));
+if(!esbuildPackage)throw new Error("esbuild is not installed in the pnpm store");
+const { build } = require(`../node_modules/.pnpm/${esbuildPackage}/node_modules/esbuild/lib/main.js`);
 
 const bundle = await build({
   entryPoints: ["src/server/photography-post.ts"],
@@ -70,21 +72,22 @@ check("ready stamps readyAt", Object.keys(editTimestamps("ready", now)), ["ready
 check("editing stamps nothing", editTimestamps("editing", now), {});
 
 // ── Edit status drives the shoot stage ──
-check("ready lifts the shoot to customer review", shootStageForEditStatus("ready"), "customer_review");
-check("delivered lifts the shoot to delivered", shootStageForEditStatus("delivered"), "delivered");
+check("ready lifts the shoot to canonical review", shootStageForEditStatus("ready"), "review_and_edit");
+check("delivered lifts the shoot to canonical ready delivery", shootStageForEditStatus("delivered"), "ready_delivery");
 check("mid-pipeline leaves the shoot alone", shootStageForEditStatus("exporting"), null);
 
 // The auto-sync must never rewind a shoot: api.ts gates it on stageIndex, so assert the
 // ordering that gate depends on.
-const SHOOT_ORDER = ["new_booking","awaiting_assignment","crew_assigned","accepted","waiting_event",
-  "on_the_way","arrived","shooting","shoot_ended","files_received","transferring","sorting",
-  "editing","customer_review","revising","ready_print","printing","ready_delivery","delivered","completed","cancelled"];
+const SHOOT_ORDER = ["new_booking","crew_assigned","waiting_event","on_the_way","shooting",
+  "processing_files","review_and_edit","printing","ready_delivery","completed"];
 const idx = (s) => SHOOT_ORDER.indexOf(s);
-check("customer_review sits before delivered", idx("customer_review") < idx("delivered"), true);
+check("review stage belongs to the operational sequence", idx(shootStageForEditStatus("ready")) >= 0, true);
+check("delivery stage belongs to the operational sequence", idx(shootStageForEditStatus("delivered")) >= 0, true);
+check("review sits before ready delivery", idx("review_and_edit") < idx("ready_delivery"), true);
 check("a completed shoot is past ready_for_review",
   idx(shootStageForEditStatus("ready")) < idx("completed"), true);
-check("a delivered shoot is not moved by edit status 'delivered'",
-  idx(shootStageForEditStatus("delivered")) > idx("delivered"), false);
+check("a ready-delivery shoot is not moved by edit status 'delivered'",
+  idx(shootStageForEditStatus("delivered")) > idx("ready_delivery"), false);
 
 // ── Memory cards ──
 check("available → assigned", evaluateCardTransition({ from: "available", to: "assigned", isManager: false }).ok, true);

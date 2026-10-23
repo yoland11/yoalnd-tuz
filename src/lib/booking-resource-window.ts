@@ -12,6 +12,18 @@ export type BookingResourceWindow = {
 
 export class BookingResourceWindowError extends Error {}
 
+/** Calendar projection only; the four explicit timestamps remain authoritative. */
+export function resourceWindowCalendar(window:BookingResourceWindow){
+  parseBookingResourceWindow(window);
+  const local=(value:string)=>{
+    const parts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Baghdad",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(new Date(value));
+    const part=(type:string)=>parts.find(item=>item.type===type)!.value;
+    return {date:`${part("year")}-${part("month")}-${part("day")}`,time:`${part("hour")}:${part("minute")}`};
+  };
+  const start=local(window.eventStart),end=local(window.eventEnd);
+  return {eventDate:start.date,eventTime:start.time,endTime:end.time};
+}
+
 export function parseBookingResourceWindow(input: unknown, eventDate?: string | null): BookingResourceWindow {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new BookingResourceWindowError("فترة تشغيل الموارد غير مكتملة");
   const value = input as Record<string, unknown>;

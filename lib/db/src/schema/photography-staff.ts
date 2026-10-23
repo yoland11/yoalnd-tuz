@@ -21,6 +21,8 @@ export const photographyEventsTable = pgTable("photography_events", {
   phone2: varchar("phone_2", { length: 30 }),
   eventStartTime: varchar("event_start_time", { length: 10 }),
   eventEndTime: varchar("event_end_time", { length: 10 }),
+  // Standalone operating period only; linked events use central booking JSON.
+  resourceWindow: jsonb("resource_window").$type<{preparationStart:string;eventStart:string;eventEnd:string;returnEnd:string}|null>(),
   photographyItems: jsonb("photography_items").$type<Array<Record<string, unknown>>>().notNull().default([]),
   requiredPhotographers: integer("required_photographers").notNull().default(1),
   customerNotes: text("customer_notes"),

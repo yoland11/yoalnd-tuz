@@ -8,6 +8,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { EmployeeAvatar } from "@/components/employee-avatar";
 import { EmployeeSelect } from "@/components/employee-select";
+import { BookingResourceWindowInputs, emptyResourceWindowDraft, resourceWindowDraftOf, resourceWindowFromLocal } from "@/components/booking-resource-window-form";
+import { resourceWindowCalendar } from "@/lib/booking-resource-window";
+import { BookingResourceWindowPanel } from "@/views/admin/booking-resource-window-panel";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -111,37 +114,63 @@ function OrderCard({ order, compact = false }: { order: PhotographyOrder; compac
   );
 }
 
-function EventForm({ me }: { me: AdminMe }) {
+export function EventForm({ me, initialEvent, onCreated }: { me: AdminMe; initialEvent?: PhotographyEvent; onCreated?: () => void }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
-  const clientTokenRef = useRef(newClientToken());
+  const clientTokenRef = useRef(initialEvent?.clientToken || newClientToken());
+  const inFlight = useRef(false), mounted = useRef(true);
   const [photographers, setPhotographers] = useState<Awaited<ReturnType<typeof photographyApi.photographers>>>([]);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ groomName: "", eventName: "", eventDate: new Date().toISOString().slice(0, 10), location: "", assignedStaffId: me.id });
-  useEffect(() => { photographyApi.photographers().then((rows) => { setPhotographers(rows); if (rows.length === 1) setForm((current) => ({ ...current, assignedStaffId: rows[0].id })); }).catch(() => {}); }, []);
+  const [employeesLoading, setEmployeesLoading] = useState(true), [employeeError, setEmployeeError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [period, setPeriod] = useState(() => initialEvent?.resourceWindow ? resourceWindowDraftOf(initialEvent.resourceWindow) : emptyResourceWindowDraft());
+  const [form, setForm] = useState({ groomName: initialEvent?.groomName || "", eventName: initialEvent?.eventName || "", eventDate: initialEvent?.eventDate || new Date().toISOString().slice(0, 10), location: initialEvent?.location || "", assignedStaffId: initialEvent?.assignedStaffId || me.id });
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const loadPhotographers = useCallback(async () => {
+    setEmployeesLoading(true); setEmployeeError("");
+    try {
+      const rows = await photographyApi.photographers();
+      if (!mounted.current) return;
+      setPhotographers(rows);
+      if (rows.length === 1) setForm(current => ({ ...current, assignedStaffId: rows[0].id }));
+    } catch (cause) { if (mounted.current) setEmployeeError(apiErrorMessage(cause)); }
+    finally { if (mounted.current) setEmployeesLoading(false); }
+  }, []);
+  useEffect(() => { void loadPhotographers(); }, [loadPhotographers]);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!form.groomName.trim() || !form.eventDate) return;
-    setBusy(true);
+    if (inFlight.current || employeeError || employeesLoading || !form.groomName.trim() || !form.eventDate) return;
+    setSaveError("");
+    let resourceWindow;
+    try { resourceWindow = resourceWindowFromLocal(period, form.eventDate); }
+    catch (cause) { setSaveError(cause instanceof Error ? cause.message : "تحقق من ترتيب المواعيد"); return; }
+    inFlight.current = true; setBusy(true);
     const clientToken = clientTokenRef.current;
-    const localEvent = { ...form, clientToken, id: 0, assignedStaffName: photographers.find((item) => item.id === form.assignedStaffId)?.name || me.fullName || me.username, status: "active", orderCount: 0, createdAt: new Date().toISOString() } as PhotographyEvent;
-    saveLocalEvent(localEvent);
+    const calendar = resourceWindowCalendar(resourceWindow);
+    const payload = { ...form, eventDate: calendar.eventDate, resourceWindow, clientToken };
+    const localEvent = { ...payload, id: 0, assignedStaffName: photographers.find((item) => item.id === form.assignedStaffId)?.name || me.fullName || me.username, status: "pending_sync", orderCount: 0, createdAt: new Date().toISOString() } as PhotographyEvent;
     try {
-      const result = await photographyApi.createEvent({ ...form, clientToken });
-      if (!isQueued(result)) saveLocalEvent(result);
-      toast({ title: isQueued(result) ? "تم حفظ المناسبة دون اتصال" : "تم بدء المناسبة", description: isQueued(result) ? "ستتم مزامنتها عند عودة الإنترنت." : "يمكنك الآن تسجيل طلبات الصور بسرعة." });
-      navigate(`/staff/photography/events/${clientToken}/register`);
-    } catch (err: any) { toast({ title: "تعذر بدء المناسبة", description: apiErrorMessage(err), variant: "destructive" }); }
-    finally { setBusy(false); }
+      const result = await photographyApi.createEvent(payload);
+      saveLocalEvent(isQueued(result) ? localEvent : result);
+      if (!mounted.current) return;
+      toast({ title: isQueued(result) ? "تم حفظ مسودة المناسبة دون اتصال" : "تم بدء المناسبة", description: isQueued(result) ? "يلزم تأكيد توفر المصور من الخادم قبل تسجيل الطلبات." : "يمكنك الآن تسجيل طلبات الصور بسرعة." });
+      if (onCreated) onCreated(); else navigate(`/staff/photography/events/${clientToken}/register`);
+    } catch (cause) { if (mounted.current) { const message = apiErrorMessage(cause); setSaveError(message); toast({ title: "تعذر بدء المناسبة", description: message, variant: "destructive" }); } }
+    finally { inFlight.current = false; if (mounted.current) setBusy(false); }
   }
   return (
     <form onSubmit={submit} className="space-y-4 rounded-xl border border-border/30 bg-card p-4">
-      <div><h2 className="font-bold text-foreground">إنشاء مناسبة جديدة</h2><p className="mt-1 text-xs text-muted-foreground">ابدأ المناسبة ثم سجّل طلبات الزبائن من شاشة واحدة.</p></div>
+      <div><h2 className="font-bold text-foreground">{initialEvent ? "تأكيد مسودة المناسبة" : "إنشاء مناسبة جديدة"}</h2><p className="mt-1 text-xs text-muted-foreground">حدد فترة التشغيل بتوقيت بغداد للتحقق من توفر المصور قبل بدء المناسبة.</p></div>
+      <fieldset disabled={busy} className="min-w-0 space-y-4">
       <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم العريس *</span><Input value={form.groomName} onChange={(event) => setForm({ ...form, groomName: event.target.value })} /></label>
       <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم المناسبة</span><Input value={form.eventName} onChange={(event) => setForm({ ...form, eventName: event.target.value })} /></label>
       <div className="grid gap-3 sm:grid-cols-2"><label className="block space-y-1"><span className="text-xs text-muted-foreground">التاريخ *</span><Input type="date" value={form.eventDate} onChange={(event) => setForm({ ...form, eventDate: event.target.value })} /></label><label className="block space-y-1"><span className="text-xs text-muted-foreground">الموقع</span><Input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} /></label></div>
-      <label className="block space-y-1"><span className="text-xs text-muted-foreground">المصور المسؤول</span><EmployeeSelect employees={photographers} value={String(form.assignedStaffId)} onValueChange={(value) => setForm({ ...form, assignedStaffId: Number(value) })} placeholder="اختر المصور" aria-label="المصور المسؤول" /></label>
-      <Button className="w-full" disabled={busy || !form.groomName.trim() || !form.eventDate}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Camera className="ml-2 h-4 w-4" /> بدء المناسبة</>}</Button>
+      <label className="block space-y-1"><span className="text-xs text-muted-foreground">المصور المسؤول</span><EmployeeSelect employees={photographers} value={String(form.assignedStaffId)} disabled={employeesLoading || !!employeeError} onValueChange={(value) => setForm({ ...form, assignedStaffId: Number(value) })} placeholder="اختر المصور" aria-label="المصور المسؤول" /></label>
+      {employeeError ? <div role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm"><p>تعذر تحميل المصورين: {employeeError}</p><Button type="button" variant="outline" className="mt-2 min-h-11" onClick={() => void loadPhotographers()}>إعادة تحميل المصورين</Button></div> : null}
+      <BookingResourceWindowInputs draft={period} disabled={busy} onChange={(key, value) => { setPeriod(current => ({ ...current, [key]: value })); if (key === "eventStart" && value) setForm(current => ({ ...current, eventDate: value.slice(0, 10) })); setSaveError(""); }} />
+      </fieldset>
+      {saveError ? <p role="alert" className="break-words rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">{saveError}</p> : null}
+      <Button className="min-h-11 w-full" disabled={busy || employeesLoading || !!employeeError || !form.groomName.trim() || !form.eventDate}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Camera className="ml-2 h-4 w-4" /> بدء المناسبة</>}</Button>
     </form>
   );
 }
@@ -183,29 +212,38 @@ function EventManagerBar({ event, onChanged }: { event: PhotographyEvent; onChan
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [photographers, setPhotographers] = useState<Awaited<ReturnType<typeof photographyApi.photographers>>>([]);
+  const [employeeError,setEmployeeError]=useState(""),[employeesLoading,setEmployeesLoading]=useState(false);
+  const pending=useRef(false),mounted=useRef(true);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const [form, setForm] = useState({ groomName: event.groomName, eventName: event.eventName ?? "", eventDate: event.eventDate, location: event.location ?? "", assignedStaffId: 0 });
-  useEffect(() => { if (open && !photographers.length) photographyApi.photographers().then(setPhotographers).catch(() => {}); }, [open, photographers.length]);
+  const loadPhotographers=useCallback(async()=>{setEmployeesLoading(true);setEmployeeError("");try{const rows=await photographyApi.photographers();if(mounted.current)setPhotographers(rows);}catch(cause){if(mounted.current)setEmployeeError(apiErrorMessage(cause));}finally{if(mounted.current)setEmployeesLoading(false);}},[]);
+  useEffect(()=>{if(open)void loadPhotographers();},[open,loadPhotographers]);
+  useEffect(()=>{if(!open)setForm({groomName:event.groomName,eventName:event.eventName??"",eventDate:event.eventDate,location:event.location??"",assignedStaffId:0});},[event,open]);
   async function save() {
+    if(pending.current||employeesLoading||employeeError)return;
+    pending.current=true;
     setBusy(true);
     try {
-      await photographyApi.updateEvent(event.clientToken, { groomName: form.groomName, eventName: form.eventName, eventDate: form.eventDate, location: form.location, assignedStaffId: form.assignedStaffId || undefined });
-      toast({ title: "تم تحديث المناسبة" }); setOpen(false); onChanged();
+      await photographyApi.updateEvent(event.clientToken, { groomName: form.groomName, eventName: form.eventName, location: form.location, assignedStaffId: form.assignedStaffId || undefined });
+      if(mounted.current){toast({ title: "تم تحديث المناسبة" }); setOpen(false); onChanged();}
     } catch (err: any) { toast({ title: "تعذر التحديث", description: apiErrorMessage(err), variant: "destructive" }); }
-    finally { setBusy(false); }
+    finally { pending.current=false;if(mounted.current)setBusy(false); }
   }
   async function archive() {
+    if(pending.current)return;
     if (!window.confirm(event.status === "archived" ? "إلغاء أرشفة هذه المناسبة؟" : "أرشفة هذه المناسبة؟")) return;
-    setBusy(true);
+    pending.current=true;setBusy(true);
     try { await photographyApi.archiveEvent(event.clientToken); toast({ title: event.status === "archived" ? "تم إلغاء الأرشفة" : "تمت الأرشفة" }); onChanged(); }
     catch (err: any) { toast({ title: "تعذر التنفيذ", description: apiErrorMessage(err), variant: "destructive" }); }
-    finally { setBusy(false); }
+    finally { pending.current=false;if(mounted.current)setBusy(false); }
   }
   async function remove() {
+    if(pending.current)return;
     if (!window.confirm("حذف هذه المناسبة نهائياً؟ لا يمكن التراجع.")) return;
-    setBusy(true);
+    pending.current=true;setBusy(true);
     try { await photographyApi.deleteEvent(event.clientToken); toast({ title: "تم حذف المناسبة" }); navigate("/staff/photography/events"); }
     catch (err: any) { toast({ title: "تعذر الحذف", description: apiErrorMessage(err), variant: "destructive" }); }
-    finally { setBusy(false); }
+    finally { pending.current=false;if(mounted.current)setBusy(false); }
   }
   return (
     <div className="rounded-xl border border-border/30 bg-card p-3">
@@ -219,16 +257,20 @@ function EventManagerBar({ event, onChanged }: { event: PhotographyEvent; onChan
         <div className="mt-3 space-y-3 border-t border-border/20 pt-3">
           <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم العريس</span><Input value={form.groomName} onChange={(e) => setForm({ ...form, groomName: e.target.value })} /></label>
           <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم المناسبة</span><Input value={form.eventName} onChange={(e) => setForm({ ...form, eventName: e.target.value })} /></label>
-          <div className="grid gap-3 sm:grid-cols-2"><label className="block space-y-1"><span className="text-xs text-muted-foreground">التاريخ</span><Input type="date" value={form.eventDate} onChange={(e) => setForm({ ...form, eventDate: e.target.value })} /></label><label className="block space-y-1"><span className="text-xs text-muted-foreground">الموقع</span><Input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></label></div>
-          <label className="block space-y-1"><span className="text-xs text-muted-foreground">إعادة تعيين المصور</span><EmployeeSelect employees={photographers} value={form.assignedStaffId ? String(form.assignedStaffId) : ""} onValueChange={(value) => setForm({ ...form, assignedStaffId: Number(value) })} placeholder={`بدون تغيير (${event.assignedStaffName})`} emptyLabel={`بدون تغيير (${event.assignedStaffName})`} aria-label="إعادة تعيين المصور" /></label>
-          <Button className="w-full" onClick={save} disabled={busy || !form.groomName.trim()}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "حفظ التعديلات"}</Button>
+          <div className="grid gap-3 sm:grid-cols-2"><label className="block space-y-1"><span className="text-xs text-muted-foreground">التاريخ</span><Input aria-label="التاريخ" type="date" value={event.eventDate} disabled /><span className="block text-xs text-muted-foreground">لتغيير الموعد استخدم «فترة تشغيل الموارد» أدناه لحفظ التاريخ والفترة معاً.</span></label><label className="block space-y-1"><span className="text-xs text-muted-foreground">الموقع</span><Input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></label></div>
+          <label className="block space-y-1"><span className="text-xs text-muted-foreground">إعادة تعيين المصور</span><EmployeeSelect employees={photographers} disabled={busy||employeesLoading||!!employeeError} value={form.assignedStaffId ? String(form.assignedStaffId) : ""} onValueChange={(value) => setForm({ ...form, assignedStaffId: Number(value) })} placeholder={`بدون تغيير (${event.assignedStaffName})`} emptyLabel={`بدون تغيير (${event.assignedStaffName})`} aria-label="إعادة تعيين المصور" /></label>
+          {employeeError?<div role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm">تعذر تحميل المصورين: {employeeError}<Button type="button" variant="outline" className="mt-2" onClick={()=>void loadPhotographers()}>إعادة تحميل المصورين</Button></div>:null}
+          <Button className="w-full" onClick={save} disabled={busy || employeesLoading || !!employeeError || !form.groomName.trim()}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "حفظ التعديلات"}</Button>
         </div>
       ) : null}
     </div>
   );
 }
 
-function RegistrationPage({ eventRef, me }: { eventRef: string; me: AdminMe }) {
+export function RegistrationPage({ eventRef, me }: { eventRef: string; me: AdminMe }) {
+  return <RegistrationEventPage key={eventRef} eventRef={eventRef} me={me} />;
+}
+function RegistrationEventPage({ eventRef, me }: { eventRef: string; me: AdminMe }) {
   const { toast } = useToast();
   const manager = isPhotoManager(me);
   const clientTokenRef = useRef(newClientToken());
@@ -238,10 +280,25 @@ function RegistrationPage({ eventRef, me }: { eventRef: string; me: AdminMe }) {
   const [unitPrice, setUnitPrice] = useState(0);
   const [paid, setPaid] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [readError, setReadError] = useState<unknown>(null), [reading, setReading] = useState(false);
+  const [priceError, setPriceError] = useState<unknown>(null), [pricesLoading, setPricesLoading] = useState(true);
+  const mounted = useRef(true), request = useRef(0), submitting = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; request.current++; }; }, []);
   const localEvent = readLocalEvent(eventRef);
-  const loadDetail = useCallback(() => photographyApi.event(eventRef).then((row) => { setDetail(row); saveLocalEvent(row); }).catch(() => {}), [eventRef]);
-  useEffect(() => { loadDetail(); }, [loadDetail]);
-  useEffect(() => { photographyApi.prices().then((rows) => { if (rows.length) setPrices(rows); }).catch(() => {}); }, []);
+  const loadDetail = useCallback(async () => {
+    const current = ++request.current; setReading(true);
+    try { const row = await photographyApi.event(eventRef); if (mounted.current && current === request.current) { setDetail(row); saveLocalEvent(row); setReadError(null); } }
+    catch (cause) { if (mounted.current && current === request.current) setReadError(cause); }
+    finally { if (mounted.current && current === request.current) setReading(false); }
+  }, [eventRef]);
+  const loadPrices = useCallback(async () => {
+    setPricesLoading(true);
+    try { const rows = await photographyApi.prices(); if (mounted.current) { setPrices(rows); setPriceError(null); } }
+    catch (cause) { if (mounted.current) setPriceError(cause); }
+    finally { if (mounted.current) setPricesLoading(false); }
+  }, []);
+  useEffect(() => { void loadDetail(); }, [loadDetail]);
+  useEffect(() => { void loadPrices(); }, [loadPrices]);
   useEffect(() => { setUnitPrice((current) => current || prices[0]?.amount || 0); }, [prices]);
   const event = detail ?? localEvent;
   const copies = Number(form.copies) || 0;
@@ -249,7 +306,8 @@ function RegistrationPage({ eventRef, me }: { eventRef: string; me: AdminMe }) {
   async function image(file: File | null) { if (!file) return; try { const dataUrl = await processImageFile(file, { maxSize: 1400, quality: 0.78 }); setForm((current) => ({ ...current, referenceImage: dataUrl })); } catch { toast({ title: "تعذر تجهيز الصورة", variant: "destructive" }); } }
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.customerName.trim() || unitPrice <= 0 || copies < 1) return;
+    if (submitting.current || !event?.id || priceError || pricesLoading || !form.customerName.trim() || unitPrice <= 0 || copies < 1) return;
+    submitting.current = true;
     setBusy(true);
     try {
       // Upload any locally-created (offline-queued) event to the server BEFORE creating its orders,
@@ -261,19 +319,24 @@ function RegistrationPage({ eventRef, me }: { eventRef: string; me: AdminMe }) {
       clientTokenRef.current = newClientToken();
       if (!isQueued(result)) loadDetail();
     } catch (err: any) { toast({ title: "تعذر حفظ الطلب", description: apiErrorMessage(err), variant: "destructive" }); }
-    finally { setBusy(false); }
+    finally { submitting.current = false; if (mounted.current) setBusy(false); }
   }
-  if (!event) return <Loading />;
+  const retry = <div role="alert" className="rounded-xl border border-destructive/40 bg-card p-4"><p>تعذر تحميل المناسبة: {apiErrorMessage(readError)}</p><Button type="button" variant="outline" className="mt-3 min-h-11" disabled={reading} onClick={() => void loadDetail()}>إعادة تحميل المناسبة</Button></div>;
+  if (readError && [401, 403].includes(apiErrorStatus(readError) || 0)) return <div className="p-4">{retry}</div>;
+  if (!event) return readError ? <div className="p-4">{retry}</div> : <Loading />;
+  if (!event.id) return <div className="space-y-4 p-4"><div role="status" className="rounded-xl border border-status-warning/40 p-4">هذه مسودة محلية لم يؤكد الخادم توفر المصور لها بعد. أكمل المواعيد وأعد تأكيد المناسبة نفسها؛ لن تُسجل طلبات صور قبل تأكيدها.</div>{readError ? retry : <Button type="button" variant="outline" disabled={reading} onClick={() => void loadDetail()}>إعادة تحميل المناسبة</Button>}<EventForm key={eventRef} me={me} initialEvent={event} onCreated={() => void loadDetail()} /></div>;
   const summary = detail?.summary;
   const orders = detail?.orders ?? [];
   return (
     <div className="space-y-4 p-4">
+      {readError ? retry : null}
       <div className="rounded-xl border border-primary/30 bg-primary/5 p-3">
         <div className="flex items-center justify-between gap-2"><div className="flex min-w-0 items-center gap-2 font-bold"><User className="h-4 w-4 flex-shrink-0 text-primary" /><span className="truncate">{event.eventName || `مناسبة ${event.groomName}`}</span></div>{event.status === "archived" ? <span className="flex-shrink-0 rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] font-bold text-status-warning">مؤرشفة</span> : null}</div>
         <div className="mt-1 text-xs text-muted-foreground">العريس: {event.groomName} • المصور: {event.assignedStaffName}</div>
         <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2"><span className="flex items-center gap-1"><CalendarDays className="h-3 w-3" />{event.eventDate}</span>{event.location ? <span className="flex items-center gap-1"><MapPin className="h-3 w-3" />{event.location}</span> : null}</div>
       </div>
       {manager ? <EventManagerBar event={event} onChanged={loadDetail} /> : null}
+      <BookingResourceWindowPanel base={`/staff/photography/events/${encodeURIComponent(eventRef)}`} queryKey={["photography-event", eventRef]} onSaved={() => void loadDetail()} />
       {summary ? (
         <div className="grid grid-cols-3 gap-2">
           <SummaryStat label="الطلبات" value={summary.orders} />
@@ -286,6 +349,7 @@ function RegistrationPage({ eventRef, me }: { eventRef: string; me: AdminMe }) {
       ) : null}
       <form onSubmit={submit} className="space-y-4 rounded-xl border border-border/30 bg-card p-4">
         <h1 className="font-bold text-foreground">التسجيل السريع</h1>
+        {priceError ? <div role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm"><p>تعذر تحميل الأسعار: {apiErrorMessage(priceError)}</p><Button type="button" variant="outline" disabled={pricesLoading} onClick={() => void loadPrices()}>إعادة تحميل الأسعار</Button></div> : null}
         <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم الزبون *</span><Input value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /></label>
         <label className="block space-y-1"><span className="text-xs text-muted-foreground">رقم الهاتف (اختياري)</span><Input dir="ltr" inputMode="numeric" value={form.phone} onChange={(e) => setForm({ ...form, phone: formatIraqiPhoneInput(e.target.value) })} placeholder="077xxxxxxxx" /></label>
         <label className="block space-y-1"><span className="text-xs text-muted-foreground">عدد النسخ *</span><Input type="number" min="1" value={form.copies} onChange={(e) => setForm({ ...form, copies: Math.max(1, Number(e.target.value) || 1) })} /></label>
@@ -294,11 +358,11 @@ function RegistrationPage({ eventRef, me }: { eventRef: string; me: AdminMe }) {
         <div className="rounded-lg bg-background p-3"><span className="text-xs text-muted-foreground">المبلغ الكلي ({photoMoney(unitPrice)} × {copies})</span><div className="mt-1 text-2xl font-bold text-primary">{photoMoney(total)} د.ع</div>{paid ? <p className="mt-1 text-[11px] text-status-warning">سيُرسل كامل المبلغ لاعتماد المدير قبل دخوله الصندوق.</p> : <p className="mt-1 text-[11px] text-muted-foreground">يبقى المبلغ مستحقاً ويمكن تحصيله لاحقاً من شاشة التسليم.</p>}</div>
         <label className="block space-y-1"><span className="text-xs text-muted-foreground">ملاحظات</span><Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></label>
         <label className="block cursor-pointer rounded-xl border border-dashed border-border/50 bg-background/50 p-3 text-center"><span className="mb-2 block text-xs text-muted-foreground">صورة تعريفية للمجموعة (اختياري)</span>{form.referenceImage ? <img src={form.referenceImage} alt="معاينة المجموعة" className="mx-auto h-36 w-full rounded-lg object-contain" /> : <span className="flex h-24 items-center justify-center"><ImagePlus className="h-6 w-6 text-primary" /></span>}<input type="file" accept="image/*" className="sr-only" onChange={(e) => void image(e.target.files?.[0] ?? null)} /></label>
-        <Button className="w-full" disabled={busy || !form.customerName.trim() || unitPrice <= 0 || copies < 1}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Send className="ml-2 h-4 w-4" /> حفظ الطلب</>}</Button>
+        <Button className="w-full" disabled={busy || pricesLoading || !!priceError || !form.customerName.trim() || unitPrice <= 0 || copies < 1}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Send className="ml-2 h-4 w-4" /> حفظ الطلب</>}</Button>
       </form>
       <section className="space-y-2">
         <h2 className="text-sm font-bold">طلبات هذه المناسبة{summary ? ` (${summary.orders})` : ""}</h2>
-        {orders.length ? <div className="space-y-2">{orders.map((order) => <OrderCard key={order.id} order={order} compact />)}</div> : <Empty text="لا توجد طلبات بعد داخل هذه المناسبة" />}
+        {detail ? orders.length ? <div className="space-y-2">{orders.map((order) => <OrderCard key={order.id} order={order} compact />)}</div> : <Empty text="لا توجد طلبات بعد داخل هذه المناسبة" /> : <p className="text-sm text-muted-foreground">قائمة الطلبات غير متاحة حتى تنجح قراءة المناسبة من الخادم.</p>}
       </section>
     </div>
   );

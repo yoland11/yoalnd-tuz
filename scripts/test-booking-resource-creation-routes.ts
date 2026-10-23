@@ -1,0 +1,18 @@
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import vm from "node:vm";
+import ts from "typescript";
+const ast=ts.createSourceFile("api.ts",readFileSync("src/server/api.ts","utf8"),ts.ScriptTarget.Latest,true);
+const helper=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==="createServiceOrderWithHistory");assert.ok(helper);assert.match(helper.getText(ast),/validateBookingResourceCreation/,"original service creation must validate the actual inserted resources before commit");
+const code=ts.transpileModule(helper.getText(ast),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+for(const mode of ["clear","busy","sync_failure"]){let active=false,writes=0,commits=0,checked=0,callbacks=0;
+ const tx:any={insert:()=>({values:async()=>{assert.ok(active);writes++;}})};
+ const ctx:any={db:{transaction:async(fn:any)=>{active=true;try{const value=await fn(tx);commits++;return value;}catch(cause){writes=0;throw cause;}finally{active=false;}}},ensureTrackingColumns:async()=>{},ensurePaymentWorkflowColumns:async()=>{},ensureCustomerProfileColumns:async()=>{},ensureCustomerForPhone:async(_p:any,_n:any,connection:any)=>{assert.equal(connection,tx);assert.ok(active);writes++;return{id:5};},insertServiceOrderWithTracking:async(value:any,options:any)=>{assert.equal(options.executor,tx);assert.ok(active);writes++;return{...value,id:71,status:"pending"};},validateBookingResourceCreation:async(connection:any,ref:any)=>{assert.equal(connection,tx);assert.equal(ref.source,"service");assert.equal(ref.id,71);assert.ok(active);checked++;if(mode==="busy")throw Error("resource busy");},logServiceBookingStep:()=>{},serviceOrderStatusHistoryTable:{},serviceOrderItemsTable:{}};
+ vm.createContext(ctx);vm.runInContext(code,ctx);const options={serviceItems:[{productId:1,quantity:1}],afterCreate:async(connection:any,row:any)=>{assert.ok(active);assert.equal(connection,tx);assert.equal(row.id,71);callbacks++;if(mode==="sync_failure")throw Error("sync unavailable");}};
+ if(mode==="clear"){assert.equal((await ctx.createServiceOrderWithHistory({serviceId:1,phone:"07700000000"},"حجز",options)).id,71);assert.equal(commits,1);assert.equal(callbacks,1);}
+ else{await assert.rejects(()=>ctx.createServiceOrderWithHistory({serviceId:1,phone:"07700000000"},"حجز",options),mode==="busy"?/resource busy/:/sync unavailable/);assert.equal(commits,0);assert.equal(writes,0);}
+ assert.equal(checked,1);
+}
+let restore:ts.IfStatement|undefined;function visit(n:ts.Node){if(ts.isIfStatement(n)&&n.expression.getText(ast)==='kind === "service-orders"')restore=n;ts.forEachChild(n,visit);}visit(ast);assert.ok(restore);assert.match(restore.getText(ast),/guardBookingResourceWrite/,"archive restoration must not reacquire resources without the canonical guard");assert.match(restore.getText(ast),/syncCentralBookingToPhotography/,"restoration keeps original linked photography in the same transaction");
+let native:ts.VariableDeclaration|undefined;function findNative(n:ts.Node){if(ts.isVariableDeclaration(n)&&n.name.getText(ast)==="[booking]"&&n.initializer?.getText(ast).includes("insert(koshaBookingsTable)"))native=n;ts.forEachChild(n,findNative);}findNative(ast);assert.ok(native);assert.match(native.initializer!.getText(ast),/validateBookingResourceCreation/,"native creation cannot publish assigned transport before the full-period check");assert.match(native.initializer!.getText(ast),/ensureCustomerForPhone[\s\S]*tx/);
+console.log("PASS original service creation transaction: inserted source identity, resource validation, original customer/items/history rollback and same-transaction callback; restore guard wiring (controlled IO)");

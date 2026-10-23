@@ -1,6 +1,7 @@
 import { adminFetch } from "@/views/admin/_lib";
 import { mutateOrQueue, type QueuedResult } from "../offline";
 import { formatMoney } from "@/lib/money";
+import type { BookingResourceWindow } from "@/lib/booking-resource-window";
 
 export type PhotographyStage = "registered" | "editing" | "ready_print" | "ready_pickup" | "delivered";
 
@@ -26,6 +27,7 @@ export type PhotographyEvent = {
   status: string;
   orderCount: number;
   createdAt: string;
+  resourceWindow?: BookingResourceWindow | null;
 };
 
 export type PhotographyOrder = {

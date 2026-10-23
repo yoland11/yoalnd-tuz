@@ -64,8 +64,8 @@ import {
 } from "@workspace/db";
 import {
   syncCentralBookingToPhotography,
-  findPhotographerConflict,
 } from "@/server/photography-booking-integration";
+import { validateBookingResourceCreation } from "@/server/booking-resource-period";
 import { normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import {
   DEFAULT_GRADUATION_CONFIG,
@@ -2039,29 +2039,19 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   // ── Graduation Extras: photography session → a linked service_order the
   // existing pipeline surfaces in the Photographers Portal (student, university,
   // group, date/time, photographer, notes travel in customFields). Priced by
-  // staff at fulfillment (services carry no catalog price). Conflict-checked,
-  // best-effort — a failure never blocks the graduation order.
+  // staff at fulfillment (services carry no catalog price). A student's date/
+  // time is a request, NOT a complete preparation-to-return resource period.
+  // Keep it pending, unassigned, until Booking Center confirms the real period.
+  // A failure never rolls back the already confirmed graduation order/invoice.
   let extrasWarning: string | undefined;
   const photo = extrasInput.photography;
   if (photo && Number(photo.serviceId) > 0 && data.status === "submitted") {
     try {
       const photographerId = Number(photo.photographerId) || 0;
       const eventDate = String(photo.date || "").slice(0, 10) || null;
-      const conflict =
-        photographerId && eventDate
-          ? await findPhotographerConflict({
-              staffId: photographerId,
-              eventId: -1,
-              eventDate,
-              startTime: photo.time ?? null,
-              endTime: null,
-            })
-          : null;
-      if (conflict) {
-        extrasWarning =
-          "الموعد المطلوب للتصوير محجوز لهذا المصور، تم تسجيل الطلب بدون تثبيت حجز التصوير.";
-      } else {
-        const [serviceOrder] = await db
+      extrasWarning="تم تسجيل طلب التصوير؛ المصور والموعد مطلوبان فقط ولم يُثبت إسناده قبل تحديد فترة التشغيل ومراجعة توفره من الإدارة.";
+      const serviceOrder=await db.transaction(async tx=>{
+        const [created] = await tx
           .insert(serviceOrdersTable)
           .values({
             serviceId: Number(photo.serviceId),
@@ -2079,40 +2069,40 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
               group: group?.title ?? "",
               session: photo.session ?? "",
               eventStartTime: photo.time ?? "",
-              assignedPhotographerId: photographerId || undefined,
+              requestedPhotographerId: photographerId || undefined,
+              photographyAssignmentPending: true,
               departments: ["photography"],
               notes: photo.notes ?? "",
             },
           })
           .returning();
-        if (serviceOrder?.id) {
-          try {
-            await syncCentralBookingToPhotography(serviceOrder.id, {
+        if(!created)throw new Error("Graduation photography request was not created");
+          await validateBookingResourceCreation(tx,{source:"service",id:created.id});
+          await syncCentralBookingToPhotography(created.id, {
               id: user?.id,
               name: user ? user.fullName || user.username : "الموقع",
-            });
-          } catch (syncError) {
-            console.warn("[graduation-extras] photography portal sync failed", syncError);
-          }
-          await db
+            },tx);
+          await tx
             .update(graduationOrdersTable)
             .set({
               extras: {
                 ...((order.extras as Record<string, unknown> | null) ?? {}),
-                photography: { serviceOrderId: serviceOrder.id, ...photo },
+                photography: { ...photo,serviceOrderId: created.id,assignmentPending:true },
               },
             })
             .where(eq(graduationOrdersTable.id, order.id));
+          return created;
+      });
           void addActivity(user, "graduation_photography_booked", order.id, {
             serviceOrderId: serviceOrder.id,
             serviceId: photo.serviceId,
             date: eventDate,
+            assignmentPending: true,
           });
-        }
-      }
     } catch (photoError) {
-      console.warn("[graduation-extras] photography booking failed", photoError);
-      extrasWarning = "تعذر تثبيت حجز التصوير، تم تسجيل الطلب.";
+      const requestId=makeRequestId();
+      console.warn("[graduation-extras] photography booking failed", {requestId,orderId:order.id,...safeServerError(photoError)});
+      extrasWarning = `تعذر تثبيت طلب التصوير، وبقي طلب التخرج محفوظاً. رقم المتابعة: ${requestId}`;
     }
   }
   const qrDataUrl = await QRCode.toDataURL(

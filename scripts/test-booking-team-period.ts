@@ -17,4 +17,10 @@ assert.equal(await findBookingStaffConflict(reference,[],connection),null);asser
 await assert.rejects(()=>findBookingStaffConflict(reference,[NaN],connection),/Invalid/);
 for(const reader of [findBookingVehicleConflict,findBookingCrewConflict])await assert.rejects(()=>reader(reference,0,connection),/Invalid/);
 await assert.rejects(()=>findBookingVehicleConflict(reference,8,{execute:async()=>{throw Error("storage unavailable")}}),/storage unavailable/);
+const photo={...candidate,source:"photography",photo_identity:{bookingIds:[],central:null}};
+const standalone={execute:async(q:any)=>{const built=dialect.sqlToQuery(q);assert.match(built.sql,/e\.assigned_staff_id/);assert.match(built.sql,/resource_window/);assert.match(built.sql,/IS NULL/);return{rows:[photo]};}};
+assert.equal((await findBookingStaffConflict(reference,[2],standalone))?.source,"photography","standalone photography is a distinct scheduling source, even for the same numeric ID");
+assert.equal(await findBookingStaffConflict({...reference,source:"photography" as any},[2],standalone),null,"exclude only the same actual photography event, never another booking with the same number");
+assert.equal((await findBookingStaffConflict(reference,[2],{execute:async()=>({rows:[{...photo,details:{}}]})}))?.timingIncomplete,true,"a legacy standalone event without full preparation-to-return timing is unknown, never advertised as free");
+await assert.rejects(()=>findBookingStaffConflict(reference,[2],{execute:async()=>({rows:[{...photo,source:"unknown"}]})}),/Invalid/);
 console.log("PASS crew/staff/driver/vehicle interval reader, original memberships and dispatch sources, bound IDs and propagated failures");
