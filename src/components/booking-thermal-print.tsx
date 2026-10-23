@@ -57,8 +57,14 @@ function ThermalPreview({ data, paperSize }: { data: BookingThermalData; paperSi
   return <div className="mx-auto w-full rounded-md border border-black bg-white p-3 text-black shadow-sm" style={{ maxWidth: paperSize === "58mm" ? "58mm" : "80mm", fontFamily: "Cairo, Tahoma, Arial, sans-serif" }} dir="rtl"><div className="text-center"><b className="text-xl tracking-[0.12em]">AJN</b><p className="m-0 text-xs font-bold">ملصق الحجز</p></div><hr className="my-2 border-black" /><div className="space-y-2 text-xs font-bold"><div><span className="block text-[10px]">رقم الفاتورة</span><b dir="ltr" className="block text-right">{data.bookingNumber}</b></div><div><span className="block text-[10px]">اسم العرسان</span><b className="block text-sm leading-5">{data.coupleName}</b></div><div><span className="block text-[10px]">تاريخ المناسبة</span><b dir="ltr" className="block text-right">{data.eventDate}</b></div><div><span className="block text-[10px]">رقم الهاتف</span><b dir="ltr" className="block text-right">{data.phone}</b></div></div><hr className="my-2 border-dashed border-black" /></div>;
 }
 
-export function BookingThermalPrintAction({ booking, size = "sm", variant = "outline", className }: { booking: BookingLike; size?: ButtonProps["size"]; variant?: ButtonProps["variant"]; className?: string }) {
-  const [open, setOpen] = useState(false);
+/** `open`/`onOpenChange` let a menu item open the dialog; `hideTrigger` then drops the button. */
+export function BookingThermalPrintAction({ booking, size = "sm", variant = "outline", className, open: openProp, onOpenChange, hideTrigger = false }: { booking: BookingLike; size?: ButtonProps["size"]; variant?: ButtonProps["variant"]; className?: string; open?: boolean; onOpenChange?: (open: boolean) => void; hideTrigger?: boolean }) {
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = openProp ?? localOpen;
+  const setOpen = (next: boolean) => {
+    setLocalOpen(next);
+    onOpenChange?.(next);
+  };
   const [paperSize, setPaperSize] = useState<"58mm" | "80mm">("58mm");
   const data = useMemo(() => bookingThermalData(booking), [booking]);
   const print = () => {
@@ -67,5 +73,5 @@ export function BookingThermalPrintAction({ booking, size = "sm", variant = "out
     popup.document.write(bookingThermalPrintHtml(data, paperSize));
     popup.document.close();
   };
-  return <><Button type="button" size={size} variant={variant} className={className} onClick={() => setOpen(true)}><Printer className="h-4 w-4" /> طباعة ملصق</Button><Dialog open={open} onOpenChange={setOpen}><DialogContent dir="rtl" className="max-w-md"><DialogHeader><DialogTitle>معاينة طباعة الحجز</DialogTitle><DialogDescription>ملصق تعريفي فقط؛ لا يتضمن أسعاراً أو دفعات.</DialogDescription></DialogHeader><div className="flex justify-center gap-2" role="group" aria-label="مقاس ورق الطباعة"><Button type="button" size="sm" variant={paperSize === "58mm" ? "default" : "outline"} onClick={() => setPaperSize("58mm")}>58mm</Button><Button type="button" size="sm" variant={paperSize === "80mm" ? "default" : "outline"} onClick={() => setPaperSize("80mm")}>80mm</Button></div><div className="max-h-[52dvh] overflow-auto rounded-lg bg-muted/40 p-5"><ThermalPreview data={data} paperSize={paperSize} /></div><DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)}>إلغاء</Button><Button type="button" onClick={print}><Printer className="h-4 w-4" /> طباعة</Button></DialogFooter></DialogContent></Dialog></>;
+  return <>{hideTrigger ? null : <Button type="button" size={size} variant={variant} className={className} onClick={() => setOpen(true)}><Printer className="h-4 w-4" /> طباعة ملصق</Button>}<Dialog open={open} onOpenChange={setOpen}><DialogContent dir="rtl" className="max-w-md"><DialogHeader><DialogTitle>معاينة طباعة الحجز</DialogTitle><DialogDescription>ملصق تعريفي فقط؛ لا يتضمن أسعاراً أو دفعات.</DialogDescription></DialogHeader><div className="flex justify-center gap-2" role="group" aria-label="مقاس ورق الطباعة"><Button type="button" size="sm" variant={paperSize === "58mm" ? "default" : "outline"} onClick={() => setPaperSize("58mm")}>58mm</Button><Button type="button" size="sm" variant={paperSize === "80mm" ? "default" : "outline"} onClick={() => setPaperSize("80mm")}>80mm</Button></div><div className="max-h-[52dvh] overflow-auto rounded-lg bg-muted/40 p-5"><ThermalPreview data={data} paperSize={paperSize} /></div><DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)}>إلغاء</Button><Button type="button" onClick={print}><Printer className="h-4 w-4" /> طباعة</Button></DialogFooter></DialogContent></Dialog></>;
 }

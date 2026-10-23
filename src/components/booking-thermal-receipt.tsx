@@ -116,6 +116,16 @@ export function buildBookingThermalReceiptHtml(data: BookingThermalReceiptData):
  * The A4 invoice remains its own separate action, so the two paper formats are
  * both available and the A4 output is completely unaffected.
  */
+/** Opens the shared print dialog with the single 80mm booking receipt format. */
+export function useBookingThermalReceiptPrint() {
+  const { print } = usePrint();
+  return (data: BookingThermalReceiptData) =>
+    print({
+      documentLabel: `وصل حجز ${data.bookingNumber}`,
+      formats: [{ id: "thermal80", buildHtml: () => buildBookingThermalReceiptHtml(data) }],
+    });
+}
+
 export function BookingThermalReceiptAction({
   data,
   size = "sm",
@@ -127,19 +137,14 @@ export function BookingThermalReceiptAction({
   variant?: ButtonProps["variant"];
   className?: string;
 }) {
-  const { print } = usePrint();
+  const printReceipt = useBookingThermalReceiptPrint();
   return (
     <Button
       type="button"
       size={size}
       variant={variant}
       className={className}
-      onClick={() =>
-        print({
-          documentLabel: `وصل حجز ${data.bookingNumber}`,
-          formats: [{ id: "thermal80", buildHtml: () => buildBookingThermalReceiptHtml(data) }],
-        })
-      }
+      onClick={() => printReceipt(data)}
     >
       <Receipt className="h-4 w-4" /> وصل حراري 80mm
     </Button>

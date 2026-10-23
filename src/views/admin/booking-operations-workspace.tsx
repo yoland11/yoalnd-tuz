@@ -46,12 +46,14 @@ import {
   Plus,
   Printer,
   QrCode,
+  Receipt,
   ReceiptText,
   RotateCcw,
   Search,
   ShieldAlert,
   ShoppingBag,
   Sparkles,
+  Tag,
   TriangleAlert,
   Trash2,
   Truck,
@@ -72,6 +74,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -91,7 +94,7 @@ import { printStandaloneDocument } from "@/lib/pdf";
 
 type GroupAttendee = { id: string; name: string; phone: string | null; amount: number; note: string | null; receiptNo: string; collected?: boolean; financialTxId?: number | null; postedAt?: string | null; createdByName?: string; createdAt: string };
 import { BookingThermalPrintAction } from "@/components/booking-thermal-print";
-import { BookingThermalReceiptAction } from "@/components/booking-thermal-receipt";
+import { useBookingThermalReceiptPrint } from "@/components/booking-thermal-receipt";
 import { AccountSummaryCard } from "./payment-collection";
 import { CustomerFinancialSummary } from "./customer-financial-summary";
 import "./booking-operations-workspace.css";
@@ -339,9 +342,10 @@ function StaffAssignmentControl({ base, queryKey, booking }: { base: string; que
   const assigned = query.data?.assignedStaff ?? [];
   const toggle = (staffId: number) => setSelected((current) => current.includes(staffId) ? current.filter((id) => id !== staffId) : [...current, staffId]);
   return <Dialog open={open} onOpenChange={setOpen}>
-    <Button variant="outline" className="ajn-op-assign-trigger" onClick={() => setOpen(true)} disabled={query.isLoading}>
-      {assigned.slice(0, 3).map((staff) => <EmployeeAvatar key={staff.id} name={staff.name} photoUrl={staff.photoUrl} size={32} />)}
-      <Users /> {assigned.length ? assigned.map((staff) => staff.name).join("، ") : "تعيين الموظفين"}
+    <Button variant="outline" className="ajn-op-chip ajn-op-assign-trigger" onClick={() => setOpen(true)} disabled={query.isLoading}>
+      {assigned.length ? <span className="ajn-op-chip-avatars">{assigned.slice(0, 3).map((staff) => <EmployeeAvatar key={staff.id} name={staff.name} photoUrl={staff.photoUrl} size={32} />)}</span> : <Users />}
+      <span className="ajn-op-chip-text"><small>فريق الحجز</small><b>{assigned.length ? assigned.map((staff) => staff.name).join("، ") : "تعيين الموظفين"}</b></span>
+      <Pencil className="ajn-op-chip-edit" aria-hidden="true" />
     </Button>
     <DialogContent dir="rtl" className="ajn-op-staff-dialog">
       <DialogHeader><DialogTitle>تعيين فريق الحجز</DialogTitle><DialogDescription>اختر موظفاً واحداً أو أكثر من المخولين لخدمات هذا الحجز. لا ينشئ التعيين مهاماً مكررة.</DialogDescription></DialogHeader>
@@ -394,7 +398,7 @@ function BookingBranchControl({ booking }: { booking: BookingOperationsBooking }
   });
   const currentBranch = query.data?.data.find((row) => row.id === current?.branchId);
   return <Dialog open={open} onOpenChange={setOpen}>
-    <Button variant="outline" onClick={() => setOpen(true)} disabled={query.isLoading || Boolean(query.error)}><Building2 /> {currentBranch?.name || "تحديد الفرع"}</Button>
+    <Button variant="outline" className="ajn-op-chip" onClick={() => setOpen(true)} disabled={query.isLoading || Boolean(query.error)}><Building2 /><span className="ajn-op-chip-text"><small>الفرع</small><b>{currentBranch?.name || "تحديد الفرع"}</b></span><Pencil className="ajn-op-chip-edit" aria-hidden="true" /></Button>
     <DialogContent dir="rtl">
       <DialogHeader><DialogTitle>فرع الحجز</DialogTitle><DialogDescription>يرتبط الفرع بالحجز نفسه دون نسخ السجل أو تغيير رقمه.</DialogDescription></DialogHeader>
       <div className="space-y-2"><Label htmlFor="booking-branch">الفرع</Label><select id="booking-branch" value={branchId} onChange={(event) => setBranchId(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"><option value="">اختر الفرع</option>{query.data?.data.filter((branch) => branch.isActive !== false || branch.id === current?.branchId).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}{branch.code ? ` · ${branch.code}` : ""}</option>)}</select></div>
@@ -410,6 +414,9 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
   const key = ["admin", "booking-operations", booking.source, booking.id];
   const [tab, setTab] = useState("overview");
   const [confirm, setConfirm] = useState<{ kind: "booking" | "warehouse"; stage: string; label: string } | null>(null);
+  const [labelOpen, setLabelOpen] = useState(false);
+  const printReceipt = useBookingThermalReceiptPrint();
+  const preparation = usePreparationListPrint(base, booking);
 
   useEffect(() => {
     const value = new URLSearchParams(window.location.search).get("tab");
@@ -527,9 +534,35 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
           <span><CircleDollarSign /><b>{booking.paymentStatus || "غير مكتمل"}</b><small>حالة الدفع</small></span>
           <span><Warehouse /><b>{STAGE_LABELS[overview.data?.warehouseStage ?? "reserved"]}</b><small>حالة المستودع</small></span>
         </div>
-        <div className="ajn-op-header-actions">{onEdit ? <Button variant="outline" onClick={onEdit}><Pencil /> تعديل</Button> : null}<Button variant="outline" onClick={() => window.print()}><Printer /> طباعة</Button><BookingThermalPrintAction booking={booking} /><BookingThermalReceiptAction data={thermalReceiptData} /><PreparationListAction base={base} booking={booking} /><IssueWorkOrderButton defaults={{ booking: { type: booking.source === "kosha" ? "kosha_booking" : "service_order", id: booking.id }, customerId: booking.customerId ?? null, customerName: booking.customerName, contextLabel: `الحجز ${booking.number} · ${booking.customerName}` }} />{whatsappNumber ? <Button variant="outline" onClick={() => window.open(`https://wa.me/${whatsappNumber}`, "_blank", "noopener,noreferrer")}><MessageCircle /> إرسال</Button> : null}<Button className="ajn-op-primary" onClick={() => changeTab("finance")}><Banknote /> تسجيل دفعة</Button><BookingBranchControl booking={booking} /><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
+      </div>
+      <div className="ajn-op-header-bar">
+        <div className="ajn-op-header-assign"><BookingBranchControl booking={booking} /><StaffAssignmentControl base={base} queryKey={key} booking={booking} /></div>
+        <div className="ajn-op-header-actions">
+          {onEdit ? <Button variant="outline" onClick={onEdit}><Pencil /> تعديل</Button> : null}
+          <DropdownMenu dir="rtl">
+            <DropdownMenuTrigger asChild><Button variant="outline" disabled={preparation.loading}>{preparation.loading ? <Loader2 className="animate-spin" /> : <Printer />} {preparation.loading ? "جارٍ التجهيز…" : "طباعة"} <ChevronDown /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="ajn-op-more-menu ajn-op-print-menu">
+              <DropdownMenuLabel className="ajn-op-menu-label">ورق A4</DropdownMenuLabel>
+              <DropdownMenuItem onSelect={() => window.print()}><Printer /> طباعة الصفحة</DropdownMenuItem>
+              <DropdownMenuItem asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="ajn-op-menu-label">الطابعة الحرارية</DropdownMenuLabel>
+              <DropdownMenuItem onSelect={() => setLabelOpen(true)}><Tag /> طباعة ملصق</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => printReceipt(thermalReceiptData)}><Receipt /> وصل حراري 80mm</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="ajn-op-menu-label">قائمة التجهيز</DropdownMenuLabel>
+              <DropdownMenuItem onSelect={() => void preparation.printFor(null)}><ClipboardCheck /> كل الأقسام</DropdownMenuItem>
+              {preparation.departments.map((department) => <DropdownMenuItem key={department.key} onSelect={() => void preparation.printFor(department)}><ClipboardCheck /> {department.label}</DropdownMenuItem>)}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {whatsappNumber ? <Button variant="outline" onClick={() => window.open(`https://wa.me/${whatsappNumber}`, "_blank", "noopener,noreferrer")}><MessageCircle /> إرسال</Button> : null}
+          <IssueWorkOrderButton defaults={{ booking: { type: booking.source === "kosha" ? "kosha_booking" : "service_order", id: booking.id }, customerId: booking.customerId ?? null, customerName: booking.customerName, contextLabel: `الحجز ${booking.number} · ${booking.customerName}` }} />
+          <DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          <Button className="ajn-op-primary" onClick={() => changeTab("finance")}><Banknote /> تسجيل دفعة</Button>
+        </div>
       </div>
     </header>
+    <BookingThermalPrintAction booking={booking} open={labelOpen} onOpenChange={setLabelOpen} hideTrigger />
 
     <BookingFinancialCards booking={booking} onFinance={() => changeTab("finance")} />
 
@@ -542,7 +575,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <OperationsSummary data={overview.data} booking={booking} onTab={changeTab} readiness={readinessQuery.isError ? undefined : readinessQuery.data} />
 
-    <section className="ajn-op-quickbar"><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button className="ajn-op-add-item"><Plus /> إضافة عنصر <ChevronDown /></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="ajn-op-add-menu"><DropdownMenuItem onSelect={() => changeTab("products")}><span className="is-store"><ShoppingBag /></span><span><b>إضافة منتج من المتجر</b><small>اختر المنتجات والمتغيرات واحجز الكمية من المخزون.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("assets")}><span className="is-asset"><PackageCheck /></span><span><b>إضافة أصل من الأصول</b><small>اربط المعدات وتحقق من التوفر وحالة الأصل.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => { window.requestAnimationFrame(() => document.getElementById("ajn-transport-card")?.scrollIntoView({ behavior: "smooth", block: "center" })); }}><span className="is-asset"><Truck /></span><span><b>إضافة خدمة نقل</b><small>حدّد النقل بواسطة AJN أو من مسؤولية الزبون لهذا الحجز.</small></span><ChevronLeft /></DropdownMenuItem></DropdownMenuContent></DropdownMenu><div>{nextBooking && <Button variant="outline" onClick={() => setConfirm({ kind: "booking", stage: nextBooking[0], label: nextBooking[1] })}><Check /> {nextBooking[1]}</Button>}{nextWarehouse && <Button variant="outline" onClick={() => setConfirm({ kind: "warehouse", stage: nextWarehouse[0], label: nextWarehouse[1] })}><QrCode /> {nextWarehouse[1]}</Button>}<Button variant="outline" onClick={() => changeTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="outline" onClick={() => changeTab("documents")}><FileText /> رفع مستند</Button></div></section>
+    <section className="ajn-op-quickbar"><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button className="ajn-op-add-item"><Plus /> إضافة عنصر <ChevronDown /></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="ajn-op-add-menu"><DropdownMenuItem onSelect={() => changeTab("products")}><span className="is-store"><ShoppingBag /></span><span><b>إضافة منتج من المتجر</b><small>اختر المنتجات والمتغيرات واحجز الكمية من المخزون.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("assets")}><span className="is-asset"><PackageCheck /></span><span><b>إضافة أصل من الأصول</b><small>اربط المعدات وتحقق من التوفر وحالة الأصل.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => { window.requestAnimationFrame(() => document.getElementById("ajn-transport-card")?.scrollIntoView({ behavior: "smooth", block: "center" })); }}><span className="is-asset"><Truck /></span><span><b>إضافة خدمة نقل</b><small>حدّد النقل بواسطة AJN أو من مسؤولية الزبون لهذا الحجز.</small></span><ChevronLeft /></DropdownMenuItem></DropdownMenuContent></DropdownMenu><div className="ajn-op-quick-groups">{nextBooking || nextWarehouse ? <div className="ajn-op-quick-group" role="group" aria-label="الخطوة التالية"><small>الخطوة التالية</small>{nextBooking && <Button variant="outline" onClick={() => setConfirm({ kind: "booking", stage: nextBooking[0], label: nextBooking[1] })}><Check /> {nextBooking[1]}</Button>}{nextWarehouse && <Button variant="outline" onClick={() => setConfirm({ kind: "warehouse", stage: nextWarehouse[0], label: nextWarehouse[1] })}><QrCode /> {nextWarehouse[1]}</Button>}</div> : null}<div className="ajn-op-quick-group" role="group" aria-label="اختصارات"><small>اختصارات</small><Button variant="ghost" onClick={() => changeTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="ghost" onClick={() => changeTab("documents")}><FileText /> رفع مستند</Button></div></div></section>
 
     <TransportationCard mode={transportationMode as any} fee={transportationFee} busy={setTransportation.isPending} onSave={(mode, fee) => setTransportation.mutate({ mode, fee })} />
 
@@ -679,7 +712,7 @@ function BookingSidebar({ booking, data, invoiceUrl, paymentUrl, onTab, departme
     <section><div className="ajn-op-side-title"><UserRound /><h2>معلومات العميل</h2></div><dl><div><dt>العميل</dt><dd>{booking.customerName}</dd></div><div><dt>رقم الهاتف</dt><dd dir="ltr">{booking.phone || "—"}</dd></div><div><dt>رقم الحجز</dt><dd>{booking.number}</dd></div></dl></section>
     <section><div className="ajn-op-side-title"><CalendarDays /><h2>معلومات الحجز</h2></div><dl><div><dt>التاريخ</dt><dd>{readableDate(booking.eventDate)}</dd></div><div><dt>الموقع</dt><dd>{booking.hall || "غير محدد"}</dd></div><div><dt>القسم</dt><dd>{department}</dd></div><div><dt>الفريق</dt><dd>{responsibleTeam}</dd></div></dl></section>
     <section className="ajn-op-side-finance"><div className="ajn-op-side-title"><CircleDollarSign /><h2>ملخص مالي سريع</h2></div><div><span>إجمالي الحجز</span><b>{money(booking.total)}</b></div><div><span>المدفوع</span><b className="is-positive">{money(booking.paid)}</b></div><div><span>المتبقي</span><b className={booking.remaining > 0 ? "is-negative" : "is-positive"}>{money(booking.remaining)}</b></div><Button variant="ghost" type="button" onClick={() => onTab("finance")}>فتح التفاصيل المالية <ChevronLeft /></Button></section>
-    <section><div className="ajn-op-side-title"><Sparkles /><h2>إجراءات سريعة</h2></div><div className="ajn-op-side-actions"><Button className="ajn-op-primary" onClick={() => onTab("finance")}><Banknote /> تسجيل دفعة</Button><Button variant="outline" asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></Button><BookingThermalPrintAction booking={booking} className="w-full" /><Button variant="outline" onClick={() => onTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="outline" onClick={() => onTab("documents")}><FileText /> المستندات</Button></div></section>
+    <section><div className="ajn-op-side-title"><Sparkles /><h2>إجراءات سريعة</h2></div><div className="ajn-op-side-actions"><Button className="ajn-op-primary ajn-op-side-primary" onClick={() => onTab("finance")}><Banknote /> تسجيل دفعة</Button><Button variant="outline" asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></Button><BookingThermalPrintAction booking={booking} className="w-full" /><Button variant="outline" onClick={() => onTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="outline" onClick={() => onTab("documents")}><FileText /> المستندات</Button></div></section>
     <div className="ajn-op-side-readiness"><div><small>فحوص الجاهزية التشغيلية</small><BookingReadinessStatus readiness={readiness}/><span>من سجل التجهيز والفريق والنقل، وليست من قيمة الدفعات.</span></div></div>
   </aside>;
 }
@@ -912,7 +945,7 @@ function buildPreparationListHtml(
   </body></html>`;
 }
 
-function PreparationListAction({ base, booking }: { base: string; booking: BookingOperationsBooking }) {
+function usePreparationListPrint(base: string, booking: BookingOperationsBooking) {
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   // The portals/departments actually on this booking (deduplicated), each mapped
@@ -953,24 +986,7 @@ function PreparationListAction({ base, booking }: { base: string; booking: Booki
       setLoading(false);
     }
   };
-  return (
-    <DropdownMenu dir="rtl">
-      <DropdownMenuTrigger asChild>
-        <Button variant="outline" disabled={loading}>
-          <ClipboardCheck /> {loading ? "جارٍ التجهيز…" : "قائمة التجهيز"} <ChevronDown />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={() => printFor(null)}><ClipboardCheck /> كل الأقسام</DropdownMenuItem>
-        {departments.length > 0 ? <DropdownMenuSeparator /> : null}
-        {departments.map((department) => (
-          <DropdownMenuItem key={department.key} onSelect={() => printFor(department)}>
-            {department.label}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
+  return { departments, printFor, loading };
 }
 
 function BookingDiscountControl({ base, currentDiscount, onChanged }: { base: string; currentDiscount: number; onChanged: () => void }) {
