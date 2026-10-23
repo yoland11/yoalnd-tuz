@@ -92,6 +92,9 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, compressImageFile, formatCurrency } from "./_lib";
 import { printStandaloneDocument } from "@/lib/pdf";
 
+type TransportValue = { mode: "ajn" | "customer" | null; fee: number; vehicleId: number | null; driverId: number | null; note: string | null; inTotal?: boolean };
+type FleetVehicleOption = { id: number; name: string; plateNumber?: string | null; status?: string | null; isActive?: boolean };
+type DriverOption = { id: number; fullName?: string | null; username?: string | null; isActive?: boolean };
 type GroupAttendee = { id: string; name: string; phone: string | null; amount: number; note: string | null; receiptNo: string; collected?: boolean; financialTxId?: number | null; postedAt?: string | null; createdByName?: string; createdAt: string };
 import { BookingThermalPrintAction } from "@/components/booking-thermal-print";
 import { useBookingThermalReceiptPrint } from "@/components/booking-thermal-receipt";
@@ -432,10 +435,18 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
   const overview = useQuery<OverviewData>({ queryKey: [...key, "overview"], queryFn: () => adminFetch(`${base}/overview`) });
   const readinessQuery = useQuery<ReadinessDisplay>({ queryKey: [...key,"readiness"], queryFn: () => adminFetch(`${base}/readiness`), refetchInterval:30_000 });
-  const transportation = useQuery<{ transportation: { mode: "ajn" | "customer" | null; fee: number } | null }>({ queryKey: [...key, "transportation"], queryFn: () => adminFetch(`${base}/transportation`) });
+  const transportation = useQuery<{ transportation: Partial<TransportValue> | null }>({ queryKey: [...key, "transportation"], queryFn: () => adminFetch(`${base}/transportation`) });
+  // Kosha bookings save transport on the kosha booking itself (its total and the
+  // vehicle accounts read it there); service orders through the booking endpoint.
   const setTransportation = useMutation({
-    mutationFn: (payload: { mode: "ajn" | "customer" | null; fee: number }) => adminFetch(`${base}/transportation`, { method: "POST", body: JSON.stringify(payload) }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: [...key, "transportation"] }); queryClient.invalidateQueries({ queryKey: [...key, "overview"] }); queryClient.invalidateQueries({queryKey:[...key,"readiness"]}); queryClient.invalidateQueries({queryKey:["admin","booking-center"]}); toast({ title: "تم تحديث خدمة النقل" }); },
+    mutationFn: (payload: TransportValue) => booking.source === "kosha"
+      ? adminFetch(`/admin/kosha-bookings/${booking.id}?source=kosha`, { method: "PATCH", body: JSON.stringify({ transportationMode: payload.mode, transportationFee: payload.mode === "ajn" ? payload.fee : 0, transportationVehicleId: payload.mode === "ajn" ? payload.vehicleId : null, transportationDriverId: payload.mode === "ajn" ? payload.driverId : null, transportationNotes: payload.mode === "ajn" ? payload.note : null }) })
+      : adminFetch(`${base}/transportation`, { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess: (_, payload) => {
+      for (const queryKey of [[...key, "transportation"], [...key, "overview"], [...key, "readiness"], [...key, "finance"], ["admin", "booking-center"], ["admin", "booking-workspace"], ["admin", "enterprise", "vehicles"]])
+        queryClient.invalidateQueries({ queryKey });
+      toast({ title: "تم تحديث خدمة النقل", description: payload.mode === "ajn" ? "أُضيفت الأجرة إلى مبلغ الحجز وحساب السيارة." : undefined });
+    },
     onError: (error: any) => toast({ title: "تعذر تحديث خدمة النقل", description: error?.message, variant: "destructive" }),
   });
   const attendees = useQuery<{ attendees: GroupAttendee[] }>({ queryKey: [...key, "group-attendees"], queryFn: () => adminFetch(`${base}/group-attendees`) });
@@ -577,7 +588,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <section className="ajn-op-quickbar"><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button className="ajn-op-add-item"><Plus /> إضافة عنصر <ChevronDown /></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="ajn-op-add-menu"><DropdownMenuItem onSelect={() => changeTab("products")}><span className="is-store"><ShoppingBag /></span><span><b>إضافة منتج من المتجر</b><small>اختر المنتجات والمتغيرات واحجز الكمية من المخزون.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("assets")}><span className="is-asset"><PackageCheck /></span><span><b>إضافة أصل من الأصول</b><small>اربط المعدات وتحقق من التوفر وحالة الأصل.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => { window.requestAnimationFrame(() => document.getElementById("ajn-transport-card")?.scrollIntoView({ behavior: "smooth", block: "center" })); }}><span className="is-asset"><Truck /></span><span><b>إضافة خدمة نقل</b><small>حدّد النقل بواسطة AJN أو من مسؤولية الزبون لهذا الحجز.</small></span><ChevronLeft /></DropdownMenuItem></DropdownMenuContent></DropdownMenu><div className="ajn-op-quick-groups">{nextBooking || nextWarehouse ? <div className="ajn-op-quick-group" role="group" aria-label="الخطوة التالية"><small>الخطوة التالية</small>{nextBooking && <Button variant="outline" onClick={() => setConfirm({ kind: "booking", stage: nextBooking[0], label: nextBooking[1] })}><Check /> {nextBooking[1]}</Button>}{nextWarehouse && <Button variant="outline" onClick={() => setConfirm({ kind: "warehouse", stage: nextWarehouse[0], label: nextWarehouse[1] })}><QrCode /> {nextWarehouse[1]}</Button>}</div> : null}<div className="ajn-op-quick-group" role="group" aria-label="اختصارات"><small>اختصارات</small><Button variant="ghost" onClick={() => changeTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="ghost" onClick={() => changeTab("documents")}><FileText /> رفع مستند</Button></div></div></section>
 
-    <TransportationCard mode={transportationMode as any} fee={transportationFee} busy={setTransportation.isPending} onSave={(mode, fee) => setTransportation.mutate({ mode, fee })} />
+    <TransportationCard value={{ mode: transportationMode as TransportValue["mode"], fee: transportationFee, vehicleId: transportation.data?.transportation?.vehicleId ?? null, driverId: transportation.data?.transportation?.driverId ?? null, note: transportation.data?.transportation?.note ?? null, inTotal: transportation.data?.transportation?.inTotal === true }} busy={setTransportation.isPending} onSave={(next) => setTransportation.mutate(next)} />
 
     <GroupAttendeesCard attendees={attendees.data?.attendees ?? []} adding={addAttendee.isPending} removingId={removeAttendee.isPending ? (removeAttendee.variables as string) : null} onAdd={(payload) => addAttendee.mutate(payload)} onRemove={(id) => removeAttendee.mutate(id)} onCollect={(id, collected) => collectAttendee.mutate({ id, collected })} onPrint={printAttendeeReceipt} onPrintSheet={printAttendeesSheet} onPostCollected={() => postCollected.mutate()} posting={postCollected.isPending} />
 
@@ -667,28 +678,65 @@ function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, on
   );
 }
 
-function TransportationCard({ mode, fee, busy, onSave }: { mode: "ajn" | "customer" | null; fee: number; busy: boolean; onSave: (mode: "ajn" | "customer" | null, fee: number) => void }) {
-  const [m, setM] = useState<"ajn" | "customer" | null>(mode);
-  const [f, setF] = useState(fee ? String(fee) : "");
-  useEffect(() => { setM(mode); setF(fee ? String(fee) : ""); }, [mode, fee]);
+function TransportationCard({ value, busy, onSave }: { value: TransportValue; busy: boolean; onSave: (next: TransportValue) => void }) {
+  const [m, setM] = useState<TransportValue["mode"]>(value.mode);
+  const [f, setF] = useState(value.fee ? String(value.fee) : "");
+  const [vehicleId, setVehicleId] = useState(value.vehicleId ? String(value.vehicleId) : "");
+  const [driverId, setDriverId] = useState(value.driverId ? String(value.driverId) : "");
+  const [touched, setTouched] = useState(false);
+  useEffect(() => {
+    setM(value.mode);
+    setF(value.fee ? String(value.fee) : "");
+    setVehicleId(value.vehicleId ? String(value.vehicleId) : "");
+    setDriverId(value.driverId ? String(value.driverId) : "");
+    setTouched(false);
+  }, [value.mode, value.fee, value.vehicleId, value.driverId]);
+  // Same lists (and cache keys) as the kosha booking editor.
+  const vehicles = useQuery<{ data: FleetVehicleOption[] }>({ queryKey: ["admin", "enterprise", "vehicles", "booking-editor"], queryFn: () => adminFetch("/admin/enterprise/vehicles"), enabled: m === "ajn", staleTime: 60_000 });
+  const drivers = useQuery<DriverOption[]>({ queryKey: ["admin", "staff", "booking-editor"], queryFn: () => adminFetch("/admin/staff"), enabled: m === "ajn", staleTime: 60_000 });
+  const vehicleOptions = (vehicles.data?.data ?? []).filter((vehicle) => vehicle.isActive !== false || String(vehicle.id) === vehicleId);
+  const driverOptions = (Array.isArray(drivers.data) ? drivers.data : []).filter((driver) => driver.isActive !== false || String(driver.id) === driverId);
+  const fee = Number(f) || 0;
+  const problem = m === "ajn" ? (fee <= 0 ? "أدخل أجرة النقل" : !vehicleId ? "اختر السيارة حتى تُحسب الأجرة لها" : null) : null;
+  // A fee saved before vehicles were linked was informational and never in the total.
+  const legacyNote = value.mode === "ajn" && !value.vehicleId && value.inTotal !== true;
   const btn = (active: boolean) => `rounded-lg border px-3 py-3 text-center text-sm transition-colors ${active ? "border-primary bg-primary/10 font-semibold text-primary" : "border-border/40 bg-background hover:border-primary/40"}`;
+  const field = "mt-1 w-full rounded-md border border-border/40 bg-background px-3 py-2 text-sm";
+  const change = (apply: () => void) => { setTouched(true); apply(); };
   return (
     <section id="ajn-transport-card" className="rounded-2xl border border-border/40 bg-card p-4" dir="rtl">
       <div className="mb-1 flex items-center gap-2"><Truck className="h-4 w-4 text-primary" /><h2 className="text-sm font-bold text-foreground">خدمة النقل</h2></div>
-      <p className="mb-3 text-xs text-muted-foreground">تُسجَّل تشغيلياً على الحجز ولا تغيّر إجماليه أو حالته المالية.</p>
+      <p className="mb-3 text-xs text-muted-foreground">النقل بواسطة AJN يُضاف إلى مبلغ الحجز، ويُحسب في حساب السيارة بنسبة المدفوع من الحجز.</p>
+      {legacyNote ? <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-800" role="status">هذه الأجرة مسجّلة للعلم فقط ولم تُضف إلى مبلغ الحجز ولا إلى أي سيارة. اختر السيارة واحفظ لتُضاف مرة واحدة.</p> : null}
       <div className="grid gap-2 sm:grid-cols-2">
-        <Button variant="ghost" type="button" onClick={() => setM("ajn")} className={btn(m === "ajn")}>النقل بواسطة AJN</Button>
-        <Button variant="ghost" type="button" onClick={() => { setM("customer"); setF(""); }} className={btn(m === "customer")}>النقل من مسؤولية الزبون</Button>
+        <Button variant="ghost" type="button" onClick={() => change(() => setM("ajn"))} className={btn(m === "ajn")}>النقل بواسطة AJN</Button>
+        <Button variant="ghost" type="button" onClick={() => change(() => { setM("customer"); setF(""); setVehicleId(""); setDriverId(""); })} className={btn(m === "customer")}>النقل من مسؤولية الزبون</Button>
       </div>
       {m === "ajn" ? (
-        <div className="mt-3 space-y-1">
-          <label className="text-xs text-muted-foreground">أجرة النقل (للعلم)</label>
-          <input inputMode="decimal" value={f} onChange={(e) => setF(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" className="w-full rounded-md border border-border/40 bg-background px-3 py-2 text-sm sm:max-w-xs" />
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <label className="text-xs text-muted-foreground">أجرة النقل
+            <input inputMode="decimal" value={f} onChange={(e) => change(() => setF(e.target.value.replace(/[^0-9.]/g, "")))} placeholder="0 د.ع" className={field} />
+          </label>
+          <label className="text-xs text-muted-foreground">السيارة
+            <select value={vehicleId} onChange={(e) => change(() => setVehicleId(e.target.value))} className={field}>
+              <option value="">{vehicles.isLoading ? "جارٍ تحميل السيارات…" : "اختر السيارة"}</option>
+              {vehicleOptions.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.name}{vehicle.plateNumber ? ` · ${vehicle.plateNumber}` : ""}{vehicle.isActive === false ? " (غير نشطة)" : ""}</option>)}
+            </select>
+            {vehicles.isError ? <span className="mt-1 block text-destructive">تعذّر تحميل السيارات: {(vehicles.error as any)?.message ?? "حاول مرة أخرى"}</span> : null}
+          </label>
+          <label className="text-xs text-muted-foreground">السائق (اختياري)
+            <select value={driverId} onChange={(e) => change(() => setDriverId(e.target.value))} className={field}>
+              <option value="">بدون سائق محدد</option>
+              {driverOptions.map((driver) => <option key={driver.id} value={driver.id}>{driver.fullName || driver.username || `#${driver.id}`}</option>)}
+            </select>
+            {drivers.isError ? <span className="mt-1 block text-destructive">تعذّر تحميل الموظفين: {(drivers.error as any)?.message ?? "حاول مرة أخرى"}</span> : null}
+          </label>
         </div>
       ) : null}
+      {problem && touched ? <p className="mt-2 text-xs font-semibold text-destructive" role="alert">{problem}</p> : null}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button size="sm" disabled={busy || !m} onClick={() => onSave(m, m === "ajn" ? Number(f) || 0 : 0)}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} حفظ خدمة النقل</Button>
-        {mode ? <Button size="sm" variant="ghost" disabled={busy} className="text-destructive" onClick={() => onSave(null, 0)}>إزالة</Button> : null}
+        <Button size="sm" disabled={busy || !m || Boolean(problem)} onClick={() => m && onSave({ mode: m, fee: m === "ajn" ? fee : 0, vehicleId: m === "ajn" ? Number(vehicleId) || null : null, driverId: m === "ajn" ? Number(driverId) || null : null, note: value.note })}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} حفظ خدمة النقل</Button>
+        {value.mode ? <Button size="sm" variant="ghost" disabled={busy} className="text-destructive" onClick={() => onSave({ mode: null, fee: 0, vehicleId: null, driverId: null, note: null })}>إزالة</Button> : null}
       </div>
     </section>
   );

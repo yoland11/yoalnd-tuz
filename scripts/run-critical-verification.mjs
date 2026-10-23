@@ -55,6 +55,7 @@ const steps = [
   ["Booking products shared stock", "pnpm", ["run", "test:booking-stock"]],
   ["Booking payments reach the cash box", "pnpm", ["run", "test:booking-cashbox"]],
   ["Company loans follow their financial request", "pnpm", ["run", "test:company-loans"]],
+  ["Booking transport reaches the vehicle accounts", "pnpm", ["run", "test:booking-transport"]],
   ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice customer search", "pnpm", ["run", "test:sales-customer-search"]],

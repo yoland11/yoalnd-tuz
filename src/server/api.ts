@@ -19,6 +19,7 @@ import { updatePreparationItems, completePreparationTask } from "./booking-prepa
 import {sendBookingReminders} from "./booking-reminders";
 import {reviewPreparationTask} from "./booking-preparation-review";
 import { bookingEvidenceWriteSql } from "./booking-operations-write-guard";
+import { executedTransportRevenue, transportTotalDelta } from "@/lib/booking-transport";
 import { LoadingError } from "@/lib/booking-loading";
 import { parseDailyOperationsFilters } from "@/lib/booking-daily-operations";
 import { autoTranslate, autoTranslateStatus } from "@/server/translate";
@@ -22204,6 +22205,11 @@ async function handleAdminKoshas(
             }) : null;
             if (conflictingBooking)
               return error("هذه السيارة مرتبطة بحجز آخر في نفس الوقت.", 409);
+            const serviceClash = eventDateForConflict
+              ? await transportVehicleBookedElsewhere(db, { vehicleId: vehicle.id, eventDate: eventDateForConflict, exclude: { source: "kosha", id } })
+              : null;
+            if (serviceClash)
+              return error(`هذه السيارة مرتبطة بحجز آخر (${serviceClash}) في نفس اليوم.`, 409);
             if (requestedDriverId) {
               const driver = await db.query.staffTable.findFirst({ where: eq(staffTable.id, requestedDriverId) });
               if (!driver) return error("السائق المختار غير موجود", 404);
@@ -22230,6 +22236,11 @@ async function handleAdminKoshas(
               driverId: update.transportationDriverId,
             } : update.transportationMode === "customer" ? { mode: "customer" } : null,
           };
+          // The booking-centre card now saves kosha transport here; drop the older copy
+          // it kept in bookingOperations so the card and the vehicle accounts agree.
+          const existingOps = ((existing.bookingDetails as any)?.bookingOperations ?? null) as Record<string, unknown> | null;
+          if (existingOps && existingOps.transportation != null)
+            (update.bookingDetails as any).bookingOperations = { ...((update.bookingDetails as any).bookingOperations ?? existingOps), transportation: null };
         }
         const sameStringList = (left: unknown, right: unknown) =>
           JSON.stringify(normalizeKoshaStringList(left)) ===
@@ -23258,7 +23269,22 @@ async function handleEnterpriseAdmin(
       orderBy: [desc(koshaBookingsTable.eventDate), desc(koshaBookingsTable.id)],
       limit: 500,
     });
-    const driverIds = bookingRows.map((row) => row.transportationDriverId).filter((value): value is number => Number.isInteger(value));
+    const serviceTripRows: any[] = ((await db.execute(sql`
+      select s.id, s.tracking_code, s.customer_name, s.event_date::text as event_date, s.total_amount, s.deposit_amount, s.payment_status,
+             ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")} as transportation
+      from service_orders s
+      where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId' = ${String(vehicleId)}
+        and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode' = 'ajn'
+        and s.archived_at is null and s.status not in ('cancelled', 'canceled')
+        ${from ? sql`and s.event_date::text >= ${from}` : sql``}
+        ${to ? sql`and s.event_date::text <= ${to}` : sql``}
+      order by s.event_date desc nulls last, s.id desc
+      limit 500
+    `)) as any)?.rows ?? [];
+    const driverIds = [
+      ...bookingRows.map((row) => row.transportationDriverId),
+      ...serviceTripRows.map((row) => Number(row.transportation?.driverId)),
+    ].filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value > 0);
     const drivers = driverIds.length ? await db.query.staffTable.findMany({ where: inArray(staffTable.id, [...new Set(driverIds)]) }) : [];
     const driverById = new Map(drivers.map((row) => [row.id, row]));
     const expenseRows = await db.query.vehicleExpensesTable.findMany({
@@ -23296,6 +23322,7 @@ async function handleEnterpriseAdmin(
       }, 0);
       const driver = booking.transportationDriverId ? driverById.get(booking.transportationDriverId) : null;
       return {
+        source: "kosha" as const,
         bookingId: booking.id,
         bookingNo: booking.trackingCode ?? `KB-${booking.id}`,
         customerName: booking.customerName,
@@ -23309,6 +23336,29 @@ async function handleEnterpriseAdmin(
         tripProfit: money(executedTransportationRevenue - tripExpenses),
       };
     });
+    // Booking-centre transport on service orders; vehicle expenses link to kosha bookings only.
+    for (const order of serviceTripRows) {
+      const total = money(order.total_amount);
+      const paid = money(order.deposit_amount);
+      const fee = money(order.transportation?.fee);
+      const executedTransportationRevenue = executedTransportRevenue(fee, paid, total);
+      const driver = Number(order.transportation?.driverId) > 0 ? driverById.get(Number(order.transportation.driverId)) : null;
+      trips.push({
+        source: "service" as any,
+        bookingId: Number(order.id),
+        bookingNo: order.tracking_code ?? `S-${order.id}`,
+        customerName: order.customer_name,
+        eventDate: order.event_date,
+        transportationFee: fee,
+        executedTransportationRevenue,
+        paymentStatus: order.payment_status,
+        executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
+        driverName: driver?.fullName || driver?.username || null,
+        tripExpense: 0,
+        tripProfit: executedTransportationRevenue,
+      });
+    }
+    trips.sort((a, b) => String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? "")) || b.bookingId - a.bookingId);
     const expenses = expenseRows.map((expense) => {
       const reversed = expense.financialTransactionId ? money(reversedByTransaction.get(expense.financialTransactionId) ?? 0) : 0;
       const effectiveAmount = ["executed", "partially_reversed", "reversed"].includes(expense.status)
@@ -23614,10 +23664,13 @@ async function handleEnterpriseAdmin(
         select v.id,
           (select count(*)::int from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled') as trip_count,
           (select coalesce(sum(case when k.total_amount::numeric > 0 then k.transportation_fee::numeric * least(1, greatest(0, k.paid_amount::numeric / k.total_amount::numeric)) else 0 end),0)::float from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled') as transportation_revenue,
-          (select coalesce(sum(e.amount::numeric),0)::float from vehicle_expenses e where e.vehicle_id=v.id and e.status='executed') as vehicle_expenses
+          (select coalesce(sum(e.amount::numeric),0)::float from vehicle_expenses e where e.vehicle_id=v.id and e.status='executed') as vehicle_expenses,
+          (select count(*)::int from service_orders s where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId'=v.id::text and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode'='ajn' and s.archived_at is null and s.status not in ('cancelled','canceled')) as service_trip_count,
+          (select coalesce(sum(case when s.total_amount::numeric > 0 then coalesce(nullif(${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'fee','')::numeric,0) * least(1, greatest(0, s.deposit_amount::numeric / s.total_amount::numeric)) else 0 end),0)::float from service_orders s where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId'=v.id::text and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode'='ajn' and s.archived_at is null and s.status not in ('cancelled','canceled')) as service_transportation_revenue
         from fleet_vehicles v
       `);
-      const statsById = new Map<number, { tripCount: number; transportationRevenue: number; vehicleExpenses: number }>((statsResult?.rows ?? []).map((row: any) => [Number(row.id), { tripCount: Number(row.trip_count ?? 0), transportationRevenue: money(row.transportation_revenue), vehicleExpenses: money(row.vehicle_expenses) }]));
+      // Kosha bookings (own columns) and service orders (booking-centre transport) both count.
+      const statsById = new Map<number, { tripCount: number; transportationRevenue: number; vehicleExpenses: number }>((statsResult?.rows ?? []).map((row: any) => [Number(row.id), { tripCount: Number(row.trip_count ?? 0) + Number(row.service_trip_count ?? 0), transportationRevenue: money(money(row.transportation_revenue) + money(row.service_transportation_revenue)), vehicleExpenses: money(row.vehicle_expenses) }]));
       return json({
         data: rows.map((row) => ({
           ...row,
@@ -31162,8 +31215,37 @@ const PreparationManualRemoveSchema = z.object({ key: z.string().trim().min(1).m
 const BookingTransportationSchema = z.object({
   mode: z.enum(["ajn", "customer"]).nullable().optional(),
   fee: z.coerce.number().min(0).max(1_000_000_000).optional().default(0),
+  vehicleId: z.coerce.number().int().positive().nullable().optional(),
+  driverId: z.coerce.number().int().positive().nullable().optional(),
   note: z.string().trim().max(1000).nullable().optional(),
 });
+
+/** Service-order transport lives in custom_fields.bookingOperations.transportation. */
+const SERVICE_TRANSPORT = sql.raw("custom_fields->'bookingOperations'->'transportation'");
+
+/**
+ * Another active booking (kosha columns or service-order transport) that uses the
+ * vehicle on the same event day, as "K-12" / "S-34"; null when the vehicle is free.
+ */
+async function transportVehicleBookedElsewhere(
+  executor: { execute: (query: any) => Promise<any> },
+  input: { vehicleId: number; eventDate: string; exclude: { source: "kosha" | "service"; id: number } },
+): Promise<string | null> {
+  const result: any = await executor.execute(sql`
+    select 'K-' || id as ref from kosha_bookings
+    where transportation_vehicle_id = ${input.vehicleId} and transportation_mode = 'ajn'
+      and event_date::text = ${input.eventDate} and archived_at is null and status <> 'cancelled'
+      ${input.exclude.source === "kosha" ? sql`and id <> ${input.exclude.id}` : sql``}
+    union all
+    select 'S-' || id from service_orders
+    where ${SERVICE_TRANSPORT}->>'mode' = 'ajn' and ${SERVICE_TRANSPORT}->>'vehicleId' = ${String(input.vehicleId)}
+      and event_date::text = ${input.eventDate} and archived_at is null and status not in ('cancelled', 'canceled')
+      ${input.exclude.source === "service" ? sql`and id <> ${input.exclude.id}` : sql``}
+    limit 1
+  `);
+  const row = (result?.rows ?? [])[0];
+  return row ? String(row.ref) : null;
+}
 // Group photography: many individuals under ONE event booking, each a participant
 // with their own receipt. Stored additively in bookingOperations.groupAttendees;
 // it is operational and does not post cash on its own.
@@ -33550,12 +33632,22 @@ async function handleBookingOperations(
   }
 
   if (resource === "transportation") {
-    // Read the booking's transport service. Prefer the workspace-managed value;
-    // fall back to a kosha booking's own transport columns for legacy records.
+    // Kosha bookings keep transport on their own columns (the vehicle accounts read
+    // them); service orders keep it in bookingOperations. A value saved by the older
+    // booking-centre card stays readable until it is saved again.
     const opsTransport = (reference.operations as any).transportation ?? null;
-    const legacyMode = reference.source === "kosha" ? ((reference.row as any)?.transportationMode ?? (reference.row as any)?.transportation_mode ?? null) : null;
-    const legacyFee = reference.source === "kosha" ? Number((reference.row as any)?.transportationFee ?? (reference.row as any)?.transportation_fee ?? 0) : 0;
-    const current = opsTransport ?? (legacyMode ? { mode: legacyMode, fee: legacyFee } : null);
+    const row = reference.row as any;
+    const columnMode = reference.source === "kosha" ? (row?.transportationMode ?? row?.transportation_mode ?? null) : null;
+    const current = columnMode
+      ? {
+          mode: columnMode,
+          fee: columnMode === "ajn" ? Number(row?.transportationFee ?? row?.transportation_fee ?? 0) : 0,
+          vehicleId: columnMode === "ajn" ? (row?.transportationVehicleId ?? row?.transportation_vehicle_id ?? null) : null,
+          driverId: columnMode === "ajn" ? (row?.transportationDriverId ?? row?.transportation_driver_id ?? null) : null,
+          note: row?.transportationNotes ?? row?.transportation_notes ?? null,
+          inTotal: columnMode === "ajn",
+        }
+      : opsTransport;
     if (method === "GET") {
       if (!can("booking_operations_view", "orders", "preparation_view", "booking_finance_view"))
         return error("ليس لديك صلاحية العرض", 403);
@@ -33567,24 +33659,92 @@ async function handleBookingOperations(
       const parsed = BookingTransportationSchema.safeParse(await body(req));
       if (!parsed.success) return validationError("transportation", parsed);
       const d = parsed.data;
-      const transportation = d.mode
-        ? { mode: d.mode, fee: d.mode === "ajn" ? d.fee : 0, note: d.note ?? null, updatedBy: auth.id, updatedByName: (auth as any).fullName || auth.username, updatedAt: new Date().toISOString() }
-        : null;
-      await db.transaction(async tx=>guardBookingResourceWrite(tx,{source:reference.source,id:reference.id},async live=>{
-        const fresh={...reference,details:live.details,operations:live.operations};
-        await saveBookingOperations(fresh, { ...live.operations, transportation },tx);
-      }));
+      // A kosha booking's transport is saved through the kosha booking itself, which
+      // owns its total and the vehicle accounts; a second copy here would diverge.
+      if (reference.source === "kosha")
+        return error("نقل حجز الكوشة يُحفظ في حجز الكوشة نفسه. حدّث الصفحة ثم احفظ من بطاقة خدمة النقل.", 409);
+      const fee = d.mode === "ajn" ? money(d.fee) : 0;
+      let vehicleLabel: string | null = null;
+      if (d.mode === "ajn") {
+        if (fee <= 0) return error("أجرة النقل مطلوبة عندما يكون النقل بواسطة AJN", 400);
+        if (!d.vehicleId) return error("اختر سيارة للنقل بواسطة AJN", 400);
+        const vehicle = await db.query.fleetVehiclesTable.findFirst({
+          where: and(eq(fleetVehiclesTable.id, d.vehicleId), eq(fleetVehiclesTable.isActive, true)),
+        });
+        if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
+        vehicleLabel = `${vehicle.name}${vehicle.plateNumber ? ` · ${vehicle.plateNumber}` : ""}`;
+        if (d.driverId) {
+          const driver = await db.query.staffTable.findFirst({ where: eq(staffTable.id, d.driverId) });
+          if (!driver) return error("السائق المختار غير موجود", 404);
+        }
+      }
+      let saved: { transportation: Record<string, unknown> | null; totals: { before: number; after: number; delta: number } | null };
+      try {
+        saved = await db.transaction(async (tx) => guardBookingResourceWrite(tx, { source: reference.source, id: reference.id }, async (live) => {
+          const [order] = ((await tx.execute(sql`
+            select total_amount, deposit_amount, event_date::text as event_date from service_orders where id = ${reference.id} for update
+          `)) as any)?.rows ?? [];
+          if (!order) throw new CheckoutError("الحجز غير موجود", 404);
+          if (d.mode === "ajn" && d.vehicleId && order.event_date) {
+            const clash = await transportVehicleBookedElsewhere(tx, { vehicleId: d.vehicleId, eventDate: String(order.event_date), exclude: { source: "service", id: reference.id } });
+            if (clash) throw new CheckoutError(`هذه السيارة مرتبطة بحجز آخر (${clash}) في نفس اليوم.`, 409);
+          }
+          // The AJN fee is part of the booking total, added exactly once: a fee saved
+          // before this rule («للعلم») was never in the total, so it counts as zero.
+          const delta = transportTotalDelta((live.operations as any).transportation ?? null, fee);
+          let totals: { before: number; after: number; delta: number } | null = null;
+          if (delta !== 0) {
+            if (!canEditOrderFinancials(auth))
+              throw new CheckoutError("لا تملك صلاحية تعديل المبالغ المالية للحجز", 403, { code: "PERMISSION_DENIED" });
+            const before = money(order.total_amount);
+            const after = money(before + delta);
+            const deposit = money(order.deposit_amount);
+            if (after < 0 || deposit > after)
+              throw new CheckoutError("المدفوع أكبر من مبلغ الحجز بعد تغيير أجرة النقل؛ صحّح الدفعات أولاً.", 409);
+            // Same rule as editing the booking total: paid stays, remaining follows.
+            const payment = paymentSummary(after, deposit);
+            await tx.update(serviceOrdersTable).set({
+              totalAmount: String(after),
+              depositAmount: String(payment.deposit),
+              remainingAmount: String(payment.remaining),
+              paymentStatus: payment.status,
+            }).where(eq(serviceOrdersTable.id, reference.id));
+            totals = { before, after, delta };
+          }
+          const transportation = d.mode
+            ? {
+                mode: d.mode,
+                fee,
+                vehicleId: d.mode === "ajn" ? d.vehicleId ?? null : null,
+                driverId: d.mode === "ajn" ? d.driverId ?? null : null,
+                note: d.note ?? null,
+                inTotal: d.mode === "ajn",
+                updatedBy: auth.id,
+                updatedByName: (auth as any).fullName || auth.username,
+                updatedAt: new Date().toISOString(),
+              }
+            : null;
+          const fresh = { ...reference, details: live.details, operations: live.operations };
+          await saveBookingOperations(fresh, { ...live.operations, transportation }, tx);
+          return { transportation, totals };
+        }));
+      } catch (cause) {
+        if (cause instanceof CheckoutError) return error(cause.message, cause.status, cause.options);
+        throw cause;
+      }
       await addEntityTimeline({
         entityType: reference.entityType,
         entityId: reference.id,
         type: "transportation_set",
         title: "تحديث خدمة النقل",
-        body: d.mode === "ajn" ? `النقل بواسطة AJN${d.fee ? ` — ${d.fee}` : ""}` : d.mode === "customer" ? "النقل من مسؤولية الزبون" : "إزالة خدمة النقل",
+        body: d.mode === "ajn"
+          ? `النقل بواسطة AJN — ${formatCurrency(fee)} · ${vehicleLabel}${saved.totals ? ` · مبلغ الحجز ${formatCurrency(saved.totals.before)} ← ${formatCurrency(saved.totals.after)}` : ""}`
+          : d.mode === "customer" ? "النقل من مسؤولية الزبون" : "إزالة خدمة النقل",
         actor: erpActorFromAdmin(auth),
-        metadata: { mode: d.mode ?? null, fee: d.fee ?? 0 },
+        metadata: { mode: d.mode ?? null, fee, vehicleId: d.vehicleId ?? null, driverId: d.driverId ?? null, totals: saved.totals },
       });
-      void logAdminActivity(req, "transportation_set", reference.entityType, reference.id, { mode: d.mode ?? null });
-      return json({ ok: true, transportation });
+      void logAdminActivity(req, "transportation_set", reference.entityType, reference.id, { mode: d.mode ?? null, fee, vehicleId: d.vehicleId ?? null, totals: saved.totals });
+      return json({ ok: true, ...saved });
     }
   }
 
