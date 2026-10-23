@@ -22806,6 +22806,23 @@ const VehicleExpenseSchema = z.object({
   idempotencyKey: z.string().trim().min(12).max(180),
 });
 
+/**
+ * Migration 0128 adds vehicle_expenses.service_order_id. Until it is applied an
+ * expense links to kosha bookings only; the column is read and written with raw
+ * SQL so nothing else depends on it.
+ */
+let vehicleExpenseServiceLinkKnown = false;
+async function vehicleExpenseServiceLinkReady() {
+  if (vehicleExpenseServiceLinkKnown) return true;
+  const result: any = await db.execute(sql`
+    select 1 from information_schema.columns
+    where table_schema = current_schema() and table_name = 'vehicle_expenses' and column_name = 'service_order_id'
+    limit 1
+  `);
+  vehicleExpenseServiceLinkKnown = (result?.rows ?? []).length > 0;
+  return vehicleExpenseServiceLinkKnown;
+}
+
 const VehicleMaintenanceSchema = z.object({
   maintenanceType: z.enum(["oil_change", "filters", "tires", "brakes", "battery", "general", "other"]),
   maintenanceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -23308,6 +23325,29 @@ async function handleEnterpriseAdmin(
       reversedByTransaction.set(originalId, money(reversedByTransaction.get(originalId) ?? 0) + money(reversal.amount));
     }
     const bookingById = new Map(bookingRows.map((row) => [row.id, row]));
+    const serviceExpenseLink = await vehicleExpenseServiceLinkReady();
+    const serviceOrderByExpense = new Map<number, number>();
+    if (serviceExpenseLink && expenseRows.length) {
+      const linked: any[] = ((await db.execute(sql`
+        select id, service_order_id from vehicle_expenses
+        where id in (${sql.join(expenseRows.map((row) => sql`${row.id}`), sql`, `)}) and service_order_id is not null
+      `)) as any)?.rows ?? [];
+      for (const row of linked) serviceOrderByExpense.set(Number(row.id), Number(row.service_order_id));
+    }
+    const linkedServiceIds = [...new Set(serviceOrderByExpense.values())];
+    const serviceCodes = new Map<number, string>();
+    if (linkedServiceIds.length) {
+      const codes: any[] = ((await db.execute(sql`
+        select id, tracking_code from service_orders where id in (${sql.join(linkedServiceIds.map((value) => sql`${value}`), sql`, `)})
+      `)) as any)?.rows ?? [];
+      for (const row of codes) serviceCodes.set(Number(row.id), row.tracking_code ?? `S-${row.id}`);
+    }
+    // Same rule for both trip kinds: posted expense amount net of executed reversals.
+    const tripExpenseOf = (matches: (expense: (typeof expenseRows)[number]) => boolean) => expenseRows.reduce((sum, expense) => {
+      if (!matches(expense) || !expense.financialTransactionId) return sum;
+      const reversed = money(reversedByTransaction.get(expense.financialTransactionId) ?? 0);
+      return sum + Math.max(0, money(expense.amount) - reversed);
+    }, 0);
     const trips = bookingRows.map((booking) => {
       const total = money(booking.totalAmount);
       const paid = money(booking.paidAmount);
@@ -23315,11 +23355,7 @@ async function handleEnterpriseAdmin(
       // Partial booking payments are attributed pro-rata. This is deterministic,
       // reversals-safe, and never creates a second cash or revenue movement.
       const executedTransportationRevenue = total > 0 ? money(fee * Math.min(1, Math.max(0, paid / total))) : 0;
-      const tripExpenses = expenseRows.reduce((sum, expense) => {
-        if (expense.bookingId !== booking.id || !expense.financialTransactionId) return sum;
-        const reversed = money(reversedByTransaction.get(expense.financialTransactionId) ?? 0);
-        return sum + Math.max(0, money(expense.amount) - reversed);
-      }, 0);
+      const tripExpenses = tripExpenseOf((expense) => expense.bookingId === booking.id);
       const driver = booking.transportationDriverId ? driverById.get(booking.transportationDriverId) : null;
       return {
         source: "kosha" as const,
@@ -23336,7 +23372,7 @@ async function handleEnterpriseAdmin(
         tripProfit: money(executedTransportationRevenue - tripExpenses),
       };
     });
-    // Booking-centre transport on service orders; vehicle expenses link to kosha bookings only.
+    // Booking-centre transport on service orders, with expenses linked to them (0128).
     for (const order of serviceTripRows) {
       const total = money(order.total_amount);
       const paid = money(order.deposit_amount);
@@ -23354,8 +23390,8 @@ async function handleEnterpriseAdmin(
         paymentStatus: order.payment_status,
         executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
         driverName: driver?.fullName || driver?.username || null,
-        tripExpense: 0,
-        tripProfit: executedTransportationRevenue,
+        tripExpense: money(tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id))),
+        tripProfit: money(executedTransportationRevenue - tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id))),
       });
     }
     trips.sort((a, b) => String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? "")) || b.bookingId - a.bookingId);
@@ -23365,6 +23401,7 @@ async function handleEnterpriseAdmin(
         ? money(Math.max(0, money(expense.amount) - reversed))
         : 0;
       const booking = expense.bookingId ? bookingById.get(expense.bookingId) : null;
+      const serviceOrderId = serviceOrderByExpense.get(expense.id) ?? null;
       return {
         id: expense.id,
         date: expense.expenseDate.toISOString(),
@@ -23372,8 +23409,11 @@ async function handleEnterpriseAdmin(
         expenseTypeLabel: VEHICLE_EXPENSE_LABELS[expense.expenseType as keyof typeof VEHICLE_EXPENSE_LABELS] ?? expense.expenseType,
         amount: money(expense.amount),
         effectiveAmount,
-        bookingId: expense.bookingId,
-        bookingNo: booking?.trackingCode ?? (expense.bookingId ? `KB-${expense.bookingId}` : null),
+        source: serviceOrderId ? "service" : "kosha",
+        bookingId: serviceOrderId ?? expense.bookingId,
+        bookingNo: serviceOrderId
+          ? serviceCodes.get(serviceOrderId) ?? `S-${serviceOrderId}`
+          : booking?.trackingCode ?? (expense.bookingId ? `KB-${expense.bookingId}` : null),
         cashbox: expense.cashAccountCode === "MASTER" ? "الصندوق الرئيسي" : expense.cashAccountCode,
         description: expense.description,
         status: expense.status,
@@ -23389,6 +23429,7 @@ async function handleEnterpriseAdmin(
       summary: { transportationRevenue, vehicleExpenses, netProfit: money(transportationRevenue - vehicleExpenses), tripCount: trips.filter((row) => row.executedTransportationRevenue > 0).length, categories },
       trips,
       expenses,
+      capabilities: { serviceExpenseLink },
     });
   }
 
@@ -23397,11 +23438,24 @@ async function handleEnterpriseAdmin(
     if (isResponse(financeAuth)) return financeAuth;
     const vehicleId = int(parts[1]);
     if (!vehicleId) return error("معرف السيارة غير صحيح", 400);
-    const parsed = VehicleExpenseSchema.safeParse(await body(req));
+    const parsed = VehicleExpenseSchema.extend({
+      serviceOrderId: z.coerce.number().int().positive().optional().nullable(),
+    }).safeParse(await body(req));
     if (!parsed.success) return validationError("enterprise.vehicle-expense.create", parsed);
     const data = parsed.data;
     const vehicle = await db.query.fleetVehiclesTable.findFirst({ where: and(eq(fleetVehiclesTable.id, vehicleId), eq(fleetVehiclesTable.isActive, true)) });
     if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
+    if (data.bookingId && data.serviceOrderId) return error("اربط المصروف بحجز واحد فقط", 400);
+    if (data.serviceOrderId) {
+      if (!(await vehicleExpenseServiceLinkReady()))
+        return error("ربط مصروف السيارة بحجز خدمة يحتاج تطبيق ترقية قاعدة البيانات 0128 أولاً", 409);
+      const [order] = ((await db.execute(sql`
+        select id, ${SERVICE_TRANSPORT} as transportation from service_orders where id = ${data.serviceOrderId}
+      `)) as any)?.rows ?? [];
+      if (!order) return error("الحجز المرتبط غير موجود", 404);
+      if (order.transportation?.mode !== "ajn" || Number(order.transportation?.vehicleId) !== vehicleId)
+        return error("الحجز المرتبط لا يستخدم هذه السيارة للنقل", 400);
+    }
     if (data.bookingId) {
       const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, data.bookingId) });
       if (!booking) return error("الحجز المرتبط غير موجود", 404);
@@ -23428,6 +23482,8 @@ async function handleEnterpriseAdmin(
         createdBy: financeAuth.id,
         createdByName: financeAuth.fullName || financeAuth.username,
       }).returning();
+      if (data.serviceOrderId)
+        await tx.execute(sql`update vehicle_expenses set service_order_id = ${data.serviceOrderId} where id = ${expense.id}`);
       const financial = await createAndExecuteSourceFinancialTransaction(tx, {
         transactionDate: data.expenseDate,
         direction: "expense",
@@ -33651,7 +33707,18 @@ async function handleBookingOperations(
     if (method === "GET") {
       if (!can("booking_operations_view", "orders", "preparation_view", "booking_finance_view"))
         return error("ليس لديك صلاحية العرض", 403);
-      return json({ transportation: current });
+      // «إسناد موارد النقل» may already have sent a vehicle; the card offers it.
+      const [dispatched] = ((await db.execute(sql`
+        select d.vehicle_id, v.name, v.plate_number from dispatch_assignments d
+        join fleet_vehicles v on v.id = d.vehicle_id
+        where d.entity_type = ${reference.entityType} and d.entity_id = ${reference.id}
+          and d.status in ('assigned', 'en_route', 'active')
+        order by d.id desc limit 1
+      `)) as any)?.rows ?? [];
+      return json({
+        transportation: current,
+        dispatchVehicle: dispatched ? { id: Number(dispatched.vehicle_id), name: String(dispatched.name), plateNumber: dispatched.plate_number ?? null } : null,
+      });
     }
     if (method === "POST" || method === "PATCH") {
       if (!can("booking_edit", "orders", "bookings"))

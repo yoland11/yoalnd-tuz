@@ -70,4 +70,31 @@ assert.match(ui, /booking\.source === "kosha"\s*\? adminFetch\(`\/admin\/kosha-b
 for (const page of ["src/views/admin/enterprise.tsx", "src/views/admin/vehicles.tsx"])
   assert.match(readFileSync(page, "utf8"), /\/admin\/bookings\/\$\{(trip|row)\.source \?\? "kosha"\}\//, `${page} opens the trip's own booking`);
 
+// 7. Vehicle expenses may link a service-order trip once migration 0128 is applied.
+const migration = readFileSync("lib/db/migrations/0128_vehicle_expense_service_orders.sql", "utf8");
+assert.match(migration, /ADD COLUMN IF NOT EXISTS "service_order_id" integer;/);
+assert.match(migration, /FOREIGN KEY \("service_order_id"\) REFERENCES "service_orders" \("id"\) ON DELETE RESTRICT/);
+assert.match(migration, /CHECK \("booking_id" IS NULL OR "service_order_id" IS NULL\)/);
+assert.match(migration, /CREATE INDEX IF NOT EXISTS "vehicle_expenses_service_order_idx"/);
+assert.doesNotMatch(migration, /(?:DROP|TRUNCATE|DELETE\s+FROM|UPDATE|RENAME|ALTER\s+COLUMN)/i, "additive only");
+assert.doesNotMatch(readFileSync("lib/db/src/schema/vehicle-finance.ts", "utf8"), /service_order_id/, "the ORM never selects the column before the migration exists");
+const expensePost = between(api, 'parts[2] === "expenses" && method === "POST" && !parts[3]', 'parts[2] === "details" && method === "GET"');
+assert.match(expensePost, /if \(!\(await vehicleExpenseServiceLinkReady\(\)\)\)\s*return error\("ربط مصروف السيارة بحجز خدمة يحتاج تطبيق ترقية قاعدة البيانات 0128 أولاً", 409\)/);
+assert.match(expensePost, /Number\(order\.transportation\?\.vehicleId\) !== vehicleId/);
+assert.match(expensePost, /update vehicle_expenses set service_order_id = \$\{data\.serviceOrderId\} where id = \$\{expense\.id\}/);
+assert.match(expensePost, /if \(data\.bookingId && data\.serviceOrderId\) return error/);
+assert.match(api, /const parsed = VehicleExpenseSchema\.extend\(\{\s*vehicleId:/, "the staff request keeps its own schema");
+assert.match(vehicleDetail, /tripExpense: money\(tripExpenseOf\(\(expense\) => serviceOrderByExpense\.get\(expense\.id\) === Number\(order\.id\)\)\)/);
+assert.match(vehicleDetail, /capabilities: \{ serviceExpenseLink \}/);
+const enterprise = readFileSync("src/views/admin/enterprise.tsx", "utf8");
+assert.match(enterprise, /value=\{`\$\{trip\.source \?\? "kosha"\}:\$\{trip\.bookingId\}`\}/, "the picker names the booking kind");
+assert.match(enterprise, /serviceOrderId: expense\.bookingId\.startsWith\("service:"\)/);
+assert.match(enterprise, /\(trip\.source \?\? "kosha"\) === "kosha" \|\| data\.capabilities\?\.serviceExpenseLink/, "service trips are offered only once linking works");
+
+// 8. The card offers the vehicle «إسناد موارد النقل» already sent.
+assert.match(endpoint, /dispatchVehicle: dispatched \?/);
+assert.match(card, /السيارة المسندة لهذا الحجز من «إسناد موارد النقل»/);
+assert.match(card, /value\.mode === "ajn" && dispatchVehicle \? String\(dispatchVehicle\.id\)/);
+
 console.log("PASS  booking transport: fee in total once, vehicle required, kosha via its booking, vehicle accounts include service orders");
+console.log("PASS  vehicle expenses link service-order trips after migration 0128; the card offers the dispatched vehicle");
