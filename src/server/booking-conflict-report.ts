@@ -7,6 +7,7 @@ import {lineOutstanding,lineReservedNotOut,normalizeQuantityLine} from "@/lib/qu
 import {resourceOccupancyTimestamps} from "@/lib/booking-resource-conflicts";
 import {baghdadDay} from "@/lib/kosha-manager";
 import {readResourceBooking} from "./booking-resource-period";
+import {hasSafeConflictQuantityCounters,readConflictQuantityHistory} from "./booking-conflict-history";
 import {BookingResourceConflictError, resourceRows, findBookingPhysicalConflict, findBookingStaffConflict, findBookingVehicleConflict, findBookingCrewConflict, findBookingKoshaConflict, type ResourceExecutor} from "./booking-resource-availability";
 
 const terminal=new Set(["released","returned","inspection","completed"]);
@@ -65,17 +66,18 @@ export async function loadBookingConflictReport(tx:ResourceExecutor,ref:BookingO
   const commitments=new Map<number,PeriodCommitment[]>(),holds=new Map<number,number>();
   if(quantityIds.length){
     // Same original commitment sources and evaluator as quantityAvailability;
-    // bounded here because a display must not scan an unbounded history.
+    // One bounded history read; settled rows do not consume the separate
+    // original 500-row live/uncertain evidence allowance.
     const [commitmentResult,holdResult]=await Promise.all([
       tx.execute(sql`SELECT 'kosha_booking' AS source,b.id AS booking_id,b.event_date::text AS day,b.status,a.value AS line,b.booking_details->'bookingOperations'->'resourceWindow' AS resource_window
         FROM kosha_bookings b CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(b.booking_details->'bookingOperations'->'assets')='array' THEN b.booking_details->'bookingOperations'->'assets' ELSE '[]'::jsonb END) a(value)
         WHERE b.archived_at IS NULL AND a.value->>'productId' IN (${sql.join(quantityIds.map(id=>sql`${String(id)}`),sql`, `)})
         UNION ALL SELECT 'service_order',b.id,b.event_date::text,b.status,a.value,b.custom_fields->'bookingOperations'->'resourceWindow'
         FROM service_orders b CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(b.custom_fields->'bookingOperations'->'assets')='array' THEN b.custom_fields->'bookingOperations'->'assets' ELSE '[]'::jsonb END) a(value)
-        WHERE b.archived_at IS NULL AND a.value->>'productId' IN (${sql.join(quantityIds.map(id=>sql`${String(id)}`),sql`, `)}) LIMIT 501`),
+        WHERE b.archived_at IS NULL AND a.value->>'productId' IN (${sql.join(quantityIds.map(id=>sql`${String(id)}`),sql`, `)}) LIMIT 5001`),
       tx.execute(sql`SELECT product_id,sum(quantity) AS quantity FROM stock_reservations WHERE ${idsWhere(sql`product_id`,quantityIds)} AND status='reserved' AND NOT(source_type=${entity} AND source_id=${ref.id}) GROUP BY product_id LIMIT 101`),
     ]);
-    for(const row of resourceRows(commitmentResult)){
+    for(const row of readConflictQuantityHistory(commitmentResult,quantityIds)){
       const productId=Number(row.line?.productId);
       if(!quantityIds.includes(productId)||!positive(row.booking_id)||!["kosha_booking","service_order"].includes(row.source))throw Error("Invalid quantity commitment database response");
       const period=readBookingResourceWindow({resourceWindow:row.resource_window},row.day);
@@ -107,7 +109,7 @@ export async function loadBookingConflictReport(tx:ResourceExecutor,ref:BookingO
       // The existing quantity-asset engine is integer-based. Never silently
       // floor fractional historical inputs; normal decimal stock is untouched.
       const numeric=[required,...Object.values(buckets),holds.get(productId)??0,...rows.flatMap(row=>["quantity","requiredQty","reservedQty","checkedOutQty","returnedGoodQty","returnedDamagedQty","missingQty"].filter(key=>row.line[key]!=null).map(key=>Number(row.line[key])))];
-      if(!numeric.every(n=>Number.isSafeInteger(n)&&n>=0)||required<=0)return {...base,state:"incomplete",reason:"راجع وحدة المعدة والكميات المسجلة؛ لا تُقرّب الكسور تلقائياً",quantities};
+      if(!numeric.every(n=>Number.isSafeInteger(n)&&n>=0)||!rows.every(row=>hasSafeConflictQuantityCounters(row.line))||required<=0)return {...base,state:"incomplete",reason:"راجع وحدة المعدة والكميات المسجلة؛ لا تُقرّب الكسور تلقائياً",quantities};
       const target=resourceOccupancyTimestamps(interval);
       const related=rows.find(row=>{
         const source=row.source==="kosha_booking"?"kosha":"service";
