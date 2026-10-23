@@ -134,7 +134,8 @@ function pendingMeasurementsCondition() {
 }
 
 function visibleCondition(user: TailorUser) {
-  return or(assignedCondition(user.id), pendingMeasurementsCondition());
+  return and(isNull(graduationOrdersTable.archivedAt), sql`${graduationOrdersTable.status} <> 'cancelled'`,
+    canSeeAll(user) ? undefined : or(assignedCondition(user.id), pendingMeasurementsCondition()));
 }
 
 // ---------------------------------------------------------------------------
@@ -259,12 +260,12 @@ async function loadGroups(ids: number[]) {
 }
 
 /** Fetch one assigned order or one item in the shared missing-measurements queue. */
-async function fetchAssignedOrder(id: number, user: TailorUser) {
-  const order = await db.query.graduationOrdersTable.findFirst({
-    where: canSeeAll(user)
-      ? eq(graduationOrdersTable.id, id)
-      : and(eq(graduationOrdersTable.id, id), visibleCondition(user)),
-  });
+async function fetchAssignedOrder(id: number, user: TailorUser, executor?: Parameters<Parameters<typeof db.transaction>[0]>[0]) {
+  const where = and(eq(graduationOrdersTable.id, id), isNull(graduationOrdersTable.archivedAt),
+    sql`${graduationOrdersTable.status} <> 'cancelled'`, canSeeAll(user) ? undefined : visibleCondition(user));
+  const order = executor
+    ? (await executor.select().from(graduationOrdersTable).where(where).limit(1).for("update"))[0]
+    : await db.query.graduationOrdersTable.findFirst({ where });
   return order ?? null;
 }
 
@@ -334,9 +335,7 @@ async function canAccessGroup(groupId: number, user: TailorUser) {
  * the authorized tailor intake queue. Managers retain the complete view.
  */
 function groupOrdersCondition(groupId: number, user: TailorUser) {
-  return canSeeAll(user)
-    ? eq(graduationOrdersTable.groupId, groupId)
-    : and(eq(graduationOrdersTable.groupId, groupId), visibleCondition(user));
+  return and(eq(graduationOrdersTable.groupId, groupId), visibleCondition(user));
 }
 
 /** Flattened row for the group measurement table. */
@@ -413,7 +412,7 @@ export async function handleTailorPortal(
   // GET /admin/tailoring  — dashboard buckets + assigned orders.
   if (method === "GET" && (!parts[0] || parts[0] === "dashboard")) {
     const orders = await db.query.graduationOrdersTable.findMany({
-      where: canSeeAll(user) ? undefined : visibleCondition(user),
+      where: visibleCondition(user),
       orderBy: [desc(graduationOrdersTable.updatedAt)],
       limit: 1000,
     });
@@ -441,7 +440,7 @@ export async function handleTailorPortal(
     const search = (req.nextUrl.searchParams.get("search") ?? "").trim().toLowerCase();
     const bucket = req.nextUrl.searchParams.get("bucket") ?? "";
     const orders = await db.query.graduationOrdersTable.findMany({
-      where: canSeeAll(user) ? undefined : visibleCondition(user),
+      where: visibleCondition(user),
       orderBy: [desc(graduationOrdersTable.updatedAt)],
       limit: 1000,
     });
@@ -532,7 +531,7 @@ export async function handleTailorPortal(
   // GET /admin/tailoring/groups — accessible groups with progress counts.
   if (method === "GET" && parts[0] === "groups" && !parts[1]) {
     const orders = await db.query.graduationOrdersTable.findMany({
-      where: canSeeAll(user) ? undefined : visibleCondition(user),
+      where: visibleCondition(user),
       limit: 3000,
     });
     const byGroup = new Map<number, OrderRow[]>();
@@ -672,9 +671,11 @@ export async function handleTailorPortal(
   if (method === "POST" && parts[0] === "order" && parts[1] && parts[2] === "production") {
     const id = Number(parts[1]);
     if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
-    const order = await fetchAssignedOrder(id, user);
-    if (!order) return error("هذا الطلب غير مخصص لك", 403);
     const body = rec(await readRequestBody(req));
+    const alerts: Parameters<NonNullable<typeof notify>>[0][] = [];
+    const result = await db.transaction(async (tx) => {
+    const order = await fetchAssignedOrder(id, user, tx);
+    if (!order) return error("الطلب غير متاح أو غير مخصص لك", 403);
     const action = String(body.action ?? "");
     let nextStage = order.productionStage;
     if (action === "mark_ready") nextStage = "ready";
@@ -683,9 +684,10 @@ export async function handleTailorPortal(
     const measurementBlock = await getGraduationProductionMeasurementBlock(
       order,
       nextStage,
+      tx,
     );
     if (measurementBlock) {
-      await notify?.({
+      alerts.push({
         audienceType: "admin",
         type: "graduation_production_measurements_blocked",
         title: "تعذر بدء الإنتاج قبل استكمال القياسات",
@@ -702,12 +704,12 @@ export async function handleTailorPortal(
       return error("يجب إكمال القياسات قبل بدء مرحلة القص والخياطة.", 409);
     }
     if (nextStage !== previous) {
-      await db.update(graduationOrdersTable)
+      await tx.update(graduationOrdersTable)
         .set({ productionStage: nextStage, updatedAt: new Date() })
         .where(eq(graduationOrdersTable.id, id));
     }
     // Log every action (start / pause / issue / material / stage) on the timeline.
-    await db.execute(sql`
+    await tx.execute(sql`
       INSERT INTO graduation_production_events
         (graduation_order_id, stage, previous_stage, scan_type, notes, employee_id, employee_name)
       VALUES (${id}, ${nextStage}, ${previous}, ${"tailor_" + (action || "update")}, ${body.notes ? String(body.notes) : null},
@@ -718,7 +720,7 @@ export async function handleTailorPortal(
       const titles: Record<string, string> = {
         issue: "الخياط أبلغ عن مشكلة", material: "طلب مواد من الخياط", mark_ready: "قطعة جاهزة",
       };
-      await notify?.({
+      alerts.push({
         audienceType: "admin", type: "graduation_production",
         title: titles[action] ?? "تحديث إنتاج",
         body: `${order.customerName}${body.notes ? ` — ${body.notes}` : ""}`,
@@ -726,6 +728,9 @@ export async function handleTailorPortal(
       });
     }
     return json({ ok: true, productionStage: nextStage });
+    });
+    for (const alert of alerts) await notify?.(alert);
+    return result;
   }
 
   // POST /admin/tailoring/order/:id/notes  — tiered tailor notes (internal never

@@ -1,6 +1,7 @@
 /** Group sash names: the title never carries a person's name, never repeats, and duplicates are surfaced. */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import {
   cleanStudentSashName,
   combineGroupSashName,
@@ -99,7 +100,9 @@ assert.match(graduation, /isLikelySameStudent\(/, "the same student cannot regis
 assert.match(graduation, /sashPrefixLocked: registrationStarted/);
 const operations = readFileSync("src/server/graduation-operations.ts", "utf8");
 assert.match(operations, /action === "students" && parts\[3\] && method === "DELETE"[\s\S]{0,700}cancelAndArchiveGraduationOrder\(order, user/, "removing a group student cancels its invoice through the approved path");
-assert.match(graduation, /export async function cancelAndArchiveGraduationOrder[\s\S]*updateOrder\(order, \{ status: "cancelled" \}, user\)[\s\S]*archivedAt: now/, "cancel first (invoice, inventory, payment target), then archive");
+// Verify the original handler's cancellation/stock/audit rollback behavior,
+// rather than requiring the former non-atomic updateOrder-then-archive sequence.
+execFileSync(process.execPath, ["scripts/test-graduation-archive-atomic.mjs"], { stdio: "inherit" });
 assert.match(operations, /action === "sash-names" && method === "POST"[\s\S]{0,120}requireOperationPermission\(user, "graduation\.edit"\)/, "corrections require the graduation edit permission");
 assert.match(operations, /async function applySashNames[\s\S]*db\.transaction[\s\S]*\.for\("update"\)[\s\S]*sash_name_corrected/, "corrections are transactional and audited per order");
 assert.match(operations, /isSashTextEditable\(order\.productionStage\)/, "printed sashes are refused");

@@ -7,6 +7,7 @@ import { saveBookingDispatch } from "./booking-dispatch";
 import {readPhotographyResource,savePhotographyResourceWindow,guardPhotographyResourceWrite,assertPhotographyResourceAllocation} from "./photography-resource-period";
 import { normalizeRepeatedBookingDetails } from "@/lib/booking-repeat";
 import { loadBookingConflictReport } from "./booking-conflict-report";
+import { GraduationOrderWriteConflict, lockGraduationPaymentSource } from "./graduation-write-guard";
 import { readBookingResourceWindow,bookingResourceOccupancy,BookingResourceWindowError,parseBookingResourceWindow,resourceWindowCalendar } from "@/lib/booking-resource-window";
 import { getLoadingView, runLoadingRequest } from "./booking-loading";
 import { BookingProfitabilityError, getBookingProfitability } from "./booking-profitability";
@@ -55524,6 +55525,15 @@ async function handleSalesInvoices(
     let cancellation: any;
     try {
       cancellation = await db.transaction(async (tx) => {
+        // Reversal below may touch a shared receipt. Lock its full original
+        // graduation source set before invoice/stock/financial locks, matching
+        // direct approval and archival; never lock an extra order afterwards.
+        const receiptSources = await tx.execute(sql`SELECT DISTINCT receipt_voucher_id FROM receipt_voucher_allocations
+          WHERE source_type = 'sales_invoice' AND source_id = ${id}`);
+        await lockGraduationPaymentSource(tx, [
+          {sourceType:"sales_invoice", sourceId:id},
+          ...(receiptSources.rows as Array<{receipt_voucher_id:number}>).map(row => ({sourceType:"receipt_voucher",sourceId:row.receipt_voucher_id})),
+        ], {requireActive:false});
         const locked: any = await tx.execute(
           sql`SELECT id FROM sales_invoices WHERE id = ${id} FOR UPDATE`,
         );
@@ -71384,6 +71394,7 @@ async function handleAccounting(
       try {
         await ensureMasterCashBoxTables();
         const updated = await db.transaction(async (tx) => {
+          await lockGraduationPaymentSource(tx, allocations);
           // Legacy Kosha records can legitimately lack customer_id. Link them
           // only inside the voucher transaction, after ownership has been
           // validated, so a failed receipt never changes customer history.
@@ -71495,6 +71506,7 @@ async function handleAccounting(
         });
         return json(savedVoucher, 201);
       } catch (err: any) {
+        if (err instanceof GraduationOrderWriteConflict) throw err;
         console.error("receipt voucher save failed", {
           message: err?.message,
           code: err?.code,
@@ -75303,6 +75315,11 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
+    if (err instanceof GraduationOrderWriteConflict) {
+      const requestId = makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN graduation operation rejected", {requestId, path:req.nextUrl.pathname, status:err.status});
+      return error(err.message, err.status, {code:"CONFLICT", requestId, retryable:false});
+    }
     if(err instanceof BookingResourceWindowError){
       const requestId=makeRequestId(req.headers.get("x-request-id"));
       console.warn("AJN resource window rejected",{requestId,path:req.nextUrl.pathname});

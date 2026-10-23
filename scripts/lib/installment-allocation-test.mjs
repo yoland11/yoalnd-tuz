@@ -48,6 +48,7 @@ export async function testInstallmentAllocation(text = readFileSync("src/server/
       sql: (strings, ...values) => ({ text: strings.join("?"), values }),
       db: { transaction: callback => callback(tx) },
       ensureMasterCashBoxTables: async () => {},
+      lockGraduationPaymentSource: async (connection, source) => {assert.equal(connection,tx);assert.equal(source.sourceType,'installment_contract');assert.equal(source.sourceId,5);},
       fail: (error, status) => ({ error, status }),
       createPaymentFinancialMovement: async (_tx, payment) => ({ ...payment, financial_transaction_id: 9 }),
       addHistory: async () => {}, entityTimelineTable: {},

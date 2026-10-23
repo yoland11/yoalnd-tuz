@@ -67,8 +67,10 @@ import {
 } from "@/server/graduation";
 import {
   syncSourcePaymentTarget,
+  ensureMasterCashBoxTables,
   type FinancialActor,
 } from "@/server/master-cash-box";
+import { reconcilePaymentState } from "@/server/payment-state";
 
 type JsonMap = Record<string, any>;
 type GraduationWriteExecutor = Pick<typeof db, "query" | "insert" | "update" | "select">;
@@ -243,8 +245,9 @@ async function audit(
   entityType: string,
   entityId: number,
   metadata: JsonMap,
+  executor: Pick<typeof db, "insert"> = db,
 ) {
-  await db.insert(adminActivityLogsTable).values({
+  await executor.insert(adminActivityLogsTable).values({
     staffId: user.id,
     userName: user.fullName || user.username,
     action,
@@ -261,8 +264,9 @@ async function timeline(
   type: string,
   title: string,
   metadata: JsonMap = {},
+  executor: Pick<typeof db, "insert"> = db,
 ) {
-  await db.insert(entityTimelineTable).values({
+  await executor.insert(entityTimelineTable).values({
     entityType,
     entityId,
     type,
@@ -1435,6 +1439,10 @@ function distributePayment(
  * produces the same allocation, receipt, cash-box and accounting records as
  * the Graduation Operations screen.
  */
+class GraduationPaymentRejected extends Error {
+  constructor(readonly response: NextResponse) { super("Graduation payment rejected before commit"); }
+}
+
 export async function receivePayment(
   raw: unknown,
   user: GraduationAdminUser,
@@ -1445,11 +1453,15 @@ export async function receivePayment(
   if (!parsed.success) return { response: fail("تحقق من بيانات الدفعة", 400, parsed.error.issues) };
   const data = parsed.data;
   const idempotencyKey = (data.idempotencyKey || randomUUID()).slice(0, 96);
-  const duplicate = await db.query.graduationStudentPaymentsTable.findFirst({
+  await ensureMasterCashBoxTables();
+  return db.transaction(async (tx) => {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(71972, hashtext(${idempotencyKey}))`);
+  if (groupId) await tx.select().from(graduationGroupsTable).where(eq(graduationGroupsTable.id, groupId)).limit(1).for("update");
+  const duplicate = await tx.query.graduationStudentPaymentsTable.findFirst({
     where: eq(graduationStudentPaymentsTable.paymentBatchId, idempotencyKey),
   });
   if (duplicate) return { response: fail("تم تسجيل هذه الدفعة مسبقاً", 409) };
-  const orders = await db
+  const orders = await tx
     .select()
     .from(graduationOrdersTable)
     .where(
@@ -1459,13 +1471,13 @@ export async function receivePayment(
         sql`${graduationOrdersTable.status} <> 'cancelled'`,
       ),
     )
-    .orderBy(asc(graduationOrdersTable.createdAt));
+    .orderBy(asc(graduationOrdersTable.id)).for("update");
   if (!orders.length) return { response: fail("لا توجد طلبات قابلة للدفع", 404) };
   if (data.strategy === "unallocated") {
     if (!groupId) return { response: fail("الرصيد غير المخصص متاح لدفعات المجموعة فقط", 400) };
-    const group = await db.query.graduationGroupsTable.findFirst({ where: eq(graduationGroupsTable.id, groupId) });
+    const group = await tx.query.graduationGroupsTable.findFirst({ where: eq(graduationGroupsTable.id, groupId) });
     if (!group) return { response: fail("المجموعة غير موجودة", 404) };
-    const [payment] = await db.insert(graduationStudentPaymentsTable).values({
+    const [payment] = await tx.insert(graduationStudentPaymentsTable).values({
       paymentBatchId: idempotencyKey,
       idempotencyKey,
       groupId,
@@ -1477,7 +1489,7 @@ export async function receivePayment(
       receivedByName: user.fullName || user.username,
     }).returning();
     const nextCredit = amount(group.groupCreditAmount) + data.amount;
-    await db.update(graduationGroupsTable).set({ groupCreditAmount: String(nextCredit), updatedAt: new Date() }).where(eq(graduationGroupsTable.id, groupId));
+    await tx.update(graduationGroupsTable).set({ groupCreditAmount: String(nextCredit), updatedAt: new Date() }).where(eq(graduationGroupsTable.id, groupId));
     const financial = await syncSourcePaymentTarget({
       sourceType: "graduation_group",
       sourceId: groupId,
@@ -1490,19 +1502,36 @@ export async function receivePayment(
       paymentMethod: data.paymentMethod,
       customerName: group.representativeName,
       customerPhone: group.representativePhone,
-    }, actor(user));
-    await db.update(graduationStudentPaymentsTable).set({ financialTransactionId: financial?.id ?? null }).where(eq(graduationStudentPaymentsTable.id, payment.id));
-    await audit(user, "graduation_group_credit_received", "graduation_group", groupId, { amount: data.amount, paymentMethod: data.paymentMethod, idempotencyKey });
+    }, actor(user), tx);
+    await tx.update(graduationStudentPaymentsTable).set({ financialTransactionId: financial?.id ?? null }).where(eq(graduationStudentPaymentsTable.id, payment.id));
+    await audit(user, "graduation_group_credit_received", "graduation_group", groupId, { amount: data.amount, paymentMethod: data.paymentMethod, idempotencyKey }, tx);
     return { payment, allocated: 0, unallocated: data.amount };
   }
-  const allocations = orderId
-    ? [{ order: orders[0], amount: Math.min(data.amount, amount(orders[0].remainingAmount)) }]
-    : distributePayment(orders, data.amount, data.strategy, data.selectedStudentIds, data.allocations);
+  // Approved snapshots come only from reconciliation; pending requests reserve
+  // collection headroom without being shown as money received.
+  const payableOrders: any[] = [];
+  for (const order of orders) {
+    await reconcilePaymentState(tx, {sourceType: "graduation_order", sourceId: order.id});
+    const current = await tx.query.graduationOrdersTable.findFirst({where:eq(graduationOrdersTable.id,order.id)});
+    if (!current) throw new Error("تعذر قراءة الطلب أثناء تسجيل الدفعة");
+    const pending = await tx.execute(sql`SELECT coalesce(sum(CASE WHEN direction = 'revenue' THEN amount::numeric ELSE -amount::numeric END), 0) AS pending_amount FROM financial_transactions WHERE source_type = 'graduation_order' AND source_id = ${String(order.id)} AND source_event = 'payment' AND approval_status IN ('pending', 'draft')`);
+    const pendingAmount = Number((pending.rows?.[0] as any)?.pending_amount);
+    if (!Number.isFinite(pendingAmount)) throw new Error("تعذر التحقق من الدفعات المعلقة");
+    const paymentTarget = Math.max(0, amount(current.paidAmount) + pendingAmount);
+    payableOrders.push({...current, paymentTarget, remainingAmount: String(Math.max(0, amount(current.totalAmount) - paymentTarget))});
+  }
+  // An individual approval must collect exactly the requested amount. Never
+  // silently approve a smaller payment after another pending request took room.
+  if (orderId && data.amount > amount(payableOrders[0].remainingAmount) + 0.009)
+    return { response: fail("المبلغ يتجاوز المتبقي بعد احتساب طلبات الدفع المعلقة؛ حدّث الرصيد وأعد المحاولة", 409) };
+  const allocations = (orderId
+    ? [{ order: payableOrders[0], amount: Math.min(data.amount, amount(payableOrders[0].remainingAmount)) }]
+    : distributePayment(payableOrders, data.amount, data.strategy, data.selectedStudentIds, data.allocations)).filter(item => item.amount > 0);
   if (!allocations.length) return { response: fail("لم يتم العثور على أرصدة قابلة لتوزيع الدفعة", 409) };
   const appliedTotal = allocations.reduce((sum, item) => sum + item.amount, 0);
   const savedPayments: any[] = [];
   for (const allocation of allocations) {
-    const [payment] = await db.insert(graduationStudentPaymentsTable).values({
+    const [payment] = await tx.insert(graduationStudentPaymentsTable).values({
       paymentBatchId: idempotencyKey,
       idempotencyKey: `${idempotencyKey}:${allocation.order.id}`,
       graduationOrderId: allocation.order.id,
@@ -1516,14 +1545,14 @@ export async function receivePayment(
       receivedByName: user.fullName || user.username,
     }).returning();
     const result = await updateOrder(allocation.order, {
-      paidAmount: amount(allocation.order.paidAmount) + allocation.amount,
+      paidAmount: allocation.order.paymentTarget + allocation.amount,
       paymentMethod: data.paymentMethod,
-    }, user);
-    if (result.response) return result;
-    const refreshed = await db.query.graduationOrdersTable.findFirst({ where: eq(graduationOrdersTable.id, allocation.order.id) });
-    await db.update(graduationStudentPaymentsTable).set({ financialTransactionId: refreshed?.financialTransactionId ?? null }).where(eq(graduationStudentPaymentsTable.id, payment.id));
+    }, user, tx);
+    if (result.response) throw new GraduationPaymentRejected(result.response);
+    const refreshed = await tx.query.graduationOrdersTable.findFirst({ where: eq(graduationOrdersTable.id, allocation.order.id) });
+    await tx.update(graduationStudentPaymentsTable).set({ financialTransactionId: refreshed?.financialTransactionId ?? null }).where(eq(graduationStudentPaymentsTable.id, payment.id));
     const paymentReceiptNo = `AJN-GR-P-${new Date().getFullYear()}-${String(payment.id).padStart(6, "0")}`;
-    await db.insert(graduationReceiptsTable).values({
+    await tx.insert(graduationReceiptsTable).values({
       receiptNo: paymentReceiptNo,
       receiptType: "payment",
       graduationOrderId: allocation.order.id,
@@ -1537,9 +1566,9 @@ export async function receivePayment(
   }
   const unallocatedAmount = Math.max(0, data.amount - appliedTotal);
   if (groupId && unallocatedAmount > 0.009) {
-    const group = await db.query.graduationGroupsTable.findFirst({ where: eq(graduationGroupsTable.id, groupId) });
+    const group = await tx.query.graduationGroupsTable.findFirst({ where: eq(graduationGroupsTable.id, groupId) });
     if (group) {
-      const [creditPayment] = await db.insert(graduationStudentPaymentsTable).values({
+      const [creditPayment] = await tx.insert(graduationStudentPaymentsTable).values({
         paymentBatchId: idempotencyKey,
         idempotencyKey: `${idempotencyKey}:credit`,
         groupId,
@@ -1551,7 +1580,7 @@ export async function receivePayment(
         receivedByName: user.fullName || user.username,
       }).returning();
       const nextCredit = amount(group.groupCreditAmount) + unallocatedAmount;
-      await db.update(graduationGroupsTable).set({ groupCreditAmount: String(nextCredit), updatedAt: new Date() }).where(eq(graduationGroupsTable.id, groupId));
+      await tx.update(graduationGroupsTable).set({ groupCreditAmount: String(nextCredit), updatedAt: new Date() }).where(eq(graduationGroupsTable.id, groupId));
       const financial = await syncSourcePaymentTarget({
         sourceType: "graduation_group",
         sourceId: groupId,
@@ -1564,10 +1593,10 @@ export async function receivePayment(
         paymentMethod: data.paymentMethod,
         customerName: group.representativeName,
         customerPhone: group.representativePhone,
-      }, actor(user));
-      await db.update(graduationStudentPaymentsTable).set({ financialTransactionId: financial?.id ?? null }).where(eq(graduationStudentPaymentsTable.id, creditPayment.id));
+      }, actor(user), tx);
+      await tx.update(graduationStudentPaymentsTable).set({ financialTransactionId: financial?.id ?? null }).where(eq(graduationStudentPaymentsTable.id, creditPayment.id));
       const creditReceiptNo = `AJN-GR-P-${new Date().getFullYear()}-${String(creditPayment.id).padStart(6, "0")}`;
-      await db.insert(graduationReceiptsTable).values({
+      await tx.insert(graduationReceiptsTable).values({
         receiptNo: creditReceiptNo,
         receiptType: "payment",
         groupId,
@@ -1585,8 +1614,12 @@ export async function receivePayment(
     strategy: data.strategy,
     allocations: allocations.map((item) => ({ orderId: item.order.id, amount: item.amount })),
     idempotencyKey,
-  });
+  }, tx);
   return { payments: savedPayments, allocated: appliedTotal, unallocated: unallocatedAmount };
+  }).catch((cause: unknown) => {
+    if (cause instanceof GraduationPaymentRejected) return {response:cause.response};
+    throw cause;
+  });
 }
 
 async function templateList() {
@@ -1850,14 +1883,17 @@ async function applyBulk(groupId: number, raw: any, user: GraduationAdminUser) {
       update.garmentDetails = { ...garments, printingType: String(raw?.value || "") };
     } else if (action === "price") {
       const total = amount(raw?.value);
-      update.totalAmount = String(total);
-      update.subtotal = String(total + amount(order.discountAmount));
-      update.remainingAmount = String(Math.max(0, total - amount(order.paidAmount)));
-      update.paymentStatus = amount(update.remainingAmount) <= 0 ? "paid" : amount(order.paidAmount) > 0 ? "partial" : "unpaid";
+      const result = await updateOrder(order, { totalAmount: total }, user);
+      if (result.response) return result;
+      continue;
     } else {
       return { response: fail("إجراء التحديث الجماعي غير مدعوم", 400) };
     }
-    await db.update(graduationOrdersTable).set(update).where(eq(graduationOrdersTable.id, order.id));
+    const changed = await db.update(graduationOrdersTable).set(update).where(and(
+      eq(graduationOrdersTable.id, order.id), sql`${graduationOrdersTable.archivedAt} is null`,
+      sql`${graduationOrdersTable.status} <> 'cancelled'`,
+    )).returning({ id: graduationOrdersTable.id });
+    if (!changed.length) return { response: fail("تغيرت حالة الطالب أو أُرشف طلبه؛ حدّث قائمة المجموعة", 409) };
   }
   await audit(user, "graduation_group_bulk_update", "graduation_group", groupId, { action, studentIds: orders.map((order) => order.id), value: raw?.value, templateVersionId: version?.id });
   await timeline(user, "graduation_group", groupId, "bulk_update", `تم تحديث ${orders.length} طالباً`, { action, count: orders.length });
@@ -2180,10 +2216,9 @@ export async function handleAdminGraduationOperations(
         timelineType: "group_student_archived",
         timelineTitle: "تم إلغاء وأرشفة تسجيل الطالب في المجموعة",
         activity: "graduation_group_student_cancelled",
-        metadata: { groupId },
+        metadata: { groupId, studentCode: order.studentCode },
       });
       if (removal.response) return removal.response;
-      await audit(user, "graduation_student_archived", "graduation_order", order.id, { groupId, studentCode: order.studentCode, oldValue: formatStudent(order) });
       return json({ archived: true });
     }
     if (action === "sash-names" && method === "POST" && !parts[3]) {
@@ -2202,7 +2237,7 @@ export async function handleAdminGraduationOperations(
       const denied = requireOperationPermission(user, "graduation.group.edit");
       if (denied) return denied;
       const result = await applyBulk(groupId, await body(req), user);
-      return "response" in result ? result.response : json(result);
+      return "response" in result && result.response ? result.response : json(result);
     }
     if (action === "payments" && method === "POST") {
       const denied = requireOperationPermission(user, "graduation.payment.receive");
@@ -2284,22 +2319,22 @@ export async function handleAdminGraduationOperations(
     if (denied) return denied;
     const data = await body(req);
     const code = String(data?.code || "").trim();
-    const order = await db.query.graduationOrdersTable.findFirst({
-      where: or(
+    return db.transaction(async (tx) => {
+    const [order] = await tx.select().from(graduationOrdersTable).where(or(
         eq(graduationOrdersTable.studentCode, code),
         eq(graduationOrdersTable.barcodeValue, code),
         eq(graduationOrdersTable.qrToken, code),
         eq(graduationOrdersTable.orderNo, code),
-      ),
-    });
+      )).limit(1).for("update");
     if (!order) return fail("لم يتم العثور على الطالب من الرمز الممسوح", 404);
+    if (order.archivedAt || order.status === "cancelled") return fail("الطلب ملغى أو مؤرشف؛ لا يمكن تسجيل عملية إنتاج عليه", 409);
     const stage = String(data?.stage || order.productionStage);
     if (!GRADUATION_STAGES.includes(stage as any)) return fail("مرحلة المسح غير صحيحة", 400);
     if (stage !== order.productionStage) {
-      const result = await updateOrder(order, { productionStage: stage }, user);
+      const result = await updateOrder(order, { productionStage: stage }, user, tx);
       if (result.response) return result.response;
     }
-    await db.insert(graduationProductionEventsTable).values({
+    await tx.insert(graduationProductionEventsTable).values({
       graduationOrderId: order.id,
       stage,
       previousStage: order.productionStage,
@@ -2309,8 +2344,9 @@ export async function handleAdminGraduationOperations(
       employeeId: user.id,
       employeeName: user.fullName || user.username,
     });
-    await timeline(user, "graduation_order", order.id, "student_scanned", `تم مسح الطالب في مرحلة ${stage}`, { scanType: data?.scanType || "qr", code });
+    await timeline(user, "graduation_order", order.id, "student_scanned", `تم مسح الطالب في مرحلة ${stage}`, { scanType: data?.scanType || "qr", code }, tx);
     return json({ order: formatStudent({ ...order, productionStage: stage }) });
+    });
   }
 
   if (resource === "deliveries" && method === "POST") {

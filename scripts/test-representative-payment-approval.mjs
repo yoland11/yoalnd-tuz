@@ -91,8 +91,10 @@ function fixture({ requests = [], orders = [], payments = [], receive } = {}) {
       const found = state.payments.filter((payment) => payment.batch === values[0]).sort((a, b) => a.id - b.id)[0];
       return { rows: found ? [{ id: found.id, receiptNo: found.receiptNo }] : [] };
     }
-    if (/^SELECT remaining_amount FROM graduation_orders WHERE id = \? FOR UPDATE$/.test(statement))
-      return { rows: [{ remaining_amount: state.orders.get(values[0])?.remainingAmount }] };
+    if (/^SELECT remaining_amount, status, archived_at FROM graduation_orders WHERE id = \? FOR UPDATE$/.test(statement)) {
+      const row=state.orders.get(values[0]);
+      return { rows: row ? [{remaining_amount:row.remainingAmount,status:row.status??"new",archived_at:row.lockedArchivedAt??row.archivedAt??null}] : [] };
+    }
     if (statement.startsWith("SELECT COALESCE(SUM(amount), 0) AS total FROM representative_payment_requests")) {
       assert.match(statement, /status IN \('pending', 'processing'\)/);
       const total = [...state.requests.values()]
@@ -311,6 +313,15 @@ const posted = (id) => ({ payments: [{ id, receiptNo: `AJN-GR-P-2026-${String(id
 }
 
 // --- custody confirmation reaches its own route instead of creating a handover
+// A representative must not add a pending receipt after archival. The query
+// preflight may be stale; the state read under the original order lock wins.
+{
+  const { call, state } = fixture({orders:[{id:81,groupId:8,customerName:"طالب مؤرشف",remainingAmount:"50000",archivedAt:null,lockedArchivedAt:"2026-10-23"}]});
+  const response=await call(rep,["payments"],"POST",{orderId:81,amount:10000,paymentMethod:"cash"});
+  assert.equal(response.status,409,"an archived student cannot receive a new representative payment request");
+  assert.equal(state.inserts.length,0);
+}
+
 {
   const { call, state } = fixture();
   const response = await call(admin, ["custody", "5", "confirm"], "POST", {});

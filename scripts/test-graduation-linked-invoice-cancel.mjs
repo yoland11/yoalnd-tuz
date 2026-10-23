@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+const ast=ts.createSourceFile('api.ts',readFileSync('src/server/api.ts','utf8'),ts.ScriptTarget.Latest,true);let callback;
+function visit(n){if(ts.isCallExpression(n)&&n.expression.getText(ast)==='db.transaction'&&n.arguments[0]?.getText(ast).includes('sales_invoice_cancellation_return'))callback=n.arguments[0];ts.forEachChild(n,visit);}visit(ast);assert.ok(callback);
+let guarded=false;const tx={execute:async query=>{const text=query.parts.join('?');if(text.includes('FOR UPDATE')){assert.ok(guarded,'linked invoice cancellation must acquire all original graduation sources before invoice/stock/financial locks');throw Error('verified lock order');}assert.match(text,/receipt_voucher_allocations/);return{rows:[{receipt_voucher_id:91}]};}};
+const context=vm.createContext({id:42,sql:(parts,...values)=>({parts,values}),lockGraduationPaymentSource:async(connection,sources,options)=>{assert.equal(connection,tx);assert.equal(options.requireActive,false);assert.equal(sources[0].sourceType,'sales_invoice');assert.equal(sources[0].sourceId,42);assert.equal(sources[1].sourceType,'receipt_voucher');assert.equal(sources[1].sourceId,91);guarded=true;}});
+vm.runInContext(ts.transpileModule('globalThis.run='+callback.getText(ast)+';',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText,context);
+await assert.rejects(()=>context.run(tx),/verified lock order/);assert.ok(guarded);
+console.log('PASS original linked sales cancellation locks sorted graduation and shared receipt sources before invoice/stock/financial locks (controlled I/O).');

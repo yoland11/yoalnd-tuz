@@ -149,6 +149,27 @@ export async function reconcilePaymentState(
   `);
   const row = (result.rows ?? [])[0];
   if (!row) throw new Error("تعذر إعادة تسوية حالة دفع السجل المرتبط.");
+  // Graduation issues a sales document for the same original order, not a
+  // second collection. Project the canonical result (including pending=0 and
+  // reversals) onto that document. An invoice with its own financial history
+  // retains that history's authority; never erase independently posted money.
+  if (input.sourceType === "graduation_order") {
+    await tx.execute(sql`
+      UPDATE sales_invoices invoice
+      SET paid_amount = ${String(row.approved_paid_amount)},
+          remaining_amount = ${String(row.remaining_amount)},
+          payment_status = ${String(row.payment_status)}, updated_at = now()
+      FROM graduation_orders source
+      WHERE source.id = ${sourceId} AND invoice.id = source.invoice_id
+        AND invoice.total::numeric = source.total_amount::numeric
+        AND NOT EXISTS (SELECT 1 FROM financial_transactions f
+          WHERE f.source_type = 'sales_invoice' AND f.source_id = invoice.id::text)
+        AND NOT EXISTS (SELECT 1 FROM receipt_voucher_allocations a
+          WHERE a.source_type = 'sales_invoice' AND a.source_id = invoice.id)
+        AND NOT EXISTS (SELECT 1 FROM installment_contracts c
+          WHERE c.sales_invoice_id = invoice.id)
+    `);
+  }
   return {
     sourceType: input.sourceType,
     sourceId,

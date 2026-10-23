@@ -29,6 +29,7 @@ import {
 import { ensureGraduationEnterpriseTables } from "@/server/graduation-enterprise-schema";
 import { readRequestBody } from "@/server/request-body";
 import type { GraduationAdminUser } from "@/server/graduation";
+import { lockGraduationPaymentSource } from "@/server/graduation-write-guard";
 
 type JsonMap = Record<string, any>;
 
@@ -438,6 +439,7 @@ export async function syncGraduationEnterpriseOrder(
   await ensureGraduationEnterpriseTables();
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(71968, ${orderId})`);
+    await lockGraduationPaymentSource(tx, { sourceType: "graduation_order", sourceId: orderId });
     const [order] = await tx
       .select()
       .from(graduationOrdersTable)
@@ -646,6 +648,7 @@ async function packagingScan(raw: unknown, user: GraduationAdminUser) {
     }
     await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(71969, ${component.id})`);
+      await lockGraduationPaymentSource(tx, { sourceType: "graduation_order", sourceId: expected.id });
       const [kit] = await tx.select().from(graduationKitsTable).where(eq(graduationKitsTable.graduationOrderId, expected.id)).limit(1);
       await tx.update(graduationComponentsTable).set({ packagingStatus: "packed", packedAt: new Date(), packedBy: user.id, updatedAt: new Date() }).where(eq(graduationComponentsTable.id, component.id));
       await tx.update(graduationKitItemsTable).set({ verified: true, verifiedAt: new Date(), verifiedBy: user.id }).where(and(eq(graduationKitItemsTable.kitId, kit.id), eq(graduationKitItemsTable.componentId, component.id)));
@@ -669,6 +672,7 @@ async function packagingScan(raw: unknown, user: GraduationAdminUser) {
     }
     await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(71970, ${expected.id})`);
+      await lockGraduationPaymentSource(tx, { sourceType: "graduation_order", sourceId: expected.id });
       await tx.update(graduationKitsTable).set({ status: "ready_for_delivery", packageImageUrl: data.packageImageUrl || current.kit.packageImageUrl, packagedBy: user.id, packagedAt: new Date(), readyAt: new Date(), updatedAt: new Date() }).where(eq(graduationKitsTable.id, current.kit.id));
       await tx.update(graduationOrdersTable).set({ productionStage: "ready", status: "ready", readyAt: new Date(), updatedAt: new Date() }).where(eq(graduationOrdersTable.id, expected.id));
       await tx.insert(graduationPackagingEventsTable).values({ graduationOrderId: expected.id, kitId: current.kit.id, eventType: "packaging_completed", scanValue: data.code, result: "accepted", expectedOrderId: expected.id, actualOrderId: expected.id, employeeId: user.id, employeeName: actorName(user), metadata: { packageImageUrl: data.packageImageUrl || null } });
@@ -695,6 +699,7 @@ async function confirmDelivery(raw: unknown, user: GraduationAdminUser) {
   const sessionCode = data.sessionCode || `AJN-GR-DEL-${new Date().getFullYear()}-${randomUUID().slice(0, 8).toUpperCase()}`;
   await db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(71971, ${order.id})`);
+    await lockGraduationPaymentSource(tx, { sourceType: "graduation_order", sourceId: order.id });
     await tx.insert(graduationDeliverySessionsTable).values({ sessionCode, groupId: data.groupId ?? order.groupId, sessionDate: new Date().toISOString().slice(0, 10), createdBy: user.id }).onConflictDoNothing();
     await tx.update(graduationDeliverySessionsTable).set({ deliveredCount: sql`${graduationDeliverySessionsTable.deliveredCount} + 1` }).where(eq(graduationDeliverySessionsTable.sessionCode, sessionCode));
     await tx.insert(graduationDeliveryEventsTable).values({ graduationOrderId: order.id, groupId: order.groupId, sessionCode, status: "delivered", deliveredBy: user.id, deliveredByName: actorName(user), receivedBy: data.receivedBy, signatureDataUrl: data.signatureDataUrl || null, packageImageUrl: data.packageImageUrl || state.kit.packageImageUrl, balanceConfirmed: !needsOverride, verification: { kitCode: state.kit.kitCode, components: state.components.map((item: any) => item.componentCode), overrideReason: data.overrideReason || null }, notes: data.notes || null });
@@ -734,8 +739,20 @@ async function productionWall() {
   return { total: orders.length, stages, late: late.length, items: orders.map((order) => ({ id: order.id, orderNo: order.orderNo, studentCode: order.studentCode, studentName: order.customerName, stage: order.productionStage, dueDate: order.dueDate, groupId: order.groupId })) };
 }
 
+/** Metadata only: the original graduation inventory ledger owns stock returns. */
+export async function releaseGraduationMaterialReservations(tx: {execute: (query: any) => Promise<any>}, orderId: number) {
+  await tx.execute(sql`UPDATE graduation_inventory_reservations SET status = 'released', released_at = now()
+    WHERE graduation_order_id = ${orderId} AND status <> 'released'`);
+  await tx.execute(sql`UPDATE graduation_material_requirements SET status = 'released', reserved_quantity = '0', updated_at = now()
+    WHERE graduation_order_id = ${orderId} AND status <> 'released'`);
+}
+
 async function materialReport() {
-  const requirements = await db.select().from(graduationMaterialRequirementsTable).orderBy(asc(graduationMaterialRequirementsTable.name));
+  const requirements = await db.select().from(graduationMaterialRequirementsTable).where(and(
+    sql`${graduationMaterialRequirementsTable.status} <> 'released'`,
+    sql`EXISTS (SELECT 1 FROM ${graduationOrdersTable} WHERE ${graduationOrdersTable.id} = ${graduationMaterialRequirementsTable.graduationOrderId}
+      AND ${graduationOrdersTable.archivedAt} IS NULL AND ${graduationOrdersTable.status} <> 'cancelled')`,
+  )).orderBy(asc(graduationMaterialRequirementsTable.name));
   const productIds = [...new Set(requirements.map((row) => row.productId).filter((value): value is number => Boolean(value)))];
   const products = productIds.length ? await db.select({ id: productsTable.id, name: productsTable.nameAr, fallbackName: productsTable.name, stock: productsTable.stock, minStock: productsTable.minStock }).from(productsTable).where(inArray(productsTable.id, productIds)) : [];
   const productMap = new Map(products.map((item) => [item.id, item]));

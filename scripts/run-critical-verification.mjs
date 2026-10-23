@@ -19,6 +19,7 @@ const steps = [
   ["Graduation student sash selection", "pnpm", ["run", "test:graduation-student-flow"]],
   ["Graduation group sash names and duplicates", "pnpm", ["run", "test:graduation-sash-name"]],
   ["Graduation inventory transaction safety", "pnpm", ["run", "test:graduation-inventory-transaction"]],
+  ["Graduation archive, pending payments and original production writer safety", "pnpm", ["run", "test:graduation-archive"]],
   ["Tailor student reference visibility", "pnpm", ["run", "test:tailor-student-references"]],
   ["Graduation invoice number length", "pnpm", ["run", "test:graduation-invoice-number"]],
   ["Graduation group per-sash pricing", "pnpm", ["run", "test:graduation-group-pricing"]],

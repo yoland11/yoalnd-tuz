@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
+import { lockGraduationPaymentSource } from "@/server/graduation-write-guard";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import { db, entityTimelineTable, notificationsTable, salesInvoicesTable } from "@workspace/db";
@@ -72,6 +73,12 @@ export async function handleInstallments(req: NextRequest, parts: string[], user
     let schedule; try { schedule = scheduleFor(data, financed); } catch (e) { return fail(e instanceof Error ? e.message : "جدول الأقساط غير صالح", 422); }
     const token = randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", "");
     const contract = await db.transaction(async (tx) => {
+      await lockGraduationPaymentSource(tx, {sourceType:"sales_invoice", sourceId:invoice.id});
+      const lockedInvoice = (await tx.execute(sql`SELECT status, remaining_amount FROM sales_invoices WHERE id=${invoice.id} FOR UPDATE`)).rows[0] as any;
+      if (!lockedInvoice || lockedInvoice.status !== "active" || money(lockedInvoice.remaining_amount) !== balance)
+        throw new Error("تغيّر رصيد الفاتورة أو حالتها؛ حدّث الصفحة قبل إنشاء عقد الأقساط");
+      const activeContract = await tx.execute(sql`SELECT id FROM installment_contracts WHERE sales_invoice_id=${invoice.id} AND status IN ('draft','active','paused','overdue')`);
+      if (activeContract.rows.length) throw new Error("توجد خطة أقساط نشطة لهذه الفاتورة");
       const noResult = await tx.execute(sql`SELECT nextval('installment_contracts_id_seq') AS id`); const id = Number((noResult.rows[0] as any).id); const contractNo = `AJN-INS-${new Date().getFullYear()}-${String(id).padStart(6, "0")}`;
       const inserted = await tx.execute(sql`INSERT INTO installment_contracts (id, contract_no, public_token, source_type, source_id, sales_invoice_id, customer_id, customer_name, customer_phone, department, original_total, paid_before_conversion, balance_at_conversion, down_payment_amount, financed_amount, collected_amount, remaining_amount, installment_count, frequency, installment_type, first_due_date, last_due_date, grace_days, internal_notes, customer_notes, created_by, created_by_name) VALUES (${id}, ${contractNo}, ${token}, 'sales_invoice', ${invoice.id}, ${invoice.id}, ${invoice.customerId}, ${invoice.customerName}, ${invoice.customerPhone}, 'sales', ${String(money(invoice.total))}, ${String(money(invoice.paidAmount))}, ${String(balance)}, ${String(data.downPayment)}, ${String(financed)}, '0', ${String(financed)}, ${data.installmentCount}, ${data.frequency}, ${data.installmentType}, ${schedule[0].dueDate}, ${schedule.at(-1)?.dueDate ?? null}, ${data.graceDays}, ${data.internalNotes || null}, ${data.customerNotes || null}, ${user.id}, ${user.fullName || user.username}) RETURNING *`);
       for (const row of schedule) await tx.execute(sql`INSERT INTO installment_schedule (contract_id, installment_no, due_date, original_amount, remaining_amount) VALUES (${id}, ${row.no}, ${row.dueDate}, ${String(row.amount)}, ${String(row.amount)})`);
@@ -152,6 +159,7 @@ export async function postInstallmentPayment(contractId:number,data:any,user:Use
   if(!Number.isFinite(Number(data.amount))||money(data.amount)<=0)return fail("مبلغ القسط غير صالح",422);
   const key=data.idempotencyKey||randomUUID();
   const paymentResult=await db.transaction(async tx=>{
+    await lockGraduationPaymentSource(tx,{sourceType:"installment_contract",sourceId:contractId});
     const contract=(await tx.execute(sql`SELECT * FROM installment_contracts WHERE id=${contractId} FOR UPDATE`)).rows[0] as any;
     if(!contract)return {error:"العقد غير موجود",status:404};
     const duplicate=(await tx.execute(sql`SELECT * FROM installment_payments WHERE idempotency_key=${key} FOR UPDATE`)).rows[0] as any;
@@ -202,6 +210,7 @@ export async function postInstallmentPayment(contractId:number,data:any,user:Use
 }
 
 async function reconcileInstallmentPaymentsInTransaction(tx:Tx,contractId:number,user:User,lockedContract?:any){
+  await lockGraduationPaymentSource(tx,{sourceType:"installment_contract",sourceId:contractId});
   const contract=lockedContract??((await tx.execute(sql`SELECT * FROM installment_contracts WHERE id=${contractId} FOR UPDATE`)).rows[0] as any);
   if(!contract)throw new Error("عقد الأقساط غير موجود");
   const payments=(await tx.execute(sql`SELECT * FROM installment_payments WHERE contract_id=${contractId} AND status='posted' AND reversed_at IS NULL ORDER BY id FOR UPDATE`)).rows as any[];

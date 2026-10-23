@@ -22,6 +22,7 @@ type GraduationOrderForMeasurementGate = {
 
 export async function graduationOrderRequiresMeasurements(
   order: GraduationOrderForMeasurementGate,
+  executor: Pick<typeof db, "select" | "query"> = db,
 ) {
   const templateSnapshot =
     order.templateSnapshot &&
@@ -41,7 +42,7 @@ export async function graduationOrderRequiresMeasurements(
   // product edit must not retroactively change its production rules.
   if (Object.keys(templateSnapshot).length > 0) return false;
 
-  const items = await db
+  const items = await executor
     .select({
       itemType: graduationOrderItemsTable.itemType,
       snapshot: graduationOrderItemsTable.snapshot,
@@ -64,7 +65,7 @@ export async function graduationOrderRequiresMeasurements(
   )
     return true;
 
-  const configRow = await db.query.settingsTable.findFirst({
+  const configRow = await executor.query.settingsTable.findFirst({
     where: eq(settingsTable.key, "graduationConfig"),
     columns: { value: true },
   });
@@ -85,9 +86,10 @@ export async function graduationOrderRequiresMeasurements(
 export async function getGraduationProductionMeasurementBlock(
   order: GraduationOrderForMeasurementGate,
   nextStage: unknown,
+  executor: Pick<typeof db, "select" | "query"> = db,
 ) {
   if (!stageRequiresCompletedMeasurements(nextStage)) return null;
-  const requiresMeasurements = await graduationOrderRequiresMeasurements(order);
+  const requiresMeasurements = await graduationOrderRequiresMeasurements(order, executor);
   if (!requiresMeasurements) return null;
   const measurementStatus = getGraduationMeasurementStatus(order.measurements);
   if (measurementStatus === "complete") return null;

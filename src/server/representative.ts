@@ -484,7 +484,9 @@ export async function handleRepresentativePortal(
         // one payment entered twice cannot exceed what the student owes. The
         // order row is locked so two requests for one student are serialized.
         const [locked] = (await tx.execute(sql`
-          SELECT remaining_amount FROM graduation_orders WHERE id = ${order.id} FOR UPDATE`)).rows as Array<{ remaining_amount?: unknown }>;
+          SELECT remaining_amount, status, archived_at FROM graduation_orders WHERE id = ${order.id} FOR UPDATE`)).rows as Array<{ remaining_amount?: unknown; status?: string; archived_at?: unknown }>;
+        if (!locked || locked.archived_at || locked.status === "cancelled")
+          return { status: 409, message: "لا يمكن تسجيل دفعة لطالب أُلغي أو أُرشف طلبه" };
         const [open] = (await tx.execute(sql`
           SELECT COALESCE(SUM(amount), 0) AS total FROM representative_payment_requests
           WHERE graduation_order_id = ${order.id} AND status IN ('pending', 'processing')`)).rows as Array<{ total?: unknown }>;

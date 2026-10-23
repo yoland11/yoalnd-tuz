@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 // A booking payment reaches the Main Cash Box on the day it is taken and is
 // visible from the booking itself.
@@ -34,8 +35,9 @@ assert.match(workspace, /"لم تُرحّل بعد"/);
 // 5. A rejected or cancelled payment request never leaves its booking/order shown as paid:
 //    both paths rebuild the document from approved money, like approval does.
 const cash = readFileSync("src/server/master-cash-box.ts", "utf8");
-const cancel = cash.slice(cash.indexOf("export async function cancelFinancialTransactionRequest("), cash.indexOf("/** Roles that may perform the final"));
-assert.match(cancel, /db\.transaction\(async \(tx\) => \{[\s\S]*isPaymentStateSourceType\(existing\.sourceType\)\)\s*await reconcilePaymentState\(tx, \{ sourceType: existing\.sourceType, sourceId: existing\.sourceId \}\)/, "cancel reconciles inside its transaction");
+// Exercise both supplied-transaction and default callers; do not pin the
+// implementation to an inline db.transaction callback that forbids reuse.
+execFileSync(process.execPath, ["scripts/test-source-financial-executor.mjs"], { stdio: "inherit" });
 const reject = cash.slice(cash.indexOf("export async function rejectFinancialTransaction("), cash.indexOf("export async function reverseFinancialTransaction("));
 assert.match(reject, /isPaymentStateSourceType\(existing\.sourceType\)\)\s*await reconcilePaymentState\(tx, \{ sourceType: existing\.sourceType, sourceId: existing\.sourceId \}\)/, "reject reconciles inside its transaction");
 

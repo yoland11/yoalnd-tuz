@@ -15,6 +15,7 @@ import {
   vehicleExpensesTable,
 } from "@workspace/db";
 import { isPaymentStateSourceType, reconcilePaymentState } from "./payment-state";
+import { lockGraduationPaymentSource } from "./graduation-write-guard";
 import { postApprovedInstallmentPayment, rejectPendingInstallmentPayment, reconcileLegacyInstallmentInvoice, reversePostedInstallmentPayment } from "./installment-payment-posting";
 
 export type FinancialActor = {
@@ -303,8 +304,9 @@ async function addAudit(
   oldValues: Record<string, unknown> = {},
   newValues: Record<string, unknown> = {},
   reason?: string | null,
+  executor: Pick<typeof db, "insert"> = db,
 ) {
-  await db.insert(financialAuditLogsTable).values({
+  await executor.insert(financialAuditLogsTable).values({
     transactionId,
     action,
     actorId: actor.id,
@@ -318,17 +320,22 @@ async function addAudit(
 export async function createFinancialTransaction(
   input: unknown,
   actor: FinancialActor,
-) {
-  await ensureMasterCashBoxTables();
+  executor?: FinancialTransactionExecutor,
+): Promise<typeof financialTransactionsTable.$inferSelect> {
+  if (!executor) await ensureMasterCashBoxTables();
   const data = financialTransactionInputSchema.parse(input);
+  if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(data.sourceType ?? ""))
+    return db.transaction(tx => createFinancialTransaction(input, actor, tx));
+  if (executor && data.direction === "revenue") await lockGraduationPaymentSource(executor, data);
   const now = new Date();
   const idempotencyKey =
     data.idempotencyKey || `manual:${actor.id ?? "system"}:${randomUUID()}`;
-  const existing = await db.query.financialTransactionsTable.findFirst({
+  const connection = executor ?? db;
+  const existing = await connection.query.financialTransactionsTable.findFirst({
     where: eq(financialTransactionsTable.idempotencyKey, idempotencyKey),
   });
   if (existing) return existing;
-  const [row] = await db
+  const [row] = await connection
     .insert(financialTransactionsTable)
     .values({
       transactionNo: `FIN-TMP-${randomUUID()}`,
@@ -362,7 +369,7 @@ export async function createFinancialTransaction(
     })
     .returning();
   const transactionNo = transactionNumber(row.id, now);
-  const [saved] = await db
+  const [saved] = await connection
     .update(financialTransactionsTable)
     .set({ transactionNo })
     .where(eq(financialTransactionsTable.id, row.id))
@@ -373,6 +380,8 @@ export async function createFinancialTransaction(
     actor,
     {},
     snapshot(saved as any),
+    undefined,
+    connection,
   );
   return saved;
 }
@@ -457,21 +466,33 @@ export async function syncSourceFinancialRequest(
   input: unknown,
   actor: FinancialActor,
   reason: string,
-) {
-  await ensureMasterCashBoxTables();
+  executor?: FinancialTransactionExecutor,
+): Promise<typeof financialTransactionsTable.$inferSelect> {
+  if (!executor) await ensureMasterCashBoxTables();
   const data = financialTransactionInputSchema.parse({
     ...(input as Record<string, unknown>),
     approvalStatus: "pending",
   });
-  const existing = await db.query.financialTransactionsTable.findFirst({
+  const connection = executor ?? db;
+  let existing = await connection.query.financialTransactionsTable.findFirst({
     where: eq(financialTransactionsTable.id, id),
   });
   if (!existing) throw new Error("المعاملة المالية المرتبطة غير موجودة");
+  if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(existing.sourceType ?? ""))
+    return db.transaction(tx => syncSourceFinancialRequest(id, input, actor, reason, tx));
+  if (executor) {
+    const initial = existing;
+    await lockGraduationPaymentSource(executor, initial, {requireActive:data.direction === "revenue"});
+    [existing] = await executor.select().from(financialTransactionsTable)
+      .where(eq(financialTransactionsTable.id,id)).limit(1).for("update");
+    if (!existing || existing.sourceType !== initial.sourceType || existing.sourceId !== initial.sourceId)
+      throw new Error("تغيّرت هوية المعاملة؛ حدّث الصفحة وأعد المحاولة");
+  }
   if (existing.approvalStatus === "executed")
     throw new Error(
       "تم تنفيذ المعاملة المالية؛ أنشئ حركة تصحيح بدلاً من تعديلها",
     );
-  const [saved] = await db
+  const [saved] = await connection
     .update(financialTransactionsTable)
     .set({
       transactionDate: data.transactionDate ?? existing.transactionDate,
@@ -507,6 +528,7 @@ export async function syncSourceFinancialRequest(
     snapshot(existing as any),
     snapshot(saved as any),
     reason,
+    connection,
   );
   return saved;
 }
@@ -515,15 +537,20 @@ export async function cancelFinancialTransactionRequest(
   id: number,
   actor: FinancialActor,
   reason: string,
+  executor?: FinancialTransactionExecutor,
 ) {
-  await ensureMasterCashBoxTables();
-  const existing = await db.query.financialTransactionsTable.findFirst({
-    where: eq(financialTransactionsTable.id, id),
-  });
-  if (!existing) return null;
-  if (existing.approvalStatus === "executed")
-    throw new Error("لا يمكن حذف أو إلغاء حركة مالية منفذة");
-  const saved = await db.transaction(async (tx) => {
+  if (!executor) await ensureMasterCashBoxTables();
+  const apply = async (tx: FinancialTransactionExecutor) => {
+    const initial = await tx.query.financialTransactionsTable.findFirst({where:eq(financialTransactionsTable.id,id)});
+    if (!initial) return null;
+    await lockGraduationPaymentSource(tx, initial, {requireActive:false});
+    const [existing] = await tx.select().from(financialTransactionsTable)
+      .where(eq(financialTransactionsTable.id,id)).limit(1).for("update");
+    if (!existing) return null;
+    if (existing.sourceType !== initial.sourceType || existing.sourceId !== initial.sourceId)
+      throw new Error("تغيّرت هوية المعاملة؛ حدّث الصفحة وأعد المحاولة");
+    if (existing.approvalStatus === "executed")
+      throw new Error("لا يمكن حذف أو إلغاء حركة مالية منفذة");
     const [row] = await tx
       .update(financialTransactionsTable)
       .set({
@@ -547,17 +574,18 @@ export async function cancelFinancialTransactionRequest(
       await tx.execute(sql`UPDATE company_loans SET status = 'cancelled', updated_at = now() WHERE id = ${loanSourceId} AND status = 'pending'`);
     if (existing.sourceType === "company_loan_repayment" && Number.isInteger(loanSourceId))
       await tx.execute(sql`UPDATE company_loan_repayments SET status = 'rejected', updated_at = now() WHERE id = ${loanSourceId} AND status = 'pending'`);
-    return row;
-  });
-  await addAudit(
+    await addAudit(
     id,
     "cancelled_by_source",
     actor,
     snapshot(existing as any),
-    snapshot(saved as any),
+    snapshot(row as any),
     reason,
+    tx,
   );
-  return saved;
+    return row;
+  };
+  return executor ? apply(executor) : db.transaction(apply);
 }
 
 /** Roles that may perform the final, official Main Cash Box posting. */
@@ -646,6 +674,7 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
     const value = money(allocation.amount);
     if (allocation.source_type === "customer_credit") continue;
     if (!allocation.source_id) throw new Error("مرجع التوزيع غير صحيح.");
+    await lockGraduationPaymentSource(tx, { sourceType: allocation.source_type, sourceId: allocation.source_id });
     let updated: any;
     if (allocation.source_type === "kosha_booking") {
       updated = await tx.execute(sql`
@@ -757,13 +786,24 @@ async function executePendingFinancialTransaction(
   actor: FinancialActor,
   note?: string | null,
 ) {
-    const [transaction] = await tx
+    const [initial] = await tx
       .select()
       .from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id, id))
       .limit(1);
+    if (!initial) throw new Error("المعاملة غير موجودة");
+    if (initial.approvalStatus === "executed") return initial;
+    await lockGraduationPaymentSource(tx, initial, {requireActive:initial.direction === "revenue"});
+    // Source writers acquire the original order before changing their pending
+    // request. Re-read under the financial row lock AFTER acquiring that source
+    // lock; otherwise approval can post an old amount while marking a newer
+    // request executed. Never lock financial first and invert that ordering.
+    const [transaction] = await tx.select().from(financialTransactionsTable)
+      .where(eq(financialTransactionsTable.id, id)).limit(1).for("update");
     if (!transaction) throw new Error("المعاملة غير موجودة");
     if (transaction.approvalStatus === "executed") return transaction;
+    if (transaction.sourceType !== initial.sourceType || transaction.sourceId !== initial.sourceId || transaction.direction !== initial.direction)
+      throw new Error("تغيّرت هوية المعاملة أثناء الاعتماد؛ حدّث الصفحة وأعد المحاولة");
     if (transaction.approvalStatus !== "pending")
       throw new Error("يجب إرسال المعاملة للموافقة أولاً");
 
@@ -1139,6 +1179,7 @@ export async function createAndExecuteSourceFinancialTransaction(
     ...input,
     approvalStatus: "pending",
   });
+  if (data.direction === "revenue") await lockGraduationPaymentSource(tx, data);
   const idempotencyKey = input.idempotencyKey;
   const [existing] = await tx
     .select()
@@ -1225,9 +1266,15 @@ export async function rejectFinancialTransaction(
   const cleanReason = reason.trim();
   if (cleanReason.length < 3) throw new Error("سبب الرفض مطلوب");
   return db.transaction(async (tx) => {
+  const [initial] = await tx.select().from(financialTransactionsTable)
+    .where(eq(financialTransactionsTable.id, id)).limit(1);
+  if (!initial) throw new Error("المعاملة غير موجودة");
+  await lockGraduationPaymentSource(tx, initial, {requireActive:false});
   const [existing] = await tx.select().from(financialTransactionsTable)
     .where(eq(financialTransactionsTable.id, id)).limit(1).for("update");
   if (!existing) throw new Error("المعاملة غير موجودة");
+  if (existing.sourceType !== initial.sourceType || existing.sourceId !== initial.sourceId)
+    throw new Error("تغيّرت هوية المعاملة؛ حدّث الصفحة وأعد المحاولة");
   if (existing.approvalStatus !== "pending")
     throw new Error("يمكن رفض المعاملات المعلّقة فقط");
   const [saved] = await tx
@@ -1320,6 +1367,10 @@ export async function reverseFinancialTransaction(
   if (cleanReason.length < 3) throw new Error("سبب العكس مطلوب");
 
   const reverseInsideTransaction = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
+    const [initial] = await tx.select().from(financialTransactionsTable)
+      .where(eq(financialTransactionsTable.id, id)).limit(1);
+    if (!initial) throw new Error("المعاملة غير موجودة");
+    await lockGraduationPaymentSource(tx, initial, {requireActive:false});
     const [original] = await tx
       .select()
       .from(financialTransactionsTable)
@@ -1327,6 +1378,8 @@ export async function reverseFinancialTransaction(
       .limit(1)
       .for("update");
     if (!original) throw new Error("المعاملة غير موجودة");
+    if (original.sourceType !== initial.sourceType || original.sourceId !== initial.sourceId)
+      throw new Error("تغيّرت هوية المعاملة؛ حدّث الصفحة وأعد المحاولة");
     if (original.approvalStatus !== "executed")
       throw new Error("يمكن عكس الحركات المنفّذة فقط");
     if (original.transactionType.endsWith("_reversal"))
@@ -2037,10 +2090,12 @@ export async function createSourceFinancialRequest(
     "approvalStatus" | "idempotencyKey"
   > & { idempotencyKey: string },
   actor: FinancialActor,
+  executor?: FinancialTransactionExecutor,
 ) {
   return createFinancialTransaction(
     { ...input, approvalStatus: "pending" },
     actor,
+    executor,
   );
 }
 
@@ -2064,11 +2119,17 @@ export async function syncSourcePaymentTarget(
     attachments?: string[];
   },
   actor: FinancialActor,
-) {
-  await ensureMasterCashBoxTables();
+  executor?: FinancialTransactionExecutor,
+): Promise<typeof financialTransactionsTable.$inferSelect | null> {
+  if (!executor) await ensureMasterCashBoxTables();
+  if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(input.sourceType))
+    return db.transaction(tx => syncSourcePaymentTarget(input, actor, tx));
+  if (executor && input.normalDirection === "revenue" && input.targetAmount > 0)
+    await lockGraduationPaymentSource(executor, input);
   const sourceId = String(input.sourceId);
   const sourceEvent = input.sourceEvent ?? "payment";
-  const rows = await db
+  const connection = executor ?? db;
+  const rows = await connection
     .select()
     .from(financialTransactionsTable)
     .where(
@@ -2101,6 +2162,7 @@ export async function syncSourcePaymentTarget(
         pending.id,
         actor,
         "لا يوجد فرق مالي متبقٍ بعد مزامنة المصدر",
+        executor,
       );
     return rows.find((row) => row.approvalStatus === "executed") ?? null;
   }
@@ -2137,6 +2199,7 @@ export async function syncSourcePaymentTarget(
       payload,
       actor,
       "مزامنة المبلغ المدفوع مع المصدر",
+      executor,
     );
-  return createSourceFinancialRequest(payload, actor);
+  return createSourceFinancialRequest(payload, actor, executor);
 }

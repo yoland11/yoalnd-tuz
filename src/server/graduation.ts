@@ -28,6 +28,7 @@ import {
 import { readRequestBody } from "@/server/request-body";
 import { createApiErrorPayload, makeRequestId, type ApiErrorCode } from "@/server/write-safety";
 import { safeServerError } from "@/server/safe-server-log";
+import { GraduationOrderWriteConflict } from "@/server/graduation-write-guard";
 import { applyGroupSashPricing, GroupSashPricingError, groupSashPrice, validateGroupSashPricing } from "@/lib/graduation-group-pricing";
 import { handleGraduationGroupPricing } from "@/server/graduation-group-pricing";
 import { canManageGraduationGroupPricing } from "@/lib/graduation-group-pricing-access";
@@ -100,12 +101,14 @@ import { ensureGraduationMediaTables } from "@/server/graduation-media-schema";
 import {
   getGraduationEnterpriseCatalog,
   syncGraduationEnterpriseOrder,
+  releaseGraduationMaterialReservations,
 } from "@/server/graduation-enterprise";
 import { getGraduationProductionMeasurementBlock } from "@/server/graduation-measurements";
 import { hasDuplicateGroupStudentName } from "@/lib/graduation-group-student-identity";
 import { cleanStudentSashName, isLikelySameStudent, isTitleOnlyPrefix, tidySashPrefix } from "@/lib/graduation-sash-name";
 import { decorationPositionImages, GRADUATION_DECORATION_POSITIONS, type GraduationDecorationImages } from "@/lib/graduation-decoration-photos";
 import { handleStudentSelfEdit, StudentEditImageError } from "@/server/graduation-student-edit";
+import { reconcilePaymentState } from "@/server/payment-state";
 
 export type GraduationAdminUser = {
   id: number;
@@ -854,8 +857,9 @@ async function addTimeline(
   user?: GraduationAdminUser | null,
   metadata: Record<string, unknown> = {},
   entityType = "graduation_order",
+  executor: Pick<typeof db, "insert"> = db,
 ) {
-  await db.insert(entityTimelineTable).values({
+  await executor.insert(entityTimelineTable).values({
     entityType,
     entityId,
     type,
@@ -872,8 +876,9 @@ async function addActivity(
   entityId?: number,
   metadata: Record<string, unknown> = {},
   entityType = "graduation_order",
+  executor: Pick<typeof db, "insert"> = db,
 ) {
-  await db.insert(adminActivityLogsTable).values({
+  await executor.insert(adminActivityLogsTable).values({
     staffId: user?.id ?? null,
     userName: user ? user.fullName || user.username : "النظام",
     action,
@@ -894,8 +899,8 @@ async function notify(input: {
   href?: string;
   entityType?: string;
   metadata?: Record<string, unknown>;
-}) {
-  return db.insert(notificationsTable).values({
+}, executor: Pick<typeof db, "insert"> = db) {
+  return executor.insert(notificationsTable).values({
     audienceType: input.audienceType ?? "admin",
     customerId: input.customerId ?? null,
     staffId: input.staffId ?? null,
@@ -1015,8 +1020,9 @@ async function applyInventory(
   direction: -1 | 1,
   user?: GraduationAdminUser | null,
   executor?: GraduationWriteExecutor,
+  originalOwners?: Awaited<ReturnType<typeof aggregateByStockOwner>>,
 ) {
-  const grouped = await aggregateByStockOwner(items, executor);
+  const grouped = originalOwners ?? await aggregateByStockOwner(items, executor);
   if (direction < 0) {
     const missing = grouped.find((item) => item.available < item.quantity);
     if (missing)
@@ -1056,6 +1062,31 @@ async function applyInventory(
   };
   if (executor) await apply(executor);
   else await db.transaction(apply);
+}
+
+/** Restore outstanding deductions to their recorded physical stock owner.
+ * Shared-stock links may have changed since checkout; never follow them here. */
+async function restoreGraduationInventoryFromMovements(order: any, user: GraduationAdminUser, tx: GraduationWriteExecutor) {
+  const result = await tx.execute(sql`SELECT product_id, stock_source_product_id, quantity_change FROM stock_movements
+    WHERE related_type = 'graduation_order' AND related_id = ${order.id}
+      AND reason IN ('graduation_order_deducted', 'graduation_order_restored') ORDER BY id`);
+  const owners = new Map<number, {productId:number; units:number}>();
+  const conflict = () => new GraduationOrderWriteConflict("سجل حركة مخزون الطلب غير مكتمل أو غير متطابق؛ يلزم مراجعة المخزون قبل الإلغاء");
+  for (const row of result.rows as any[]) {
+    const owner = Number(row.stock_source_product_id), product = Number(row.product_id);
+    const quantity = Number(row.quantity_change), units = Math.round(quantity * 1000);
+    if (!Number.isSafeInteger(owner) || owner <= 0 || !Number.isSafeInteger(product) || product <= 0 ||
+        !Number.isFinite(quantity) || !Number.isSafeInteger(units) || Math.abs(quantity * 1000 - units) > 0.00001)
+      throw conflict();
+    const sum = (owners.get(owner)?.units ?? 0) + units;
+    if (!Number.isSafeInteger(sum)) throw conflict();
+    owners.set(owner, {productId:product, units:sum});
+  }
+  if ((!result.rows.length && order.inventoryApplied) || [...owners.values()].some(item => item.units > 0 || (item.units < 0 && !order.inventoryApplied)))
+    throw conflict();
+  const outstanding = [...owners.entries()].filter(([,item]) => item.units < 0).sort(([a],[b]) => a-b)
+    .map(([owner,item]) => ({productId:item.productId, stockSourceProductId:owner, quantity:-item.units/1000, label:`مادة ${item.productId}`, available:0}));
+  if (outstanding.length) await applyInventory(order.id, [], 1, user, tx, outstanding);
 }
 
 async function createProductionTasks(
@@ -2132,7 +2163,14 @@ export async function updateOrder(
   order: any,
   raw: unknown,
   user: GraduationAdminUser,
+  executor?: GraduationWriteExecutor,
 ) {
+  if (!executor) await ensureMasterCashBoxTables();
+  const apply = async (tx: GraduationWriteExecutor) => {
+  const [fresh] = await tx.select().from(graduationOrdersTable).where(eq(graduationOrdersTable.id, order.id)).limit(1).for("update");
+  if (!fresh || (fresh.groupId ?? null) !== (order.groupId ?? null)) return { response: error("سجل الطالب غير موجود ضمن هذا النطاق", 404) };
+  if (fresh.archivedAt) return { response: error("لا يمكن تعديل طلب مؤرشف", 409) };
+  order = fresh;
   const parsed = graduationAdminPatchSchema.safeParse(raw);
   if (!parsed.success)
     return {
@@ -2142,7 +2180,7 @@ export async function updateOrder(
   if (data.productionStage) {
     const measurementBlock = await getGraduationProductionMeasurementBlock(
       order,
-      data.productionStage,
+      data.productionStage, tx
     );
     if (measurementBlock) {
       await notify({
@@ -2156,11 +2194,11 @@ export async function updateOrder(
           measurementStatus: measurementBlock.measurementStatus,
           attemptedBy: user.id,
         },
-      });
+      }, tx);
       await addActivity(user, "graduation_production_measurements_blocked", order.id, {
         attemptedStage: data.productionStage,
         measurementStatus: measurementBlock.measurementStatus,
-      });
+      }, "graduation_order", tx);
       return {
         response: error(
           "يجب إكمال القياسات قبل بدء مرحلة القص والخياطة.",
@@ -2180,7 +2218,7 @@ export async function updateOrder(
   let nextProductionEstimate = safeJson(order.productionEstimate);
   if (data.assignedTailorId !== undefined) {
     if (data.assignedTailorId) {
-      selectedTailor = await db.query.graduationResourcesTable.findFirst({
+      selectedTailor = await tx.query.graduationResourcesTable.findFirst({
         where: and(
           eq(graduationResourcesTable.id, data.assignedTailorId),
           eq(graduationResourcesTable.resourceType, "tailor"),
@@ -2336,7 +2374,7 @@ export async function updateOrder(
     oldStatus !== "cancelled" &&
     order.inventoryApplied
   ) {
-    await applyInventory(order.id, inventoryItems, 1, user);
+    await restoreGraduationInventoryFromMovements(order, user, tx);
     update.inventoryApplied = false;
   } else if (
     oldStatus === "cancelled" &&
@@ -2344,29 +2382,26 @@ export async function updateOrder(
     data.status !== "cancelled" &&
     !order.inventoryApplied
   ) {
-    await applyInventory(order.id, inventoryItems, -1, user);
+    await applyInventory(order.id, inventoryItems, -1, user, tx);
     update.inventoryApplied = true;
   }
-  const [saved] = await db
+  const [saved] = await tx
     .update(graduationOrdersTable)
     .set(update)
     .where(eq(graduationOrdersTable.id, order.id))
     .returning();
   if (saved.invoiceId) {
-    await db
+    await tx
       .update(salesInvoicesTable)
       .set({
         total: String(total),
         discountAmount: String(discount),
-        paidAmount: String(paid),
-        remainingAmount: String(remaining),
-        paymentStatus: update.paymentStatus,
         paymentMethod: data.paymentMethod ?? order.paymentMethod,
         status: saved.status === "cancelled" ? "cancelled" : "active",
         updatedAt: new Date(),
       })
       .where(eq(salesInvoicesTable.id, saved.invoiceId));
-    await db
+    await tx
       .update(salesInvoiceItemsTable)
       .set({
         unitPrice: String(total + discount),
@@ -2392,12 +2427,12 @@ export async function updateOrder(
     await addTimeline(saved.id, action, title, user, {
       previousTailorId: previousTailor.tailorId ?? null,
       tailorId: newAssignment.tailorId ?? null,
-    });
+    }, "graduation_order", tx);
     await addActivity(user, `graduation_${action}`, saved.id, {
       previousTailorId: previousTailor.tailorId ?? null,
       tailorId: newAssignment.tailorId ?? null,
       orderNo: saved.orderNo,
-    });
+    }, "graduation_order", tx);
     if (selectedTailor?.operatorId) {
       await notify({
         audienceType: "staff",
@@ -2408,8 +2443,8 @@ export async function updateOrder(
         entityId: saved.id,
         href: `/staff/tailors/order/${saved.id}`,
         metadata: { tailorId: selectedTailor.id },
-      });
-      await db
+      }, tx);
+      await tx
         .update(tasksTable)
         .set({
           assignedStaffIds: [selectedTailor.operatorId],
@@ -2435,7 +2470,7 @@ export async function updateOrder(
     data.dueDate !== order.dueDate &&
     Number(tailorAssignment(saved).tailorId)
   ) {
-    const assignedTailor = await db.query.graduationResourcesTable.findFirst({
+    const assignedTailor = await tx.query.graduationResourcesTable.findFirst({
       where: eq(
         graduationResourcesTable.id,
         Number(tailorAssignment(saved).tailorId),
@@ -2450,7 +2485,7 @@ export async function updateOrder(
         body: `${saved.orderNo} - الموعد الجديد ${saved.dueDate || "غير محدد"}`,
         entityId: saved.id,
         href: "/admin/graduation/orders",
-      });
+      }, tx);
   }
   if (
     data.paidAmount !== undefined ||
@@ -2473,18 +2508,18 @@ export async function updateOrder(
         customerPhone: saved.phone,
         dueDate: saved.dueDate,
       },
-      actor(user),
+      actor(user), tx
     );
     update.financialTransactionId = financial?.id ?? null;
     if (financial?.id)
-      await db
+      await tx
         .update(graduationOrdersTable)
         .set({ financialTransactionId: financial.id })
         .where(eq(graduationOrdersTable.id, saved.id));
   }
   if (data.productionStage && data.productionStage !== oldStage) {
     const stageIndex = GRADUATION_STAGES.indexOf(data.productionStage);
-    await db
+    await tx
       .update(tasksTable)
       .set({ status: "completed", updatedAt: new Date() })
       .where(
@@ -2494,7 +2529,7 @@ export async function updateOrder(
           lte(tasksTable.sequence, stageIndex + 1),
         ),
       );
-    await db
+    await tx
       .update(tasksTable)
       .set({ status: "in_progress", updatedAt: new Date() })
       .where(
@@ -2512,26 +2547,26 @@ export async function updateOrder(
       body: `أصبح طلبك في مرحلة: ${GRADUATION_STAGE_LABELS[data.productionStage]}`,
       entityId: saved.id,
       href: `/graduation/track/${saved.qrToken}`,
-    });
+    }, tx);
     await addTimeline(
       saved.id,
       "stage_changed",
       `تم نقل الطلب إلى ${GRADUATION_STAGE_LABELS[data.productionStage]}`,
       user,
-      { from: oldStage, to: data.productionStage },
+      { from: oldStage, to: data.productionStage }, "graduation_order", tx
     );
     if (saved.groupId) {
-      const group = await db.query.graduationGroupsTable.findFirst({
+      const group = await tx.query.graduationGroupsTable.findFirst({
         where: eq(graduationGroupsTable.id, saved.groupId),
       });
       const representative = group
         ? await ensureCustomer(
             group.representativePhone,
-            group.representativeName,
+            group.representativeName, tx
           )
         : null;
       if (group && representative && oldStage === "new") {
-        const started = await db
+        const started = await tx
           .select({ count: sql<number>`count(*)::int` })
           .from(graduationOrdersTable)
           .where(
@@ -2551,14 +2586,14 @@ export async function updateOrder(
             entityId: group.id,
             entityType: "graduation_group",
             href: `/graduation?group=${group.joinToken}`,
-          });
+          }, tx);
       }
       if (
         group &&
         representative &&
         ["ready", "delivered"].includes(data.productionStage)
       ) {
-        const pending = await db
+        const pending = await tx
           .select({ count: sql<number>`count(*)::int` })
           .from(graduationOrdersTable)
           .where(
@@ -2578,7 +2613,7 @@ export async function updateOrder(
             entityId: group.id,
             entityType: "graduation_group",
             href: `/graduation?group=${group.joinToken}`,
-          });
+          }, tx);
       }
     }
   }
@@ -2598,13 +2633,13 @@ export async function updateOrder(
       body: labels[deliveryStatus] || "تم تحديث بيانات التسليم",
       entityId: saved.id,
       href: `/graduation/track/${saved.qrToken}`,
-    });
+    }, tx);
     await addTimeline(
       saved.id,
       "delivery_updated",
       labels[deliveryStatus] || "تم تحديث بيانات التسليم",
       user,
-      { delivery: data.delivery },
+      { delivery: data.delivery }, "graduation_order", tx
     );
   }
   await addActivity(user, "graduation_order_updated", saved.id, {
@@ -2615,8 +2650,13 @@ export async function updateOrder(
     total,
     paid,
     remaining,
-  });
-  return { order: publicOrder(saved) };
+  }, "graduation_order", tx);
+  await reconcilePaymentState(tx, { sourceType: "graduation_order", sourceId: saved.id });
+  const current = await tx.query.graduationOrdersTable.findFirst({where:eq(graduationOrdersTable.id,saved.id)});
+  if (!current) throw new Error("تعذر قراءة الطلب بعد تحديثه");
+  return { order: publicOrder(current) };
+  };
+  return executor ? apply(executor) : db.transaction(apply);
 }
 
 async function orderDetail(id: number, origin = "") {
@@ -3392,79 +3432,97 @@ export async function handleGraduationPublic(
 
 /**
  * The one approved way to remove an unstarted, unpaid graduation booking:
- * cancellation through updateOrder (restores inventory, cancels the linked
- * invoice and clears its payment target), then the booking's open tasks are
- * cancelled and it is archived. Used by individual and group removals alike.
+ * All eligibility, stock restoration, invoice cancellation and history belong
+ * to one transaction. Never call updateOrder here: it is a separate workflow
+ * and a stale preflight must not authorize an archive or a second stock return.
  */
 export async function cancelAndArchiveGraduationOrder(
   order: any,
   user: GraduationAdminUser,
   context: { timelineType: string; timelineTitle: string; activity: string; metadata?: Record<string, unknown> },
 ): Promise<{ response?: NextResponse; order?: any }> {
-  if (order.archivedAt) return { response: error("تم حذف هذا الحجز مسبقاً", 409) };
-  if (
-    order.productionStage !== "new" ||
-    ["ready", "delivered"].includes(order.status)
-  )
-    return {
-      response: error(
-        "لا يمكن حذف حجز بدأ إنتاجه أو أصبح جاهزاً للتسليم. استخدم إجراء الإلغاء المعتمد.",
-        409,
-      ),
-    };
-  if (money(order.paidAmount) > 0)
-    return { response: error("لا يمكن حذف حجز عليه دفعة. اعكس أو ألغِ الدفعة أولاً.", 409) };
-  if (order.invoiceId) {
-    const invoice = await db.query.salesInvoicesTable.findFirst({
-      where: eq(salesInvoicesTable.id, order.invoiceId),
-    });
-    if (invoice && money(invoice.paidAmount) > 0)
-      return {
-        response: error("لا يمكن حذف حجز مرتبط بفاتورة مدفوعة. اعكس أو ألغِ الدفعة أولاً.", 409),
-      };
-  }
-
-  // Cancellation restores inventory, cancels the linked invoice, and clears
-  // its payment target before the booking is hidden from operational lists.
-  const cancellation = await updateOrder(order, { status: "cancelled" }, user);
-  if (cancellation.response) return { response: cancellation.response };
-
-  const now = new Date();
-  const [archived] = await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
+    const [fresh] = await tx.select().from(graduationOrdersTable)
+      .where(eq(graduationOrdersTable.id, order.id)).limit(1).for("update");
+    if (!fresh || (fresh.groupId ?? null) !== (order.groupId ?? null))
+      return { response: error("سجل الطالب غير موجود ضمن هذا النطاق", 404) };
+    if (fresh.archivedAt) return { response: error("تمت أرشفة هذا الطلب مسبقاً", 409) };
+    if ((fresh.productionStage ?? "new") !== "new" || ["ready", "delivered"].includes(fresh.status))
+      return { response: error("لا يمكن أرشفة طلب بدأ إنتاجه أو أصبح جاهزاً للتسليم", 409) };
+    // Preserve positive legacy snapshots too; reconciliation must never erase
+    // evidence that should route the administrator to financial review.
+    if (!Number.isFinite(Number(fresh.paidAmount)) || Number(fresh.paidAmount) > 0)
+      return { response: error("لا يمكن أرشفة طلب عليه دفعة؛ راجع سجل الدفعات أولاً", 409) };
+    if (fresh.invoiceId) {
+      const [invoice] = await tx.select().from(salesInvoicesTable)
+        .where(eq(salesInvoicesTable.id, fresh.invoiceId)).limit(1).for("update");
+      if (!invoice) return { response: error("الفاتورة المرتبطة غير موجودة؛ يلزم مراجعة الربط قبل الأرشفة", 409) };
+      if (!Number.isFinite(Number(invoice.paidAmount)) || Number(invoice.paidAmount) > 0)
+        return { response: error("لا يمكن أرشفة طلب مرتبط بفاتورة عليها دفعة", 409) };
+    }
+    const evidence = await tx.execute(sql`
+      SELECT
+        ((SELECT count(*) FROM graduation_student_payments WHERE graduation_order_id = ${fresh.id}) +
+         (SELECT count(*) FROM financial_transactions WHERE
+            (source_type = 'graduation_order' AND source_id = ${String(fresh.id)}) OR
+            (source_type = 'sales_invoice' AND source_id = ${String(fresh.invoiceId ?? 0)})) +
+         (SELECT count(*) FROM receipt_voucher_allocations WHERE
+            (source_type = 'graduation_order' AND source_id = ${fresh.id}) OR
+            (source_type = 'sales_invoice' AND source_id = ${fresh.invoiceId ?? 0})) +
+         (SELECT count(*) FROM installment_contracts WHERE sales_invoice_id = ${fresh.invoiceId ?? 0}) +
+         (SELECT count(*) FROM representative_payment_requests WHERE graduation_order_id = ${fresh.id}
+            AND status IN ('pending', 'processing', 'approved')))::int AS payment_count,
+        ((SELECT count(*) FROM graduation_production_events WHERE graduation_order_id = ${fresh.id}
+            AND (stage <> 'new' OR previous_stage <> 'new' OR scan_type IN ('tailor_start', 'tailor_mark_ready'))) +
+         (SELECT count(*) FROM entity_timeline WHERE entity_type = 'graduation_order' AND entity_id = ${fresh.id}
+            AND type = 'stage_changed' AND (coalesce(metadata->>'to', 'new') <> 'new'
+              OR coalesce(metadata->>'from', 'new') <> 'new')) +
+         (SELECT count(*) FROM graduation_packaging_events WHERE graduation_order_id = ${fresh.id}
+            AND result = 'accepted' AND event_type IN ('component_scan', 'packaging_completed')))::int AS production_count
+    `);
+    const counts = evidence.rows?.[0] as { payment_count: number; production_count: number } | undefined;
+    if (!counts || !Number.isFinite(Number(counts.payment_count)) || !Number.isFinite(Number(counts.production_count)))
+      throw new Error("تعذر التحقق من سجل دفعات وإنتاج طلب التخرج");
+    if (Number(counts.payment_count) > 0)
+      return { response: error("لا يمكن الأرشفة: توجد دفعة أو مطالبة مالية مسجلة، بما فيها الدفعات المعلقة", 409) };
+    if (Number(counts.production_count) > 0)
+      return { response: error("لا يمكن الأرشفة: سجل الطلب يثبت بدء الإنتاج", 409) };
+    await restoreGraduationInventoryFromMovements(fresh, user, tx);
+    await releaseGraduationMaterialReservations(tx, fresh.id);
+    const now = new Date();
+    if (fresh.invoiceId)
+      await tx.update(salesInvoicesTable).set({ status: "cancelled", updatedAt: now })
+        .where(eq(salesInvoicesTable.id, fresh.invoiceId));
     await tx
       .update(tasksTable)
       .set({ status: "cancelled", updatedAt: now })
       .where(
         and(
           eq(tasksTable.relatedType, "graduation_order"),
-          eq(tasksTable.relatedId, order.id),
+          eq(tasksTable.relatedId, fresh.id),
           sql`${tasksTable.status} not in ('completed', 'cancelled')`,
         ),
       );
-    return tx
+    const [archived] = await tx
       .update(graduationOrdersTable)
-      .set({ archivedAt: now, updatedAt: now })
+      .set({ status: "cancelled", inventoryApplied: false, archivedAt: now, updatedAt: now })
       .where(
         and(
-          eq(graduationOrdersTable.id, order.id),
+          eq(graduationOrdersTable.id, fresh.id),
           isNull(graduationOrdersTable.archivedAt),
         ),
       )
       .returning();
+    if (!archived) throw new Error("تغير الطلب أثناء الأرشفة");
+    await reconcilePaymentState(tx, { sourceType: "graduation_order", sourceId: fresh.id });
+    await addTimeline(archived.id, context.timelineType, context.timelineTitle, user, {
+      orderNo: archived.orderNo, archivedAt: now.toISOString(), ...(context.metadata ?? {}),
+    }, "graduation_order", tx);
+    await addActivity(user, context.activity, archived.id, {
+      orderNo: archived.orderNo, cancelledBeforeArchive: true, ...(context.metadata ?? {}),
+    }, "graduation_order", tx);
+    return { order: archived };
   });
-  if (!archived) return { response: error("تعذر حذف الحجز، حاول مرة أخرى", 409) };
-
-  await addTimeline(archived.id, context.timelineType, context.timelineTitle, user, {
-    orderNo: archived.orderNo,
-    archivedAt: now.toISOString(),
-    ...(context.metadata ?? {}),
-  });
-  await addActivity(user, context.activity, archived.id, {
-    orderNo: archived.orderNo,
-    cancelledBeforeArchive: true,
-    ...(context.metadata ?? {}),
-  });
-  return { order: archived };
 }
 
 export async function handleAdminGraduation(
