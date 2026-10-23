@@ -437,6 +437,14 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
   const overview = useQuery<OverviewData>({ queryKey: [...key, "overview"], queryFn: () => adminFetch(`${base}/overview`) });
   const readinessQuery = useQuery<ReadinessDisplay>({ queryKey: [...key,"readiness"], queryFn: () => adminFetch(`${base}/readiness`), refetchInterval:30_000 });
   const transportation = useQuery<{ transportation: Partial<TransportValue> | null; dispatchVehicle?: DispatchVehicle | null }>({ queryKey: [...key, "transportation"], queryFn: () => adminFetch(`${base}/transportation`) });
+  // A vehicle is a scheduled resource: the period engine refuses one without the
+  // booking's operating period. Shares the period panel's query, so saving the
+  // period there updates the card at once.
+  const resourceWindow = useQuery<{ resourceWindow?: unknown | null }>({ queryKey: ["booking-resource-window", base], queryFn: () => adminFetch(`${base}/resource-window`), retry: false });
+  const openResourcePeriod = () => {
+    changeTab("assets");
+    window.setTimeout(() => document.getElementById("ajn-resource-window")?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
+  };
   // Kosha bookings save transport on the kosha booking itself (its total and the
   // vehicle accounts read it there); service orders through the booking endpoint.
   const setTransportation = useMutation({
@@ -589,7 +597,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <section className="ajn-op-quickbar"><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button className="ajn-op-add-item"><Plus /> إضافة عنصر <ChevronDown /></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="ajn-op-add-menu"><DropdownMenuItem onSelect={() => changeTab("products")}><span className="is-store"><ShoppingBag /></span><span><b>إضافة منتج من المتجر</b><small>اختر المنتجات والمتغيرات واحجز الكمية من المخزون.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("assets")}><span className="is-asset"><PackageCheck /></span><span><b>إضافة أصل من الأصول</b><small>اربط المعدات وتحقق من التوفر وحالة الأصل.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => { window.requestAnimationFrame(() => document.getElementById("ajn-transport-card")?.scrollIntoView({ behavior: "smooth", block: "center" })); }}><span className="is-asset"><Truck /></span><span><b>إضافة خدمة نقل</b><small>حدّد النقل بواسطة AJN أو من مسؤولية الزبون لهذا الحجز.</small></span><ChevronLeft /></DropdownMenuItem></DropdownMenuContent></DropdownMenu><div className="ajn-op-quick-groups">{nextBooking || nextWarehouse ? <div className="ajn-op-quick-group" role="group" aria-label="الخطوة التالية"><small>الخطوة التالية</small>{nextBooking && <Button variant="outline" onClick={() => setConfirm({ kind: "booking", stage: nextBooking[0], label: nextBooking[1] })}><Check /> {nextBooking[1]}</Button>}{nextWarehouse && <Button variant="outline" onClick={() => setConfirm({ kind: "warehouse", stage: nextWarehouse[0], label: nextWarehouse[1] })}><QrCode /> {nextWarehouse[1]}</Button>}</div> : null}<div className="ajn-op-quick-group" role="group" aria-label="اختصارات"><small>اختصارات</small><Button variant="ghost" onClick={() => changeTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="ghost" onClick={() => changeTab("documents")}><FileText /> رفع مستند</Button></div></div></section>
 
-    <TransportationCard value={{ mode: transportationMode as TransportValue["mode"], fee: transportationFee, vehicleId: transportation.data?.transportation?.vehicleId ?? null, driverId: transportation.data?.transportation?.driverId ?? null, note: transportation.data?.transportation?.note ?? null, inTotal: transportation.data?.transportation?.inTotal === true }} dispatchVehicle={transportation.data?.dispatchVehicle ?? null} busy={setTransportation.isPending} onSave={(next) => setTransportation.mutate(next)} />
+    <TransportationCard value={{ mode: transportationMode as TransportValue["mode"], fee: transportationFee, vehicleId: transportation.data?.transportation?.vehicleId ?? null, driverId: transportation.data?.transportation?.driverId ?? null, note: transportation.data?.transportation?.note ?? null, inTotal: transportation.data?.transportation?.inTotal === true }} dispatchVehicle={transportation.data?.dispatchVehicle ?? null} periodMissing={resourceWindow.isSuccess && !resourceWindow.data?.resourceWindow} onOpenPeriod={openResourcePeriod} busy={setTransportation.isPending} onSave={(next) => setTransportation.mutate(next)} />
 
     <GroupAttendeesCard attendees={attendees.data?.attendees ?? []} adding={addAttendee.isPending} removingId={removeAttendee.isPending ? (removeAttendee.variables as string) : null} onAdd={(payload) => addAttendee.mutate(payload)} onRemove={(id) => removeAttendee.mutate(id)} onCollect={(id, collected) => collectAttendee.mutate({ id, collected })} onPrint={printAttendeeReceipt} onPrintSheet={printAttendeesSheet} onPostCollected={() => postCollected.mutate()} posting={postCollected.isPending} />
 
@@ -679,7 +687,7 @@ function GroupAttendeesCard({ attendees, adding, removingId, onAdd, onRemove, on
   );
 }
 
-function TransportationCard({ value, dispatchVehicle, busy, onSave }: { value: TransportValue; dispatchVehicle: DispatchVehicle | null; busy: boolean; onSave: (next: TransportValue) => void }) {
+function TransportationCard({ value, dispatchVehicle, periodMissing, onOpenPeriod, busy, onSave }: { value: TransportValue; dispatchVehicle: DispatchVehicle | null; periodMissing: boolean; onOpenPeriod: () => void; busy: boolean; onSave: (next: TransportValue) => void }) {
   const [m, setM] = useState<TransportValue["mode"]>(value.mode);
   const [f, setF] = useState(value.fee ? String(value.fee) : "");
   const [vehicleId, setVehicleId] = useState(value.vehicleId ? String(value.vehicleId) : "");
@@ -699,7 +707,7 @@ function TransportationCard({ value, dispatchVehicle, busy, onSave }: { value: T
   const vehicleOptions = (vehicles.data?.data ?? []).filter((vehicle) => vehicle.isActive !== false || String(vehicle.id) === vehicleId);
   const driverOptions = (Array.isArray(drivers.data) ? drivers.data : []).filter((driver) => driver.isActive !== false || String(driver.id) === driverId);
   const fee = Number(f) || 0;
-  const problem = m === "ajn" ? (fee <= 0 ? "أدخل أجرة النقل" : !vehicleId ? "اختر السيارة حتى تُحسب الأجرة لها" : null) : null;
+  const problem = m === "ajn" ? (fee <= 0 ? "أدخل أجرة النقل" : !vehicleId ? "اختر السيارة حتى تُحسب الأجرة لها" : periodMissing ? "حدّد فترة تشغيل الموارد للحجز أولاً" : null) : null;
   // A fee saved before vehicles were linked was informational and never in the total.
   const legacyNote = value.mode === "ajn" && !value.vehicleId && value.inTotal !== true;
   const dispatchDiffers = Boolean(dispatchVehicle && m === "ajn" && vehicleId && String(dispatchVehicle.id) !== vehicleId);
@@ -737,6 +745,7 @@ function TransportationCard({ value, dispatchVehicle, busy, onSave }: { value: T
           </label>
         </div>
       ) : null}
+      {m === "ajn" && periodMissing ? <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-800" role="status"><span className="min-w-0 flex-1 basis-60">ربط السيارة يحتاج <b>فترة تشغيل الموارد</b> لهذا الحجز (بداية التجهيز، المناسبة، والإرجاع) حتى لا تُحجز السيارة لحجزين بنفس الوقت.</span><Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs" onClick={onOpenPeriod}>تحديد فترة التشغيل</Button></div> : null}
       {dispatchDiffers ? <p className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800" role="status">السيارة المسندة لهذا الحجز من «إسناد موارد النقل»: <b>{dispatchLabel}</b>، وتختلف عن سيارة النقل المختارة.<Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => change(() => setVehicleId(String(dispatchVehicle!.id)))}>استخدمها</Button></p> : null}
       {problem && touched ? <p className="mt-2 text-xs font-semibold text-destructive" role="alert">{problem}</p> : null}
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -851,7 +860,7 @@ function AssetsTab({ base, queryKey,onSaved }: { base: string; queryKey: unknown
   });
   return <div className="ajn-op-tab-panel ajn-op-assets-panel">
     <div className="ajn-op-section-head"><div><PackageCheck /><span><small>دورة حياة الأصل</small><h2>أصول الحجز</h2></span></div><div className="ajn-op-actions"><Badge variant="outline">{assets.data?.assets.length ?? 0} أصل</Badge><Button className="ajn-op-import is-asset" onClick={() => document.getElementById("booking-asset-search")?.focus()}><PackageCheck /> إضافة أصل</Button><Button variant="outline" asChild><Link href="/admin/assets">فتح إدارة الأصول</Link></Button></div></div>
-    <BookingResourceWindowPanel base={base} queryKey={queryKey} onSaved={onSaved} />
+    <div id="ajn-resource-window" className="scroll-mt-52"><BookingResourceWindowPanel base={base} queryKey={queryKey} onSaved={onSaved} /></div>
     <BookingConflictReportPanel base={base} queryKey={queryKey} />
     <KoshaEquipmentImport base={base} queryKey={queryKey} />
     <FixedCustodyPanel base={base} queryKey={queryKey} />

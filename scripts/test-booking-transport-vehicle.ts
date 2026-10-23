@@ -96,5 +96,11 @@ assert.match(endpoint, /dispatchVehicle: dispatched \?/);
 assert.match(card, /السيارة المسندة لهذا الحجز من «إسناد موارد النقل»/);
 assert.match(card, /value\.mode === "ajn" && dispatchVehicle \? String\(dispatchVehicle\.id\)/);
 
+// 9. A vehicle needs the booking's operating period; the card says so before saving.
+assert.match(ui, /queryKey: \["booking-resource-window", base\], queryFn: \(\) => adminFetch\(`\$\{base\}\/resource-window`\)/, "shares the period panel's query");
+assert.match(card, /periodMissing \? "حدّد فترة تشغيل الموارد للحجز أولاً"/);
+assert.match(card, /تحديد فترة التشغيل/);
+assert.match(ui, /<div id="ajn-resource-window" className="scroll-mt-52"><BookingResourceWindowPanel/);
+
 console.log("PASS  booking transport: fee in total once, vehicle required, kosha via its booking, vehicle accounts include service orders");
 console.log("PASS  vehicle expenses link service-order trips after migration 0128; the card offers the dispatched vehicle");
