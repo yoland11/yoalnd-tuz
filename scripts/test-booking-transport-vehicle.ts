@@ -108,6 +108,13 @@ assert.equal(bookingResourceSpan({ resourceWindow: { eventStart: "bad" } }, "202
 const { resourceTimingProblem } = await import("../src/server/booking-resource-availability");
 assert.equal(resourceTimingProblem({ operations: {}, eventDate: "2026-10-31" }), null);
 assert.match(String(resourceTimingProblem({ operations: {}, eventDate: null })), /تاريخ الحجز/);
+// Photography too: the event may be created and timed without a period.
+const photoForm = readFileSync("src/views/staff/photography/index.tsx", "utf8");
+assert.match(photoForm, /if \(Object\.values\(period\)\.some\(Boolean\)\) \{/, "an empty photography period is allowed");
+assert.match(photoForm, /<BookingResourceWindowInputs draft=\{period\} disabled=\{busy\} required=\{false\}/);
+assert.match(photoForm, /onSaved=\{\(\) => void loadDetail\(\)\} optional \/>/);
+assert.match(api, /const resourceWindow=data\.resourceWindow==null\?null:parseBookingResourceWindow\(data\.resourceWindow,data\.eventDate\)/);
+assert.match(api, /patch\.eventTime!==live\.eventTime&&before\.resourceWindow&&patch\.eventTime!==/, "a shoot time is only held to a period that exists");
 
 // Trip cost counts executed expenses only, like the vehicle's executed-expense total.
 assert.match(vehicleDetail, /!\["executed", "partially_reversed", "reversed"\]\.includes\(expense\.status\)\) return sum;/);

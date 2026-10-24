@@ -62639,7 +62639,8 @@ async function handlePhotographyStaffPortal(
           if(!canAccessPhotographyEvent(auth,duplicate,crewEventIds))throw new BookingResourceConflictError("المناسبة تخص حساباً آخر",403);
           return{row:duplicate,replayed:true};
         }
-        const resourceWindow=parseBookingResourceWindow(data.resourceWindow,data.eventDate),calendar=resourceWindowCalendar(resourceWindow);
+        // The period is optional; without one the photographer holds the whole event day.
+        const resourceWindow=data.resourceWindow==null?null:parseBookingResourceWindow(data.resourceWindow,data.eventDate),calendar=resourceWindow?resourceWindowCalendar(resourceWindow):null;
         const [row] = await tx
         .insert(photographyEventsTable)
         .values({
@@ -62648,8 +62649,8 @@ async function handlePhotographyStaffPortal(
           eventName: nullableText(data.eventName),
           eventDate: data.eventDate,
           resourceWindow,
-          eventStartTime:calendar.eventTime,
-          eventEndTime:calendar.endTime,
+          eventStartTime:calendar?.eventTime??null,
+          eventEndTime:calendar?.endTime??null,
           location: nullableText(data.location),
           assignedStaffId: assigned.id,
           assignedStaffName: assigned.fullName || assigned.username,
@@ -63296,7 +63297,7 @@ async function handlePhotographyStaffPortal(
       const [updated] = await db.transaction(tx => guardPhotographyResourceWrite(tx,event.id,async before => {
       const live=await tx.query.photographyShootsTable.findFirst({where:eq(photographyShootsTable.id,shoot.id)});
       if(!live||live.eventId!==event.id)throw new BookingResourceConflictError("تغيّرت مهمة التصوير؛ أعد فتحها",409);
-      if(payload?.eventTime!==undefined&&patch.eventTime!==live.eventTime&&(!before.resourceWindow||patch.eventTime!==resourceWindowCalendar(before.resourceWindow).eventTime))throw new BookingResourceConflictError("عدّل الموعد وفترة التشغيل معاً من محرر الفترة؛ لا يمكن حفظ وقت تصوير مخالف للفترة",409);
+      if(payload?.eventTime!==undefined&&patch.eventTime!==live.eventTime&&before.resourceWindow&&patch.eventTime!==resourceWindowCalendar(before.resourceWindow).eventTime)throw new BookingResourceConflictError("عدّل الموعد وفترة التشغيل معاً من محرر الفترة؛ لا يمكن حفظ وقت تصوير مخالف للفترة",409);
       return tx
         .update(photographyShootsTable)
         .set(patch)

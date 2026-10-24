@@ -1,7 +1,7 @@
 import {sql} from "drizzle-orm";
 import {isDeepStrictEqual} from "node:util";
 import {parseBookingResourceWindow,readBookingResourceWindow,resourceWindowCalendar} from "@/lib/booking-resource-window";
-import {BookingResourceConflictError,findBookingStaffConflict,resourceRows,staffConflictGroups,type ResourceExecutor,type StaffTimedRef} from "./booking-resource-availability";
+import {BookingResourceConflictError,resourceTimingProblem,findBookingStaffConflict,resourceRows,staffConflictGroups,type ResourceExecutor,type StaffTimedRef} from "./booking-resource-availability";
 import {guardBookingResourceWrite,readResourceBooking,saveBookingResourceWindow,type ResourceWindowSaveOptions} from "./booking-resource-period";
 
 type Database=ResourceExecutor&{transaction<T>(run:(tx:ResourceExecutor)=>Promise<T>):Promise<T>};
@@ -43,9 +43,11 @@ export async function assertPhotographyResourceAllocation(tx:ResourceExecutor,ne
   if(!next.staffIds.length)return null;
   if(next.staffIds.length>100)throw new BookingResourceConflictError("راجع عدد أفراد فريق التصوير قبل الإسناد",422);
   if(next.central&&(next.central.archivedAt||terminal(next.central.status)))throw new BookingResourceConflictError("لا يمكن إسناد تصوير لحجز مركزي ملغي أو مكتمل أو مؤرشف",409);
-  if(!next.resourceWindow)throw new BookingResourceConflictError("حدد فترة تشغيل التصوير من التجهيز حتى اكتمال الإرجاع قبل الإسناد أو تغيير الموعد",409);
-  const calendar=resourceWindowCalendar(next.resourceWindow);
-  if(next.event.event_date!==calendar.eventDate||next.event.event_start_time&&String(next.event.event_start_time).slice(0,5)!==calendar.eventTime||next.event.event_end_time&&String(next.event.event_end_time).slice(0,5)!==calendar.endTime)throw new BookingResourceConflictError("موعد التصوير لا يطابق فترة التشغيل؛ عدّل الموعد والفترة معاً",409);
+  // The period is optional; without one the shoot holds its whole event day.
+  const timingProblem=resourceTimingProblem(next.reference);
+  if(timingProblem)throw new BookingResourceConflictError(timingProblem,409);
+  const calendar=next.resourceWindow?resourceWindowCalendar(next.resourceWindow):null;
+  if(calendar&&(next.event.event_date!==calendar.eventDate||next.event.event_start_time&&String(next.event.event_start_time).slice(0,5)!==calendar.eventTime||next.event.event_end_time&&String(next.event.event_end_time).slice(0,5)!==calendar.endTime))throw new BookingResourceConflictError("موعد التصوير لا يطابق فترة التشغيل؛ عدّل الموعد والفترة معاً",409);
   const staff=resourceRows(await tx.execute(sql`SELECT id,is_active FROM staff WHERE id IN (${sql.join(next.staffIds.map(id=>sql`${id}`),sql`, `)}) ORDER BY id FOR UPDATE`));
   if(next.staffIds.some(id=>!staff.some(row=>Number(row.id)===id&&row.is_active===true)))throw new BookingResourceConflictError("تغيّرت أهلية أحد المصورين؛ اختر فريقاً نشطاً",422);
   const groups=staffConflictGroups(next.staffIds,overrideReason,overrideStaffIds);

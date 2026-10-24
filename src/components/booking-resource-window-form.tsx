@@ -36,16 +36,16 @@ export const emptyResourceWindowDraft=()=>draftOf(null);
 export function resourceWindowFromLocal(draft:Draft,eventDate?:string|null){
   return parseBookingResourceWindow(Object.fromEntries(fields.map(([key])=>[key,draft[key]?`${draft[key]}${draft[key].length===16?":00":""}+03:00`:""])),eventDate);
 }
-export function BookingResourceWindowInputs({draft,disabled=false,onChange}:{draft:Draft;disabled?:boolean;onChange:(key:keyof BookingResourceWindow,value:string)=>void}){
+export function BookingResourceWindowInputs({draft,disabled=false,required=true,onChange}:{draft:Draft;disabled?:boolean;required?:boolean;onChange:(key:keyof BookingResourceWindow,value:string)=>void}){
   const prefix=useId();
-  return <FieldGroup className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-4">{fields.map(([key,label,description])=><Field key={key} className="min-w-0 gap-2"><FieldLabel htmlFor={`${prefix}-${key}`}>{label}</FieldLabel><Input id={`${prefix}-${key}`} name={key} type="datetime-local" step="1" dir="ltr" className="min-h-11 min-w-0 max-w-full text-sm" required value={draft[key]} disabled={disabled} onChange={event=>onChange(key,event.target.value)} aria-describedby={`${prefix}-${key}-help`}/><FieldDescription id={`${prefix}-${key}-help`}>{description}</FieldDescription></Field>)}</FieldGroup>;
+  return <FieldGroup className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-4">{fields.map(([key,label,description])=><Field key={key} className="min-w-0 gap-2"><FieldLabel htmlFor={`${prefix}-${key}`}>{label}</FieldLabel><Input id={`${prefix}-${key}`} name={key} type="datetime-local" step="1" dir="ltr" className="min-h-11 min-w-0 max-w-full text-sm" required={required} value={draft[key]} disabled={disabled} onChange={event=>onChange(key,event.target.value)} aria-describedby={`${prefix}-${key}-help`}/><FieldDescription id={`${prefix}-${key}-help`}>{description}</FieldDescription></Field>)}</FieldGroup>;
 }
 
 /** No guessed duration or reservation side effect. The expected snapshot stays
  * with the draft: a background refresh cannot silently overwrite unsaved times. */
 export function BookingResourceWindowForm({ data, loading = false, error, onRetry, onSave, optional = false }: {
   data?: BookingResourceWindowData;
-  /** Bookings: without a period the whole event day is held. Photography still requires one. */
+  /** Without a saved period the whole event day is held. */
   optional?: boolean;
   loading?: boolean;
   error?: unknown;

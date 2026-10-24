@@ -141,13 +141,15 @@ export function EventForm({ me, initialEvent, onCreated }: { me: AdminMe; initia
     event.preventDefault();
     if (inFlight.current || employeeError || employeesLoading || !form.groomName.trim() || !form.eventDate) return;
     setSaveError("");
-    let resourceWindow;
-    try { resourceWindow = resourceWindowFromLocal(period, form.eventDate); }
-    catch (cause) { setSaveError(cause instanceof Error ? cause.message : "تحقق من ترتيب المواعيد"); return; }
+    // The period is optional: left empty, the photographer holds the whole event day.
+    let resourceWindow = null;
+    if (Object.values(period).some(Boolean)) {
+      try { resourceWindow = resourceWindowFromLocal(period, form.eventDate); }
+      catch (cause) { setSaveError(cause instanceof Error ? cause.message : "تحقق من ترتيب المواعيد"); return; }
+    }
     inFlight.current = true; setBusy(true);
     const clientToken = clientTokenRef.current;
-    const calendar = resourceWindowCalendar(resourceWindow);
-    const payload = { ...form, eventDate: calendar.eventDate, resourceWindow, clientToken };
+    const payload = { ...form, eventDate: resourceWindow ? resourceWindowCalendar(resourceWindow).eventDate : form.eventDate, ...(resourceWindow ? { resourceWindow } : {}), clientToken };
     const localEvent = { ...payload, id: 0, assignedStaffName: photographers.find((item) => item.id === form.assignedStaffId)?.name || me.fullName || me.username, status: "pending_sync", orderCount: 0, createdAt: new Date().toISOString() } as PhotographyEvent;
     try {
       const result = await photographyApi.createEvent(payload);
@@ -160,14 +162,14 @@ export function EventForm({ me, initialEvent, onCreated }: { me: AdminMe; initia
   }
   return (
     <form onSubmit={submit} className="space-y-4 rounded-xl border border-border/30 bg-card p-4">
-      <div><h2 className="font-bold text-foreground">{initialEvent ? "تأكيد مسودة المناسبة" : "إنشاء مناسبة جديدة"}</h2><p className="mt-1 text-xs text-muted-foreground">حدد فترة التشغيل بتوقيت بغداد للتحقق من توفر المصور قبل بدء المناسبة.</p></div>
+      <div><h2 className="font-bold text-foreground">{initialEvent ? "تأكيد مسودة المناسبة" : "إنشاء مناسبة جديدة"}</h2><p className="mt-1 text-xs text-muted-foreground">فترة التشغيل اختيارية (بتوقيت بغداد)؛ بدونها يُحجز المصور طوال يوم المناسبة.</p></div>
       <fieldset disabled={busy} className="min-w-0 space-y-4">
       <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم العريس *</span><Input value={form.groomName} onChange={(event) => setForm({ ...form, groomName: event.target.value })} /></label>
       <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم المناسبة</span><Input value={form.eventName} onChange={(event) => setForm({ ...form, eventName: event.target.value })} /></label>
       <div className="grid gap-3 sm:grid-cols-2"><label className="block space-y-1"><span className="text-xs text-muted-foreground">التاريخ *</span><Input type="date" value={form.eventDate} onChange={(event) => setForm({ ...form, eventDate: event.target.value })} /></label><label className="block space-y-1"><span className="text-xs text-muted-foreground">الموقع</span><Input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} /></label></div>
       <label className="block space-y-1"><span className="text-xs text-muted-foreground">المصور المسؤول</span><EmployeeSelect employees={photographers} value={String(form.assignedStaffId)} disabled={employeesLoading || !!employeeError} onValueChange={(value) => setForm({ ...form, assignedStaffId: Number(value) })} placeholder="اختر المصور" aria-label="المصور المسؤول" /></label>
       {employeeError ? <div role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm"><p>تعذر تحميل المصورين: {employeeError}</p><Button type="button" variant="outline" className="mt-2 min-h-11" onClick={() => void loadPhotographers()}>إعادة تحميل المصورين</Button></div> : null}
-      <BookingResourceWindowInputs draft={period} disabled={busy} onChange={(key, value) => { setPeriod(current => ({ ...current, [key]: value })); if (key === "eventStart" && value) setForm(current => ({ ...current, eventDate: value.slice(0, 10) })); setSaveError(""); }} />
+      <BookingResourceWindowInputs draft={period} disabled={busy} required={false} onChange={(key, value) => { setPeriod(current => ({ ...current, [key]: value })); if (key === "eventStart" && value) setForm(current => ({ ...current, eventDate: value.slice(0, 10) })); setSaveError(""); }} />
       </fieldset>
       {saveError ? <p role="alert" className="break-words rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">{saveError}</p> : null}
       <Button className="min-h-11 w-full" disabled={busy || employeesLoading || !!employeeError || !form.groomName.trim() || !form.eventDate}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Camera className="ml-2 h-4 w-4" /> بدء المناسبة</>}</Button>
@@ -336,7 +338,7 @@ function RegistrationEventPage({ eventRef, me }: { eventRef: string; me: AdminMe
         <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2"><span className="flex items-center gap-1"><CalendarDays className="h-3 w-3" />{event.eventDate}</span>{event.location ? <span className="flex items-center gap-1"><MapPin className="h-3 w-3" />{event.location}</span> : null}</div>
       </div>
       {manager ? <EventManagerBar event={event} onChanged={loadDetail} /> : null}
-      <BookingResourceWindowPanel base={`/staff/photography/events/${encodeURIComponent(eventRef)}`} queryKey={["photography-event", eventRef]} onSaved={() => void loadDetail()} />
+      <BookingResourceWindowPanel base={`/staff/photography/events/${encodeURIComponent(eventRef)}`} queryKey={["photography-event", eventRef]} onSaved={() => void loadDetail()} optional />
       {summary ? (
         <div className="grid grid-cols-3 gap-2">
           <SummaryStat label="الطلبات" value={summary.orders} />
