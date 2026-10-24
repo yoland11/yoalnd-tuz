@@ -402,6 +402,7 @@ import {
 } from "@/server/daily-cash";
 import {
   approveAndExecuteFinancialTransaction,
+  FinancialApprovalError,
   cancelFinancialTransactionRequest,
   canApproveFinancialTransactions,
   createAndExecuteSourceFinancialTransaction,
@@ -70288,6 +70289,26 @@ async function handleMasterCash(
           return json(row);
         } catch (approvalError) {
           const requestId = makeRequestId(req.headers.get("x-request-id"));
+          // A known rule (e.g. insufficient cash) is the reviewer's to fix: say why.
+          if (approvalError instanceof FinancialApprovalError) {
+            console.warn("Master cash approval rejected", {
+              requestId,
+              transactionId: id,
+              actorId: financeUser.id,
+              status: approvalError.status,
+              message: approvalError.message,
+            });
+            return error(approvalError.message, approvalError.status, {
+              code:
+                approvalError.status === 403
+                  ? "PERMISSION_DENIED"
+                  : approvalError.status === 404
+                    ? "NOT_FOUND"
+                    : "CONFLICT",
+              requestId,
+              retryable: false,
+            });
+          }
           console.error("Master cash approval failed", {
             requestId,
             transactionId: id,

@@ -48,6 +48,10 @@ check("loan repayment is approval-first and durably idempotent", api.includes('i
 check("reversing a loan repayment restores the company liability", cashbox.includes('company_loan_repayment_reversed') && cashbox.includes('net_repaid'));
 check("financial approvals UI uses the server-side approval API", sales.includes('/admin/master-cash/transactions/${id}/approve'));
 check("financial approvals have a dedicated admin route", api.includes("if (section !== \"master-cash\")") && readFileSync("src/views/admin/index.tsx", "utf8").includes('path="/admin/financial-approvals"'));
+check("insufficient cash is a typed rule with the balance and amount", executor.includes("throw new FinancialApprovalError(`رصيد الصندوق غير كافٍ لتنفيذ المصروف: الرصيد الحالي ${iqd(before)} والمطلوب ${iqd(amount)}`)"));
+check("known approval rules never fall back to plain errors", !executor.includes("throw new Error("));
+const approveRoute = api.slice(api.indexOf('if (method === "POST" && action === "approve") {'), api.indexOf('if (method === "POST" && action === "reject") {'));
+check("approval route answers a known rule with its message and status, not 500", approveRoute.includes("if (approvalError instanceof FinancialApprovalError) {") && approveRoute.includes("return error(approvalError.message, approvalError.status, {") && approveRoute.indexOf("FinancialApprovalError") < approveRoute.indexOf("DATABASE_ERROR"));
 
 if (failures) {
   console.error(`AJN FINANCIAL APPROVAL CONTRACT FAILED: ${failures} check(s).`);

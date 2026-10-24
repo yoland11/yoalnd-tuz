@@ -18,6 +18,16 @@ import { isPaymentStateSourceType, reconcilePaymentState } from "./payment-state
 import { lockGraduationPaymentSource } from "./graduation-write-guard";
 import { postApprovedInstallmentPayment, rejectPendingInstallmentPayment, reconcileLegacyInstallmentInvoice, reversePostedInstallmentPayment } from "./installment-payment-posting";
 
+/** A known approval rule (balance, state, missing link) the reviewer can act on.
+ * Same message as before, so callers that read the message are unaffected. */
+export class FinancialApprovalError extends Error {
+  constructor(message: string, public status: 403 | 404 | 409 = 409) {
+    super(message);
+    this.name = "FinancialApprovalError";
+  }
+}
+const iqd = (value: number) => `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value)} د.ع`;
+
 export type FinancialActor = {
   id: number | null;
   name: string;
@@ -791,7 +801,7 @@ async function executePendingFinancialTransaction(
       .from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id, id))
       .limit(1);
-    if (!initial) throw new Error("المعاملة غير موجودة");
+    if (!initial) throw new FinancialApprovalError("المعاملة غير موجودة", 404);
     if (initial.approvalStatus === "executed") return initial;
     await lockGraduationPaymentSource(tx, initial, {requireActive:initial.direction === "revenue"});
     // Source writers acquire the original order before changing their pending
@@ -800,25 +810,25 @@ async function executePendingFinancialTransaction(
     // request executed. Never lock financial first and invert that ordering.
     const [transaction] = await tx.select().from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id, id)).limit(1).for("update");
-    if (!transaction) throw new Error("المعاملة غير موجودة");
+    if (!transaction) throw new FinancialApprovalError("المعاملة غير موجودة", 404);
     if (transaction.approvalStatus === "executed") return transaction;
     if (transaction.sourceType !== initial.sourceType || transaction.sourceId !== initial.sourceId || transaction.direction !== initial.direction)
-      throw new Error("تغيّرت هوية المعاملة أثناء الاعتماد؛ حدّث الصفحة وأعد المحاولة");
+      throw new FinancialApprovalError("تغيّرت هوية المعاملة أثناء الاعتماد؛ حدّث الصفحة وأعد المحاولة");
     if (transaction.approvalStatus !== "pending")
-      throw new Error("يجب إرسال المعاملة للموافقة أولاً");
+      throw new FinancialApprovalError("يجب إرسال المعاملة للموافقة أولاً");
 
     const locked = await tx.execute(
       sql`SELECT * FROM master_cash_box WHERE code = 'MASTER' FOR UPDATE`,
     );
     const cashRaw = (locked.rows?.[0] ?? {}) as any;
-    if (!cashRaw.id) throw new Error("الصندوق الرئيسي غير مهيأ");
+    if (!cashRaw.id) throw new FinancialApprovalError("الصندوق الرئيسي غير مهيأ");
     const amount = money(transaction.amount);
     const before = money(cashRaw.current_balance);
     const after = money(
       transaction.direction === "revenue" ? before + amount : before - amount,
     );
     if (transaction.direction === "expense" && after < 0)
-      throw new Error("رصيد الصندوق غير كافٍ لتنفيذ المصروف");
+      throw new FinancialApprovalError(`رصيد الصندوق غير كافٍ لتنفيذ المصروف: الرصيد الحالي ${iqd(before)} والمطلوب ${iqd(amount)}`);
 
     const [cashAccount] = await tx
       .select()
@@ -836,7 +846,7 @@ async function executePendingFinancialTransaction(
       .where(eq(financialAccountsTable.code, counterCode))
       .limit(1);
     if (!cashAccount || !counterAccount)
-      throw new Error("دليل الحسابات غير مكتمل");
+      throw new FinancialApprovalError("دليل الحسابات غير مكتمل");
 
     const now = new Date();
     const [saved] = await tx
@@ -870,7 +880,7 @@ async function executePendingFinancialTransaction(
         .where(eq(financialTransactionsTable.id, id))
         .limit(1);
       if (current?.approvalStatus === "executed") return current;
-      throw new Error("تغيّرت حالة المعاملة، أعد المحاولة");
+      throw new FinancialApprovalError("تغيّرت حالة المعاملة، أعد المحاولة");
     }
 
     await tx
@@ -968,7 +978,7 @@ async function executePendingFinancialTransaction(
           ))
           .returning();
         if (!vehicleExpense)
-          throw new Error("مصروف السيارة المرتبط بالطلب المالي غير موجود");
+          throw new FinancialApprovalError("مصروف السيارة المرتبط بالطلب المالي غير موجود");
         await tx.insert(financialAuditLogsTable).values({
           transactionId: id,
           action: "vehicle_expense_posted",
@@ -995,7 +1005,7 @@ async function executePendingFinancialTransaction(
           RETURNING id
         `);
         if (!(posted.rows ?? []).length)
-          throw new Error("فاتورة المبيعات المرتبطة بالطلب المالي غير موجودة");
+          throw new FinancialApprovalError("فاتورة المبيعات المرتبطة بالطلب المالي غير موجودة");
       } else if (transaction.sourceType === "purchase_invoice") {
         // Purchases can be recorded operationally before cash is approved.
         // The approved request is the single place that settles supplier debt.
@@ -1014,7 +1024,7 @@ async function executePendingFinancialTransaction(
         `);
         const supplierId = Number((posted.rows?.[0] as any)?.supplier_id);
         if (!(posted.rows ?? []).length)
-          throw new Error("فاتورة الشراء المرتبطة بالطلب المالي غير موجودة أو غير نشطة");
+          throw new FinancialApprovalError("فاتورة الشراء المرتبطة بالطلب المالي غير موجودة أو غير نشطة");
         if (Number.isInteger(supplierId) && supplierId > 0) {
           await tx.execute(sql`
             UPDATE suppliers
@@ -1052,7 +1062,7 @@ async function executePendingFinancialTransaction(
           RETURNING invoice.id
         `);
         if (!(posted.rows ?? []).length)
-          throw new Error("طلب البحث أو فاتورته المرتبطة غير موجودة");
+          throw new FinancialApprovalError("طلب البحث أو فاتورته المرتبطة غير موجودة");
       } else if (transaction.sourceType === "receipt_voucher") {
         await tx.execute(
           sql`UPDATE receipt_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
@@ -1085,7 +1095,7 @@ async function executePendingFinancialTransaction(
           .set({ status: "executed", updatedAt: now })
           .where(eq(companyLoanRepaymentsTable.id, sourceId))
           .returning();
-        if (!repayment) throw new Error("دفعة سداد القرض المرتبطة غير موجودة");
+        if (!repayment) throw new FinancialApprovalError("دفعة سداد القرض المرتبطة غير موجودة");
         await tx.execute(sql`
           UPDATE company_loans
           SET total_repaid = least(original_amount::numeric, total_repaid::numeric + ${amount}),
@@ -1144,11 +1154,11 @@ export async function approveAndExecuteFinancialTransaction(
 ) {
   await ensureMasterCashBoxTables();
   if (!canApproveFinancialTransactions(actor))
-    throw new Error("اعتماد المعاملات المالية متاح للمدير الرئيسي فقط");
+    throw new FinancialApprovalError("اعتماد المعاملات المالية متاح للمدير الرئيسي فقط", 403);
   const pending = await db.query.financialTransactionsTable.findFirst({
     where: eq(financialTransactionsTable.id, id),
   });
-  if (!pending) throw new Error("المعاملة غير موجودة");
+  if (!pending) throw new FinancialApprovalError("المعاملة غير موجودة", 404);
   // The sole authorised role is the principal administrator. They may also
   // approve their own request, because no delegated role can post cash.
   return db.transaction((tx) =>
