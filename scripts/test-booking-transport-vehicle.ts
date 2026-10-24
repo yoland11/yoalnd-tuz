@@ -102,5 +102,11 @@ assert.match(card, /periodMissing \? "حدّد فترة تشغيل الموار�
 assert.match(card, /تحديد فترة التشغيل/);
 assert.match(ui, /<div id="ajn-resource-window" className="scroll-mt-52"><BookingResourceWindowPanel/);
 
+// 10. Vehicle loading sees the card's vehicle on service orders; an empty team is explained.
+const loading = readFileSync("src/server/booking-loading.ts", "utf8");
+assert.match(loading, /coalesce\(CASE WHEN b\.custom_fields->'bookingOperations'->'transportation'->>'mode'='ajn' THEN nullif\(b\.custom_fields->'bookingOperations'->'transportation'->>'vehicleId',''\)::integer END,d\.vehicle_id\) AS vehicle_id/);
+assert.match(loading, /const teamMissing=!record&&facts\.staff\.length<2;/);
+assert.match(loading, /عيّن فريق الحجز من «فريق الحجز» أعلى الصفحة/);
+
 console.log("PASS  booking transport: fee in total once, vehicle required, kosha via its booking, vehicle accounts include service orders");
 console.log("PASS  vehicle expenses link service-order trips after migration 0128; the card offers the dispatched vehicle");
