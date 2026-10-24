@@ -71,6 +71,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ProductionProgressPanel } from "./production-progress";
 import { useToast } from "@/hooks/use-toast";
+import { useGraduationOrderArchive } from "./graduation-archive";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { formatCurrency } from "@/lib/money";
 import { buildWhatsAppLink } from "@/lib/order-stages";
@@ -83,7 +84,7 @@ import {
   type GraduationConfig,
   type GraduationOption,
 } from "@/lib/graduation";
-import { adminFetch, apiErrorMessage } from "./_lib";
+import { adminFetch, apiErrorMessage, fetchAdminMe } from "./_lib";
 import { openQrPrintWindow } from "./print-helpers";
 import {
   GraduationGroupWorkspace,
@@ -1365,12 +1366,12 @@ function Orders({
   deliveryOnly?: boolean;
   individualOnly?: boolean;
 }) {
-  const { toast } = useToast();
-  const client = useQueryClient();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [measurementStatus, setMeasurementStatus] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
+  const me = useQuery({queryKey:["admin", "me"], queryFn:() => fetchAdminMe(), staleTime:60_000});
+  const archive = useGraduationOrderArchive(me.data);
   const stage = deliveryOnly ? "ready" : "";
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "graduation", "orders", search, status, stage, individualOnly, measurementStatus],
@@ -1379,26 +1380,6 @@ function Orders({
         `/admin/graduation/orders?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}&stage=${encodeURIComponent(stage)}&orderType=${individualOnly ? "individual" : ""}&measurementStatus=${encodeURIComponent(measurementStatus)}`,
       ),
   });
-  const removeBooking = useMutation({
-    mutationFn: (id: number) =>
-      adminFetch(`/admin/graduation/orders/${id}`, { method: "DELETE" }),
-    onSuccess: () => {
-      toast({ title: "تم حذف الحجز الفردي" });
-      client.invalidateQueries({ queryKey: ["admin", "graduation"] });
-    },
-    onError: (error) =>
-      toast({
-        title: "تعذر حذف الحجز",
-        description: apiErrorMessage(error),
-        variant: "destructive",
-      }),
-  });
-  function confirmRemove(item: any) {
-    const confirmed = window.confirm(
-      `سيتم إلغاء وأرشفة الحجز ${item.orderNo} للزبون ${item.customerName}. هل تريد المتابعة؟`,
-    );
-    if (confirmed) removeBooking.mutate(item.id);
-  }
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row">
@@ -1499,16 +1480,16 @@ function Orders({
                       >
                         <Eye className="h-4 w-4" />
                       </Button>
-                      {individualOnly ? (
+                      {archive.canArchive(item) ? (
                         <Button
-                          variant="ghost"
+                          variant="destructive"
                           size="icon"
-                          className="text-destructive hover:text-destructive"
-                          onClick={() => confirmRemove(item)}
-                          disabled={removeBooking.isPending}
-                          title="حذف الحجز الفردي"
+                          onClick={() => archive.request(item)}
+                          disabled={archive.isPending}
+                          title={item.groupId != null ? "أرشفة طلب هذا الطالب فقط" : "أرشفة الطلب الفردي"}
+                          aria-label={`أرشفة طلب ${item.customerName}`}
                         >
-                          {removeBooking.isPending ? (
+                          {archive.isPending ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <Trash2 className="h-4 w-4" />
@@ -1535,6 +1516,7 @@ function Orders({
       {selected ? (
         <OrderDetail id={selected} onClose={() => setSelected(null)} />
       ) : null}
+      {archive.confirmation}
     </div>
   );
 }
