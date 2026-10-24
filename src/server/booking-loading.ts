@@ -21,7 +21,8 @@ async function factsFor(tx:Executor,ref:Ref,actor:LoadingActor,lock=false) {
     SELECT b.id,b.status,b.booking_details AS details,b.assigned_staff_id,coalesce(b.transportation_vehicle_id,d.vehicle_id) AS vehicle_id
     FROM kosha_bookings b LEFT JOIN dispatch_assignments d ON d.entity_type='kosha_booking' AND d.entity_id=b.id AND d.status IN ('assigned','en_route','active')
     WHERE b.id=${ref.id} AND b.archived_at IS NULL ${lock?sql`FOR UPDATE OF b`:sql``}`:sql`
-    SELECT b.id,b.status,b.custom_fields AS details,NULL::integer AS assigned_staff_id,d.vehicle_id
+    SELECT b.id,b.status,b.custom_fields AS details,NULL::integer AS assigned_staff_id,
+      coalesce(CASE WHEN b.custom_fields->'bookingOperations'->'transportation'->>'mode'='ajn' THEN nullif(b.custom_fields->'bookingOperations'->'transportation'->>'vehicleId','')::integer END,d.vehicle_id) AS vehicle_id
     FROM service_orders b LEFT JOIN dispatch_assignments d ON d.entity_type='service_order' AND d.entity_id=b.id AND d.status IN ('assigned','en_route','active')
     WHERE b.id=${ref.id} AND b.archived_at IS NULL ${lock?sql`FOR UPDATE OF b`:sql``}`);
   if(!booking)throw new LoadingError("الحجز غير موجود أو مؤرشف",404);
@@ -134,9 +135,12 @@ async function factsFor(tx:Executor,ref:Ref,actor:LoadingActor,lock=false) {
 function viewOf(context:Awaited<ReturnType<typeof factsFor>>,actor:LoadingActor){
   const {facts,saved:record}=context;
   const reasons=[...facts.blockers];
+  // Loading roles come from the booking's own team; say so instead of an empty picker.
+  const teamMissing=!record&&facts.staff.length<2;
+  if(teamMissing)reasons.push("عيّن فريق الحجز من «فريق الحجز» أعلى الصفحة: يلزم موظفان على الأقل للتسليم والاستلام");
   if(!record){
     try{createLoading(facts,{id:"preview",responsibleId:facts.staff[0]?.id??0,senderId:facts.staff[0]?.id??0,receiverId:facts.staff[1]?.id??0},actor,new Date().toISOString())}
-    catch(cause){if(cause instanceof LoadingError){if(!reasons.includes(cause.message))reasons.push(cause.message)}else throw cause}
+    catch(cause){if(cause instanceof LoadingError){if(!reasons.includes(cause.message)&&!(teamMissing&&cause.message.startsWith("حدد مسؤول التحميل")))reasons.push(cause.message)}else throw cause}
   }
   return {facts:{...facts,lines:facts.lines.map(({codes,...line})=>line)},record,blockers:reasons,actorId:actor.id,canManage:actor.manager===true,canAct:actor.manager===true||facts.staff.some(s=>s.id===actor.id),
     returns:record?.status==="confirmed"?loadingReturnSummary(record,facts):null};
