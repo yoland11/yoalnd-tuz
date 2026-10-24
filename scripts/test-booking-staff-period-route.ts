@@ -3,8 +3,8 @@ import fs from "node:fs";import vm from "node:vm";import ts from "typescript";
 import { sql,eq,asc } from "drizzle-orm";import { PgDialect } from "drizzle-orm/pg-core";
 import * as tables from "@workspace/db";
 import { readResourceBooking } from "../src/server/booking-resource-period";
-import { findBookingStaffConflict,BookingResourceConflictError } from "../src/server/booking-resource-availability";
-import { readBookingResourceWindow } from "../src/lib/booking-resource-window";
+import { findBookingStaffConflict,BookingResourceConflictError,resourceTimingProblem } from "../src/server/booking-resource-availability";
+import { readBookingResourceWindow,bookingResourceSpan } from "../src/lib/booking-resource-window";
 const ast=ts.createSourceFile("api.ts",fs.readFileSync("src/server/api.ts","utf8"),ts.ScriptTarget.Latest,true);
 const compile=(name:string)=>ts.transpileModule(ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name)!.getText(ast),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const period={preparationStart:"2026-10-22T12:00:00+03:00",eventStart:"2026-10-22T20:00:00+03:00",eventEnd:"2026-10-23T01:00:00+03:00",returnEnd:"2026-10-23T12:00:00+03:00"};
@@ -22,7 +22,7 @@ async function run(conflict:boolean){
     if(q.startsWith("WITH bookings"))return {rows:conflict?[{source:"service",id:7,event_date:"2026-10-22",details:{bookingOperations:{resourceWindow:period}}}]:[]};
     throw Error("Unexpected route SQL "+q);
   },update:()=>builder,insert:()=>builder};
-  const context=vm.createContext({...tables,sql,eq,asc,readResourceBooking,findBookingStaffConflict,readBookingResourceWindow,BookingResourceConflictError,
+  const context=vm.createContext({...tables,sql,eq,asc,readResourceBooking,findBookingStaffConflict,readBookingResourceWindow,bookingResourceSpan,resourceTimingProblem,BookingResourceConflictError,
     requireAnyPermission:async()=>({id:1,role:"admin",fullName:"مدير",username:"admin"}),isResponse:(v:any)=>typeof v?.status==="number",hasPermission:()=>false,
     int:(v:string)=>Number(v),ensureAdminExtensionsTables:async()=>{},ensureKoshaStaffTables:async()=>{},ensureVariantTables:async()=>{},ensureMasterCashBoxTables:async()=>{},
     loadBookingOperationsReference:async()=>reference,canManageBookingStaffAssignments:()=>true,bookingAssignmentTypes:async()=>["kosha"],staffMatchesBookingAssignment:()=>true,

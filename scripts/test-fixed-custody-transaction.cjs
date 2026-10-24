@@ -183,7 +183,7 @@ function harness(initial = fixture(), settings = {}) {
   class IndividualCustodyError extends Error { constructor(message, status = 422) { super(message); this.status = status; } }
   const context = {
     ...tables, db, sql, Date, IndividualCustodyError,bookingEvidenceWriteSql:protection.exports.bookingEvidenceWriteSql,
-    readBookingResourceWindow: windows.readBookingResourceWindow, findBookingPhysicalConflict: resources.findBookingPhysicalConflict,
+    readBookingResourceWindow: windows.readBookingResourceWindow, bookingResourceSpan: windows.bookingResourceSpan, findBookingPhysicalConflict: resources.findBookingPhysicalConflict,
     eq: compare, and: (...and) => ({ and }), desc: (value) => value,
     ensureCustodyGroupTables: async () => {}, hasPermission: (auth, permission) => auth.role === "admin" || auth.permissions.includes(permission),
     body: async (req) => req.payload, int: Number,
@@ -226,8 +226,14 @@ function harness(initial = fixture(), settings = {}) {
   await fullPeriod.run({ action: "reserve", employeeIds: [5] });
   assert.equal(fullPeriod.state.reservations[0].start_at.toISOString(), new Date(period.preparationStart).toISOString(), "fixed custody starts at preparation, not an invented event start");
   assert.equal(fullPeriod.state.reservations[0].end_at.toISOString(), new Date(period.returnEnd).toISOString(), "fixed custody includes dismantling and return, not a default eight hours");
+  // The period is optional: without one fixed custody holds the whole event day.
   const noPeriod = fixture(); delete noPeriod.booking.bookingDetails.bookingOperations.resourceWindow;
-  const unknownPeriod = harness(noPeriod);
+  const dayOnly = harness(noPeriod);
+  await dayOnly.run({ action: "reserve", employeeIds: [5] });
+  assert.equal(dayOnly.state.reservations[0].start_at.toISOString(), new Date("2026-10-18T00:00:00+03:00").toISOString(), "no period: custody starts at the event day");
+  assert.equal(dayOnly.state.reservations[0].end_at.toISOString(), new Date("2026-10-19T00:00:00+03:00").toISOString(), "no period: custody ends with the event day");
+  const noDate = fixture(); delete noDate.booking.bookingDetails.bookingOperations.resourceWindow; noDate.booking.eventDate = null;
+  const unknownPeriod = harness(noDate);
   await assert.rejects(() => unknownPeriod.run({ action: "reserve" }), /فترة تشغيل/);
   assert.equal(unknownPeriod.state.audits.length, 0);
   const overlap = harness(fixture(), { periodConflicts: [{ source: "service", id: 8, event_date: "2026-10-19", details: { bookingOperations: { resourceWindow: { preparationStart: "2026-10-19T01:00:00+03:00", eventStart: "2026-10-19T10:00:00+03:00", eventEnd: "2026-10-19T20:00:00+03:00", returnEnd: "2026-10-20T02:00:00+03:00" } } } }] });

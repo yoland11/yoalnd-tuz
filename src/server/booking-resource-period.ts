@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import { parseBookingResourceWindow,readBookingResourceWindow,resourceWindowCalendar } from "@/lib/booking-resource-window";
 import { dailyAssignedStaffIds } from "@/lib/booking-daily-operations";
-import { BookingResourceConflictError,findBookingPhysicalConflict,findBookingStaffConflict,findBookingVehicleConflict,findBookingCrewConflict,findBookingKoshaConflict,resourceRows,staffConflictGroups,photographyEventLinkIds,resolvePhotographyBookingId,KOSHA_RESOURCE_STATUSES,type ResourceExecutor,type TimedBookingRef } from "./booking-resource-availability";
+import { BookingResourceConflictError,resourceTimingProblem,findBookingPhysicalConflict,findBookingStaffConflict,findBookingVehicleConflict,findBookingCrewConflict,findBookingKoshaConflict,resourceRows,staffConflictGroups,photographyEventLinkIds,resolvePhotographyBookingId,KOSHA_RESOURCE_STATUSES,type ResourceExecutor,type TimedBookingRef } from "./booking-resource-availability";
 
 type Ref={source:"kosha"|"service";id:number};
 type Database=ResourceExecutor&{transaction<T>(run:(tx:ResourceExecutor)=>Promise<T>):Promise<T>};
@@ -140,10 +140,12 @@ async function assertBookingResourceCandidate(tx:ResourceExecutor,next:ResourceB
   if(next.archivedAt||terminal(next.status)||(before&&!terminal(before.status)&&sameOrReleased(before,next)))return;
   const hasResources=allocatesKosha(next)||next.staffIds.length||next.vehicleId||next.crewId||next.assets.some(asset=>!["released","returned","inspection","completed"].includes(String(asset.stage??"linked")));
   if(!hasResources&&!next.operations.resourceWindow)return;
+  // The period is optional; without one the booking holds its whole event day.
+  const timingProblem=resourceTimingProblem(next);
+  if(timingProblem)throw new BookingResourceConflictError(timingProblem,409);
   const window=readBookingResourceWindow(next.operations,next.eventDate);
-  if(!window)throw new BookingResourceConflictError("راجع فترة تشغيل الموارد مع موعد الحجز قبل تأكيد تغيير الموارد أو الإسناد",409);
-  if(next.eventTime&&resourceWindowCalendar(window).eventTime!==next.eventTime.slice(0,5))throw new BookingResourceConflictError("موعد الحجز لا يطابق فترة الموارد؛ عدّل الموعد والفترة معاً من محرر الفترة",409);
-  if(next.eventEndTime&&resourceWindowCalendar(window).endTime!==next.eventEndTime.slice(0,5))throw new BookingResourceConflictError("موعد نهاية الحجز لا يطابق فترة الموارد؛ عدّل الموعد والفترة معاً",409);
+  if(window&&next.eventTime&&resourceWindowCalendar(window).eventTime!==next.eventTime.slice(0,5))throw new BookingResourceConflictError("موعد الحجز لا يطابق فترة الموارد؛ عدّل الموعد والفترة معاً من محرر الفترة",409);
+  if(window&&next.eventEndTime&&resourceWindowCalendar(window).endTime!==next.eventEndTime.slice(0,5))throw new BookingResourceConflictError("موعد نهاية الحجز لا يطابق فترة الموارد؛ عدّل الموعد والفترة معاً",409);
   const scheduleChanged=before&&(before.eventDate!==next.eventDate||before.eventTime!==next.eventTime||!isDeepStrictEqual(before.operations.resourceWindow,next.operations.resourceWindow));
   if(scheduleChanged){
     if(next.assets.some(a=>a.stage==="out"||Number(a.checkedOutQty??0)>0))throw new BookingResourceConflictError("أكمل إرجاع المعدات قبل تعديل الموعد",409);
@@ -189,7 +191,8 @@ export async function lockBookingExecutionTeam(tx:ResourceExecutor,ref:Ref,staff
   if(!ids.length)return live;
   const rows=resourceRows(await tx.execute(sql`SELECT id,is_active,role,department,permissions FROM staff WHERE id IN (${sql.join(ids.map(id=>sql`${id}`),sql`, `)}) ORDER BY id FOR UPDATE`));
   for(const id of ids){const staff=rows.find(row=>Number(row.id)===id);if(!staff||staff.is_active!==true||(eligible&&!eligible(staff)))throw new BookingResourceConflictError("تغيّرت أهلية الموظف؛ اختر فريقاً نشطاً ومسموحاً له بالتنفيذ",422)}
-  if(!readBookingResourceWindow(live.operations,live.eventDate))throw new BookingResourceConflictError("حدد فترة تشغيل الموارد قبل إسناد فريق التنفيذ",409);
+  const timingProblem=resourceTimingProblem(live);
+  if(timingProblem)throw new BookingResourceConflictError(timingProblem,409);
   if(await findBookingStaffConflict(live,ids,tx))throw new BookingResourceConflictError("أحد الموظفين مشغول خلال فترة التجهيز والتنفيذ والإرجاع أو مواعيده غير مكتملة",409);
   return live;
 }

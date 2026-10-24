@@ -8,7 +8,7 @@ import {resourceOccupancyTimestamps} from "@/lib/booking-resource-conflicts";
 import {baghdadDay} from "@/lib/kosha-manager";
 import {readResourceBooking} from "./booking-resource-period";
 import {hasSafeConflictQuantityCounters,readConflictQuantityHistory} from "./booking-conflict-history";
-import {BookingResourceConflictError, resourceRows, findBookingPhysicalConflict, findBookingStaffConflict, findBookingVehicleConflict, findBookingCrewConflict, findBookingKoshaConflict, type ResourceExecutor} from "./booking-resource-availability";
+import {BookingResourceConflictError, resourceTimingProblem, resourceRows, findBookingPhysicalConflict, findBookingStaffConflict, findBookingVehicleConflict, findBookingCrewConflict, findBookingKoshaConflict, type ResourceExecutor} from "./booking-resource-availability";
 
 const terminal=new Set(["released","returned","inspection","completed"]);
 const blocked=new Set(["maintenance","damaged","lost","retired","locked","sold","disposed"]);
@@ -93,7 +93,9 @@ export async function loadBookingConflictReport(tx:ResourceExecutor,ref:BookingO
   const jobs:Array<()=>Promise<ConflictReportRow>>=[];
   const status=(candidate:any):Pick<ConflictReportRow,"state"|"reason"|"booking">=>{
     if(candidate)return {state:candidate.timingIncomplete?"incomplete":"conflict",reason:candidate.still_out?"معدات مصروفة لحجز آخر ولم يُسجّل إرجاعها":candidate.timingIncomplete?"مواعيد الحجز الآخر غير مكتملة؛ لا يمكن تأكيد التوفر":"تداخل خلال فترة التجهيز والتنفيذ والإرجاع",booking:{source:candidate.source,id:Number(candidate.id)}};
-    return window?{state:"no_conflict",reason:"لم يظهر تعارض مع حجز آخر ضمن الفحوص المتاحة"}:{state:"incomplete",reason:"حدد فترة تشغيل الموارد أولاً"};
+    // Without a saved period the finders checked the whole event day.
+    const timingProblem=resourceTimingProblem(live);
+    return timingProblem?{state:"incomplete",reason:timingProblem}:{state:"no_conflict",reason:window?"لم يظهر تعارض مع حجز آخر ضمن الفحوص المتاحة":"لم يظهر تعارض مع حجز آخر في يوم المناسبة ضمن الفحوص المتاحة"};
   };
   for(const [productId,line] of assets)jobs.push(async()=>{
     const product=products.get(productId),quantity=product?.tracking_mode==="quantity"||line.trackingMode==="quantity",kind=quantity?"quantity":"asset";

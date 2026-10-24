@@ -41,7 +41,11 @@ assert.deepEqual(byKey.get("quantity:30")!.booking,{source:"service",id:9},"shor
 assert.equal(byKey.get("staff:2")!.state,"conflict");assert.equal(byKey.get("vehicle:4")!.state,"incomplete");
 assert.equal(byKey.get("crew:6")!.state,"no_conflict");assert.equal(byKey.get("kosha:3")!.state,"no_conflict");
 assert.ok(queries.every(query=>!/FOR UPDATE/.test(query)));assert.ok(!JSON.stringify(value).includes("bookingOperations"),"return only report DTO, not private source JSON");
-const missing=await report({missingTiming:true});assert.equal(missing.value.timingComplete,false);assert.ok(missing.value.rows.every(row=>row.state!=="no_conflict"));
+// No operating period: checked on the whole event day, never reported as an exact period.
+const missing=await report({missingTiming:true});assert.equal(missing.value.timingComplete,false);
+const missingRows=new Map(missing.value.rows.map(row=>[row.key,row]));
+assert.equal(missingRows.get("staff:2")!.state,"incomplete","a same-day booking is not advertised as free");assert.equal(missingRows.get("asset:20")!.state,"conflict");
+assert.equal(missingRows.get("crew:6")!.state,"no_conflict");assert.match(missingRows.get("crew:6")!.reason,/يوم المناسبة/);
 const fraction=await report({fraction:true});assert.equal(fraction.value.rows.find(row=>row.key==="quantity:30")!.state,"incomplete","never floor unsupported historical quantities into fake availability");
 const invalidRequired=await report({badRequired:true});assert.equal(invalidRequired.value.rows.find(row=>row.key==="quantity:30")!.quantities,undefined,"invalid quantities must not leak NaN/null as valid numeric data");
 const missingProfile=await report({profileMissing:true});assert.equal(missingProfile.value.rows.find(row=>row.key==="quantity:30")?.state,"incomplete","missing quantity profile must not become an available individual asset");

@@ -13,13 +13,13 @@ visit(ast); assert.ok(branch);
 const code = ts.transpileModule(`async function run(req,auth){const section='dispatch',method=req.method,parts=['dispatch'];${branch!.getText(ast)}}`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const store = existsSync("src/server/booking-dispatch.ts") ? await import("../src/server/booking-dispatch") : null;
 const period = { preparationStart: "2026-10-22T08:00:00+03:00", eventStart: "2026-10-22T20:00:00+03:00", eventEnd: "2026-10-23T01:00:00+03:00", returnEnd: "2026-10-23T12:00:00+03:00" };
-function fixture(options: { conflict?: boolean; failVehicle?: boolean; noTiming?: boolean } = {}) {
+function fixture(options: { conflict?: boolean; failVehicle?: boolean; noTiming?: boolean; noDate?: boolean } = {}) {
   let state = { assignment: null as any, vehicle: "available", crew: "available", audit: 0, notices: 0, activity: 0 };
   let active = false; const queries: string[] = [];
   const tx: any = {
     execute: async (statement: any) => {
       const { sql: raw, params } = dialect.sqlToQuery(statement), q = raw.replace(/\s+/g, " ").trim(); queries.push(q);
-      if (/^SELECT id,status,event_date/.test(q)) return { rows: [{ id: 7, status: "confirmed", event_date: "2026-10-22", details: { bookingOperations: { resourceWindow: options.noTiming ? null : period } } }] };
+      if (/^SELECT id,status,event_date/.test(q)) return { rows: [{ id: 7, status: "confirmed", event_date: options.noDate ? null : "2026-10-22", details: { bookingOperations: { resourceWindow: options.noTiming ? null : period } } }] };
       if (q.startsWith("SELECT vehicle_id,crew_id")) return { rows: state.assignment ? [{ vehicle_id: state.assignment.vehicleId, crew_id: state.assignment.crewId }] : [] };
       if (q.startsWith("SELECT c.staff_id")) return { rows: [] };
       if (q.includes("pg_advisory_xact_lock")) return { rows: [] };
@@ -45,6 +45,9 @@ const normal = fixture(); await normal.run(); assert.equal(normal.state.assignme
 assert.equal(normal.state.audit, 1); await normal.run(); assert.equal(normal.state.audit, 1); assert.equal(normal.state.notices, 1, "same assignment retry creates no duplicate notification");
 const conflict = fixture({ conflict: true }); await assert.rejects(() => conflict.run(), /مشغول|تعارض|متاحة/); assert.equal(conflict.state.assignment, null); assert.equal(conflict.state.notices, 0);
 const rollback = fixture({ failVehicle: true }); await assert.rejects(() => rollback.run(), /vehicle write unavailable/); assert.equal(rollback.state.assignment, null); assert.equal(rollback.state.crew, "available"); assert.equal(rollback.state.audit, 0);
-const unknown = fixture({ noTiming: true }); await assert.rejects(() => unknown.run(), /فترة تشغيل/); assert.equal(unknown.state.assignment, null);
+// The period is optional: without one the booking holds its whole event day.
+const dayOnly = fixture({ noTiming: true }); await dayOnly.run(); assert.equal(dayOnly.state.assignment.id, 21, "no operating period still assigns on the event day");
+const sameDay = fixture({ noTiming: true, conflict: true }); await assert.rejects(() => sameDay.run(), /مشغول/, "a day-only booking still refuses a vehicle busy that day"); assert.equal(sameDay.state.assignment, null);
+const unknown = fixture({ noTiming: true, noDate: true }); await assert.rejects(() => unknown.run(), /تاريخ الحجز/); assert.equal(unknown.state.assignment, null);
 assert.match(normal.queries[0], /service_orders.*FOR UPDATE/, "original source booking is locked before dispatch/resource locks");
 console.log("PASS actual dispatch handler/store: original source lock, full-period vehicle/crew checks, atomic status/audit rollback and duplicate retry (controlled IO)");

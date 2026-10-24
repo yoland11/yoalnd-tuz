@@ -96,11 +96,18 @@ assert.match(endpoint, /dispatchVehicle: dispatched \?/);
 assert.match(card, /السيارة المسندة لهذا الحجز من «إسناد موارد النقل»/);
 assert.match(card, /value\.mode === "ajn" && dispatchVehicle \? String\(dispatchVehicle\.id\)/);
 
-// 9. A vehicle needs the booking's operating period; the card says so before saving.
-assert.match(ui, /queryKey: \["booking-resource-window", base\], queryFn: \(\) => adminFetch\(`\$\{base\}\/resource-window`\)/, "shares the period panel's query");
-assert.match(card, /periodMissing \? "حدّد فترة تشغيل الموارد للحجز أولاً"/);
-assert.match(card, /تحديد فترة التشغيل/);
-assert.match(ui, /<div id="ajn-resource-window" className="scroll-mt-52"><BookingResourceWindowPanel/);
+// 9. The operating period is optional: without one the booking holds its event day.
+assert.doesNotMatch(card, /periodMissing|فترة تشغيل/, "the transport card never demands an operating period");
+assert.match(ui, /<BookingResourceWindowPanel base=\{base\} queryKey=\{queryKey\} onSaved=\{onSaved\} optional \/>/);
+const span = readFileSync("src/lib/booking-resource-window.ts", "utf8");
+assert.match(span, /if\(operations\.resourceWindow!=null\|\|!day\)return null;/, "a saved but invalid period is never replaced by the day");
+const { bookingResourceSpan } = await import("../src/lib/booking-resource-window");
+assert.deepEqual(bookingResourceSpan({}, "2026-10-31"), { start: "2026-10-31T00:00:00+03:00", end: "2026-11-01T00:00:00+03:00" });
+assert.equal(bookingResourceSpan({}, null), null);
+assert.equal(bookingResourceSpan({ resourceWindow: { eventStart: "bad" } }, "2026-10-31"), null);
+const { resourceTimingProblem } = await import("../src/server/booking-resource-availability");
+assert.equal(resourceTimingProblem({ operations: {}, eventDate: "2026-10-31" }), null);
+assert.match(String(resourceTimingProblem({ operations: {}, eventDate: null })), /تاريخ الحجز/);
 
 // Trip cost counts executed expenses only, like the vehicle's executed-expense total.
 assert.match(vehicleDetail, /!\["executed", "partially_reversed", "reversed"\]\.includes\(expense\.status\)\) return sum;/);

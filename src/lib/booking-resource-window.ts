@@ -57,6 +57,17 @@ export function readBookingResourceWindow(operations: Record<string, unknown>, e
   }
 }
 
+/** The period is optional: without one the booking occupies its whole event day
+ * (Baghdad, no DST). A saved but invalid period stays unknown (null), never a day. */
+export function bookingResourceSpan(operations:Record<string,unknown>,eventDate?:string|null):ResourceOccupancy|null{
+  const window=readBookingResourceWindow(operations,eventDate);
+  if(window)return {start:window.preparationStart,end:window.returnEnd};
+  const day=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(eventDate??""));
+  if(operations.resourceWindow!=null||!day)return null;
+  const next=new Date(Date.UTC(Number(day[1]),Number(day[2])-1,Number(day[3])+1)).toISOString().slice(0,10);
+  return {start:`${day[0]}T00:00:00+03:00`,end:`${next}T00:00:00+03:00`};
+}
+
 /** Undefined retains legacy date-only callers; explicit but invalid saved timing
  * is null and must fail the interval guard, never silently fall back to a day. */
 export function bookingResourceOccupancy(operations:Record<string,unknown>,eventDate?:string|null):ResourceOccupancy|null|undefined{

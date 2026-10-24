@@ -1,6 +1,6 @@
 import { sql, type SQL } from "drizzle-orm";
 import type { BookingOperationRef } from "@/lib/booking-operational-readiness";
-import { readBookingResourceWindow } from "@/lib/booking-resource-window";
+import { bookingResourceSpan,readBookingResourceWindow } from "@/lib/booking-resource-window";
 import { resourceOccupancyTimestamps } from "@/lib/booking-resource-conflicts";
 
 export type ResourceExecutor={execute(query:any):Promise<any>};
@@ -41,19 +41,26 @@ export function projectPhotographyOccupancy(row:any):any|null{
   if(central.archivedAt||["cancelled","canceled","deleted","completed","delivered","closed"].includes(String(central.status).toLowerCase()))return null;
   return {...candidate,source:"service",id:bookingId,event_date:central.eventDate,details:central.details};
 }
+/** Saved operating period, or the whole event day when none was set. */
 export function resourceInterval(reference:Pick<TimedBookingRef,"operations"|"eventDate">){
-  const window=readBookingResourceWindow(reference.operations,reference.eventDate);
-  return window?resourceOccupancyTimestamps({start:window.preparationStart,end:window.returnEnd}):null;
+  return resourceOccupancyTimestamps(bookingResourceSpan(reference.operations,reference.eventDate));
+}
+/** Null when the booking's occupancy is known; otherwise what the user must fix. */
+export function resourceTimingProblem(reference:Pick<TimedBookingRef,"operations"|"eventDate">){
+  if(resourceInterval(reference))return null;
+  return reference.operations.resourceWindow!=null?"راجع فترة تشغيل الموارد مع موعد الحجز قبل تأكيد تغيير الموارد أو الإسناد":"سجّل تاريخ الحجز قبل إسناد الفريق أو السيارة أو المعدات";
 }
 export function firstBookingOverlap(reference:StaffTimedRef,candidates:any[],allowPhotography=false){
-  const target=resourceInterval(reference);
+  const target=resourceInterval(reference),targetExact=!!readBookingResourceWindow(reference.operations,reference.eventDate);
   for(const candidate of candidates){
     if(!["kosha","service",...(allowPhotography?["photography"]:[])].includes(candidate.source)||!Number.isSafeInteger(Number(candidate.id))||Number(candidate.id)<=0)throw Error("Invalid resource booking identity");
     if(candidate.source===reference.source&&Number(candidate.id)===reference.id)continue;
     if(candidate.still_out===true)return {...candidate,timingIncomplete:false};
-    const occupied=resourceInterval({eventDate:candidate.event_date,operations:candidate.details?.bookingOperations??{}});
+    const operations=candidate.details?.bookingOperations??{};
+    const occupied=resourceInterval({eventDate:candidate.event_date,operations});
     if(!target||!occupied)return {...candidate,timingIncomplete:true};
-    if(target[0]<occupied[1]&&occupied[0]<target[1])return {...candidate,timingIncomplete:false};
+    // A day-only overlap is a conflict too; exact periods on both could separate them.
+    if(target[0]<occupied[1]&&occupied[0]<target[1])return {...candidate,timingIncomplete:!targetExact||!readBookingResourceWindow(operations,candidate.event_date)};
   }
   return null;
 }

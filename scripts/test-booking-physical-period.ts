@@ -8,6 +8,7 @@ assert.equal((await findBookingPhysicalConflict(ref,20,db([candidate])))?.id,7,"
 assert.equal(await findBookingPhysicalConflict(ref,20,db([{...candidate,source:"kosha",id:7}])),null,"exact own identity is never a competing booking");
 assert.equal(await findBookingPhysicalConflict(ref,20,db([{...candidate,details:{bookingOperations:{resourceWindow:{...candidate.details.bookingOperations.resourceWindow,preparationStart:window.returnEnd}}}}])),null,"exact return boundary releases resource");
 assert.equal((await findBookingPhysicalConflict(ref,20,db([{...candidate,details:{}}])))?.timingIncomplete,true,"legacy resource without actual interval is not free");
+assert.equal(await findBookingPhysicalConflict(ref,20,db([{...candidate,event_date:"2026-10-25",details:{}}])),null,"a booking without a period holds only its own event day");
 assert.equal((await findBookingPhysicalConflict(ref,20,db([{...candidate,still_out:true,details:{bookingOperations:{resourceWindow:{...window,preparationStart:"2026-10-19T10:00:00+03:00",eventStart:"2026-10-19T18:00:00+03:00",eventEnd:"2026-10-19T20:00:00+03:00",returnEnd:"2026-10-20T12:00:00+03:00"}}},event_date:"2026-10-19"}])))?.still_out,true,"issued asset is held beyond planned return, including a completed source");
 assert.equal(await findBookingPhysicalConflict(ref,20,db([])),null);
 await assert.rejects(()=>findBookingPhysicalConflict(ref,20,{execute:async()=>({})}),/Invalid/);

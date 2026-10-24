@@ -43,8 +43,10 @@ export function BookingResourceWindowInputs({draft,disabled=false,onChange}:{dra
 
 /** No guessed duration or reservation side effect. The expected snapshot stays
  * with the draft: a background refresh cannot silently overwrite unsaved times. */
-export function BookingResourceWindowForm({ data, loading = false, error, onRetry, onSave }: {
+export function BookingResourceWindowForm({ data, loading = false, error, onRetry, onSave, optional = false }: {
   data?: BookingResourceWindowData;
+  /** Bookings: without a period the whole event day is held. Photography still requires one. */
+  optional?: boolean;
   loading?: boolean;
   error?: unknown;
   onRetry?: () => void;
@@ -89,12 +91,12 @@ export function BookingResourceWindowForm({ data, loading = false, error, onRetr
       } catch (cause) { if (mounted.current) setSaveError(cause instanceof Error ? cause.message : "تعذر حفظ المواعيد؛ احتفظنا بالمدخلات لإعادة المحاولة"); }
       finally { inFlight.current = false; if (mounted.current) setPending(false); }
     }}>
-      <div className="flex flex-wrap items-baseline justify-between gap-2 border-y border-border py-3 text-sm"><p>تاريخ المناسبة المسجل: <bdi dir="ltr" className="font-medium">{data.eventDate?.slice(0, 10) || "غير مسجل"}{data.eventTime ? ` · ${data.eventTime}` : ""}</bdi></p><p className={data.resourceWindow ? "text-foreground" : "font-medium text-primary"}>{data.resourceWindow ? "فترة تشغيل مسجلة" : "مواعيد التشغيل غير مكتملة"}</p></div>
+      <div className="flex flex-wrap items-baseline justify-between gap-2 border-y border-border py-3 text-sm"><p>تاريخ المناسبة المسجل: <bdi dir="ltr" className="font-medium">{data.eventDate?.slice(0, 10) || "غير مسجل"}{data.eventTime ? ` · ${data.eventTime}` : ""}</bdi></p><p className={data.resourceWindow || optional ? "text-foreground" : "font-medium text-primary"}>{data.resourceWindow ? "فترة تشغيل مسجلة" : optional ? "اختيارية — بدونها يُحجز يوم المناسبة كاملاً" : "مواعيد التشغيل غير مكتملة"}</p></div>
       {data.canEdit && data.canReschedule ? <Field className="gap-2 rounded-lg border border-border p-3"><div className="flex items-start gap-3"><Checkbox id={`${prefix}-reschedule`} checked={reschedule} disabled={pending || !!error || loading} onCheckedChange={checked => { setReschedule(checked === true); setDirty(true); setSaved(false); setSaveError(""); }} aria-describedby={`${prefix}-reschedule-help`} className="mt-1" /><FieldLabel htmlFor={`${prefix}-reschedule`} className="min-h-8 cursor-pointer">تعديل موعد الحجز مع فترة الموارد</FieldLabel></div><FieldDescription id={`${prefix}-reschedule-help`}>عند تفعيله، يُحفظ تاريخ ووقت الحجز من بداية المناسبة أدناه مع الفترة في عملية واحدة، بعد مراجعة التعارضات. اتركه مغلقاً لحفظ الفترة فقط.</FieldDescription></Field> : null}
       <BookingResourceWindowInputs draft={draft} disabled={!data.canEdit || pending || !!error || loading} onChange={(key,value)=>{setDraft(current=>({...current,[key]:value}));setDirty(true);setSaved(false);setSaveError("");}}/>
       {saveError ? <p role="alert" className="break-words rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">{saveError}</p> : null}
       {saved ? <p role="status" className="text-sm text-emerald-700 dark:text-emerald-300">{reschedule && data.canReschedule ? "تم حفظ موعد الحجز وفترة الموارد" : "تم حفظ فترة تشغيل الموارد"}</p> : null}
-      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4"><p className="max-w-prose text-sm text-muted-foreground">تُراجع التعارضات عند حجز الموارد. المواعيد الناقصة لا تعني أن المعدات أو الفريق متاحون.</p>{data.canEdit ? <Button type="submit" disabled={pending || !!error || loading || !dirty} className="min-h-11 w-full sm:w-auto"><Save aria-hidden="true" />{pending ? "جارٍ حفظ المواعيد" : reschedule && data.canReschedule ? "حفظ موعد الحجز والفترة" : "حفظ فترة التشغيل"}</Button> : <p className="text-sm">عرض فقط — تعديل المواعيد يتطلب صلاحية تعديل الحجز.</p>}</footer>
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4"><p className="max-w-prose text-sm text-muted-foreground">{optional ? "تُراجع التعارضات عند حجز الموارد. بدون فترة يُعتبر الفريق والسيارة والمعدات محجوزين طوال يوم المناسبة؛ حدّدها إذا احتجت دقة بالساعات." : "تُراجع التعارضات عند حجز الموارد. المواعيد الناقصة لا تعني أن المعدات أو الفريق متاحون."}</p>{data.canEdit ? <Button type="submit" disabled={pending || !!error || loading || !dirty} className="min-h-11 w-full sm:w-auto"><Save aria-hidden="true" />{pending ? "جارٍ حفظ المواعيد" : reschedule && data.canReschedule ? "حفظ موعد الحجز والفترة" : "حفظ فترة التشغيل"}</Button> : <p className="text-sm">عرض فقط — تعديل المواعيد يتطلب صلاحية تعديل الحجز.</p>}</footer>
     </form> : null}
   </section>;
 }

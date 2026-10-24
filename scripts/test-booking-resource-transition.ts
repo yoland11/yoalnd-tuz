@@ -24,7 +24,11 @@ async function run(patch:any,{busy=false,fail=false,legacy=false,archived=false,
 }
 await assert.rejects(()=>run({assigned_staff_id:2},{busy:true}),/مشغول/);
 await assert.rejects(()=>run({assigned_staff_id:2},{fail:true}),/resource read unavailable/);
-await assert.rejects(()=>run({assigned_staff_id:2},{legacy:true}),/فترة|مواعيد/);
+// No operating period: the booking holds its event day; a missing date is still unknown.
+assert.equal((await run({assigned_staff_id:2},{legacy:true})).row.assigned_staff_id,2,"the operating period is optional");
+await assert.rejects(()=>run({assigned_staff_id:2},{legacy:true,busy:true}),/مشغول/,"a day-only booking still refuses staff busy that day");
+await assert.rejects(()=>run({assigned_staff_id:2,event_date:null},{legacy:true}),/تاريخ الحجز/);
+await assert.rejects(()=>run({assigned_staff_id:2},{initialDetails:{bookingOperations:{resourceWindow:{...window,eventEnd:"bad"}}}}),/فترة/,"a saved but invalid period is never replaced by the day");
 await assert.rejects(()=>run({event_date:"2026-10-25",assigned_staff_id:2}),/فترة|موعد/);
 await assert.rejects(()=>run({event_time:"21:00",assigned_staff_id:2}),/فترة|موعد/);
 const assigned=await run({assigned_staff_id:2});assert.ok(assigned.calls.some(q=>q.startsWith("SELECT id,is_active")&&q.includes("ORDER BY id FOR UPDATE")));
@@ -39,5 +43,5 @@ await run({details:{linkedAssets:[{productId:20,quantity:1,note:"تصحيح ال
 await run({assigned_staff_id:2},{busy:true,override:true});
 await assert.rejects(()=>run({assigned_staff_id:2},{busy:true,override:true,initialDetails:{assignedStaffIds:[3],bookingOperations:original.details.bookingOperations}}),/مشغول/,"photo override must not waive another employee or driver conflict");
 await assert.rejects(()=>run({assigned_staff_id:2},{fail:true,override:true}),/resource read unavailable/,"an authorized staffing override cannot suppress a failed resource read");
-await assert.rejects(()=>run({assigned_staff_id:2},{legacy:true,override:true}),/فترة|مواعيد/,"an override reason cannot invent an operating period");
+await assert.rejects(()=>run({assigned_staff_id:2,event_date:null},{legacy:true,override:true}),/تاريخ الحجز/,"an override reason cannot invent a booking date");
 console.log("PASS original resource transition: locked read/write/check, shared source identity, full period, time consistency, sorted staff locks, legacy edit and read-error propagation (controlled IO)");

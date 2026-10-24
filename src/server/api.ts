@@ -1,14 +1,14 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { loadDailyOperations } from "./booking-daily-operations";
 import { loadBookingReadiness } from "./booking-operational-readiness";
-import { findBookingPhysicalConflict,findBookingStaffConflict,BookingResourceConflictError } from "./booking-resource-availability";
+import { findBookingPhysicalConflict,findBookingStaffConflict,BookingResourceConflictError,resourceTimingProblem } from "./booking-resource-availability";
 import { readResourceBooking,saveBookingResourceWindow,resourceWindowView,lockBookingExecutionTeam,guardBookingResourceWrite,validateBookingResourceCreation } from "./booking-resource-period";
 import { saveBookingDispatch } from "./booking-dispatch";
 import {readPhotographyResource,savePhotographyResourceWindow,guardPhotographyResourceWrite,assertPhotographyResourceAllocation} from "./photography-resource-period";
 import { normalizeRepeatedBookingDetails } from "@/lib/booking-repeat";
 import { loadBookingConflictReport } from "./booking-conflict-report";
 import { GraduationOrderWriteConflict, lockGraduationPaymentSource } from "./graduation-write-guard";
-import { readBookingResourceWindow,bookingResourceOccupancy,BookingResourceWindowError,parseBookingResourceWindow,resourceWindowCalendar } from "@/lib/booking-resource-window";
+import { readBookingResourceWindow,bookingResourceOccupancy,bookingResourceSpan,BookingResourceWindowError,parseBookingResourceWindow,resourceWindowCalendar } from "@/lib/booking-resource-window";
 import { getLoadingView, runLoadingRequest } from "./booking-loading";
 import { BookingProfitabilityError, getBookingProfitability } from "./booking-profitability";
 import { getBookingFinancialSummary } from "./booking-finance";
@@ -32993,7 +32993,8 @@ async function handleBookingOperations(
           for(const staffId of nextIds){const member=(locked.rows as any[]).find(row=>Number(row.id)===staffId);if(!member||member.is_active!==true||!staffMatchesBookingAssignment(member,types))throw new BookingResourceConflictError("تغيّرت أهلية أحد الموظفين؛ حدّث قائمة الفريق",422)}
         }
         if(nextIds.length){
-          if(!readBookingResourceWindow(live.operations,live.eventDate))throw new BookingResourceConflictError("حدد فترة تشغيل الموارد من بداية التجهيز حتى اكتمال الإرجاع قبل إسناد الفريق",409);
+          const timingProblem=resourceTimingProblem(live);
+          if(timingProblem)throw new BookingResourceConflictError(timingProblem,409);
           if(await findBookingStaffConflict(live,nextIds,tx))throw new BookingResourceConflictError("أحد الموظفين مشغول أو فترة حجزه الآخر غير مكتملة؛ اختر موظفاً آخر أو راجع المواعيد",409);
         }
         removedIds=liveIds.filter(staffId=>!nextIds.includes(staffId));
@@ -33340,9 +33341,10 @@ async function handleBookingOperations(
       auth.role === "manager" ||
       hasPermission(auth, "products") ||
       permissions.some((p) => hasPermission(auth, p));
-    const resourceWindow = readBookingResourceWindow(reference.operations, reference.eventDate);
-    const eventStart = resourceWindow ? new Date(resourceWindow.preparationStart) : null;
-    const eventEnd = resourceWindow ? new Date(resourceWindow.returnEnd) : null;
+    // Saved operating period, or the whole event day when none was set.
+    const resourceSpan = bookingResourceSpan(reference.operations, reference.eventDate);
+    const eventStart = resourceSpan ? new Date(resourceSpan.start) : null;
+    const eventEnd = resourceSpan ? new Date(resourceSpan.end) : null;
     const savedEmployeeIds = Array.isArray(
       reference.operations.custodyEmployeeIds,
     )
@@ -33372,7 +33374,7 @@ async function handleBookingOperations(
         employeeIds,
         startAt: eventStart?.toISOString() ?? null,
         endAt: eventEnd?.toISOString() ?? null,
-        timingIncomplete: !resourceWindow,
+        timingIncomplete: !resourceSpan,
         assets,
         reservations: (() => { if (!Array.isArray(reservations.rows)) throw new Error("Invalid fixed custody reservations database response"); return reservations.rows; })(),
       });
@@ -33406,9 +33408,9 @@ async function handleBookingOperations(
       const ref = { ...reference, row: fresh, details, operations: bookingOperationsState(details), eventDate: fresh.eventDate };
       const savedIds: number[] = Array.isArray(ref.operations.custodyEmployeeIds) ? ref.operations.custodyEmployeeIds.map(Number).filter((id: number) => Number.isSafeInteger(id) && id > 0) : [];
       const employeeIds: number[] = Array.isArray(data?.employeeIds) ? [...new Set<number>(data.employeeIds.map(Number))] : savedIds;
-      const window = readBookingResourceWindow(ref.operations, ref.eventDate);
-      const start = window ? new Date(window.preparationStart) : null;
-      const end = window ? new Date(window.returnEnd) : null;
+      const span = bookingResourceSpan(ref.operations, ref.eventDate);
+      const start = span ? new Date(span.start) : null;
+      const end = span ? new Date(span.end) : null;
       const reservationsResult = await db.execute(sql`select r.*,g.name as group_name,s.full_name,s.username from employee_custody_reservations r join employee_custody_groups g on g.id=r.group_id join staff s on s.id=r.staff_id where r.booking_type=${ref.entityType} and r.booking_id=${ref.id} order by r.id`);
       const reservations = reservationsResult.rows as any[];
       const candidates = employeeIds.length
@@ -33446,7 +33448,7 @@ async function handleBookingOperations(
         await logCustodyAudit({ bookingType: ref.entityType, bookingId: ref.id, action: "reservation_released", previous: { employeeIds: savedIds }, next: { employeeIds }, auth }, db);
         await save(preserveOut(operationsAssets), { custodyEmployeeIds: employeeIds });
         effects.push({ entityType: ref.entityType, entityId: ref.id, type: "custody_employee_changed", title: "تغيير موظف عهدة الحجز", body: employeeIds.join(", ") || "بدون موظف", actor: erpActorFromAdmin(auth), metadata: { previous: savedIds, next: employeeIds } });
-        return json({ ok: true, assets: await custodyPreview(employeeIds, start, end, ref.entityType, ref.id, db, ref), timingIncomplete: !window });
+        return json({ ok: true, assets: await custodyPreview(employeeIds, start, end, ref.entityType, ref.id, db, ref), timingIncomplete: !span });
       }
       if (action === "release") {
         if (!canCustody("asset_release")) reject("ليس لديك صلاحية تحرير معدات العهدة", 403);

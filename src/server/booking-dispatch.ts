@@ -1,9 +1,8 @@
 import { db, dispatchAssignmentsTable, crewsTable, fleetVehiclesTable } from "@workspace/db";
 import { and, eq, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
-import { readBookingResourceWindow } from "@/lib/booking-resource-window";
 import { readResourceBooking } from "./booking-resource-period";
-import { BookingResourceConflictError, findBookingVehicleConflict, findBookingCrewConflict, resourceRows } from "./booking-resource-availability";
+import { BookingResourceConflictError, resourceTimingProblem, findBookingVehicleConflict, findBookingCrewConflict, resourceRows } from "./booking-resource-availability";
 
 type DispatchInput = {
   entityType: string; entityId: number; branchId?: number | null;
@@ -28,7 +27,8 @@ export async function saveBookingDispatch(database: Pick<typeof db, "transaction
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`dispatch:${input.entityType}:${input.entityId}`}))`);
     const previous = await tx.query.dispatchAssignmentsTable.findFirst({ where: and(eq(dispatchAssignmentsTable.entityType, input.entityType), eq(dispatchAssignmentsTable.entityId, input.entityId)) });
     if (previous?.status === "assigned" && isDeepStrictEqual(snapshot(previous), snapshot(input))) return { row: previous, replayed: true };
-    if (reference && (input.vehicleId || input.crewId) && !readBookingResourceWindow(reference.operations, reference.eventDate)) throw new BookingResourceConflictError("حدد فترة تشغيل الموارد قبل إسناد المركبة أو فريق التركيب", 409);
+    const timingProblem = reference && (input.vehicleId || input.crewId) ? resourceTimingProblem(reference) : null;
+    if (timingProblem) throw new BookingResourceConflictError(timingProblem, 409);
     const vehicleIds = [...new Set([previous?.vehicleId, input.vehicleId].filter((id): id is number => !!id))].sort((a, b) => a - b);
     const crewIds = [...new Set([previous?.crewId, input.crewId].filter((id): id is number => !!id))].sort((a, b) => a - b);
     for (const id of vehicleIds) {
