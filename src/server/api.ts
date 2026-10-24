@@ -23342,9 +23342,10 @@ async function handleEnterpriseAdmin(
       `)) as any)?.rows ?? [];
       for (const row of codes) serviceCodes.set(Number(row.id), row.tracking_code ?? `S-${row.id}`);
     }
-    // Same rule for both trip kinds: posted expense amount net of executed reversals.
+    // Same rule as «مصاريف السيارة المنفذة»: only executed expenses, net of executed
+    // reversals (a request awaiting approval has a transaction but moved no money).
     const tripExpenseOf = (matches: (expense: (typeof expenseRows)[number]) => boolean) => expenseRows.reduce((sum, expense) => {
-      if (!matches(expense) || !expense.financialTransactionId) return sum;
+      if (!matches(expense) || !expense.financialTransactionId || !["executed", "partially_reversed", "reversed"].includes(expense.status)) return sum;
       const reversed = money(reversedByTransaction.get(expense.financialTransactionId) ?? 0);
       return sum + Math.max(0, money(expense.amount) - reversed);
     }, 0);

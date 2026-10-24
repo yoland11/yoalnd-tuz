@@ -102,6 +102,9 @@ assert.match(card, /periodMissing \? "حدّد فترة تشغيل الموار�
 assert.match(card, /تحديد فترة التشغيل/);
 assert.match(ui, /<div id="ajn-resource-window" className="scroll-mt-52"><BookingResourceWindowPanel/);
 
+// Trip cost counts executed expenses only, like the vehicle's executed-expense total.
+assert.match(vehicleDetail, /!\["executed", "partially_reversed", "reversed"\]\.includes\(expense\.status\)\) return sum;/);
+
 // 10. Vehicle loading sees the card's vehicle on service orders; an empty team is explained.
 const loading = readFileSync("src/server/booking-loading.ts", "utf8");
 assert.match(loading, /coalesce\(CASE WHEN b\.custom_fields->'bookingOperations'->'transportation'->>'mode'='ajn' THEN nullif\(b\.custom_fields->'bookingOperations'->'transportation'->>'vehicleId',''\)::integer END,d\.vehicle_id\) AS vehicle_id/);
