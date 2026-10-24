@@ -172,6 +172,23 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
 };
 const sourceTypeLabel = (sourceType: string | null | undefined) =>
   (sourceType && SOURCE_TYPE_LABELS[sourceType]) || "طلب مالي";
+// One tint per source so the column scans at a glance; text stays readable in both themes.
+const SOURCE_TYPE_TONES: Record<string, string> = {
+  kosha_booking: "bg-pink-100 text-pink-800 ring-pink-200 dark:bg-pink-500/15 dark:text-pink-300 dark:ring-pink-500/30",
+  photography_order: "bg-violet-100 text-violet-800 ring-violet-200 dark:bg-violet-500/15 dark:text-violet-300 dark:ring-violet-500/30",
+  service_order: "bg-blue-100 text-blue-800 ring-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-500/30",
+  order: "bg-teal-100 text-teal-800 ring-teal-200 dark:bg-teal-500/15 dark:text-teal-300 dark:ring-teal-500/30",
+  rental_order: "bg-cyan-100 text-cyan-800 ring-cyan-200 dark:bg-cyan-500/15 dark:text-cyan-300 dark:ring-cyan-500/30",
+  sales_invoice: "bg-emerald-100 text-emerald-800 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30",
+  receipt_voucher: "bg-lime-100 text-lime-800 ring-lime-200 dark:bg-lime-500/15 dark:text-lime-300 dark:ring-lime-500/30",
+  purchase_invoice: "bg-orange-100 text-orange-800 ring-orange-200 dark:bg-orange-500/15 dark:text-orange-300 dark:ring-orange-500/30",
+  payment_voucher: "bg-amber-100 text-amber-800 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-500/30",
+  expense: "bg-rose-100 text-rose-800 ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-500/30",
+  vehicle_expense: "bg-indigo-100 text-indigo-800 ring-indigo-200 dark:bg-indigo-500/15 dark:text-indigo-300 dark:ring-indigo-500/30",
+  payroll_run: "bg-purple-100 text-purple-800 ring-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:ring-purple-500/30",
+};
+const sourceTypeTone = (sourceType: string | null | undefined) =>
+  (sourceType && SOURCE_TYPE_TONES[sourceType]) || "bg-muted text-foreground ring-border/60";
 
 // Top-of-approvals filter buckets. Bucketing is by sourceType (reliable) — NOT
 // by department, because service bookings inherit their department by keyword.
@@ -744,7 +761,7 @@ function ApprovalsPanel({
               {rows.map((row) => (
                 <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]">
                   <td className="px-3 py-3 text-center font-mono text-xs text-primary"><Button variant="ghost" onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</Button></td>
-                  <td className="px-3 py-3 text-center"><span className="inline-flex rounded-full bg-muted px-2 py-1 text-[11px] text-foreground">{sourceTypeLabel(row.sourceType)}</span></td>
+                  <td className="px-3 py-3 text-center"><span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-medium ring-1 ring-inset ${sourceTypeTone(row.sourceType)}`}>{sourceTypeLabel(row.sourceType)}</span></td>
                   <td className="max-w-48 px-3 py-3 text-center"><p className="truncate text-foreground" title={row.counterpartyName ?? row.customerName ?? ""}>{row.counterpartyName || row.customerName || "—"}</p>{(row.counterpartyName || row.customerName) && <p className="mt-0.5 text-[10px] text-muted-foreground">{row.counterpartyType === "supplier" ? "المورد" : row.counterpartyType === "customer" ? "العميل" : "الطرف"}</p>}</td>
                   <td className="px-3 py-3 text-center font-mono text-xs text-muted-foreground">{row.sourceReference || (row.sourceId ? `#${row.sourceId}` : "—")}</td>
                   <td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td>
