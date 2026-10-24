@@ -1,7 +1,7 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { loadDailyOperations } from "./booking-daily-operations";
 import { loadBookingReadiness } from "./booking-operational-readiness";
-import { findBookingPhysicalConflict,findBookingStaffConflict,BookingResourceConflictError,resourceTimingProblem } from "./booking-resource-availability";
+import { findBookingPhysicalConflict,findBookingStaffConflict,findBookingVehicleConflict,BookingResourceConflictError,resourceInterval,resourceTimingProblem,type TimedBookingRef } from "./booking-resource-availability";
 import { readResourceBooking,saveBookingResourceWindow,resourceWindowView,lockBookingExecutionTeam,guardBookingResourceWrite,validateBookingResourceCreation } from "./booking-resource-period";
 import { saveBookingDispatch } from "./booking-dispatch";
 import {readPhotographyResource,savePhotographyResourceWindow,guardPhotographyResourceWrite,assertPhotographyResourceAllocation} from "./photography-resource-period";
@@ -22169,9 +22169,10 @@ async function handleAdminKoshas(
           const requestedDriverId = parsed.data.transportationDriverId === undefined
             ? currentDriverId
             : parsed.data.transportationDriverId;
-          const changed = nextMode !== currentMode || requestedFee !== currentFee || requestedVehicleId !== currentVehicleId || requestedDriverId !== currentDriverId ||
-            (parsed.data.transportationNotes !== undefined && nullableText(parsed.data.transportationNotes) !== ((existing as any).transportationNotes ?? null));
-          if (changed) {
+          // Only the transport type and fee touch the booking's money; the vehicle,
+          // driver and notes stay editable after payments (as on service orders).
+          const financialChange = nextMode !== currentMode || requestedFee !== currentFee;
+          if (financialChange) {
             const [postedPayment] = await db
               .select({ id: financialTransactionsTable.id })
               .from(financialTransactionsTable)
@@ -22194,23 +22195,15 @@ async function handleAdminKoshas(
             });
             if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
             const eventDateForConflict = String((update as any).eventDate ?? (existing as any).eventDate ?? "");
-            const conflictingBooking = eventDateForConflict ? await db.query.koshaBookingsTable.findFirst({
-              where: and(
-                eq(koshaBookingsTable.transportationVehicleId, vehicle.id),
-                eq(koshaBookingsTable.transportationMode, "ajn"),
-                eq(koshaBookingsTable.eventDate, eventDateForConflict),
-                ne(koshaBookingsTable.id, id),
-                sql`${koshaBookingsTable.archivedAt} is null`,
-                sql`${koshaBookingsTable.status} <> 'cancelled'`,
-              ),
-            }) : null;
-            if (conflictingBooking)
-              return error("هذه السيارة مرتبطة بحجز آخر في نفس الوقت.", 409);
-            const serviceClash = eventDateForConflict
-              ? await transportVehicleBookedElsewhere(db, { vehicleId: vehicle.id, eventDate: eventDateForConflict, exclude: { source: "kosha", id } })
+            const clash = eventDateForConflict
+              ? await transportVehicleClash(db, vehicle.id, {
+                  source: "kosha",
+                  id,
+                  eventDate: eventDateForConflict,
+                  operations: (((update.bookingDetails ?? existing.bookingDetails) as any)?.bookingOperations ?? {}) as Record<string, unknown>,
+                })
               : null;
-            if (serviceClash)
-              return error(`هذه السيارة مرتبطة بحجز آخر (${serviceClash}) في نفس اليوم.`, 409);
+            if (clash) return error(clash, 409);
             if (requestedDriverId) {
               const driver = await db.query.staffTable.findFirst({ where: eq(staffTable.id, requestedDriverId) });
               if (!driver) return error("السائق المختار غير موجود", 404);
@@ -22343,6 +22336,13 @@ async function handleAdminKoshas(
               code: "PERMISSION_DENIED",
             });
           const pricing = parsed.data.pricing;
+          // A transport-only edit shifts the total by the fee change and keeps the
+          // amount actually paid; the cash "paid in full" default below belongs to
+          // explicit pricing edits, never to choosing a vehicle or changing a fee.
+          const transportOnly = transportationRequested &&
+            parsed.data.totalAmount === undefined && parsed.data.paidAmount === undefined &&
+            parsed.data.paymentStatus === undefined && parsed.data.paymentMethod === undefined &&
+            pricing === undefined;
           const transportFeeForTotal = money(
             update.transportationFee ?? (existing as any).transportationFee ?? 0,
           );
@@ -22376,12 +22376,14 @@ async function handleAdminKoshas(
             update.remainingAmount = "0";
             update.paymentStatus = "pending_pricing";
           } else {
-            const payment = paymentSummary(
-              totalAmount,
-              paidAmount,
-              parsed.data.paymentStatus,
-              paymentMethod,
-            );
+            const payment = transportOnly
+              ? paymentSummary(totalAmount, paidAmount)
+              : paymentSummary(
+                  totalAmount,
+                  paidAmount,
+                  parsed.data.paymentStatus,
+                  paymentMethod,
+                );
             update.totalAmount = String(totalAmount);
             update.paidAmount = String(payment.deposit);
             update.remainingAmount = String(payment.remaining);
@@ -23267,6 +23269,41 @@ async function handleEnterpriseAdmin(
 
   if (section === "command-center" && method === "GET")
     return json(await getCachedEnterpriseCommandCenter());
+
+  // AJN transport saved without a vehicle (mostly before vehicles were linked):
+  // such a trip reaches no vehicle's accounts until a vehicle is chosen on it.
+  if (section === "vehicles" && parts[1] === "unassigned-transport" && !parts[2] && method === "GET") {
+    const result: any = await db.execute(sql`
+      select * from (
+        select 'kosha' as source, id, tracking_code, customer_name, event_date::text as event_date, status,
+               coalesce(transportation_fee, 0)::numeric as fee, true as in_total
+        from kosha_bookings
+        where transportation_mode = 'ajn' and transportation_vehicle_id is null
+          and archived_at is null and status <> 'cancelled'
+        union all
+        select 'service', id, tracking_code, customer_name, event_date::text, status,
+               case when ${SERVICE_TRANSPORT}->>'fee' ~ '^[0-9]+([.][0-9]+)?$' then (${SERVICE_TRANSPORT}->>'fee')::numeric else 0 end,
+               coalesce(${SERVICE_TRANSPORT}->>'inTotal', '') = 'true'
+        from service_orders
+        where ${SERVICE_TRANSPORT}->>'mode' = 'ajn' and coalesce(${SERVICE_TRANSPORT}->>'vehicleId', '') = ''
+          and archived_at is null and status not in ('cancelled', 'canceled')
+      ) unassigned
+      order by event_date desc nulls last, id desc
+      limit 201
+    `);
+    if (!Array.isArray(result?.rows)) throw new Error("Invalid unassigned transport database response");
+    const rows = result.rows.slice(0, 200).map((row: any) => ({
+      source: row.source as "kosha" | "service",
+      bookingId: Number(row.id),
+      bookingNo: row.tracking_code ?? `${row.source === "kosha" ? "KB" : "S"}-${row.id}`,
+      customerName: row.customer_name ?? "",
+      eventDate: row.event_date ?? null,
+      status: row.status ?? null,
+      fee: money(row.fee),
+      inTotal: row.in_total === true,
+    }));
+    return json({ data: rows, truncated: result.rows.length > 200 });
+  }
 
   if (section === "vehicles" && parts[1] && parts[2] === "financial" && method === "GET") {
     const vehicleId = int(parts[1]);
@@ -31282,27 +31319,23 @@ const BookingTransportationSchema = z.object({
 const SERVICE_TRANSPORT = sql.raw("custom_fields->'bookingOperations'->'transportation'");
 
 /**
- * Another active booking (kosha columns or service-order transport) that uses the
- * vehicle on the same event day, as "K-12" / "S-34"; null when the vehicle is free.
+ * Another active booking that holds the vehicle while this one needs it: during
+ * its operating period, or its whole event day when no period is set (the same
+ * rule as the resource guard). Returns a message naming it ("K-12" / "S-34").
  */
-async function transportVehicleBookedElsewhere(
+async function transportVehicleClash(
   executor: { execute: (query: any) => Promise<any> },
-  input: { vehicleId: number; eventDate: string; exclude: { source: "kosha" | "service"; id: number } },
+  vehicleId: number,
+  reference: TimedBookingRef,
 ): Promise<string | null> {
-  const result: any = await executor.execute(sql`
-    select 'K-' || id as ref from kosha_bookings
-    where transportation_vehicle_id = ${input.vehicleId} and transportation_mode = 'ajn'
-      and event_date::text = ${input.eventDate} and archived_at is null and status <> 'cancelled'
-      ${input.exclude.source === "kosha" ? sql`and id <> ${input.exclude.id}` : sql``}
-    union all
-    select 'S-' || id from service_orders
-    where ${SERVICE_TRANSPORT}->>'mode' = 'ajn' and ${SERVICE_TRANSPORT}->>'vehicleId' = ${String(input.vehicleId)}
-      and event_date::text = ${input.eventDate} and archived_at is null and status not in ('cancelled', 'canceled')
-      ${input.exclude.source === "service" ? sql`and id <> ${input.exclude.id}` : sql``}
-    limit 1
-  `);
-  const row = (result?.rows ?? [])[0];
-  return row ? String(row.ref) : null;
+  // Unknown own timing is the guard's to explain (date or period), not a clash.
+  if (!resourceInterval(reference)) return null;
+  const clash = await findBookingVehicleConflict(reference, vehicleId, executor);
+  if (!clash) return null;
+  const ref = `${clash.source === "kosha" ? "K" : "S"}-${clash.id}`;
+  return clash.timingIncomplete
+    ? `هذه السيارة مرتبطة بحجز آخر (${ref}) في نفس اليوم. إذا كانت تكفي الحجزين، حدّد فترة التشغيل لكليهما.`
+    : `هذه السيارة مرتبطة بحجز آخر (${ref}) خلال نفس فترة التشغيل.`;
 }
 // Group photography: many individuals under ONE event booking, each a participant
 // with their own receipt. Stored additively in bookingOperations.groupAttendees;
@@ -33757,8 +33790,8 @@ async function handleBookingOperations(
           `)) as any)?.rows ?? [];
           if (!order) throw new CheckoutError("الحجز غير موجود", 404);
           if (d.mode === "ajn" && d.vehicleId && order.event_date) {
-            const clash = await transportVehicleBookedElsewhere(tx, { vehicleId: d.vehicleId, eventDate: String(order.event_date), exclude: { source: "service", id: reference.id } });
-            if (clash) throw new CheckoutError(`هذه السيارة مرتبطة بحجز آخر (${clash}) في نفس اليوم.`, 409);
+            const clash = await transportVehicleClash(tx, d.vehicleId, live);
+            if (clash) throw new CheckoutError(clash, 409);
           }
           // The AJN fee is part of the booking total, added exactly once: a fee saved
           // before this rule («للعلم») was never in the total, so it counts as zero.

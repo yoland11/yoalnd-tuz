@@ -37,7 +37,7 @@ assert.match(endpoint, /reference\.source === "kosha"\)\s*return error\("نقل 
 assert.match(endpoint, /if \(fee <= 0\) return error\("أجرة النقل مطلوبة/);
 assert.match(endpoint, /if \(!d\.vehicleId\) return error\("اختر سيارة للنقل بواسطة AJN"/);
 assert.match(endpoint, /from service_orders where id = \$\{reference\.id\} for update/);
-assert.match(endpoint, /transportVehicleBookedElsewhere\(tx, \{ vehicleId: d\.vehicleId/);
+assert.match(endpoint, /const clash = await transportVehicleClash\(tx, d\.vehicleId, live\);/);
 assert.match(endpoint, /const delta = transportTotalDelta\(\(live\.operations as any\)\.transportation \?\? null, fee\);/);
 assert.match(endpoint, /if \(!canEditOrderFinancials\(auth\)\)\s*throw new CheckoutError/);
 assert.match(endpoint, /deposit > after\)\s*throw new CheckoutError/, "paid can never exceed the new total");
@@ -45,9 +45,35 @@ assert.match(endpoint, /const payment = paymentSummary\(after, deposit\);/);
 assert.match(endpoint, /inTotal: d\.mode === "ajn",/);
 assert.match(endpoint, /columnMode\s*\?\s*\{/, "kosha bookings read their own transport columns first");
 
-// 4. Kosha booking form: same-day clash with service orders; the old card copy is cleared.
+// 4. Kosha booking form: one period-aware vehicle clash check; the old card copy is cleared.
 const koshaPatch = between(api, "const transportationRequested = [", "const sameStringList = ");
-assert.match(koshaPatch, /transportVehicleBookedElsewhere\(db, \{ vehicleId: vehicle\.id, eventDate: eventDateForConflict, exclude: \{ source: "kosha", id \} \}\)/);
+assert.match(koshaPatch, /await transportVehicleClash\(db, vehicle\.id, \{\s*source: "kosha",\s*id,\s*eventDate: eventDateForConflict,/);
+assert.doesNotMatch(koshaPatch, /eq\(koshaBookingsTable\.eventDate, eventDateForConflict\)/, "no date-only kosha clash check");
+// Only the type and fee touch money: the vehicle, driver and notes stay editable after payments.
+assert.match(koshaPatch, /const financialChange = nextMode !== currentMode \|\| requestedFee !== currentFee;\s*if \(financialChange\) \{/);
+const clashFn = between(api, "async function transportVehicleClash(", "// Group photography:");
+assert.match(clashFn, /if \(!resourceInterval\(reference\)\) return null;/, "unknown own timing is the guard's to explain");
+assert.match(clashFn, /await findBookingVehicleConflict\(reference, vehicleId, executor\)/, "same interval rule as the resource guard");
+assert.match(clashFn, /clash\.timingIncomplete\s*\?\s*`[^`]*في نفس اليوم\. إذا كانت تكفي الحجزين، حدّد فترة التشغيل لكليهما\.`/);
+assert.match(clashFn, /خلال نفس فترة التشغيل\./);
+
+// A transport-only kosha edit keeps the amount actually paid: the cash "paid in full"
+// default (pricing.paymentMethod missing → "cash") must never settle the booking.
+assert.match(api, /const transportOnly = transportationRequested &&\s*parsed\.data\.totalAmount === undefined && parsed\.data\.paidAmount === undefined &&\s*parsed\.data\.paymentStatus === undefined && parsed\.data\.paymentMethod === undefined &&\s*pricing === undefined;/);
+assert.match(api, /const payment = transportOnly\s*\?\s*paymentSummary\(totalAmount, paidAmount\)\s*:/);
+const { settlePaymentAmounts } = await import("../src/lib/payment-settlement");
+assert.deepEqual(settlePaymentAmounts(560000, 0), { paid: 0, remaining: 560000, status: "unpaid" }, "no method: nothing is invented as paid");
+assert.deepEqual(settlePaymentAmounts(540000, 200000), { paid: 200000, remaining: 340000, status: "partial" });
+
+// 4b. Transport without a vehicle is listed so a vehicle can be chosen on it.
+const unassigned = between(api, 'parts[1] === "unassigned-transport"', 'parts[2] === "financial"');
+assert.match(unassigned, /transportation_mode = 'ajn' and transportation_vehicle_id is null/);
+assert.match(unassigned, /->>'mode' = 'ajn' and coalesce\(\$\{SERVICE_TRANSPORT\}->>'vehicleId', ''\) = ''/);
+assert.match(unassigned, /throw new Error\("Invalid unassigned transport database response"\)/, "a bad read is an error, never an empty list");
+const vehiclesPage = readFileSync("src/views/admin/vehicles.tsx", "utf8");
+assert.match(vehiclesPage, /<\/Card><UnassignedTransport \/>/);
+assert.match(vehiclesPage, /if \(query\.isError\) return <Card[^>]*><p role="alert"[^>]*>تعذر تحميل حجوزات النقل بدون سيارة/);
+assert.match(vehiclesPage, /href=\{`\/admin\/bookings\/\$\{row\.source\}\/\$\{row\.bookingId\}`\}/);
 assert.match(koshaPatch, /bookingOperations = \{ \.\.\.\(\(update\.bookingDetails as any\)\.bookingOperations \?\? existingOps\), transportation: null \}/);
 
 // 5. Vehicle accounts count service-order transport too.
