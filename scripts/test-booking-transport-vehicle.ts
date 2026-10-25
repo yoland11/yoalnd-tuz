@@ -151,5 +151,24 @@ assert.match(loading, /coalesce\(CASE WHEN b\.custom_fields->'bookingOperations'
 assert.match(loading, /const teamMissing=!record&&facts\.staff\.length<2;/);
 assert.match(loading, /عيّن فريق الحجز من «فريق الحجز» أعلى الصفحة/);
 
+// 11. Transport slip: the saved fee and its details, A4 and 80mm, escaped.
+const { buildBookingTransportHtml } = await import("../src/components/booking-transport-print");
+const slip = { bookingNumber: "B-137-1839", customerName: "أحمد <لطيف>", phone: "07700000000", eventDate: "2026-10-25", eventTime: "12:00", location: "حي عسكري", vehicle: "كيا حمل · 26 A68498", driver: "علي ابراهيم", fee: 1000, inTotal: true, note: null };
+const a4 = buildBookingTransportHtml(slip, "a4"), thermal = buildBookingTransportHtml(slip, "80mm");
+for (const html of [a4, thermal]) {
+  assert.match(html, /وصل خدمة النقل/);
+  assert.match(html, /كيا حمل · 26 A68498/);
+  assert.match(html, /علي ابراهيم/);
+  assert.match(html, /25 \/ 10 \/ 2026/);
+  assert.match(html, /ضمن مبلغ الحجز/);
+  assert.match(html, /أحمد &lt;لطيف&gt;/, "customer text is escaped");
+  assert.doesNotMatch(html, /<script/i, "the shared print dialog adds the print script");
+}
+assert.match(a4, /@page \{ size: A4 portrait/);
+assert.match(a4, /توقيع السائق/);
+assert.match(thermal, /@page \{ size: 80mm auto/);
+assert.match(buildBookingTransportHtml({ ...slip, inTotal: false }, "80mm"), /للعلم — غير مضافة إلى مبلغ الحجز/);
+assert.match(card, /value\.mode === "ajn" \? <Button size="sm" variant="outline" disabled=\{busy \|\| touched\} title=\{touched \? "احفظ التعديلات أولاً" : undefined\} onClick=\{print\}><Printer className="h-4 w-4" \/> طباعة النقل<\/Button>/, "prints only the saved transport");
+
 console.log("PASS  booking transport: fee in total once, vehicle required, kosha via its booking, vehicle accounts include service orders");
 console.log("PASS  vehicle expenses link service-order trips after migration 0128; the card offers the dispatched vehicle");

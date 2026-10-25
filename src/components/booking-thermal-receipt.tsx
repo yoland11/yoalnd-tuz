@@ -39,10 +39,10 @@ export type BookingThermalReceiptData = {
   companyPhone?: string | null;
 };
 
-const clean = (value: unknown) =>
+export const clean = (value: unknown) =>
   typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 
-const esc = (value: unknown) =>
+export const esc = (value: unknown) =>
   clean(value).replace(
     /[&<>"']/g,
     (character) =>
@@ -50,7 +50,7 @@ const esc = (value: unknown) =>
   );
 
 /** Display-only date tidy: YYYY-MM-DD → DD / MM / YYYY; otherwise passes through. */
-function displayDate(value: unknown) {
+export function displayDate(value: unknown) {
   const raw = clean(value);
   const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
   return match ? `${match[3]} / ${match[2]} / ${match[1]}` : raw;
