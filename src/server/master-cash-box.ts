@@ -7,6 +7,8 @@ import { parseMoney } from "../lib/vehicle-partnership/money";
 import { PartnershipValidationError } from "../lib/vehicle-partnership/types";
 import { executePartnershipFinancialTransaction, rejectPartnershipFinancialTransaction, reversePartnershipFinancialTransaction } from "./vehicle-partnership/posting";
 import { lockPartnershipOriginalVehicleExpense } from "./vehicle-partnership/costing";
+import { prepareDistributionExecution, finishDistributionExecution, type DistributionExecution } from "./vehicle-partnership/distributions";
+import { calculatePartnershipCashPosting } from "../lib/vehicle-partnership/cash";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import {
@@ -363,23 +365,23 @@ export async function createPartnershipSourceFinancialRequest(
   const sourceActor: PartnershipActor = {id:Number(actor.id),name:actor.name,role:actor.role,permissions:actor.permissions??[],isActive:actor.isActive??true,...(actor.allowedBranchIds?{allowedBranchIds:actor.allowedBranchIds}:{})};
   authorizePartnership(sourceActor);
   const source = await preparePartnershipFinancialRequest(executor, reference, sourceActor);
-  const existing = partnershipRows(await executor.execute(sql`/* vp_financial_request_replay */ SELECT id,source_type,source_id,source_event,transaction_type,transaction_date::text,direction,amount::text,approval_status FROM financial_transactions WHERE idempotency_key=${source.idempotencyKey}`));
+  const existing = partnershipRows(await executor.execute(sql`/* vp_financial_request_replay */ SELECT id,source_type,source_id,source_event,transaction_type,transaction_date::text,direction,amount::text,approval_status,payment_method FROM financial_transactions WHERE idempotency_key=${source.idempotencyKey}`));
   if (existing.length) {
     const row = existing[0];
-    if (existing.length!==1 || row.source_type!==source.sourceType || String(row.source_id)!==String(source.sourceId) || row.source_event!==source.sourceEvent || row.transaction_type!==source.transactionType || row.transaction_date!==source.transactionDate || row.direction!==source.direction || parseMoney(String(row.amount))!==parseMoney(source.amount) || row.approval_status!=="pending" || source.linkedFinancialTransactionId!=null&&Number(row.id)!==source.linkedFinancialTransactionId)
+    if (existing.length!==1 || row.source_type!==source.sourceType || String(row.source_id)!==String(source.sourceId) || row.source_event!==source.sourceEvent || row.transaction_type!==source.transactionType || row.transaction_date!==source.transactionDate || row.direction!==source.direction || parseMoney(String(row.amount))!==parseMoney(source.amount) || row.approval_status!=="pending" || source.paymentMethod!=null&&row.payment_method!==source.paymentMethod || source.linkedFinancialTransactionId!=null&&Number(row.id)!==source.linkedFinancialTransactionId)
       throw new PartnershipRepositoryError("مرجع الطلب المالي مستخدم لبيانات أو حالة مختلفة؛ راجع المصدر",409,"CONFLICT");
     return {id:Number(row.id),approvalStatus:"pending"};
   }
   if (source.linkedFinancialTransactionId!=null)
     throw new PartnershipRepositoryError("مصدر النقل مرتبط بطلب مالي آخر؛ لا يمكن إنشاء طلب إضافي",409,"CONFLICT");
-  const rows = partnershipRows(await executor.execute(sql`INSERT INTO financial_transactions (transaction_no,transaction_date,direction,amount,department,transaction_type,reference_no,description,source_type,source_id,source_event,idempotency_key,approval_status,payment_method,requested_by,requested_by_name,submitted_at) VALUES (${`FIN-TMP-${randomUUID()}`},${source.transactionDate},${source.direction},${source.amount},${source.department},${source.transactionType},${source.referenceNo},${source.description},${source.sourceType},${String(source.sourceId)},${source.sourceEvent},${source.idempotencyKey},'pending','other',${sourceActor.id},${sourceActor.name},now()) RETURNING id,approval_status`));
+  const rows = partnershipRows(await executor.execute(sql`INSERT INTO financial_transactions (transaction_no,transaction_date,direction,amount,department,transaction_type,reference_no,description,source_type,source_id,source_event,idempotency_key,approval_status,payment_method,requested_by,requested_by_name,submitted_at) VALUES (${`FIN-TMP-${randomUUID()}`},${source.transactionDate},${source.direction},${source.amount},${source.department},${source.transactionType},${source.referenceNo},${source.description},${source.sourceType},${String(source.sourceId)},${source.sourceEvent},${source.idempotencyKey},'pending',${source.paymentMethod??"other"},${sourceActor.id},${sourceActor.name},now()) RETURNING id,approval_status`));
   const id=Number(rows[0]?.id);
   if (rows.length!==1 || !Number.isSafeInteger(id) || id<=0 || rows[0].approval_status!=="pending")
     throw new Error("Partnership financial request insert was not confirmed");
   const numbered=partnershipRows(await executor.execute(sql`UPDATE financial_transactions SET transaction_no=${transactionNumber(id)} WHERE id=${id} AND approval_status='pending' RETURNING id,approval_status`));
   if (numbered.length!==1 || Number(numbered[0].id)!==id || numbered[0].approval_status!=="pending")
     throw new Error("Partnership financial request numbering was not confirmed");
-  await appendPartnershipAudit(executor,{vehicleId:source.vehicleId,partnershipId:source.partnershipId,actor:sourceActor,action:"financial_requested",reason:"طلب اعتماد غير نقدي مشتق من المصدر الأصلي",financialTransactionId:id,newValues:{sourceType:source.sourceType,sourceId:source.sourceId,sourceDigest:source.sourceDigest,amount:source.amount,status:"pending"}});
+  await appendPartnershipAudit(executor,{vehicleId:source.vehicleId,partnershipId:source.partnershipId,actor:sourceActor,action:"financial_requested",reason:"طلب اعتماد مشتق من المصدر الأصلي",financialTransactionId:id,newValues:{sourceType:source.sourceType,sourceId:source.sourceId,sourceDigest:source.sourceDigest,amount:source.amount,status:"pending",...(source.sourceSnapshot?{sourceSnapshot:source.sourceSnapshot}:{})}});
   return {id,approvalStatus:"pending"};
 }
 
@@ -882,24 +884,38 @@ async function executePendingFinancialTransaction(
       .where(eq(financialTransactionsTable.id, id))
       .limit(1);
     if (!initial) throw new FinancialApprovalError("المعاملة غير موجودة", 404);
+    let partnershipCash: DistributionExecution | null = null;
     if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
       try {
-        await executePartnershipFinancialTransaction(tx, initial, {
-          id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
-        }, note);
+        if (initial.sourceType === "vehicle_partnership_settlement") {
+          partnershipCash = await prepareDistributionExecution(tx, initial, {
+            id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
+          });
+          if (partnershipCash.alreadyExecuted) {
+            const [saved] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,id)).limit(1);
+            if (!saved || saved.approvalStatus!=="executed") throw new FinancialApprovalError("تعذر تأكيد صرف الحصة المنفذ");
+            return saved;
+          }
+        } else {
+          await executePartnershipFinancialTransaction(tx, initial, {
+            id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
+          }, note);
+        }
       } catch (cause) {
         if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)
           throw new FinancialApprovalError(cause.message, cause.status===403?403:cause.status===404?404:409);
         throw cause;
       }
-      const [saved] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,id)).limit(1);
-      if (!saved || saved.approvalStatus!=="executed")
-        throw new FinancialApprovalError("تعذر تأكيد اعتماد طلب الشراكة");
-      return saved;
+      if (!partnershipCash) {
+        const [saved] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,id)).limit(1);
+        if (!saved || saved.approvalStatus!=="executed")
+          throw new FinancialApprovalError("تعذر تأكيد اعتماد طلب الشراكة");
+        return saved;
+      }
     }
     if (initial.approvalStatus === "executed") return initial;
     if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "execute");
-    await lockGraduationPaymentSource(tx, initial, {requireActive:initial.direction === "revenue"});
+    if (!partnershipCash) await lockGraduationPaymentSource(tx, initial, {requireActive:initial.direction === "revenue"});
     // Source writers acquire the original order before changing their pending
     // request. Re-read under the financial row lock AFTER acquiring that source
     // lock; otherwise approval can post an old amount while marking a newer
@@ -918,9 +934,22 @@ async function executePendingFinancialTransaction(
     );
     const cashRaw = (locked.rows?.[0] ?? {}) as any;
     if (!cashRaw.id) throw new FinancialApprovalError("الصندوق الرئيسي غير مهيأ");
-    const amount = money(transaction.amount);
-    const before = money(cashRaw.current_balance);
-    const after = money(
+    let exactCash: ReturnType<typeof calculatePartnershipCashPosting> | null = null;
+    if (partnershipCash) {
+      if (transaction.amount !== partnershipCash.amount || transaction.direction !== "expense" || transaction.transactionType !== "vp_partner_distribution")
+        throw new FinancialApprovalError("طلب الحصة تغير بعد فحص مصدره");
+      try {
+        exactCash = calculatePartnershipCashPosting({amount:partnershipCash.amount,currentBalance:cashRaw.current_balance,totalRevenue:cashRaw.total_revenue,totalExpenses:cashRaw.total_expenses,netProfit:cashRaw.net_profit});
+      } catch (cause) {
+        if (cause instanceof PartnershipValidationError) throw new FinancialApprovalError(cause.message,409);
+        throw cause;
+      }
+    }
+    // Legacy source formulas remain unchanged. Partnership money never passes
+    // through their floating-point formatter, including the persisted balance.
+    const amount = exactCash ? 0 : money(transaction.amount);
+    const before = exactCash ? 0 : money(cashRaw.current_balance);
+    const after = exactCash ? 0 : money(
       transaction.direction === "revenue" ? before + amount : before - amount,
     );
     if (transaction.direction === "expense" && after < 0)
@@ -931,7 +960,7 @@ async function executePendingFinancialTransaction(
       .from(financialAccountsTable)
       .where(eq(financialAccountsTable.code, "1000"))
       .limit(1);
-    const counterCode = counterAccountCode(
+    const counterCode = partnershipCash?.counterCode ?? counterAccountCode(
       transaction.direction as "revenue" | "expense",
       transaction.department,
       transaction.transactionType,
@@ -943,6 +972,8 @@ async function executePendingFinancialTransaction(
       .limit(1);
     if (!cashAccount || !counterAccount)
       throw new FinancialApprovalError("دليل الحسابات غير مكتمل");
+    if (partnershipCash && (cashAccount.accountType!=="asset" || cashAccount.isActive!==true || counterAccount.accountType!=="liability" || counterAccount.isActive!==true))
+      throw new FinancialApprovalError("تصنيف أو حالة حسابات صرف الحصة غير مطابق");
 
     const now = new Date();
     const [saved] = await tx
@@ -955,8 +986,8 @@ async function executePendingFinancialTransaction(
         executedBy: actor.id,
         executedByName: actor.name,
         executedAt: now,
-        balanceBefore: String(before),
-        balanceAfter: String(after),
+        balanceBefore: exactCash?.before ?? String(before),
+        balanceAfter: exactCash?.after ?? String(after),
         notes: note?.trim()
           ? [transaction.notes, note.trim()].filter(Boolean).join("\n")
           : transaction.notes,
@@ -988,14 +1019,14 @@ async function executePendingFinancialTransaction(
                 transactionId: id,
                 accountId: cashAccount.id,
                 entrySide: "debit",
-                amount: String(amount),
+                amount: exactCash?.amount ?? String(amount),
                 description: transaction.description,
               },
               {
                 transactionId: id,
                 accountId: counterAccount.id,
                 entrySide: "credit",
-                amount: String(amount),
+                amount: exactCash?.amount ?? String(amount),
                 description: transaction.description,
               },
             ]
@@ -1004,14 +1035,14 @@ async function executePendingFinancialTransaction(
                 transactionId: id,
                 accountId: counterAccount.id,
                 entrySide: "debit",
-                amount: String(amount),
+                amount: exactCash?.amount ?? String(amount),
                 description: transaction.description,
               },
               {
                 transactionId: id,
                 accountId: cashAccount.id,
                 entrySide: "credit",
-                amount: String(amount),
+                amount: exactCash?.amount ?? String(amount),
                 description: transaction.description,
               },
             ],
@@ -1022,7 +1053,7 @@ async function executePendingFinancialTransaction(
     // Loans and employee advances move value between cash and a balance-sheet
     // account. They never inflate operating revenue, expenses, or profit.
     const balanceSheetTransfer = isBalanceSheetTransfer(transaction);
-    const nextRevenue = money(
+    const nextRevenue = exactCash ? 0 : money(
       Math.max(
         0,
         money(cashRaw.total_revenue) +
@@ -1030,7 +1061,7 @@ async function executePendingFinancialTransaction(
           (transaction.direction === "expense" && isReversal && !balanceSheetTransfer ? amount : 0),
       ),
     );
-    const nextExpenses = money(
+    const nextExpenses = exactCash ? 0 : money(
       Math.max(
         0,
         money(cashRaw.total_expenses) +
@@ -1041,11 +1072,11 @@ async function executePendingFinancialTransaction(
     await tx
       .update(masterCashBoxTable)
       .set({
-        currentBalance: String(after),
-        availableBalance: String(after),
-        totalRevenue: String(nextRevenue),
-        totalExpenses: String(nextExpenses),
-        netProfit: String(money(nextRevenue - nextExpenses)),
+        currentBalance: exactCash?.after ?? String(after),
+        availableBalance: exactCash?.after ?? String(after),
+        totalRevenue: exactCash?.totalRevenue ?? String(nextRevenue),
+        totalExpenses: exactCash?.totalExpenses ?? String(nextExpenses),
+        netProfit: exactCash?.netProfit ?? String(money(nextRevenue - nextExpenses)),
         version: Number(cashRaw.version ?? 0) + 1,
         updatedBy: actor.id,
         updatedByName: actor.name,
@@ -1211,6 +1242,17 @@ async function executePendingFinancialTransaction(
         await reconcilePaymentState(tx, { sourceType: transaction.sourceType, sourceId });
     }
 
+    if (partnershipCash) {
+      try {
+        await finishDistributionExecution(tx,partnershipCash,{
+          id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
+        });
+      } catch (cause) {
+        if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)
+          throw new FinancialApprovalError(cause.message,cause.status===403?403:cause.status===404?404:409);
+        throw cause;
+      }
+    }
     await tx.insert(financialAuditLogsTable).values([
       {
         transactionId: id,
@@ -1226,8 +1268,8 @@ async function executePendingFinancialTransaction(
         action: "executed",
         actorId: actor.id,
         actorName: actor.name,
-        oldValues: { balance: before },
-        newValues: { balance: after, debit: amount, credit: amount },
+        oldValues: { balance: exactCash?.before ?? before },
+        newValues: { balance: exactCash?.after ?? after, debit: exactCash?.amount ?? amount, credit: exactCash?.amount ?? amount },
         reason: note?.trim() || null,
       },
       ...(receiptAllocations.length ? [{

@@ -12,8 +12,9 @@ import {PARTNERSHIP_POSTING_TYPES} from "./financial-classification";
 import {preparePartnershipCostRequest} from "./costing";
 import {preparePartnershipCapitalRequest} from "./capital";
 import {prepareClosingFinancialRequest} from "./closing-lifecycle";
+import {prepareDistributionFinancialRequest} from "./distributions";
 
-export type PartnershipFinancialRequestReference={sourceType:"vehicle_partnership_activity"|"vehicle_partnership_cost"|"vehicle_partnership_right"|"vehicle_partnership_closing";sourceId:number};
+export type PartnershipFinancialRequestReference={sourceType:"vehicle_partnership_activity"|"vehicle_partnership_cost"|"vehicle_partnership_right"|"vehicle_partnership_closing"|"vehicle_partnership_settlement";sourceId:number;distribution?:unknown};
 export type PartnershipFinancialRequestWriter=(tx:PartnershipExecutor,reference:PartnershipFinancialRequestReference,actor:PartnershipActor)=>Promise<{id:number;approvalStatus:string}>;
 export type TrustedPartnershipRequest={
  sourceType:PartnershipFinancialRequestReference["sourceType"];sourceId:number;
@@ -22,6 +23,7 @@ export type TrustedPartnershipRequest={
  amount:string;transactionDate:string;department:string;description:string;referenceNo:string;idempotencyKey:string;
  partnershipId:number;vehicleId:number;sourceDigest:string;linkedFinancialTransactionId:number|null;
  agreementId?:number;memberId?:number;employeeFinanceEntryId?:number;
+ sourceSnapshot?:Record<string,unknown>;paymentMethod?:"cash"|"transfer"|"pos";
 };
 const common=z.object({source:z.enum(["kosha","service","delivery"]),sourceId:z.number().int().positive(),recognitionDate:z.string(),expectedVersion:z.number().int().nonnegative(),idempotencyKey:z.string().trim().min(8).max(180),reason:z.string().trim().min(1).max(2000),driverNoCharge:z.boolean().default(false)});
 const requestSchema=z.discriminatedUnion("incomeBasis",[
@@ -73,6 +75,7 @@ export async function lockPartnershipActivityContext(tx:PartnershipExecutor,acto
  * direction, account or cash-impact flag. Validate its original locked source
  * and immutable proof again before constructing the pending financial row. */
 export async function preparePartnershipFinancialRequest(tx:PartnershipExecutor,reference:PartnershipFinancialRequestReference,actor:PartnershipActor):Promise<TrustedPartnershipRequest>{
+ if(reference.sourceType==="vehicle_partnership_settlement")return prepareDistributionFinancialRequest(tx,{sourceType:"vehicle_partnership_settlement",sourceId:reference.sourceId,distribution:reference.distribution},actor);
  if(reference.sourceType==="vehicle_partnership_closing")return prepareClosingFinancialRequest(tx,{sourceType:"vehicle_partnership_closing",sourceId:reference.sourceId},actor);
  if(reference.sourceType==="vehicle_partnership_cost")return preparePartnershipCostRequest(tx,reference,actor);
  if(reference.sourceType==="vehicle_partnership_right")return preparePartnershipCapitalRequest(tx,reference,actor);
