@@ -16,6 +16,12 @@ assert.ok(indexed("vehiclePartnershipAgreementsTable",["partnership_id","revisio
 assert.ok(indexed("vehiclePartnershipClosingsTable",["partnership_id","period"]));
 assert.ok(indexed("vehiclePartnershipClosingLinesTable",["closing_id","revision","source_key"]));
 assert.ok(indexed("vehiclePartnershipSettlementAllocationsTable",["financial_transaction_id","right_id","purpose"]));
+assert.ok(configs.vehiclePartnershipClosingsTable.columns.some(column=>column.name==="financial_transaction_id"),"monthly conversion must reference its real approved noncash financial source");
+assert.ok(configs.vehiclePartnershipSettlementAllocationsTable.columns.some(column=>column.name==="conversion_allocation_id"),"mapped cash needs its original approved conversion reference");
+assert.ok(configs.vehiclePartnershipSettlementAllocationsTable.foreignKeys.some(fk=>fk.reference().columns.map(c=>c.name).join(",")==="conversion_allocation_id,right_id"&&fk.reference().foreignColumns.map(c=>c.name).join(",")==="id,right_id"),"conversion coverage cannot reference a different original gross right");
+assert.ok(configs.vehiclePartnershipSettlementAllocationsTable.indexes.find(index=>index.config.name==="vp_settlement_tx_right_purpose_unique")?.config.where,"preserve old inactive coverage rows when a new reviewed closing revision references the same real original cost");
+assert.ok(indexed("vehiclePartnershipSettlementAllocationsTable",["financial_transaction_id","right_id","purpose","conversion_allocation_id"]));
+assert.match(checks("vehiclePartnershipSettlementAllocationsTable"),/internal_conversion/);
 assert.ok(indexed("vehiclePartnershipCostFundingTable",["vehicle_expense_id"]),"funding annotates one original cost, never another expense");
 for(const name of ["vp_cost_expense_unique","vp_cost_employee_unique"]){
  const index=configs.vehiclePartnershipCostFundingTable.indexes.find(index=>index.config.name===name)!;

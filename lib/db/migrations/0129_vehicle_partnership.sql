@@ -71,6 +71,7 @@ CREATE TABLE "vehicle_partnership_closings" (
 	"version" integer DEFAULT 0 NOT NULL,
 	"status" varchar(24) DEFAULT 'draft' NOT NULL,
 	"source_digest" varchar(64),
+	"financial_transaction_id" integer,
 	"policy_snapshot" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"approved_by" integer,
 	"approved_at" timestamp with time zone,
@@ -154,14 +155,17 @@ CREATE TABLE "vehicle_partnership_settlement_allocations" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"right_id" integer NOT NULL,
 	"financial_transaction_id" integer NOT NULL,
+	"conversion_allocation_id" integer,
 	"purpose" varchar(40) NOT NULL,
 	"amount" numeric(16, 2) NOT NULL,
 	"idempotency_key" varchar(180) NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"created_by" integer,
 	"reason" text NOT NULL,
+	CONSTRAINT "vp_settlement_conversion_scope_unique" UNIQUE("id","right_id"),
 	CONSTRAINT "vp_settlement_amount_check" CHECK ("vehicle_partnership_settlement_allocations"."amount">0),
-	CONSTRAINT "vp_settlement_purpose_check" CHECK ("vehicle_partnership_settlement_allocations"."purpose" IN ('distribution','advance_reimbursement','internal_entitlement_settlement','capital_transfer'))
+	CONSTRAINT "vp_settlement_conversion_check" CHECK ("vehicle_partnership_settlement_allocations"."conversion_allocation_id" IS NULL OR ("vehicle_partnership_settlement_allocations"."purpose"='internal_entitlement_settlement' AND "vehicle_partnership_settlement_allocations"."conversion_allocation_id"<>"vehicle_partnership_settlement_allocations"."id")),
+	CONSTRAINT "vp_settlement_purpose_check" CHECK ("vehicle_partnership_settlement_allocations"."purpose" IN ('distribution','advance_reimbursement','internal_entitlement_settlement','capital_transfer','internal_conversion'))
 );
 
 CREATE TABLE "vehicle_partnerships" (
@@ -194,6 +198,7 @@ ALTER TABLE "vehicle_partnership_closing_lines" ADD CONSTRAINT "vehicle_partners
 ALTER TABLE "vehicle_partnership_closing_lines" ADD CONSTRAINT "vehicle_partnership_closing_lines_member_id_vehicle_partnership_members_id_fk" FOREIGN KEY ("member_id") REFERENCES "public"."vehicle_partnership_members"("id") ON DELETE restrict;
 ALTER TABLE "vehicle_partnership_closing_lines" ADD CONSTRAINT "vehicle_partnership_closing_lines_created_by_staff_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."staff"("id") ON DELETE restrict;
 ALTER TABLE "vehicle_partnership_closings" ADD CONSTRAINT "vehicle_partnership_closings_partnership_id_vehicle_partnerships_id_fk" FOREIGN KEY ("partnership_id") REFERENCES "public"."vehicle_partnerships"("id") ON DELETE restrict;
+ALTER TABLE "vehicle_partnership_closings" ADD CONSTRAINT "vehicle_partnership_closings_financial_transaction_id_financial_transactions_id_fk" FOREIGN KEY ("financial_transaction_id") REFERENCES "public"."financial_transactions"("id") ON DELETE restrict;
 ALTER TABLE "vehicle_partnership_closings" ADD CONSTRAINT "vehicle_partnership_closings_approved_by_staff_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."staff"("id") ON DELETE restrict;
 ALTER TABLE "vehicle_partnership_closings" ADD CONSTRAINT "vehicle_partnership_closings_created_by_staff_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."staff"("id") ON DELETE restrict;
 ALTER TABLE "vehicle_partnership_cost_funding" ADD CONSTRAINT "vehicle_partnership_cost_funding_partnership_id_vehicle_partnerships_id_fk" FOREIGN KEY ("partnership_id") REFERENCES "public"."vehicle_partnerships"("id") ON DELETE restrict;
@@ -223,6 +228,7 @@ ALTER TABLE "vehicle_partnership_rights" ADD CONSTRAINT "vp_right_payer_scope_fk
 ALTER TABLE "vehicle_partnership_settlement_allocations" ADD CONSTRAINT "vehicle_partnership_settlement_allocations_right_id_vehicle_partnership_rights_id_fk" FOREIGN KEY ("right_id") REFERENCES "public"."vehicle_partnership_rights"("id") ON DELETE restrict;
 ALTER TABLE "vehicle_partnership_settlement_allocations" ADD CONSTRAINT "vehicle_partnership_settlement_allocations_financial_transaction_id_financial_transactions_id_fk" FOREIGN KEY ("financial_transaction_id") REFERENCES "public"."financial_transactions"("id") ON DELETE restrict;
 ALTER TABLE "vehicle_partnership_settlement_allocations" ADD CONSTRAINT "vehicle_partnership_settlement_allocations_created_by_staff_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."staff"("id") ON DELETE restrict;
+ALTER TABLE "vehicle_partnership_settlement_allocations" ADD CONSTRAINT "vp_settlement_conversion_scope_fk" FOREIGN KEY ("conversion_allocation_id","right_id") REFERENCES "public"."vehicle_partnership_settlement_allocations"("id","right_id") ON DELETE restrict;
 ALTER TABLE "vehicle_partnerships" ADD CONSTRAINT "vehicle_partnerships_vehicle_id_fleet_vehicles_id_fk" FOREIGN KEY ("vehicle_id") REFERENCES "public"."fleet_vehicles"("id") ON DELETE restrict;
 ALTER TABLE "vehicle_partnerships" ADD CONSTRAINT "vehicle_partnerships_created_by_staff_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."staff"("id") ON DELETE restrict;
 CREATE UNIQUE INDEX "vp_activity_replay_unique" ON "vehicle_partnership_activity" USING btree ("idempotency_key");
@@ -236,6 +242,7 @@ CREATE UNIQUE INDEX "vp_agreement_replay_unique" ON "vehicle_partnership_agreeme
 CREATE INDEX "vp_agreement_date_idx" ON "vehicle_partnership_agreements" USING btree ("partnership_id","effective_from");
 CREATE UNIQUE INDEX "vp_closing_line_source_unique" ON "vehicle_partnership_closing_lines" USING btree ("closing_id","revision","source_key");
 CREATE UNIQUE INDEX "vp_closing_period_unique" ON "vehicle_partnership_closings" USING btree ("partnership_id","period");
+CREATE UNIQUE INDEX "vp_closing_financial_unique" ON "vehicle_partnership_closings" USING btree ("financial_transaction_id");
 CREATE UNIQUE INDEX "vp_closing_replay_unique" ON "vehicle_partnership_closings" USING btree ("idempotency_key");
 CREATE UNIQUE INDEX "vp_cost_expense_unique" ON "vehicle_partnership_cost_funding" USING btree ("vehicle_expense_id") WHERE "vehicle_partnership_cost_funding"."status" IN ('pending','approved');
 CREATE UNIQUE INDEX "vp_cost_employee_unique" ON "vehicle_partnership_cost_funding" USING btree ("employee_finance_entry_id") WHERE "vehicle_partnership_cost_funding"."status" IN ('pending','approved');
@@ -245,7 +252,8 @@ CREATE UNIQUE INDEX "vp_member_supplier_unique" ON "vehicle_partnership_members"
 CREATE UNIQUE INDEX "vp_member_staff_unique" ON "vehicle_partnership_members" USING btree ("agreement_id","staff_id");
 CREATE UNIQUE INDEX "vp_right_event_unique" ON "vehicle_partnership_rights" USING btree ("event_key");
 CREATE INDEX "vp_right_member_idx" ON "vehicle_partnership_rights" USING btree ("partnership_id","member_id","category","status");
-CREATE UNIQUE INDEX "vp_settlement_tx_right_purpose_unique" ON "vehicle_partnership_settlement_allocations" USING btree ("financial_transaction_id","right_id","purpose");
+CREATE UNIQUE INDEX "vp_settlement_tx_right_purpose_unique" ON "vehicle_partnership_settlement_allocations" USING btree ("financial_transaction_id","right_id","purpose") WHERE "vehicle_partnership_settlement_allocations"."conversion_allocation_id" IS NULL;
+CREATE UNIQUE INDEX "vp_settlement_converted_coverage_unique" ON "vehicle_partnership_settlement_allocations" USING btree ("financial_transaction_id","right_id","purpose","conversion_allocation_id") WHERE "vehicle_partnership_settlement_allocations"."conversion_allocation_id" IS NOT NULL;
 CREATE UNIQUE INDEX "vp_settlement_replay_unique" ON "vehicle_partnership_settlement_allocations" USING btree ("idempotency_key");
 CREATE INDEX "vp_settlement_right_idx" ON "vehicle_partnership_settlement_allocations" USING btree ("right_id");
 CREATE UNIQUE INDEX "vp_vehicle_unique" ON "vehicle_partnerships" USING btree ("vehicle_id");

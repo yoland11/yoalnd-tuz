@@ -13,6 +13,7 @@ import {lockPartnershipCostContext} from "./costing";
 import {lockPartnershipCapitalContext} from "./capital";
 import {executePartnershipCapitalFinancialTransaction} from "./capital-posting";
 import {transitionDriverAccrual} from "./driver-posting";
+import {executeClosingFinancialTransaction,rejectClosingFinancialTransaction} from "./closing-posting";
 import {appendPartnershipAudit,partnershipRows,PartnershipRepositoryError,type PartnershipExecutor} from "./repository";
 
 type FinancialIdentity={id:number;sourceType:string|null;sourceId:string|null};
@@ -28,6 +29,7 @@ async function internalRightProof(tx:PartnershipExecutor,activity:Row,financialI
  * Internal approval is an obligation, never cash or customer sales. */
 export async function executePartnershipFinancialTransaction(tx:PartnershipExecutor,initial:FinancialIdentity,actor:PartnershipActor,note?:string|null):Promise<{id:number;rightId?:number}>{
  authorizePartnership(actor,true);
+ if(initial.sourceType==="vehicle_partnership_closing")return executeClosingFinancialTransaction(tx,initial,actor,note);
  if(initial.sourceType==="vehicle_partnership_cost")return executePartnershipCostFinancialTransaction(tx,initial,actor,note);
  if(initial.sourceType==="vehicle_partnership_right")return executePartnershipCapitalFinancialTransaction(tx,initial,actor,note);
  if(initial.sourceType!=="vehicle_partnership_activity")conflict("مصدر الشراكة المالية غير مدعوم للاعتماد");
@@ -100,6 +102,7 @@ function cleanReason(value:string):string{
  if(typeof value!=="string"||value.trim().length<3||value.trim().length>2000)throw new PartnershipValidationError("سبب واضح للعملية مطلوب");return value.trim();
 }
 export async function rejectPartnershipFinancialTransaction(tx:PartnershipExecutor,initial:FinancialIdentity,actor:PartnershipActor,reason:string,mode:"reject"|"cancel"="reject"):Promise<{id:number}>{
+ if(initial.sourceType==="vehicle_partnership_closing")return rejectClosingFinancialTransaction(tx,initial,actor,reason,mode);
  authorizePartnership(actor,mode==="reject");const activityId=activityIdFor(initial),why=cleanReason(reason);
  const isCost=initial.sourceType==="vehicle_partnership_cost";
  const isCapital=initial.sourceType==="vehicle_partnership_right";

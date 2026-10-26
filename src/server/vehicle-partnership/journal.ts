@@ -13,6 +13,11 @@ const ACCOUNTS={
  "VP-CAPITAL":{name:"مساهمات رأس مال شراكة المركبة",type:"equity"},
  "VP-CAPITAL-CLEAR":{name:"تسوية المساهمات المعلنة قبل قبضها",type:"asset"},
  "VP-INVESTMENT":{name:"استثمارات رأسمالية لشراكة المركبة",type:"asset"},
+ "VP-PROFIT":{name:"أرباح شراكة المركبة المعتمدة للتوزيع",type:"liability"},
+ "VP-LOSS":{name:"خسائر الشراكة المثبتة على أطرافها الأصلية",type:"asset"},
+ "VP-RESERVE":{name:"احتياطي شراكة المركبة المعتمد",type:"equity"},
+ "VP-RESULT":{name:"تخصيص نتيجة نشاط الشراكة من المصادر الأصلية",type:"equity"},
+ "VP-COST-CLEAR":{name:"تسوية كلفة نشاط شراكة المركبة",type:"equity"},
  "5000":{name:"المصروفات التشغيلية",type:"expense"},
 } as const;
 /** Server-owned chart entries; no account identifiers accepted from a form. */

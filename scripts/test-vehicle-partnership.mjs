@@ -1,6 +1,18 @@
 import {spawnSync} from "node:child_process";
 const commands=[
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-domain.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-math.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-evidence.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-source-read.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-preview.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-journal.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-locks.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-terminal-vehicle-barrier.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-lifecycle.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-rights.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-posting.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-conversion.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-conversion-state.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-canonical.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-weighted-money.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-financial-classification.ts"],

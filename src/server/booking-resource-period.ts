@@ -137,7 +137,13 @@ export async function validateBookingResourceCreation(tx:ResourceExecutor,ref:Re
 }
 async function assertBookingResourceCandidate(tx:ResourceExecutor,next:ResourceBooking,before:ResourceBooking|null,staffOverrideReason?:string|null,staffOverrideIds:number[]=[]){
   const ref={source:next.source,id:next.id};
-  if(next.archivedAt||terminal(next.status)||(before&&!terminal(before.status)&&sameOrReleased(before,next)))return;
+  if(next.archivedAt||terminal(next.status)||(before&&!terminal(before.status)&&sameOrReleased(before,next))){
+    // JSON-only service vehicle identities have no FK barrier. Serialize even
+    // historical/fee-only edits with the monthly snapshot, without rechecking
+    // old scheduling or requiring a historical vehicle to still be active.
+    if(next.source==="service")await lockBookingVehicleIdentities(tx,next);
+    return;
+  }
   const hasResources=allocatesKosha(next)||next.staffIds.length||next.vehicleId||next.crewId||next.assets.some(asset=>!["released","returned","inspection","completed"].includes(String(asset.stage??"linked")));
   if(!hasResources&&!next.operations.resourceWindow)return;
   // The period is optional; without one the booking holds its whole event day.
@@ -171,10 +177,26 @@ async function assertBookingResourceCandidate(tx:ResourceExecutor,next:ResourceB
   if(physical.length)await tx.execute(sql`SELECT id FROM products WHERE id IN (${sql.join(physical.map(asset=>sql`${asset.productId}`),sql`, `)}) ORDER BY id FOR UPDATE`);
   for(const asset of physical)if(await findBookingPhysicalConflict(next,asset.productId,tx))throw new BookingResourceConflictError("إحدى المعدات مشغولة أو مواعيدها غير مكتملة",409);
 }
+/** Keep every persisted transport identity behind one sorted fleet barrier.
+ * A dispatch resource may differ from the financial transport JSON vehicle;
+ * neither identity is silently overwritten or inferred from the other. */
+async function lockBookingVehicleIdentities(tx:ResourceExecutor,next:ResourceBooking){
+  const transport=object(next.operations.transportation);
+  const jsonVehicle=next.source==="service"&&transport.mode==="ajn"?id(transport.vehicleId):null;
+  const ids=[...new Set([next.vehicleId,jsonVehicle].filter((value):value is number=>value!==null))].sort((a,b)=>a-b);
+  const result=new Map<number,Record<string,any>>();
+  for(const vehicleId of ids){
+    const rows=resourceRows(await tx.execute(sql`SELECT id,is_active,status FROM fleet_vehicles WHERE id=${vehicleId} FOR UPDATE /* vp_terminal_vehicle_barrier */`));
+    if(rows.length!==1||Number(rows[0].id)!==vehicleId)throw new BookingResourceConflictError("مرجع مركبة النقل غير موجود؛ راجع إسناد الحجز",409);
+    result.set(vehicleId,rows[0]);
+  }
+  return result;
+}
 async function lockBookingDispatchResources(tx:ResourceExecutor,next:ResourceBooking){
+  const vehicles=await lockBookingVehicleIdentities(tx,next);
   for(const [kind,resourceId] of [["vehicle",next.vehicleId],["crew",next.crewId]] as const){
     if(!resourceId)continue;
-    const [resource]=resourceRows(await tx.execute(kind==="vehicle"?sql`SELECT id,is_active,status FROM fleet_vehicles WHERE id=${resourceId} FOR UPDATE`:sql`SELECT id,is_active,status FROM crews WHERE id=${resourceId} FOR UPDATE`));
+    const resource=kind==="vehicle"?vehicles.get(resourceId):resourceRows(await tx.execute(sql`SELECT id,is_active,status FROM crews WHERE id=${resourceId} FOR UPDATE`))[0];
     if(!resource||resource.is_active!==true||["maintenance","repair","retired","inactive",...(kind==="crew"?["unavailable"]:[])].includes(String(resource.status)))throw new BookingResourceConflictError("المركبة أو فريق التركيب غير متاح أو تغيّرت حالته",409);
     const outside=resourceRows(await tx.execute(sql`SELECT entity_type,entity_id FROM dispatch_assignments WHERE ${kind==="vehicle"?sql`vehicle_id`:sql`crew_id`}=${resourceId} AND status IN ('assigned','en_route','active') AND entity_type NOT IN ('kosha_booking','service_order') LIMIT 1`));
     if(outside.length||await(kind==="vehicle"?findBookingVehicleConflict(next,resourceId,tx):findBookingCrewConflict(next,resourceId,tx)))throw new BookingResourceConflictError("المركبة أو فريق التركيب مشغول أو مواعيده غير مكتملة",409);

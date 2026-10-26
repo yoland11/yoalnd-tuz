@@ -11,8 +11,9 @@ import {appendPartnershipAudit,lockPartnership,partnershipRows,PartnershipReposi
 import {PARTNERSHIP_POSTING_TYPES} from "./financial-classification";
 import {preparePartnershipCostRequest} from "./costing";
 import {preparePartnershipCapitalRequest} from "./capital";
+import {prepareClosingFinancialRequest} from "./closing-lifecycle";
 
-export type PartnershipFinancialRequestReference={sourceType:"vehicle_partnership_activity"|"vehicle_partnership_cost"|"vehicle_partnership_right";sourceId:number};
+export type PartnershipFinancialRequestReference={sourceType:"vehicle_partnership_activity"|"vehicle_partnership_cost"|"vehicle_partnership_right"|"vehicle_partnership_closing";sourceId:number};
 export type PartnershipFinancialRequestWriter=(tx:PartnershipExecutor,reference:PartnershipFinancialRequestReference,actor:PartnershipActor)=>Promise<{id:number;approvalStatus:string}>;
 export type TrustedPartnershipRequest={
  sourceType:PartnershipFinancialRequestReference["sourceType"];sourceId:number;
@@ -72,6 +73,7 @@ export async function lockPartnershipActivityContext(tx:PartnershipExecutor,acto
  * direction, account or cash-impact flag. Validate its original locked source
  * and immutable proof again before constructing the pending financial row. */
 export async function preparePartnershipFinancialRequest(tx:PartnershipExecutor,reference:PartnershipFinancialRequestReference,actor:PartnershipActor):Promise<TrustedPartnershipRequest>{
+ if(reference.sourceType==="vehicle_partnership_closing")return prepareClosingFinancialRequest(tx,{sourceType:"vehicle_partnership_closing",sourceId:reference.sourceId},actor);
  if(reference.sourceType==="vehicle_partnership_cost")return preparePartnershipCostRequest(tx,reference,actor);
  if(reference.sourceType==="vehicle_partnership_right")return preparePartnershipCapitalRequest(tx,reference,actor);
  authorizePartnership(actor);
