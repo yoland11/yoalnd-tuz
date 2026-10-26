@@ -1,0 +1,53 @@
+import assert from "node:assert/strict";
+import {PgDialect} from "drizzle-orm/pg-core";
+import {submitPartnershipActivity,preparePartnershipFinancialRequest} from "../src/server/vehicle-partnership/accounting";
+import {PARTNERSHIP_TABLE_NAMES} from "../src/server/vehicle-partnership/repository";
+
+const admin={id:7,name:"مدير",role:"admin",isActive:true,permissions:[]},accountant={...admin,role:"employee",permissions:["accounting"]};
+const dialect=new PgDialect();let state={activities:[] as any[],requests:[] as any[],audits:0},failRequest=false,failAudit=false;
+const calls:Array<{sql:string;params:any[]}>=[];
+const trip={source:"kosha",id:8,vehicle_id:12,driver_id:9,reference:"K-8",event_date:"2026-10-20",customer_name:"أحمد",mode:"ajn",status:"confirmed",customer_charge:"50000.00",contract_total:"100000.00",in_total:true,billing_source:"kosha_booking",billing_id:8};
+const root={id:1,vehicle_id:12,ownership_type:"partnership",registration_owner:"شركة",version:2};
+const tx={execute:async(statement:any)=>{const q=dialect.sqlToQuery(statement);calls.push(q);const p=q.params;
+ if(q.sql.includes("to_regclass"))return {rows:PARTNERSHIP_TABLE_NAMES.map(name=>({name,present:true}))};
+ if(q.sql.includes("FROM fleet_vehicles"))return {rows:[{id:12,branch_id:null,is_active:true,name:"نيسان",purchase_price:"20000000.00"}]};
+ if(q.sql.includes("FROM vehicle_partnerships"))return {rows:[root]};
+ if(q.sql.includes("vp_transport_source_lock"))return {rows:[{id:8}]};
+ if(q.sql.includes("vp_original_trips"))return {rows:[trip]};
+ if(q.sql.includes("vp_financial_activity_source"))return {rows:state.activities.filter(a=>a.id===p[0]).map(a=>({...a,vehicle_id:12}))};
+ if(q.sql.includes("vp_agreement_history"))return {rows:[{id:3,revision:1,effective_from:"2026-10-01",status:"approved",policy:{}}]};
+ if(q.sql.includes("vp_agreement_members"))return {rows:[{id:11,party_kind:"customer",customer_id:1,ownership_basis_points:5000,profit_basis_points:5000,expense_basis_points:5000,capital_contribution:"10000000.00"},{id:12,party_kind:"supplier",supplier_id:2,ownership_basis_points:5000,profit_basis_points:5000,expense_basis_points:5000,capital_contribution:"10000000.00"}]};
+ if(q.sql.includes("vp_transport_replay"))return {rows:state.activities.filter(a=>a.idempotency_key===p[0])};
+ if(q.sql.includes("vp_transport_active"))return {rows:state.activities.filter(a=>a.status==="pending"||a.status==="approved")};
+ if(q.sql.includes("vp_transport_revision"))return {rows:[{revision:state.activities.length+1}]};
+ if(q.sql.includes("INSERT INTO vehicle_partnership_activity")){const row={id:state.activities.length+1,partnership_id:p[0],agreement_id:p[1],kosha_booking_id:p[2],service_order_id:p[3],delivery_order_id:p[4],amount:p[5],recognition_date:p[6],revision:p[7],source_digest:p[8],source_snapshot:JSON.parse(p[9]),idempotency_key:p[10],status:"pending",income_basis:p[11],financial_transaction_id:null,reason:p[13]};state.activities.push(row);return {rows:[row]};}
+ if(q.sql.includes("UPDATE vehicle_partnership_activity")){const row=state.activities.find(a=>a.id===p[1]);row.financial_transaction_id=p[0];return {rows:[{id:row.id}]};}
+ if(q.sql.includes("financial_audit_logs")){if(failAudit)throw Error("audit failed");state.audits++;return {rows:[{id:state.audits}]};}
+ throw Error(`unexpected source request SQL ${q.sql}`);
+}};
+const db={...tx,transaction:async<T>(work:(executor:typeof tx)=>Promise<T>)=>{const before=structuredClone(state);try{return await work(tx);}catch(cause){state=before;throw cause;}}};
+const createRequest=async(executor:any,reference:any,actor:any)=>{assert.equal(executor,tx);assert.equal(actor.id,7);assert.equal(reference.sourceType,"vehicle_partnership_activity");assert.ok(Number.isInteger(reference.sourceId));if(failRequest)throw Error("request failed");
+ state.activities.at(-1).source_snapshot=Object.fromEntries(Object.entries(state.activities.at(-1).source_snapshot).reverse());
+ const prepared=await preparePartnershipFinancialRequest(tx,reference,actor);assert.equal(prepared.amount,state.activities.at(-1).amount);assert.equal(prepared.sourceId,reference.sourceId);assert.equal(prepared.transactionType,state.activities.at(-1).income_basis==="internal"?"vp_internal_entitlement":"vp_external_attribution");
+ const request={id:91+state.requests.length,approvalStatus:"pending" as const};state.requests.push(request);return request;};
+const command={source:"kosha",sourceId:8,incomeBasis:"internal",amount:"30000.00",recognitionDate:"2026-10-20",expectedVersion:2,idempotencyKey:"transport-request-001",reason:"أجرة النقل المتفق عليها",driverNoCharge:false};
+await assert.rejects(()=>submitPartnershipActivity(db,{...admin,role:"employee"},12,command,createRequest),(e:any)=>e.status===403);assert.equal(calls.length,0);
+await assert.rejects(()=>submitPartnershipActivity(db,admin,12,{...command,cashImpact:"none"},createRequest),(e:any)=>e.status===422);assert.equal(calls.length,0,"client cannot supply cash/approval/account flags");
+failRequest=true;await assert.rejects(()=>submitPartnershipActivity(db,admin,12,command,createRequest),/request failed/);failRequest=false;assert.equal(state.activities.length,0);
+failAudit=true;await assert.rejects(()=>submitPartnershipActivity(db,admin,12,command,createRequest),/audit failed/);failAudit=false;assert.equal(state.activities.length,0);assert.equal(state.requests.length,0,"audit failure rolls back source and pending financial request");
+let result=await submitPartnershipActivity(db,accountant,12,command,createRequest);assert.equal(result.status,"pending");assert.equal(result.financialTransactionId,91);assert.equal(state.activities[0].amount,"30000.00","internal amount separate from 50000 customer fee");assert.equal(state.requests.length,1);
+result=await submitPartnershipActivity(db,accountant,12,command,createRequest);assert.equal(result.financialTransactionId,91);assert.equal(state.requests.length,1);assert.equal(state.audits,1,"network retry adds no request or audit");
+assert.equal(state.activities[0].source_snapshot.eventDate,"2026-10-20","retain the original event date separately from recognition date");
+assert.equal(state.activities[0].source_snapshot.reference,"K-8");
+assert.equal(state.activities[0].source_snapshot.driverId,9);
+assert.equal(state.activities[0].source_snapshot.billingSource,"kosha_booking");
+await assert.rejects(()=>submitPartnershipActivity(db,admin,12,{...command,amount:"30001"},createRequest),(e:any)=>e.status===409);
+await assert.rejects(()=>submitPartnershipActivity(db,admin,12,{...command,idempotencyKey:"transport-request-002"},createRequest),(e:any)=>e.status===409,"one live income basis per original trip");
+state={activities:[],requests:[],audits:0};
+const {amount:ignored,...external}=command;
+result=await submitPartnershipActivity(db,admin,12,{...external,incomeBasis:"external",idempotencyKey:"external-request-001"},createRequest);assert.equal(state.activities[0].amount,"50000.00","external charge derived from original invoice; no new customer charge");
+state={activities:[],requests:[],audits:0};trip.in_total=false;
+await assert.rejects(()=>submitPartnershipActivity(db,admin,12,{...external,incomeBasis:"external"},createRequest),(e:any)=>e.status===409);assert.equal(state.activities.length,0);trip.in_total=true;
+assert.ok(calls.some(q=>q.sql.includes("vp_transport_source_lock")&&q.sql.includes("FOR UPDATE")));
+assert.ok(!calls.some(q=>/INSERT INTO vehicle_expenses|INSERT INTO vehicle_partnership_rights|UPDATE (master_cash_box|kosha_bookings|service_orders)|financial_ledger_entries/.test(q.sql)),"request does not change original prices, create another trip/expense/right, post ledger or move cash");
+console.log("PASS original transport source request: accounting permission, server amount, strict flags, locked original/config, one income basis, durable retry and atomic pending request/audit rollback; no cash or extra charge.");

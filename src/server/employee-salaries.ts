@@ -9,6 +9,14 @@ const rows = <T = any>(value: any): T[] => (value?.rows ?? []) as T[];
 const num = (value: unknown) => Number.isFinite(Number(value)) ? Math.round((Number(value) + Number.EPSILON) * 100) / 100 : 0;
 const todayBaghdad = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const PAYMENT_METHODS = ["cash", "main_cash_box", "bank", "transfer", "card"] as const;
+const VEHICLE_PARTNERSHIP_SOURCE_PREFIX = "vehicle_partnership_";
+const VEHICLE_PARTNERSHIP_TRANSACTION_PREFIX = "vp_";
+
+function historicalSalarySourcePredicate() {
+  // Trip accruals and settlements are never historical monthly salary payments.
+  // Use exact prefixes: SQL LIKE would treat the namespace underscores as wildcards.
+  return sql`left(coalesce(ft.source_type,''),${VEHICLE_PARTNERSHIP_SOURCE_PREFIX.length})<>${VEHICLE_PARTNERSHIP_SOURCE_PREFIX} and left(coalesce(ft.transaction_type,''),${VEHICLE_PARTNERSHIP_TRANSACTION_PREFIX.length})<>${VEHICLE_PARTNERSHIP_TRANSACTION_PREFIX}`;
+}
 
 const paymentSchema = z.object({
   amount: z.coerce.number().positive().max(1_000_000_000),
@@ -315,7 +323,7 @@ export async function getEmployeeSalaryManagementDetail(runId: number, lineId: n
     db.execute(sql`select * from employee_salary_adjustments where payroll_line_id=${lineId} order by created_at desc,id desc`),
     db.execute(sql`select id,name,mime_type,data_url,notes,uploaded_by_name,created_at from employee_salary_attachments where payroll_line_id=${lineId} order by created_at desc,id desc`),
     db.execute(sql`select * from employee_salary_events where payroll_line_id=${lineId} order by created_at desc,id desc limit 200`),
-    db.execute(sql`select ft.id,ft.transaction_no,ft.transaction_date,ft.amount::float as amount,ft.payment_method,ft.description,ft.responsible_user_id,case when ft.responsible_user_id=${line.staff_id} then 60 else 0 end + case when abs(ft.amount::numeric-${line.net_salary}::numeric)<0.01 then 30 else 0 end + case when to_char(ft.transaction_date,'YYYY-MM')=${line.period}::text then 10 else 0 end as match_score from financial_transactions ft where ft.direction='expense' and ft.approval_status='executed' and ft.reversed_at is null and abs(ft.amount::numeric-${line.net_salary}::numeric)<0.01 and ft.transaction_date between (${line.period}::text||'-01')::date-interval '45 days' and ((${line.period}::text||'-01')::date+interval '2 months') and not exists(select 1 from employee_salary_payments sp where sp.financial_transaction_id=ft.id) order by match_score desc,ft.transaction_date desc limit 12`),
+    db.execute(sql`select ft.id,ft.transaction_no,ft.transaction_date,ft.amount::float as amount,ft.payment_method,ft.description,ft.responsible_user_id,case when ft.responsible_user_id=${line.staff_id} then 60 else 0 end + case when abs(ft.amount::numeric-${line.net_salary}::numeric)<0.01 then 30 else 0 end + case when to_char(ft.transaction_date,'YYYY-MM')=${line.period}::text then 10 else 0 end as match_score from financial_transactions ft where ft.direction='expense' and ft.approval_status='executed' and ft.reversed_at is null and ${historicalSalarySourcePredicate()} and abs(ft.amount::numeric-${line.net_salary}::numeric)<0.01 and ft.transaction_date between (${line.period}::text||'-01')::date-interval '45 days' and ((${line.period}::text||'-01')::date+interval '2 months') and not exists(select 1 from employee_salary_payments sp where sp.financial_transaction_id=ft.id) order by match_score desc,ft.transaction_date desc limit 12`),
   ]);
   return { line, payments: rows(payments), adjustments: rows(adjustments), attachments: rows(attachments), events: rows(events), suggestions: rows(suggestions) };
 }
@@ -328,6 +336,7 @@ export async function linkHistoricalSalaryPayment(runId: number, lineId: number,
     const line = await salaryContext(runId, lineId, true, tx); if (!line) throw new Error("سجل الراتب غير موجود");
     const financial = rows<any>(await tx.execute(sql`select * from financial_transactions where id=${data.financialTransactionId} for update`))[0];
     if (!financial || financial.direction !== "expense" || financial.approval_status !== "executed" || financial.reversed_at) throw new Error("الحركة المالية المقترحة غير صالحة للربط");
+    if (String(financial.source_type ?? "").startsWith(VEHICLE_PARTNERSHIP_SOURCE_PREFIX) || String(financial.transaction_type ?? "").startsWith(VEHICLE_PARTNERSHIP_TRANSACTION_PREFIX)) throw new Error("لا يمكن ربط حركة شراكة المركبات أو أجرة الرحلة براتب شهري");
     if (Math.abs(num(financial.amount) - num(line.net_salary)) > 0.01) throw new Error("مبلغ الحركة لا يطابق صافي الراتب");
     const used = rows<any>(await tx.execute(sql`select id from employee_salary_payments where financial_transaction_id=${financial.id} limit 1`)); if (used.length) throw new Error("الحركة المالية مرتبطة براتب آخر");
     const payment = rows<any>(await tx.execute(sql`insert into employee_salary_payments(payroll_run_id,payroll_line_id,staff_id,amount,payment_date,payment_method,reference_no,financial_transaction_id,status,origin,idempotency_key,notes,created_by,created_by_name) values(${runId},${lineId},${line.staff_id},${financial.amount},${financial.transaction_date},${financial.payment_method},${financial.reference_no || null},${financial.id},'paid','legacy_reconciliation',${`legacy-salary:${lineId}:financial:${financial.id}`},${data.reason},${actor.id},${actor.name}) returning *`))[0];

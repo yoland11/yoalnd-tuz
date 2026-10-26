@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import {PgDialect} from "drizzle-orm/pg-core";
+import {sql} from "drizzle-orm";
+import {resolvePartnershipFinancialEffect,partnershipCashPredicate,partnershipOperatingPredicate,PARTNERSHIP_POSTING_TYPES} from "../src/server/vehicle-partnership/financial-classification";
+const old=[{sourceType:"sales_invoice",transactionType:"sales_payment",sourceEvent:"payment",direction:"revenue"},{sourceType:"vehicle_expense",transactionType:"vehicle_expense",sourceEvent:"vehicle_expense",direction:"expense"},{sourceType:"company_loan",transactionType:"company_loan_received",sourceEvent:"primary",direction:"revenue"},{sourceType:"installment_payment",transactionType:"installment_payment",sourceEvent:"payment",direction:"revenue"},{sourceType:null,transactionType:"manual",sourceEvent:"primary",direction:"expense"}];
+for(const row of old)assert.equal(resolvePartnershipFinancialEffect(row),null,"existing sources keep their original execution path/classification");
+const internal={sourceType:"vehicle_partnership_activity",transactionType:"vp_internal_entitlement",sourceEvent:"internal_entitlement",direction:"expense"};
+let effect=resolvePartnershipFinancialEffect(internal)!;assert.equal(effect.cash,"none");assert.equal(effect.operating,"none");assert.equal(effect.debit,"VP-INTERNAL");assert.equal(effect.credit,"VP-PAYABLE");
+effect=resolvePartnershipFinancialEffect({...internal,transactionType:"vp_external_attribution",sourceEvent:"external_attribution",direction:"revenue"})!;assert.equal(effect.cash,"none");assert.equal(effect.operating,"none","external charge approval annotates original revenue, never second company sales");
+effect=resolvePartnershipFinancialEffect({sourceType:"vehicle_partnership_cost",transactionType:"vp_partner_operating_advance",sourceEvent:"partner_paid_cost",direction:"expense"})!;assert.equal(effect.cash,"none");assert.equal(effect.operating,"expense");assert.equal(effect.credit,"VP-ADVANCE");
+effect=resolvePartnershipFinancialEffect({sourceType:"vehicle_partnership_cost",transactionType:"vp_partner_capital_capital",sourceEvent:"partner_paid_cost",direction:"expense"})!;assert.equal(effect.cash,"none");assert.equal(effect.operating,"none");assert.equal(effect.credit,"VP-CAPITAL");
+effect=resolvePartnershipFinancialEffect({sourceType:"vehicle_partnership_settlement",transactionType:"vp_partner_distribution",sourceEvent:"distribution",direction:"expense"})!;assert.equal(effect.cash,"out");assert.equal(effect.operating,"none","payout never another expense");assert.equal(effect.credit,"1000");
+effect=resolvePartnershipFinancialEffect({sourceType:"vehicle_partnership_cost",transactionType:"vp_driver_accrual",sourceEvent:"driver_accrual",direction:"expense"})!;assert.equal(effect.cash,"none");assert.equal(effect.operating,"expense");assert.equal(effect.credit,"VP-DRIVER");
+effect=resolvePartnershipFinancialEffect({sourceType:"vehicle_partnership_driver",transactionType:"vp_driver_payment",sourceEvent:"driver_fee_settlement",direction:"expense"})!;assert.equal(effect.cash,"out");assert.equal(effect.operating,"none","settling original driver earnings is not a second wage expense");
+effect=resolvePartnershipFinancialEffect({...internal,transactionType:"vp_internal_entitlement_reversal",sourceEvent:"reversal",direction:"revenue",reversedTransactionId:55})!;assert.equal(effect.cash,"none");assert.equal(effect.debit,"VP-PAYABLE");assert.equal(effect.credit,"VP-INTERNAL");
+assert.throws(()=>resolvePartnershipFinancialEffect({...internal,transactionType:"manual"}),/مصدر|نوع/);
+assert.throws(()=>resolvePartnershipFinancialEffect({...internal,sourceType:"vehicle_partnership_unknown"}),/مصدر|نوع/);
+assert.throws(()=>resolvePartnershipFinancialEffect({...internal,direction:"revenue"}),/اتجاه|مصدر/);
+assert.throws(()=>resolvePartnershipFinancialEffect({...internal,sourceEvent:"payment"}),/حدث|مصدر/);
+assert.throws(()=>resolvePartnershipFinancialEffect({...internal,transactionType:"vp_internal_entitlement_reversal",sourceEvent:"reversal",direction:"revenue"}),/عكس|مصدر/);
+for(const [type,rule] of Object.entries(PARTNERSHIP_POSTING_TYPES)){
+ const base=resolvePartnershipFinancialEffect({sourceType:rule.sourceType,transactionType:type,sourceEvent:rule.sourceEvent,direction:rule.direction})!;
+ const reverse=resolvePartnershipFinancialEffect({sourceType:rule.sourceType,transactionType:`${type}_reversal`,sourceEvent:"reversal",direction:rule.direction==="expense"?"revenue":"expense",reversedTransactionId:55})!;
+ assert.equal(reverse.debit,base.credit);assert.equal(reverse.credit,base.debit);
+ assert.notEqual(base.debit,base.credit);if(type!=="vp_capital_cash_received")assert.notEqual(base.cash,"in","only explicit capital cash receipt may be an inflow");
+}
+const dialect=new PgDialect(),columns={sourceType:sql`f.source_type`,transactionType:sql`f.transaction_type`};
+const cash=dialect.sqlToQuery(partnershipCashPredicate(columns));assert.match(cash.sql,/f\.source_type/);assert.ok(cash.params.includes("vehicle_partnership_settlement"));
+const operating=dialect.sqlToQuery(partnershipOperatingPredicate(columns));assert.ok(operating.params.includes("vp_partner_operating_advance"));assert.ok(!operating.params.includes("vp_partner_distribution"));
+console.log("PASS trusted partnership financial classification: old defaults, non-cash internal/capital/attribution, single operating cost, balance-sheet payouts, exact reversal classification and source/type/event fail-closed rules.");

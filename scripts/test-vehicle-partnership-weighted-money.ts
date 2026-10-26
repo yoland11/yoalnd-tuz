@@ -1,0 +1,10 @@
+import assert from "node:assert/strict";
+import {allocateWeightedMoney,parseMoney} from "../src/lib/vehicle-partnership/money";
+assert.deepEqual(allocateWeightedMoney(2n,[{key:"a",weight:1n},{key:"b",weight:2n}]),[{key:"a",amount:"0.01"},{key:"b",amount:"0.01"}],"partial reversal preserves exact original proportions and total");
+assert.deepEqual(allocateWeightedMoney(1n,[{key:"b",weight:1n},{key:"a",weight:1n}]),[{key:"b",amount:"0.00"},{key:"a",amount:"0.01"}],"stable tie independent of scan/order");
+const total=parseMoney("99999999999999.99");const split=allocateWeightedMoney(total,[{key:"a",weight:3333333333333333n},{key:"b",weight:6666666666666666n}]);assert.equal(split.reduce((s,l)=>s+parseMoney(l.amount),0n),total);
+assert.throws(()=>allocateWeightedMoney(1n,[{key:"a",weight:0n}]),/وزن|توزيع/);
+assert.throws(()=>allocateWeightedMoney(-1n,[{key:"a",weight:1n}]),/مبلغ|توزيع/);
+assert.throws(()=>allocateWeightedMoney(1n,[{key:"a",weight:1n},{key:"a",weight:1n}]),/مكرر|هوية/);
+assert.throws(()=>allocateWeightedMoney(1n,[{key:"a",weight:-1n}]),/وزن|توزيع/);
+console.log("PASS exact weighted money allocation for partial reversals: cent conservation, stable ties, full numeric range and invalid/duplicate/negative weight refusal.");

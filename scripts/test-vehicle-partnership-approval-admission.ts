@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import vm from "node:vm";
+import ts from "typescript";
+import {sql} from "drizzle-orm";
+import {PgDialect} from "drizzle-orm/pg-core";
+import {executePartnershipFinancialTransaction} from "../src/server/vehicle-partnership/posting";
+import {PartnershipRepositoryError} from "../src/server/vehicle-partnership/repository";
+import {PartnershipValidationError} from "../src/lib/vehicle-partnership/types";
+const tree=ts.createSourceFile("finance.ts",readFileSync("src/server/master-cash-box.ts","utf8"),ts.ScriptTarget.Latest,true);
+const node=tree.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==="executePendingFinancialTransaction")!;
+const code=ts.transpileModule(node.getText(tree)+"\nexecutePendingFinancialTransaction",{compilerOptions:{module:ts.ModuleKind.None,target:ts.ScriptTarget.ES2022}}).outputText;
+const dialect=new PgDialect();let legacyLocks=0;const queries:string[]=[];
+let initial={id:91,sourceType:"vehicle_partnership_unknown",sourceId:"1",approvalStatus:"pending",direction:"expense",amount:"30000.00"};
+const tx={select:()=>({from:()=>({where:()=>({limit:async()=>[initial]})})}),execute:async(statement:any)=>{const q=dialect.sqlToQuery(statement);queries.push(q.sql);assert.ok(!q.sql.includes("master_cash_box"),"missing/unsupported feature source never reaches generic cash");return {rows:[]};}};
+class FinancialApprovalError extends Error{constructor(message:string,public status=409){super(message);}}
+const run=vm.runInNewContext(code,{executePartnershipFinancialTransaction,PartnershipRepositoryError,PartnershipValidationError,FinancialApprovalError,financialTransactionsTable:{id:"id"},eq:()=>({}),sql,lockGraduationPaymentSource:async()=>{legacyLocks++;throw Error("GENERIC_PATH");}});
+const actor={id:7,name:"مدير",role:"admin",permissions:[]};
+await assert.rejects(()=>run(tx,91,actor),(e:any)=>e instanceof FinancialApprovalError&&e.status===409);assert.equal(legacyLocks,0);assert.equal(queries.length,0);
+initial={...initial,sourceType:"vehicle_partnership_activity"};await assert.rejects(()=>run(tx,91,actor),(e:any)=>e instanceof FinancialApprovalError&&e.status===404);assert.equal(legacyLocks,0);assert.equal(queries.length,1);
+initial={...initial,sourceType:"sales_invoice",approvalStatus:"executed"};assert.equal(await run(tx,91,actor),initial,"old executed retry remains unchanged");assert.equal(legacyLocks,0);
+console.log("PASS actual central approval admission: feature source-specific adapter precedes generic cash/early return, unsupported/missing source fails closed and old executed retry retains path.");

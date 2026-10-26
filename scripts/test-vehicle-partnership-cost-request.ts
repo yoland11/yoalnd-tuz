@@ -1,0 +1,42 @@
+import assert from "node:assert/strict";
+import {PgDialect} from "drizzle-orm/pg-core";
+import {submitPartnershipCost,preparePartnershipCostRequest} from "../src/server/vehicle-partnership/costing";
+import {PARTNERSHIP_TABLE_NAMES} from "../src/server/vehicle-partnership/repository";
+const actor={id:7,name:"محاسب",role:"employee",isActive:true,permissions:["accounting"]};
+const dialect=new PgDialect();let state={funding:[] as any[],requests:[] as any[],audits:0},failAudit=false;
+const expense={id:21,vehicle_id:12,booking_id:8,service_order_id:null,driver_id:null,expense_type:"maintenance",amount:"100000.00",cost_date:"2026-10-20",status:"pending",description:"تصليح المركبة",attachments:[],financial_transaction_id:null,financial_status:null,financial_source_type:null,financial_source_id:null};
+const root={id:1,vehicle_id:12,ownership_type:"partnership",registration_owner:"شركة",version:2};
+const calls:Array<{sql:string;params:any[]}>=[];
+const tx={execute:async(statement:any)=>{const q=dialect.sqlToQuery(statement);calls.push(q);const p=q.params;
+ if(q.sql.includes("to_regclass"))return {rows:PARTNERSHIP_TABLE_NAMES.map(name=>({name,present:true}))};
+ if(q.sql.includes("FROM fleet_vehicles"))return {rows:[{id:12,branch_id:null,is_active:true,name:"نيسان",purchase_price:"20000000.00"}]};
+ if(q.sql.includes("FROM vehicle_partnerships"))return {rows:[root]};
+ if(q.sql.includes("vp_cost_original"))return {rows:[expense]};
+ if(q.sql.includes("vp_cost_member"))return {rows:[{id:11,agreement_id:3,partnership_id:1,status:"approved",effective_from:"2026-10-01"}]};
+ if(q.sql.includes("vp_cost_replay"))return {rows:state.funding.filter(f=>f.idempotency_key===p[0])};
+ if(q.sql.includes("vp_cost_existing"))return {rows:state.funding.filter(f=>["pending","approved"].includes(f.status))};
+ if(q.sql.includes("vp_cost_source"))return {rows:state.funding.filter(f=>f.id===p[0]).map(f=>({...f,vehicle_id:12}))};
+ if(q.sql.includes("INSERT INTO vehicle_partnership_cost_funding")){const row={id:31+state.funding.length,partnership_id:p[0],vehicle_expense_id:p[1],payer_member_id:p[2],funding_kind:p[3],cost_class:p[4],source_digest:p[5],idempotency_key:p[6],created_by:p[7],reason:p[8],source_snapshot:JSON.parse(String(p[9])),status:"pending",financial_transaction_id:null};state.funding.push(row);return {rows:[row]};}
+ if(q.sql.includes("UPDATE vehicle_partnership_cost_funding")){const row=state.funding.find(f=>f.id===p[1]);row.financial_transaction_id=p[0];return {rows:[{id:row.id}]};}
+ if(q.sql.includes("financial_audit_logs")){if(failAudit)throw Error("cost audit failed");state.audits++;return {rows:[{id:state.audits}]};}
+ throw Error(`unexpected cost source SQL ${q.sql}`);
+}};
+const db={...tx,transaction:async<T>(work:(executor:typeof tx)=>Promise<T>)=>{const before=structuredClone(state);try{return await work(tx);}catch(cause){state=before;throw cause;}}};
+const create=async(executor:any,ref:any,a:any)=>{const plan=await preparePartnershipCostRequest(executor,ref,a);assert.equal(plan.amount,"100000.00");assert.equal(plan.transactionType,"vp_partner_operating_advance");assert.equal(plan.direction,"expense");assert.equal(plan.sourceType,"vehicle_partnership_cost");const request={id:91+state.requests.length,approvalStatus:"pending"};state.requests.push(request);return request;};
+const command={expenseId:21,payerMemberId:11,fundingKind:"partner_advance",costClass:"operating",expectedVersion:2,idempotencyKey:"cost-partner-paid-001",reason:"دفع الشريك من ماله"};
+await assert.rejects(()=>submitPartnershipCost(db,{...actor,permissions:[]},12,command,create),(e:any)=>e.status===403);assert.equal(calls.length,0);
+await assert.rejects(()=>submitPartnershipCost(db,actor,12,{...command,amount:"1.00"},create),(e:any)=>e.status===422);assert.equal(calls.length,0,"amount always comes from original expense");
+expense.financial_transaction_id=90 as any;expense.financial_status="executed" as any;await assert.rejects(()=>submitPartnershipCost(db,actor,12,command,create),(e:any)=>e.status===409);assert.equal(state.funding.length,0,"cannot treat executed company expense as partner-funded");
+expense.financial_status="pending" as any;await assert.rejects(()=>submitPartnershipCost(db,actor,12,command,create),(e:any)=>e.status===409);expense.financial_transaction_id=null;expense.financial_status=null;
+failAudit=true;await assert.rejects(()=>submitPartnershipCost(db,actor,12,command,create),/cost audit failed/);assert.equal(state.funding.length,0);assert.equal(state.requests.length,0);failAudit=false;
+const saved=await submitPartnershipCost(db,actor,12,command,create);assert.equal(saved.financialTransactionId,91);assert.equal(state.funding.length,1);assert.equal(state.requests.length,1);
+assert.equal(state.funding[0].source_snapshot?.amount,"100000.00","preserve original exact cost for historical closing evidence");
+assert.equal(state.funding[0].source_snapshot?.date,"2026-10-20");
+await submitPartnershipCost(db,actor,12,command,create);assert.equal(state.requests.length,1,"durable replay keeps one source expense and pending request");
+await assert.rejects(()=>submitPartnershipCost(db,actor,12,{...command,fundingKind:"partner_capital"},create),(e:any)=>e.status===409);
+expense.amount="100001.00";await assert.rejects(()=>preparePartnershipCostRequest(tx,{sourceType:"vehicle_partnership_cost",sourceId:31},actor),(e:any)=>e.status===409,"source change blocks approval");expense.amount="100000.00";
+assert.equal(state.funding[0].source_snapshot.amount,"100000.00","editing the original must not rewrite the source snapshot");
+state.funding[0].status="rejected";const corrected=await submitPartnershipCost(db,actor,12,{...command,idempotencyKey:"cost-corrected-request-002",reason:"تصحيح سبب المصروف بعد الرفض"},create);assert.equal(corrected.costFundingId,32);assert.equal(state.funding[0].status,"rejected","old source remains in history");assert.equal(state.funding.length,2);
+assert.ok(calls.filter(q=>q.sql.includes("vp_cost_existing")).every(q=>q.sql.includes("status IN ('pending','approved')")),"source guard only blocks another active request");
+assert.ok(calls.every(q=>!/INSERT INTO vehicle_expenses|UPDATE vehicle_expenses|master_cash_box|financial_ledger_entries|INSERT INTO employee_finance/.test(q.sql)),"request does not create another expense, payroll fee, cash movement or ledger posting");
+console.log("PASS original expense partner-funding request: source amount/date, approved payer identity, pending-only atomic request, no cash/duplicate expense, company-payment blockers, durable retry and stale-source proof.");

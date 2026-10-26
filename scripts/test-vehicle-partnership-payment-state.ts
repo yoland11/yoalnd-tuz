@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+import {PgDialect} from "drizzle-orm/pg-core";
+import {reconcilePaymentState,isPaymentStateSourceType} from "../src/server/payment-state";
+import {PARTNERSHIP_TABLE_NAMES} from "../src/server/vehicle-partnership/repository";
+
+const dialect=new PgDialect();let status="pending",reversed="0.00",fail=false,missing=false,overflow=false,extra=false,duplicate=false;
+let right={id:1,partnership_id:1,vehicle_id:12,agreement_id:3,member_id:11,category:"profit",direction:"credit",amount:"100.00",status:"approved"};
+const base={allocation_id:20,right_id:1,allocation_partnership_id:1,purpose:"distribution",allocated_amount:"40.00",financial_transaction_id:91,financial_amount:"40.00",financial_status:"pending",financial_direction:"expense",financial_source_type:"vehicle_partnership_settlement",financial_source_id:"1",financial_event:"distribution",transaction_type:"vp_partner_distribution",reversed_amount:"0.00",invalid_reversal:false,cost_vehicle_id:null};
+const calls:string[]=[];
+const tx={execute:async(statement:any)=>{const q=dialect.sqlToQuery(statement);calls.push(q.sql);if(fail)throw Error("payment source unavailable");
+ if(q.sql.includes("vp_payment_right_scope"))return {rows:missing?[]:[{vehicle_id:12}]};
+ if(q.sql.includes("to_regclass"))return {rows:PARTNERSHIP_TABLE_NAMES.map(name=>({name,present:true}))};
+ if(q.sql.includes("FROM vehicle_partnerships"))return {rows:[{id:1,vehicle_id:12,ownership_type:"partnership",registration_owner:"شركة",version:2}]};
+ if(q.sql.includes("vp_payment_right_lock"))return {rows:[right]};
+ if(q.sql.includes("vp_payment_allocations")){const row={...base,financial_status:status,reversed_amount:reversed};return {rows:overflow?Array.from({length:5001},()=>row):duplicate?[row,row]:extra?[row,{...base,allocation_id:21,financial_transaction_id:92,allocated_amount:"80.00",financial_amount:"80.00",financial_status:"pending"}]:[row]};}
+ throw Error(`unexpected canonical query ${q.sql}`);
+}};
+assert.equal(isPaymentStateSourceType("vehicle_partnership_right"),true,"new source must enter canonical AJN engine");assert.equal(isPaymentStateSourceType("vehicle_partnership_settlement"),true);
+let state:any=await reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1});assert.equal(state.approvedPaidAmount,"0.00");assert.equal(state.remainingAmount,"100.00");assert.equal(state.reservedAmount,"40.00");assert.equal(state.availableAmount,"60.00");
+status="approved";state=await reconcilePaymentState(tx,{sourceType:"vehicle_partnership_settlement",sourceId:"1"});assert.equal(state!.approvedPaidAmount,"0.00","approved-but-unexecuted is not paid");
+status="executed";state=await reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1});assert.equal(state.approvedPaidAmount,"40.00");assert.equal(state.remainingAmount,"60.00");assert.equal(state.reservedAmount,"0.00");
+reversed="15.00";state=await reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1});assert.equal(state.approvedPaidAmount,"25.00");assert.equal(state.remainingAmount,"75.00");
+reversed="0.00";extra=true;await assert.rejects(()=>reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1}),(e:any)=>e.status===409,"pending reserves cannot overbook the remaining approved balance");extra=false;
+status="rejected";state=await reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1});assert.equal(state.reservedAmount,"0.00");assert.equal(state.availableAmount,"100.00");
+duplicate=true;await assert.rejects(()=>reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1}),/مكرر|توزيع/);duplicate=false;
+status="executed";right={...right,amount:"20.00"};await assert.rejects(()=>reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1}),(e:any)=>e.status===409,"overpayment is an error, never clamped away");right={...right,amount:"100.00"};
+right={...right,status:"pending"};await assert.rejects(()=>reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1}),(e:any)=>e.status===409,"executed cash cannot be hidden under unapproved right");right={...right,status:"approved"};
+overflow=true;await assert.rejects(()=>reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1}),(e:any)=>e.status===422);overflow=false;
+missing=true;await assert.rejects(()=>reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1}),(e:any)=>e.status===404);missing=false;
+fail=true;await assert.rejects(()=>reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:1}),/payment source unavailable/);fail=false;
+const count=calls.length;assert.equal(await reconcilePaymentState(tx,{sourceType:"unsupported-old-source",sourceId:1}),null);assert.equal(calls.length,count,"legacy unrecognized source behavior remains unchanged");
+assert.ok(calls.every(q=>/^\s*(?:\/\*.*?\*\/\s*)?SELECT\b/is.test(q)),"canonical rights derive paid from original financial allocations, no independent mutable paid snapshot");assert.ok(calls.some(q=>q.includes("FOR UPDATE")),"source read shares transaction-owned locking");
+console.log("PASS real canonical partnership payment-state integration: pending/approved-unexecuted not paid, pending reservations, exact executed net/reversal, overpayment refusal, source locks and unchanged legacy unknown source behavior.");
+console.log("LIMITATION: controlled SQL boundary, not actual PostgreSQL/concurrency coverage.");

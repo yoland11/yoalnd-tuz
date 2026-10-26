@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import vm from 'node:vm';
 import ts from 'typescript';
+import {assertGenericFinancialSourceInput} from './lib/vehicle-partnership-financial-guard-test.mjs';
 const source=process.env.AJN_ARCHIVE_BASELINE==='1'?execFileSync('git',['show','95a867f81:src/server/master-cash-box.ts'],{encoding:'utf8'}):readFileSync('src/server/master-cash-box.ts','utf8');
 const ast=ts.createSourceFile('finance.ts',source,ts.ScriptTarget.Latest,true),names=new Set(['addAudit','createFinancialTransaction','createSourceFinancialRequest','syncSourcePaymentTarget','syncSourceFinancialRequest','cancelFinancialTransactionRequest']);
 const guardAst=ts.createSourceFile('guard.ts',readFileSync('src/server/graduation-write-guard.ts','utf8'),ts.ScriptTarget.Latest,true);
@@ -23,7 +24,7 @@ for(const mode of ['new','pending','executed','reversal','zero','audit_failure',
   const blocked=()=>assert.fail('financial helper escaped the supplied transaction');
   const db={...connection,transaction:async fn=>{if(active)assert.fail('nested pool transaction');active=true;const before=structuredClone(rows);try{const result=await fn(connection);commits++;return result;}catch(cause){rows=before;audits.length=0;throw cause;}finally{active=false;}}};
   if(!mode.startsWith('legacy')){db.select=blocked;db.insert=blocked;db.update=blocked;db.query={financialTransactionsTable:{findFirst:blocked}};}
-  const context=vm.createContext({db,financialTransactionsTable,financialAuditLogsTable,
+  const context=vm.createContext({db,financialTransactionsTable,financialAuditLogsTable,assertGenericFinancialSourceInput,
     financialTransactionInputSchema:{parse:input=>({...input,attachments:input.attachments??[]})},randomUUID:()=> 'uuid',todayBaghdad:()=> '2026-10-23',transactionNumber:id=>`FIN-${id}`,money:v=>Math.round(Number(v||0)*100)/100,snapshot:v=>v,
     eq:()=>{},and:()=>{},desc:()=>{},sql:(parts,...values)=>({parts,values}),ensureMasterCashBoxTables:async()=>{},isPaymentStateSourceType:v=>v==='graduation_order',reconcilePaymentState:async tx=>{assert.equal(tx,connection);reconciled++;},
   });vm.runInContext(code,context);

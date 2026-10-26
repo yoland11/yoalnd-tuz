@@ -1,3 +1,4 @@
+import { partnershipIncomePredicate } from "./vehicle-partnership/financial-classification";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -959,7 +960,7 @@ export async function addCareerEvent(input: any, actor: HrActor) {
 export async function executiveDashboard(period = periodNow()) {
   const hr = await hrDashboard(period);
   const [revenue, orders, products, advances, production, cashbox, collections, koshas, payroll, attendance, assets, lowStock] = await Promise.all([
-    db.execute(sql`select coalesce(sum(amount::numeric) filter(where transaction_date::text like ${period + '%'}),0)::float as monthly, coalesce(sum(amount::numeric) filter(where transaction_date=current_date),0)::float as today from financial_transactions where approval_status='executed' and direction='revenue' and coalesce(source_type,'') not in ('company_loan','company_loan_repayment') and coalesce(transaction_type,'') not in ('company_loan_received','company_loan_repayment')`),
+    db.execute(sql`select coalesce(sum(amount::numeric) filter(where transaction_date::text like ${period + '%'}),0)::float as monthly, coalesce(sum(amount::numeric) filter(where transaction_date=current_date),0)::float as today from financial_transactions where approval_status='executed' and direction='revenue' and ${partnershipIncomePredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})} and coalesce(source_type,'') not in ('company_loan','company_loan_repayment') and coalesce(transaction_type,'') not in ('company_loan_received','company_loan_repayment')`),
     db.execute(sql`select count(*) filter(where lower(status) not in ('completed','delivered','cancelled','canceled'))::int as pending from orders`),
     db.execute(sql`select name_ar, coalesce(sum(quantity),0)::float as qty from order_items oi join products p on p.id=oi.product_id group by name_ar order by qty desc limit 1`),
     db.execute(sql`select coalesce(sum(remaining_amount::numeric),0)::float as outstanding from employee_advances where status in ('paid','approved')`),

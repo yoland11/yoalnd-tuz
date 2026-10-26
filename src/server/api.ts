@@ -1,5 +1,9 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { loadDailyOperations } from "./booking-daily-operations";
+import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
+import { resolvePartnershipFinancialEffect, partnershipIncomePredicate } from "./vehicle-partnership/financial-classification";
+import { PartnershipRepositoryError } from "./vehicle-partnership/repository";
+import { PartnershipValidationError } from "@/lib/vehicle-partnership/types";
 import { loadBookingReadiness } from "./booking-operational-readiness";
 import { findBookingPhysicalConflict,findBookingStaffConflict,findBookingVehicleConflict,BookingResourceConflictError,resourceInterval,resourceTimingProblem,type TimedBookingRef } from "./booking-resource-availability";
 import { readResourceBooking,saveBookingResourceWindow,resourceWindowView,lockBookingExecutionTeam,guardBookingResourceWrite,validateBookingResourceCreation } from "./booking-resource-period";
@@ -23239,6 +23243,18 @@ async function handleEnterpriseAdmin(
   req: NextRequest,
   parts: string[],
 ): Promise<NextResponse | null> {
+  if (parts[0] === "vehicles" && parts[2] === "partnership") {
+    const auth = await getAdminUser(req);
+    if (!auth) return error("غير مخول", 401);
+    const result = await handleVehiclePartnershipRequest(db, {
+      id: auth.id, name: auth.fullName || auth.username, role: auth.role,
+      permissions: auth.permissions, isActive: auth.isActive,
+    }, { method: req.method, parts, query: req.nextUrl.searchParams, readBody: () => req.json() });
+    if (!result) return error("مسار شراكة المركبة غير موجود", 404);
+    const response = json(result.data, result.status);
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
+  }
   if (parts[0] === "daily-operations") {
     const auth = await requirePermission(req, "dashboard");
     if (isResponse(auth)) return auth;
@@ -70307,7 +70323,7 @@ async function handleMasterCash(
               balanceAfter: row.balanceAfter,
             },
           );
-          if (row.direction === "revenue") {
+          if (row.direction === "revenue" && (resolvePartnershipFinancialEffect(row)?.cash ?? "in") === "in") {
             void notifyTelegramPayment({
               event: "managerApproval",
               reference: row.transactionNo,
@@ -72635,6 +72651,7 @@ async function handleAccounting(
             coalesce(sum(amount::numeric), 0)::float AS total_paid
           FROM financial_transactions
           WHERE direction = 'revenue' AND approval_status = 'executed'
+            AND ${partnershipIncomePredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
             AND transaction_date BETWEEN ${from} AND ${to}
           GROUP BY to_char(transaction_date, ${period})
           ORDER BY period DESC
@@ -75600,6 +75617,11 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
+    if (err instanceof PartnershipRepositoryError || err instanceof PartnershipValidationError) {
+      const requestId = makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN vehicle partnership operation rejected", {requestId, path:req.nextUrl.pathname, status:err.status, code:err.code});
+      return error(err.message, err.status, {requestId, retryable:false});
+    }
     if (err instanceof GraduationOrderWriteConflict) {
       const requestId = makeRequestId(req.headers.get("x-request-id"));
       console.warn("AJN graduation operation rejected", {requestId, path:req.nextUrl.pathname, status:err.status});

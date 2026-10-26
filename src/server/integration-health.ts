@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "@workspace/db";
+import { partnershipCashPredicate } from "./vehicle-partnership/financial-classification";
 
 /**
  * Cross-module oversight: a read-only health monitor, the cashbox drift used by
@@ -78,6 +79,7 @@ export async function computeCashboxDrift(): Promise<{
         coalesce(sum(case when direction = 'expense' then amount else 0 end), 0) as expenses
       from financial_transactions
       where approval_status = 'executed'
+        and ${partnershipCashPredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
     `),
   )[0];
   const opening = money(box?.opening_balance);

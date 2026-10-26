@@ -1,4 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { assertGenericFinancialSourceInput, resolvePartnershipFinancialEffect, partnershipCashPredicate, partnershipOperatingPredicate } from "./vehicle-partnership/financial-classification";
+import { preparePartnershipFinancialRequest, type PartnershipFinancialRequestReference } from "./vehicle-partnership/accounting";
+import { authorizePartnership, type PartnershipActor } from "./vehicle-partnership/agreements";
+import { appendPartnershipAudit, partnershipRows, PartnershipRepositoryError, type PartnershipExecutor } from "./vehicle-partnership/repository";
+import { parseMoney } from "../lib/vehicle-partnership/money";
+import { PartnershipValidationError } from "../lib/vehicle-partnership/types";
+import { executePartnershipFinancialTransaction, rejectPartnershipFinancialTransaction, reversePartnershipFinancialTransaction } from "./vehicle-partnership/posting";
+import { lockPartnershipOriginalVehicleExpense } from "./vehicle-partnership/costing";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import {
@@ -41,7 +49,11 @@ const dateSchema = z
 const optionalText = z.string().trim().max(2000).optional().nullable();
 
 /** Cash movements that settle a balance-sheet account, never operating income/expense. */
-function isBalanceSheetTransfer(transaction: Pick<typeof financialTransactionsTable.$inferSelect, "transactionType" | "sourceType">) {
+function isBalanceSheetTransfer(transaction: Pick<typeof financialTransactionsTable.$inferSelect, "transactionType" | "sourceType"> & Partial<Pick<typeof financialTransactionsTable.$inferSelect,"sourceEvent"|"direction"|"reversedTransactionId">>) {
+  if (String(transaction.sourceType??"").startsWith("vehicle_partnership_") || transaction.transactionType.startsWith("vp_")) {
+    const effect=resolvePartnershipFinancialEffect({...transaction,sourceEvent:transaction.sourceEvent??"",direction:transaction.direction??""});
+    return effect?.operating==="none";
+  }
   return ["company_loan_received", "company_loan_repayment", "employee_advance", "employee_advance_repayment"].includes(transaction.transactionType)
     || ["company_loan", "company_loan_repayment", "employee_advance"].includes(String(transaction.sourceType ?? ""));
 }
@@ -51,7 +63,16 @@ function isBalanceSheetTransfer(transaction: Pick<typeof financialTransactionsTa
  * The persisted direction remains compatible with the historic cash-box
  * schema; callers receive this semantic classification for display/export.
  */
-function cashMovementPresentation(transaction: Pick<typeof financialTransactionsTable.$inferSelect, "direction" | "transactionType" | "sourceType">) {
+function cashMovementPresentation(transaction: Pick<typeof financialTransactionsTable.$inferSelect, "direction" | "transactionType" | "sourceType"> & Partial<Pick<typeof financialTransactionsTable.$inferSelect,"sourceEvent"|"reversedTransactionId">>) {
+  if (String(transaction.sourceType??"").startsWith("vehicle_partnership_") || transaction.transactionType.startsWith("vp_")) {
+    const effect=resolvePartnershipFinancialEffect({...transaction,sourceEvent:transaction.sourceEvent??""})!;
+    return {
+      cashDirection:effect.cash==="none"?"noncash" as const:effect.cash==="in"?"inflow" as const:"outflow" as const,
+      cashDirectionLabel:effect.cash==="none"?"غير نقدي":effect.cash==="in"?"وارد":"صادر",
+      accountingClassification:effect.operating==="none"?"partnership_transfer" as const:"expense" as const,
+      accountingClassificationLabel:effect.operating==="none"?"تسوية شراكة / خارج نتيجة التشغيل":effect.reversal?"عكس مصروف شراكة":"مصروف شراكة",
+    };
+  }
   if (transaction.transactionType === "company_loan_received" || transaction.sourceType === "company_loan") {
     return { cashDirection: "inflow" as const, cashDirectionLabel: "وارد", accountingClassification: "liability_inflow" as const, accountingClassificationLabel: "استلام قرض / التزام" };
   }
@@ -68,7 +89,12 @@ function balanceSheetTransferSql() {
   return sql`(
     coalesce(${financialTransactionsTable.sourceType}, '') in ('company_loan', 'company_loan_repayment', 'employee_advance')
     or ${financialTransactionsTable.transactionType} in ('company_loan_received', 'company_loan_repayment', 'employee_advance', 'employee_advance_repayment')
+    or NOT ${partnershipOperatingPredicate({sourceType:sql`${financialTransactionsTable.sourceType}`,transactionType:sql`${financialTransactionsTable.transactionType}`})}
   )`;
+}
+
+function cashImpactSql() {
+  return partnershipCashPredicate({sourceType:sql`${financialTransactionsTable.sourceType}`,transactionType:sql`${financialTransactionsTable.transactionType}`});
 }
 
 export const financialTransactionInputSchema = z.object({
@@ -327,11 +353,42 @@ async function addAudit(
   });
 }
 
+/** Narrow trusted source path. Generic cash forms cannot select these sources.
+ * Caller owns the transaction; original operation supplies every money field. */
+export async function createPartnershipSourceFinancialRequest(
+  executor: PartnershipExecutor,
+  reference: PartnershipFinancialRequestReference,
+  actor: Pick<FinancialActor, "id" | "name" | "role"> & { permissions?: readonly string[]; isActive?: boolean; allowedBranchIds?: readonly number[] },
+): Promise<{id:number;approvalStatus:"pending"}> {
+  const sourceActor: PartnershipActor = {id:Number(actor.id),name:actor.name,role:actor.role,permissions:actor.permissions??[],isActive:actor.isActive??true,...(actor.allowedBranchIds?{allowedBranchIds:actor.allowedBranchIds}:{})};
+  authorizePartnership(sourceActor);
+  const source = await preparePartnershipFinancialRequest(executor, reference, sourceActor);
+  const existing = partnershipRows(await executor.execute(sql`/* vp_financial_request_replay */ SELECT id,source_type,source_id,source_event,transaction_type,transaction_date::text,direction,amount::text,approval_status FROM financial_transactions WHERE idempotency_key=${source.idempotencyKey}`));
+  if (existing.length) {
+    const row = existing[0];
+    if (existing.length!==1 || row.source_type!==source.sourceType || String(row.source_id)!==String(source.sourceId) || row.source_event!==source.sourceEvent || row.transaction_type!==source.transactionType || row.transaction_date!==source.transactionDate || row.direction!==source.direction || parseMoney(String(row.amount))!==parseMoney(source.amount) || row.approval_status!=="pending" || source.linkedFinancialTransactionId!=null&&Number(row.id)!==source.linkedFinancialTransactionId)
+      throw new PartnershipRepositoryError("مرجع الطلب المالي مستخدم لبيانات أو حالة مختلفة؛ راجع المصدر",409,"CONFLICT");
+    return {id:Number(row.id),approvalStatus:"pending"};
+  }
+  if (source.linkedFinancialTransactionId!=null)
+    throw new PartnershipRepositoryError("مصدر النقل مرتبط بطلب مالي آخر؛ لا يمكن إنشاء طلب إضافي",409,"CONFLICT");
+  const rows = partnershipRows(await executor.execute(sql`INSERT INTO financial_transactions (transaction_no,transaction_date,direction,amount,department,transaction_type,reference_no,description,source_type,source_id,source_event,idempotency_key,approval_status,payment_method,requested_by,requested_by_name,submitted_at) VALUES (${`FIN-TMP-${randomUUID()}`},${source.transactionDate},${source.direction},${source.amount},${source.department},${source.transactionType},${source.referenceNo},${source.description},${source.sourceType},${String(source.sourceId)},${source.sourceEvent},${source.idempotencyKey},'pending','other',${sourceActor.id},${sourceActor.name},now()) RETURNING id,approval_status`));
+  const id=Number(rows[0]?.id);
+  if (rows.length!==1 || !Number.isSafeInteger(id) || id<=0 || rows[0].approval_status!=="pending")
+    throw new Error("Partnership financial request insert was not confirmed");
+  const numbered=partnershipRows(await executor.execute(sql`UPDATE financial_transactions SET transaction_no=${transactionNumber(id)} WHERE id=${id} AND approval_status='pending' RETURNING id,approval_status`));
+  if (numbered.length!==1 || Number(numbered[0].id)!==id || numbered[0].approval_status!=="pending")
+    throw new Error("Partnership financial request numbering was not confirmed");
+  await appendPartnershipAudit(executor,{vehicleId:source.vehicleId,partnershipId:source.partnershipId,actor:sourceActor,action:"financial_requested",reason:"طلب اعتماد غير نقدي مشتق من المصدر الأصلي",financialTransactionId:id,newValues:{sourceType:source.sourceType,sourceId:source.sourceId,sourceDigest:source.sourceDigest,amount:source.amount,status:"pending"}});
+  return {id,approvalStatus:"pending"};
+}
+
 export async function createFinancialTransaction(
   input: unknown,
   actor: FinancialActor,
   executor?: FinancialTransactionExecutor,
 ): Promise<typeof financialTransactionsTable.$inferSelect> {
+  assertGenericFinancialSourceInput(input);
   if (!executor) await ensureMasterCashBoxTables();
   const data = financialTransactionInputSchema.parse(input);
   if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(data.sourceType ?? ""))
@@ -344,7 +401,10 @@ export async function createFinancialTransaction(
   const existing = await connection.query.financialTransactionsTable.findFirst({
     where: eq(financialTransactionsTable.idempotencyKey, idempotencyKey),
   });
-  if (existing) return existing;
+  if (existing) {
+    assertGenericFinancialSourceInput(existing);
+    return existing;
+  }
   const [row] = await connection
     .insert(financialTransactionsTable)
     .values({
@@ -401,12 +461,14 @@ export async function updateFinancialTransaction(
   input: unknown,
   actor: FinancialActor,
 ) {
+  assertGenericFinancialSourceInput(input);
   await ensureMasterCashBoxTables();
   const data = financialTransactionPatchSchema.parse(input);
   const existing = await db.query.financialTransactionsTable.findFirst({
     where: eq(financialTransactionsTable.id, id),
   });
   if (!existing) throw new Error("المعاملة غير موجودة");
+  assertGenericFinancialSourceInput(existing);
   if (!["draft", "rejected"].includes(existing.approvalStatus))
     throw new Error("لا يمكن تعديل المعاملة بعد إرسالها أو تنفيذها");
   const reason = data.reason;
@@ -446,6 +508,7 @@ export async function submitFinancialTransaction(
     where: eq(financialTransactionsTable.id, id),
   });
   if (!existing) throw new Error("المعاملة غير موجودة");
+  assertGenericFinancialSourceInput(existing);
   if (!["draft", "rejected"].includes(existing.approvalStatus))
     throw new Error("المعاملة مرسلة مسبقاً");
   const [saved] = await db
@@ -478,6 +541,7 @@ export async function syncSourceFinancialRequest(
   reason: string,
   executor?: FinancialTransactionExecutor,
 ): Promise<typeof financialTransactionsTable.$inferSelect> {
+  assertGenericFinancialSourceInput(input);
   if (!executor) await ensureMasterCashBoxTables();
   const data = financialTransactionInputSchema.parse({
     ...(input as Record<string, unknown>),
@@ -488,6 +552,7 @@ export async function syncSourceFinancialRequest(
     where: eq(financialTransactionsTable.id, id),
   });
   if (!existing) throw new Error("المعاملة المالية المرتبطة غير موجودة");
+  assertGenericFinancialSourceInput(existing);
   if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(existing.sourceType ?? ""))
     return db.transaction(tx => syncSourceFinancialRequest(id, input, actor, reason, tx));
   if (executor) {
@@ -553,6 +618,21 @@ export async function cancelFinancialTransactionRequest(
   const apply = async (tx: FinancialTransactionExecutor) => {
     const initial = await tx.query.financialTransactionsTable.findFirst({where:eq(financialTransactionsTable.id,id)});
     if (!initial) return null;
+    if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
+      try {
+        await rejectPartnershipFinancialTransaction(tx, initial, {
+          id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
+        }, reason, "cancel");
+      } catch (cause) {
+        if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)
+          throw new FinancialApprovalError(cause.message, cause.status===403?403:cause.status===404?404:409);
+        throw cause;
+      }
+      const [saved] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,id)).limit(1);
+      if (!saved || saved.approvalStatus!=="rejected") throw new FinancialApprovalError("تعذر تأكيد إلغاء طلب الشراكة");
+      return saved;
+    }
+    if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "cancel");
     await lockGraduationPaymentSource(tx, initial, {requireActive:false});
     const [existing] = await tx.select().from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id,id)).limit(1).for("update");
@@ -802,7 +882,23 @@ async function executePendingFinancialTransaction(
       .where(eq(financialTransactionsTable.id, id))
       .limit(1);
     if (!initial) throw new FinancialApprovalError("المعاملة غير موجودة", 404);
+    if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
+      try {
+        await executePartnershipFinancialTransaction(tx, initial, {
+          id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
+        }, note);
+      } catch (cause) {
+        if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)
+          throw new FinancialApprovalError(cause.message, cause.status===403?403:cause.status===404?404:409);
+        throw cause;
+      }
+      const [saved] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,id)).limit(1);
+      if (!saved || saved.approvalStatus!=="executed")
+        throw new FinancialApprovalError("تعذر تأكيد اعتماد طلب الشراكة");
+      return saved;
+    }
     if (initial.approvalStatus === "executed") return initial;
+    if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "execute");
     await lockGraduationPaymentSource(tx, initial, {requireActive:initial.direction === "revenue"});
     // Source writers acquire the original order before changing their pending
     // request. Re-read under the financial row lock AFTER acquiring that source
@@ -1185,6 +1281,7 @@ export async function createAndExecuteSourceFinancialTransaction(
   > & { idempotencyKey: string },
   actor: FinancialActor,
 ) {
+  assertGenericFinancialSourceInput(input);
   const data = financialTransactionInputSchema.parse({
     ...input,
     approvalStatus: "pending",
@@ -1279,6 +1376,21 @@ export async function rejectFinancialTransaction(
   const [initial] = await tx.select().from(financialTransactionsTable)
     .where(eq(financialTransactionsTable.id, id)).limit(1);
   if (!initial) throw new Error("المعاملة غير موجودة");
+  if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
+    try {
+      await rejectPartnershipFinancialTransaction(tx, initial, {
+        id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
+      }, cleanReason);
+    } catch (cause) {
+      if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)
+        throw new FinancialApprovalError(cause.message, cause.status===403?403:cause.status===404?404:409);
+      throw cause;
+    }
+    const [saved] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,id)).limit(1);
+    if (!saved || saved.approvalStatus!=="rejected") throw new FinancialApprovalError("تعذر تأكيد رفض طلب الشراكة");
+    return saved;
+  }
+  if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "reject");
   await lockGraduationPaymentSource(tx, initial, {requireActive:false});
   const [existing] = await tx.select().from(financialTransactionsTable)
     .where(eq(financialTransactionsTable.id, id)).limit(1).for("update");
@@ -1380,6 +1492,24 @@ export async function reverseFinancialTransaction(
     const [initial] = await tx.select().from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id, id)).limit(1);
     if (!initial) throw new Error("المعاملة غير موجودة");
+    if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
+      let result;
+      try {
+        result = await reversePartnershipFinancialTransaction(tx, initial, {
+          id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
+        }, cleanReason, options??{}, transactionNumber);
+      } catch (cause) {
+        if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)
+          throw new FinancialApprovalError(cause.message, cause.status===403?403:cause.status===404?404:409);
+        throw cause;
+      }
+      const [original] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,result.originalId)).limit(1);
+      const [reverse] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,result.reverseId)).limit(1);
+      if (!original || !reverse || reverse.approvalStatus!=="executed") throw new FinancialApprovalError("تعذر تأكيد عكس طلب الشراكة");
+      if (withinTransaction && !result.alreadyReversed) await withinTransaction(tx,{original,reverse});
+      return {original,reverse,alreadyReversed:result.alreadyReversed};
+    }
+    if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "reverse");
     await lockGraduationPaymentSource(tx, initial, {requireActive:false});
     const [original] = await tx
       .select()
@@ -1672,7 +1802,7 @@ export async function reverseFinancialTransaction(
     // 4) Recompute master balance from executed entries (_reversal nets to zero).
     const [tot] = await tx
       .select({
-        cashNet: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus}='executed' and ${financialTransactionsTable.direction}='revenue' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.approvalStatus}='executed' and ${financialTransactionsTable.direction}='expense' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        cashNet: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus}='executed' and ${cashImpactSql()} and ${financialTransactionsTable.direction}='revenue' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.approvalStatus}='executed' and ${cashImpactSql()} and ${financialTransactionsTable.direction}='expense' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
         revenue: sql<number>`coalesce(sum(case
         when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric
         when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric
@@ -1919,8 +2049,8 @@ export async function recalculateMasterCashBox(actor?: FinancialActor) {
   const [totals] = await db
     .select({
       cashNet: sql<number>`coalesce(sum(case
-      when ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.direction} = 'revenue' then ${financialTransactionsTable.amount}::numeric
-      when ${financialTransactionsTable.approvalStatus} = 'executed' and ${financialTransactionsTable.direction} = 'expense' then -${financialTransactionsTable.amount}::numeric
+      when ${financialTransactionsTable.approvalStatus} = 'executed' and ${cashImpactSql()} and ${financialTransactionsTable.direction} = 'revenue' then ${financialTransactionsTable.amount}::numeric
+      when ${financialTransactionsTable.approvalStatus} = 'executed' and ${cashImpactSql()} and ${financialTransactionsTable.direction} = 'expense' then -${financialTransactionsTable.amount}::numeric
       else 0 end),0)::float`,
       revenue: sql<number>`coalesce(sum(case
       when ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric
@@ -1985,8 +2115,8 @@ export async function getMasterCashDashboard() {
   ] = await Promise.all([
     db
       .select({
-        revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction}='revenue' and not ${balanceSheetTransferSql()} then ${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
-        expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction}='expense' and not ${balanceSheetTransferSql()} then ${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction}='revenue' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction}='expense' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction}='expense' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction}='revenue' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
       })
       .from(financialTransactionsTable)
       .where(
@@ -2049,7 +2179,7 @@ export async function getMasterCashDashboard() {
         COALESCE(SUM(CASE WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='revenue' AND transaction_type NOT LIKE '%_reversal' THEN amount::numeric WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='expense' AND transaction_type LIKE '%_reversal' THEN -amount::numeric ELSE 0 END),0)::float AS revenue,
         COALESCE(SUM(CASE WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='expense' AND transaction_type NOT LIKE '%_reversal' THEN amount::numeric WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='revenue' AND transaction_type LIKE '%_reversal' THEN -amount::numeric ELSE 0 END),0)::float AS expenses
       FROM financial_transactions
-      WHERE approval_status='executed' AND transaction_date >= (${today}::date - interval '11 months')
+      WHERE approval_status='executed' AND NOT ${balanceSheetTransferSql()} AND transaction_date >= (${today}::date - interval '11 months')
       GROUP BY to_char(transaction_date, 'YYYY-MM') ORDER BY month
     `),
   ]);

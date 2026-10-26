@@ -1,4 +1,6 @@
 import { sql } from "drizzle-orm";
+import { reconcilePartnershipPaymentState, type PartnershipPaymentSource, type PartnershipPaymentState } from "./vehicle-partnership/payment-state";
+import { reconcilePartnershipDriverPaymentState, type DriverPaymentState } from "./vehicle-partnership/driver-payment-state";
 
 /**
  * The canonical, server-side view of a document's official payment state.
@@ -8,7 +10,7 @@ import { sql } from "drizzle-orm";
  * module owns the final paid/remaining/status update; source modules must not
  * infer the value from client input or a previously stored payment status.
  */
-export type PaymentStateSourceType =
+type DocumentPaymentStateSourceType =
   | "sales_invoice"
   | "purchase_invoice"
   | "kosha_booking"
@@ -18,6 +20,7 @@ export type PaymentStateSourceType =
   | "photography_order"
   | "rental_order"
   | "research_order";
+export type PaymentStateSourceType = DocumentPaymentStateSourceType | PartnershipPaymentSource | "vehicle_partnership_driver_entitlement";
 
 type SourceConfig = {
   table: string;
@@ -33,7 +36,7 @@ type SourceConfig = {
 
 // Every identifier here is a fixed application-owned SQL identifier. Never
 // accept table or column names from a request.
-const SOURCES: Record<PaymentStateSourceType, SourceConfig> = {
+const SOURCES: Record<DocumentPaymentStateSourceType, SourceConfig> = {
   sales_invoice: { table: "sales_invoices", total: "total", paid: "paid_amount", remaining: "remaining_amount", status: "payment_status", direction: "revenue", receiptAllocations: true },
   purchase_invoice: { table: "purchase_invoices", total: "total", paid: "paid_amount", remaining: "remaining_amount", status: "payment_status", direction: "expense", receiptAllocations: false },
   kosha_booking: { table: "kosha_bookings", total: "total_amount", paid: "paid_amount", remaining: "remaining_amount", status: "payment_status", direction: "revenue", receiptAllocations: true },
@@ -58,7 +61,7 @@ export type ReconciledPaymentState = {
 };
 
 export function isPaymentStateSourceType(value: string | null | undefined): value is PaymentStateSourceType {
-  return Boolean(value && Object.prototype.hasOwnProperty.call(SOURCES, value));
+  return value === "vehicle_partnership_right" || value === "vehicle_partnership_settlement" || value === "vehicle_partnership_driver_entitlement" || Boolean(value && Object.prototype.hasOwnProperty.call(SOURCES, value));
 }
 
 /**
@@ -66,15 +69,31 @@ export function isPaymentStateSourceType(value: string | null | undefined): valu
  * transaction. Reversal entries net against their original executed entry by
  * direction, while receipt allocation reversals reduce their allocation.
  */
+export function reconcilePaymentState(
+  tx: { execute: (query: any) => Promise<any> },
+  input: { sourceType: "vehicle_partnership_driver_entitlement"; sourceId: string | number | null | undefined },
+): Promise<DriverPaymentState>;
+export function reconcilePaymentState(
+  tx: { execute: (query: any) => Promise<any> },
+  input: { sourceType: PartnershipPaymentSource; sourceId: string | number | null | undefined },
+): Promise<PartnershipPaymentState>;
+export function reconcilePaymentState(
+  tx: { execute: (query: any) => Promise<any> },
+  input: { sourceType: string | null | undefined; sourceId: string | number | null | undefined },
+): Promise<ReconciledPaymentState | null>;
 export async function reconcilePaymentState(
   tx: { execute: (query: any) => Promise<any> },
   input: { sourceType: string | null | undefined; sourceId: string | number | null | undefined },
 ): Promise<ReconciledPaymentState | null> {
+  if (input.sourceType === "vehicle_partnership_driver_entitlement")
+    return reconcilePartnershipDriverPaymentState(tx,input.sourceId);
+  if (input.sourceType === "vehicle_partnership_right" || input.sourceType === "vehicle_partnership_settlement")
+    return reconcilePartnershipPaymentState(tx, { sourceType: input.sourceType, sourceId: input.sourceId });
   if (!isPaymentStateSourceType(input.sourceType)) return null;
   const sourceId = Number(input.sourceId);
   if (!Number.isInteger(sourceId) || sourceId <= 0) return null;
 
-  const config = SOURCES[input.sourceType];
+  const config = SOURCES[input.sourceType as DocumentPaymentStateSourceType];
   const table = sql.raw(config.table);
   const total = sql.raw(config.total);
   const paid = sql.raw(config.paid);

@@ -6,6 +6,7 @@ import {
   db,
 } from "@workspace/db";
 import { ensureMasterCashBoxTables } from "@/server/master-cash-box";
+import { partnershipOperatingPredicate } from "./vehicle-partnership/financial-classification";
 
 export type DailyCashActor = {
   id: number | null;
@@ -210,6 +211,7 @@ async function aggregateDailyCash(from: string, to: string) {
         AND COALESCE(source_type,'') NOT IN ('sales_invoice','order','service_order','kosha_booking')
         AND COALESCE(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance')
         AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment')
+        AND ${partnershipOperatingPredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
         AND transaction_date >= ${from} AND transaction_date <= ${to}
       GROUP BY transaction_date
     `),
@@ -227,6 +229,7 @@ async function aggregateDailyCash(from: string, to: string) {
         WHERE approval_status='executed'
           AND COALESCE(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance')
           AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment')
+          AND ${partnershipOperatingPredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
           AND transaction_date >= ${from} AND transaction_date <= ${to}
         GROUP BY transaction_date
       ) rows GROUP BY day
