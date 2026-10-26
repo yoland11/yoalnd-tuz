@@ -14,6 +14,7 @@ import {lockPartnershipCapitalContext} from "./capital";
 import {executePartnershipCapitalFinancialTransaction} from "./capital-posting";
 import {transitionDriverAccrual} from "./driver-posting";
 import {executeClosingFinancialTransaction,rejectClosingFinancialTransaction} from "./closing-posting";
+import {reverseClosingFinancialTransaction} from "./closing-reversal";
 import {appendPartnershipAudit,partnershipRows,PartnershipRepositoryError,type PartnershipExecutor} from "./repository";
 
 type FinancialIdentity={id:number;sourceType:string|null;sourceId:string|null};
@@ -119,10 +120,11 @@ export async function rejectPartnershipFinancialTransaction(tx:PartnershipExecut
  await appendPartnershipAudit(tx,{vehicleId:root.vehicleId,partnershipId:root.id,actor,action:mode==="cancel"?"financial_cancelled":"financial_rejected",reason:why,financialTransactionId:initial.id,oldValues:{status:"pending"},newValues:{activityId,status:"rejected",cashImpact:"none"}});
  return {id:initial.id};
 }
-export type PartnershipReversalOptions={amount?:number;idempotencyKey?:string;sourceType?:string;sourceId?:string|number;sourceEvent?:string;description?:string};
+export type PartnershipReversalOptions={amount?:number;idempotencyKey?:string;sourceType?:string;sourceId?:string|number;sourceEvent?:string;description?:string;expectedVersion?:number;expectedDigest?:string};
 /** Full reversal of an unused non-cash source. Used/closed obligations require
  * an approved correction, never a fake cash refund or historical overwrite. */
 export async function reversePartnershipFinancialTransaction(tx:PartnershipExecutor,initial:FinancialIdentity,actor:PartnershipActor,reason:string,options:PartnershipReversalOptions,numberFinancial:(id:number)=>string):Promise<{originalId:number;reverseId:number;alreadyReversed:boolean}>{
+ if(initial.sourceType==="vehicle_partnership_closing")return reverseClosingFinancialTransaction(tx,initial,actor,reason,options,numberFinancial);
  authorizePartnership(actor,true);const activityId=activityIdFor(initial),why=cleanReason(reason);
  if(options.sourceType!=null&&options.sourceType!==initial.sourceType||options.sourceId!=null&&String(options.sourceId)!==String(initial.sourceId)||options.sourceEvent!=null&&options.sourceEvent!=="reversal")conflict("لا يمكن تغيير مصدر عكس استحقاق النقل");
  const isCost=initial.sourceType==="vehicle_partnership_cost";
@@ -149,7 +151,7 @@ export async function reversePartnershipFinancialTransaction(tx:PartnershipExecu
  }
  if(financial.reversed_at!=null||financial.reversal_txn_id!=null||activity.status!=="approved")conflict("حالة الاستحقاق لا تسمح بعكس جديد");
  const originalKey="original" in context?`${context.original.source}:${context.original.sourceId}:transportation`:isCapital?`capital:${activityId}`:`vehicle_expense:${Number(activity.vehicle_expense_id)}`;
- const closed=partnershipRows(await tx.execute(sql`/* vp_activity_closed_guard */ /* vp_cost_closed_guard */ SELECT h.id FROM vehicle_partnership_closing_lines l JOIN vehicle_partnership_closings h ON h.id=l.closing_id WHERE h.partnership_id=${root.id} AND h.status IN ('approved','distributed') AND (l.source_key=${originalKey} OR l.snapshot->>${isCapital?"capitalRightId":isCost?"costFundingId":"activityId"}=${String(activityId)}) LIMIT 1`));
+ const closed=partnershipRows(await tx.execute(sql`/* vp_activity_closed_guard */ /* vp_cost_closed_guard */ SELECT h.id FROM vehicle_partnership_closing_lines l JOIN vehicle_partnership_closings h ON h.id=l.closing_id WHERE h.partnership_id=${root.id} AND l.revision=h.revision AND h.status IN ('approved','distributed') AND (l.source_key=${originalKey} OR l.snapshot->>${isCapital?"capitalRightId":isCost?"costFundingId":"activityId"}=${String(activityId)}) LIMIT 1`));
  if(closed.length)conflict("استحقاق النقل ضمن إغلاق معتمد؛ استخدم تصحيح فترة أو إعادة فتح مضبوطة");
  let rightId:number|undefined;
  if(isDriver){

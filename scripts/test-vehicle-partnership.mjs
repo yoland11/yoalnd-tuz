@@ -11,6 +11,8 @@ const commands=[
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-lifecycle.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-rights.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-posting.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-unused.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-reversal.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-conversion.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-conversion-state.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-canonical.ts"],

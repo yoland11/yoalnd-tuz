@@ -13,6 +13,7 @@ import {appendPartnershipAudit,lockPartnership,partnershipRows,PartnershipReposi
 import type {PartnershipFinancialRequestWriter,TrustedPartnershipRequest} from "./accounting";
 import {PARTNERSHIP_POSTING_TYPES} from "./financial-classification";
 import {reserveClosingConversions,approveClosingRights} from "./closing-rights";
+import {assertClosingUnused} from "./closing-unused";
 
 type Row=Record<string,unknown>;
 const hash=(value:unknown)=>createHash("sha256").update(canonicalPartnershipJson(value)).digest("hex");
@@ -20,7 +21,7 @@ function conflict(message:string):never{throw new PartnershipRepositoryError(mes
 function object(value:unknown):Row{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Invalid monthly closing source object");return value as Row;}
 const common={expectedVersion:z.number().int().nonnegative(),expectedDigest:z.string().regex(/^[a-f0-9]{64}$/),idempotencyKey:z.string().trim().min(8).max(180),reason:z.string().trim().min(3).max(2000)};
 const draftSchema=z.object({...common,month:z.string(),policy:closingPolicySchema}).strict();
-const transitionSchema=z.object({...common,closingId:z.number().int().positive(),action:z.enum(["review","submit","return_to_draft","approve_zero","cancel_zero"])}).strict();
+const transitionSchema=z.object({...common,closingId:z.number().int().positive(),action:z.enum(["review","submit","return_to_draft","approve_zero","cancel_zero","reopen_zero"])}).strict();
 function parse<T>(schema:z.ZodType<T>,input:unknown):T{const parsed=schema.safeParse(input);if(!parsed.success)throw new PartnershipValidationError(parsed.error.issues.map(issue=>issue.message).join("؛ "));return parsed.data;}
 export function closingDto(row:Row){return {closingId:partnershipId(Number(row.id)),month:String(row.period).slice(0,7),status:String(row.status),version:Number(row.version),revision:Number(row.revision),sourceDigest:String(row.source_digest),financialTransactionId:row.financial_transaction_id==null?null:partnershipId(Number(row.financial_transaction_id))};}
 async function header(tx:PartnershipExecutor,rootId:number,ref:{id:number}|{period:string},lock=true):Promise<Row|null>{
@@ -79,7 +80,7 @@ export async function saveClosingDraft(db:PartnershipDatabase,actor:PartnershipA
 /** Review/submit use original data under locks. Only the source-derived
  * request writer may create a pending FI; it cannot approve or move cash. */
 export async function transitionClosing(db:PartnershipDatabase,actor:PartnershipActor,vehicleId:number,input:unknown,createRequest:PartnershipFinancialRequestWriter){
- authorizePartnership(actor);partnershipId(vehicleId);const command=parse(transitionSchema,input);if(command.action==="approve_zero")authorizePartnership(actor,true);
+ authorizePartnership(actor);partnershipId(vehicleId);const command=parse(transitionSchema,input);if(["approve_zero","reopen_zero"].includes(command.action))authorizePartnership(actor,true);
  const fingerprint=hash({command,vehicleId,actorId:actor.id});
  return db.transaction(async tx=>{
   const root=await lockPartnership(tx,vehicleId);await readOriginalVehicle(tx,actor,vehicleId);
@@ -88,10 +89,20 @@ export async function transitionClosing(db:PartnershipDatabase,actor:Partnership
   if(!["return_to_draft","cancel_zero"].includes(command.action))await lockClosingOriginalSources(tx,actor,vehicleId,String(initial.period).slice(0,7));
   const current=await header(tx,root.id,{id:command.closingId});if(!current||current.period!==initial.period)conflict("هوية الإغلاق تغيرت أثناء المراجعة");
   const prior=await replay(tx,current,command.idempotencyKey,fingerprint);if(prior)return prior;expected(current,command.expectedVersion,command.expectedDigest);
-  const allowed=command.action==="review"?"draft":command.action==="submit"||command.action==="return_to_draft"?"review":"pending";
+  const allowed=command.action==="review"?"draft":command.action==="submit"||command.action==="return_to_draft"?"review":command.action==="reopen_zero"?"approved":"pending";
   if(current.status!==allowed)conflict("العملية غير متاحة في مرحلة الإغلاق الحالية");
   const container=object(current.policy_snapshot);let next:Row;
   if(command.action==="return_to_draft")next=await update(tx,current,"draft",String(current.source_digest),container);
+  else if(command.action==="reopen_zero"){
+   if(current.financial_transaction_id!=null||current.approved_by==null||current.approved_at==null)conflict("أعد فتح الإغلاق المالي من مسار العكس الأصلي؛ هذا المسار للشهر المعتمد الخالي من القيود فقط");
+   const proof=await verifySubmittedClosing(tx,actor,{root,row:current},false);
+   if(proof.journal.legs.length||parseMoney(proof.journal.amount)!==0n)conflict("الإغلاق المعتمد ليس خالياً من القيود");
+   const audit=partnershipRows(await tx.execute(sql`/* vp_month_zero_approval */ SELECT EXISTS(SELECT 1 FROM financial_audit_logs a WHERE a.action='vehicle_partnership_closing_approved_zero' AND a.actor_id=${Number(current.approved_by)} AND a.transaction_id IS NULL AND a.new_values->>'closingId'=${String(current.id)} AND a.new_values->>'partnershipId'=${String(root.id)} AND a.new_values->>'vehicleId'=${String(vehicleId)} AND a.new_values->>'sourceDigest'=${String(current.source_digest)} AND a.new_values->>'revision'=${String(current.revision)} AND a.new_values->>'version'=${String(current.version)} AND a.new_values->>'status'='approved') AS proven`));
+   if(audit.length!==1||audit[0].proven!==true)conflict("الموافقة الإدارية على النسخة الصفرية غير مثبتة");
+   await assertClosingUnused(tx,actor,{root,row:current,snapshot:proof.snapshot,financialId:null});
+   const changed=partnershipRows(await tx.execute(sql`/* vp_month_reopen_zero */ UPDATE vehicle_partnership_closings SET status='draft',revision=revision+1,version=version+1,approved_by=NULL,approved_at=NULL WHERE id=${Number(current.id)} AND version=${Number(current.version)} AND status='approved' AND financial_transaction_id IS NULL RETURNING *,period::text AS period`));
+   if(changed.length!==1)conflict("نسخة الإغلاق تغيرت أثناء إعادة الفتح");next=changed[0];
+  }
   else if(command.action==="cancel_zero"){
    if(current.financial_transaction_id!=null)conflict("ألغِ طلب الإغلاق المالي من مسار الموافقة الأصلي");
    const proof=await verifySubmittedClosing(tx,actor,{root,row:current},false);if(proof.journal.legs.length||parseMoney(proof.journal.amount)!==0n)conflict("مصدر الإغلاق المعلق غير مطابق لمسار الإلغاء الصفري");

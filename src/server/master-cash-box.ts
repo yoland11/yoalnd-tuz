@@ -1480,6 +1480,8 @@ export async function reverseFinancialTransaction(
     sourceId?: string | number;
     sourceEvent?: string;
     description?: string;
+    expectedVersion?: number;
+    expectedDigest?: string;
   },
 ) {
   if (!existingTransaction) await ensureMasterCashBoxTables();
