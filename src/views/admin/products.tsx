@@ -1180,7 +1180,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <Inp label="سعر الشراء" type="number" value={form.costPrice ?? "0"} onChange={v => onChange({ ...form, costPrice: v })} />
           {form.itemType !== "service" && form.trackInventory !== false && <Inp label="المخزون" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />}
           {form.itemType !== "service" && form.trackInventory !== false && <Inp label="حد التنبيه للمخزون" type="number" value={form.minStock ?? "0"} onChange={v => onChange({ ...form, minStock: v })} />}
-          <Inp label="الباركود (اختياري)" value={form.barcode ?? ""} onChange={v => onChange({ ...form, barcode: v })} />
+          <Inp label="الباركود (اختياري)" value={form.barcode ?? ""} onChange={v => onChange({ ...form, barcode: v })} noEnterSubmit />
           {form.itemType !== "service" && form.trackInventory !== false && <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
             <label className="flex items-center justify-between gap-3 text-sm text-foreground">
               <span className="inline-flex items-center gap-2">
@@ -1607,11 +1607,13 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   );
 }
 
-function Inp({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
+function Inp({ label, value, onChange, type = "text", noEnterSubmit = false }: { label: string; value: string; onChange: (v: string) => void; type?: string; noEnterSubmit?: boolean }) {
   return (
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)}
+        // A barcode scanner ends every scan with Enter; that must not save the form.
+        onKeyDown={noEnterSubmit ? e => { if (e.key === "Enter") e.preventDefault(); } : undefined}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
     </div>
   );
