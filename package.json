@@ -47,6 +47,7 @@
     "test:service-item-invoice": "node ./scripts/test-service-item-invoice-logic.mjs",
     "test:photography-service-items": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-photography-service-items.ts",
     "test:wholesale": "node ./scripts/test-wholesale-schema.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-wholesale-pricing.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-wholesale-customer-validation.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-wholesale-price-admin-validation.ts && node ./scripts/test-wholesale-invoice-contract.mjs",
+    "test:invoice-credit-sync": "node ./scripts/test-invoice-credit-financial-method.mjs",
     "test:sales-invoice-customer-linking": "pnpm --filter @workspace/db exec tsx ../../scripts/test-sales-invoice-customer-linking.ts",
     "test:customer-receivable-repair": "pnpm --filter @workspace/db exec tsx ../../scripts/test-customer-receivable-repair.ts",
     "repair:customer-receivables": "pnpm --filter @workspace/db exec tsx ../../scripts/repair-customer-receivables.ts",

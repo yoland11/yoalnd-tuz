@@ -62,6 +62,7 @@ const steps = [
   ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice customer search", "pnpm", ["run", "test:sales-customer-search"]],
+  ["Credit invoices sync a valid financial payment method", "pnpm", ["run", "test:invoice-credit-sync"]],
   ["Sales invoice product search", "pnpm", ["run", "test:sales-product-search"]],
   ["Kosha routed instruction persistence", "pnpm", ["run", "test:kosha-instruction-store"]],
   ["Kosha staff detail instruction redaction", "pnpm", ["run", "test:kosha-staff-detail"]],
