@@ -13,8 +13,9 @@ import {preparePartnershipCostRequest} from "./costing";
 import {preparePartnershipCapitalRequest} from "./capital";
 import {prepareClosingFinancialRequest} from "./closing-lifecycle";
 import {prepareDistributionFinancialRequest} from "./distributions";
+import {prepareDriverPaymentFinancialRequest} from "./driver-payments";
 
-export type PartnershipFinancialRequestReference={sourceType:"vehicle_partnership_activity"|"vehicle_partnership_cost"|"vehicle_partnership_right"|"vehicle_partnership_closing"|"vehicle_partnership_settlement";sourceId:number;distribution?:unknown};
+export type PartnershipFinancialRequestReference={sourceType:"vehicle_partnership_activity"|"vehicle_partnership_cost"|"vehicle_partnership_right"|"vehicle_partnership_closing"|"vehicle_partnership_settlement"|"vehicle_partnership_driver";sourceId:number;distribution?:unknown;driverPayment?:unknown};
 export type PartnershipFinancialRequestWriter=(tx:PartnershipExecutor,reference:PartnershipFinancialRequestReference,actor:PartnershipActor)=>Promise<{id:number;approvalStatus:string}>;
 export type TrustedPartnershipRequest={
  sourceType:PartnershipFinancialRequestReference["sourceType"];sourceId:number;
@@ -75,6 +76,7 @@ export async function lockPartnershipActivityContext(tx:PartnershipExecutor,acto
  * direction, account or cash-impact flag. Validate its original locked source
  * and immutable proof again before constructing the pending financial row. */
 export async function preparePartnershipFinancialRequest(tx:PartnershipExecutor,reference:PartnershipFinancialRequestReference,actor:PartnershipActor):Promise<TrustedPartnershipRequest>{
+ if(reference.sourceType==="vehicle_partnership_driver")return prepareDriverPaymentFinancialRequest(tx,{sourceType:"vehicle_partnership_driver",sourceId:reference.sourceId,driverPayment:reference.driverPayment},actor);
  if(reference.sourceType==="vehicle_partnership_settlement")return prepareDistributionFinancialRequest(tx,{sourceType:"vehicle_partnership_settlement",sourceId:reference.sourceId,distribution:reference.distribution},actor);
  if(reference.sourceType==="vehicle_partnership_closing")return prepareClosingFinancialRequest(tx,{sourceType:"vehicle_partnership_closing",sourceId:reference.sourceId},actor);
  if(reference.sourceType==="vehicle_partnership_cost")return preparePartnershipCostRequest(tx,reference,actor);

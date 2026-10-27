@@ -16,6 +16,7 @@ import {transitionDriverAccrual} from "./driver-posting";
 import {executeClosingFinancialTransaction,rejectClosingFinancialTransaction} from "./closing-posting";
 import {reverseClosingFinancialTransaction} from "./closing-reversal";
 import {rejectDistributionFinancialTransaction} from "./distributions";
+import {rejectDriverPaymentFinancialTransaction} from "./driver-payments";
 import {appendPartnershipAudit,partnershipRows,PartnershipRepositoryError,type PartnershipExecutor} from "./repository";
 
 type FinancialIdentity={id:number;sourceType:string|null;sourceId:string|null};
@@ -104,6 +105,7 @@ function cleanReason(value:string):string{
  if(typeof value!=="string"||value.trim().length<3||value.trim().length>2000)throw new PartnershipValidationError("سبب واضح للعملية مطلوب");return value.trim();
 }
 export async function rejectPartnershipFinancialTransaction(tx:PartnershipExecutor,initial:FinancialIdentity,actor:PartnershipActor,reason:string,mode:"reject"|"cancel"="reject"):Promise<{id:number}>{
+ if(initial.sourceType==="vehicle_partnership_driver")return rejectDriverPaymentFinancialTransaction(tx,initial,actor,reason,mode);
  if(initial.sourceType==="vehicle_partnership_settlement")return rejectDistributionFinancialTransaction(tx,initial,actor,reason,mode);
  if(initial.sourceType==="vehicle_partnership_closing")return rejectClosingFinancialTransaction(tx,initial,actor,reason,mode);
  authorizePartnership(actor,mode==="reject");const activityId=activityIdFor(initial),why=cleanReason(reason);

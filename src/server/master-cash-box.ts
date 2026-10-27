@@ -8,6 +8,7 @@ import { PartnershipValidationError } from "../lib/vehicle-partnership/types";
 import { executePartnershipFinancialTransaction, rejectPartnershipFinancialTransaction, reversePartnershipFinancialTransaction } from "./vehicle-partnership/posting";
 import { lockPartnershipOriginalVehicleExpense } from "./vehicle-partnership/costing";
 import { prepareDistributionExecution, finishDistributionExecution, type DistributionExecution } from "./vehicle-partnership/distributions";
+import { prepareDriverPaymentExecution, finishDriverPaymentExecution, type DriverPaymentExecution } from "./vehicle-partnership/driver-payments";
 import { calculatePartnershipCashPosting } from "../lib/vehicle-partnership/cash";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { z } from "zod/v4";
@@ -884,16 +885,17 @@ async function executePendingFinancialTransaction(
       .where(eq(financialTransactionsTable.id, id))
       .limit(1);
     if (!initial) throw new FinancialApprovalError("المعاملة غير موجودة", 404);
-    let partnershipCash: DistributionExecution | null = null;
+    let partnershipCash: DistributionExecution | DriverPaymentExecution | null = null;
     if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
       try {
-        if (initial.sourceType === "vehicle_partnership_settlement") {
-          partnershipCash = await prepareDistributionExecution(tx, initial, {
+        if (initial.sourceType === "vehicle_partnership_settlement" || initial.sourceType === "vehicle_partnership_driver") {
+          const prepareCash = initial.sourceType === "vehicle_partnership_driver" ? prepareDriverPaymentExecution : prepareDistributionExecution;
+          partnershipCash = await prepareCash(tx, initial, {
             id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
           });
           if (partnershipCash.alreadyExecuted) {
             const [saved] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,id)).limit(1);
-            if (!saved || saved.approvalStatus!=="executed") throw new FinancialApprovalError("تعذر تأكيد صرف الحصة المنفذ");
+            if (!saved || saved.approvalStatus!=="executed") throw new FinancialApprovalError("تعذر تأكيد صرف المستحق المنفذ");
             return saved;
           }
         } else {
@@ -936,12 +938,13 @@ async function executePendingFinancialTransaction(
     if (!cashRaw.id) throw new FinancialApprovalError("الصندوق الرئيسي غير مهيأ");
     let exactCash: ReturnType<typeof calculatePartnershipCashPosting> | null = null;
     if (partnershipCash) {
-      if (transaction.amount !== partnershipCash.amount || transaction.direction !== "expense" || transaction.transactionType !== "vp_partner_distribution")
-        throw new FinancialApprovalError("طلب الحصة تغير بعد فحص مصدره");
       try {
+        const effect = resolvePartnershipFinancialEffect({...transaction,sourceEvent:transaction.sourceEvent??"",direction:transaction.direction??""});
+        if (transaction.id !== partnershipCash.financialId || transaction.sourceType !== partnershipCash.sourceType || transaction.amount !== partnershipCash.amount || transaction.transactionType !== partnershipCash.transactionType || !effect || effect.reversal || effect.cash!=="out" || effect.operating!=="none" || effect.debit!==partnershipCash.counterCode || effect.credit!=="1000")
+          throw new FinancialApprovalError("طلب صرف المستحق تغير بعد فحص مصدره");
         exactCash = calculatePartnershipCashPosting({amount:partnershipCash.amount,currentBalance:cashRaw.current_balance,totalRevenue:cashRaw.total_revenue,totalExpenses:cashRaw.total_expenses,netProfit:cashRaw.net_profit});
       } catch (cause) {
-        if (cause instanceof PartnershipValidationError) throw new FinancialApprovalError(cause.message,409);
+        if (cause instanceof PartnershipValidationError || cause instanceof PartnershipRepositoryError) throw new FinancialApprovalError(cause.message,409);
         throw cause;
       }
     }
@@ -973,7 +976,7 @@ async function executePendingFinancialTransaction(
     if (!cashAccount || !counterAccount)
       throw new FinancialApprovalError("دليل الحسابات غير مكتمل");
     if (partnershipCash && (cashAccount.accountType!=="asset" || cashAccount.isActive!==true || counterAccount.accountType!=="liability" || counterAccount.isActive!==true))
-      throw new FinancialApprovalError("تصنيف أو حالة حسابات صرف الحصة غير مطابق");
+      throw new FinancialApprovalError("تصنيف أو حالة حسابات صرف المستحق غير مطابق");
 
     const now = new Date();
     const [saved] = await tx
@@ -1244,9 +1247,9 @@ async function executePendingFinancialTransaction(
 
     if (partnershipCash) {
       try {
-        await finishDistributionExecution(tx,partnershipCash,{
-          id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
-        });
+        const sourceActor = {id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true};
+        if (partnershipCash.sourceType === "vehicle_partnership_driver") await finishDriverPaymentExecution(tx,partnershipCash,sourceActor);
+        else await finishDistributionExecution(tx,partnershipCash,sourceActor);
       } catch (cause) {
         if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)
           throw new FinancialApprovalError(cause.message,cause.status===403?403:cause.status===404?404:409);
