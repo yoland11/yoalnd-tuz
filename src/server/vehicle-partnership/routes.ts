@@ -7,6 +7,8 @@ import {submitPartnershipActivity,type PartnershipFinancialRequestWriter} from "
 import {submitPartnershipDriverAccrual} from "./driver";
 import {requestPartnershipDriverPayment} from "./driver-payments";
 import {requestPartnerDistribution} from "./distributions";
+import {requestPartnerAdvancePayment} from "./advance-payments";
+import {submitPartnershipCost} from "./costing";
 import {closingPolicySchema,previewClosing} from "./closing";
 import {saveClosingDraft,transitionClosing} from "./closing-lifecycle";
 import {authorizePartnership,readVehiclePartnership,saveVehicleAgreement,approveVehicleAgreement,rejectVehicleAgreement,searchPartnershipParties,type PartnershipActor,type PartnershipDatabase} from "./agreements";
@@ -46,11 +48,12 @@ export async function handleVehiclePartnershipRequest(db:PartnershipDatabase,act
   if(method!=="GET")throw new PartnershipRepositoryError("مساحة الشراكة للعرض فقط",405,"METHOD_NOT_ALLOWED");
   return {data:await readPartnershipWorkspace(db,actor,vehicleId,{from:request.query.get("from"),to:request.query.get("to")}),status:200};
  }
- if(parts.length===4&&["driver-accrual","driver-payments","distributions"].includes(parts[3])){
+ if(parts.length===4&&["driver-accrual","driver-payments","distributions","advance-payments","costs"].includes(parts[3])){
   if(method!=="POST")throw new PartnershipRepositoryError("طريقة الطلب غير متاحة",405,"METHOD_NOT_ALLOWED");
   if(!writer)throw new PartnershipRepositoryError("مسار الطلب المالي غير متاح",503,"SETUP_REQUIRED");
   const body=await readObject(request);
-  const data=parts[3]==="driver-accrual"?await submitPartnershipDriverAccrual(db,actor,vehicleId,body,writer):parts[3]==="driver-payments"?await requestPartnershipDriverPayment(db,actor,vehicleId,body,writer):await requestPartnerDistribution(db,actor,vehicleId,body,writer);
+  if(parts[3]==="costs")return {data:await submitPartnershipCost(db,actor,vehicleId,body,writer),status:201};
+  const data=parts[3]==="driver-accrual"?await submitPartnershipDriverAccrual(db,actor,vehicleId,body,writer):parts[3]==="driver-payments"?await requestPartnershipDriverPayment(db,actor,vehicleId,body,writer):parts[3]==="advance-payments"?await requestPartnerAdvancePayment(db,actor,vehicleId,body,writer):await requestPartnerDistribution(db,actor,vehicleId,body,writer);
   return {data,status:201};
  }
  if(parts[3]==="closings"&&parts.length===5&&["preview","draft","transition"].includes(parts[4])){

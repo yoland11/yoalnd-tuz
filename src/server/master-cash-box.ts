@@ -8,6 +8,7 @@ import { PartnershipValidationError } from "../lib/vehicle-partnership/types";
 import { executePartnershipFinancialTransaction, rejectPartnershipFinancialTransaction, reversePartnershipFinancialTransaction } from "./vehicle-partnership/posting";
 import { lockPartnershipOriginalVehicleExpense } from "./vehicle-partnership/costing";
 import { prepareDistributionExecution, finishDistributionExecution, type DistributionExecution } from "./vehicle-partnership/distributions";
+import { prepareAdvancePaymentExecution, finishAdvancePaymentExecution, type AdvancePaymentExecution } from "./vehicle-partnership/advance-payments";
 import { prepareDriverPaymentExecution, finishDriverPaymentExecution, type DriverPaymentExecution } from "./vehicle-partnership/driver-payments";
 import { calculatePartnershipCashPosting } from "../lib/vehicle-partnership/cash";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
@@ -885,11 +886,11 @@ async function executePendingFinancialTransaction(
       .where(eq(financialTransactionsTable.id, id))
       .limit(1);
     if (!initial) throw new FinancialApprovalError("المعاملة غير موجودة", 404);
-    let partnershipCash: DistributionExecution | DriverPaymentExecution | null = null;
+    let partnershipCash: DistributionExecution | DriverPaymentExecution | AdvancePaymentExecution | null = null;
     if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
       try {
         if (initial.sourceType === "vehicle_partnership_settlement" || initial.sourceType === "vehicle_partnership_driver") {
-          const prepareCash = initial.sourceType === "vehicle_partnership_driver" ? prepareDriverPaymentExecution : prepareDistributionExecution;
+          const prepareCash = initial.sourceType === "vehicle_partnership_driver" ? prepareDriverPaymentExecution : initial.transactionType === "vp_partner_advance_repayment" ? prepareAdvancePaymentExecution : prepareDistributionExecution;
           partnershipCash = await prepareCash(tx, initial, {
             id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
           });
@@ -1249,6 +1250,7 @@ async function executePendingFinancialTransaction(
       try {
         const sourceActor = {id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true};
         if (partnershipCash.sourceType === "vehicle_partnership_driver") await finishDriverPaymentExecution(tx,partnershipCash,sourceActor);
+        else if (partnershipCash.transactionType === "vp_partner_advance_repayment") await finishAdvancePaymentExecution(tx,partnershipCash,sourceActor);
         else await finishDistributionExecution(tx,partnershipCash,sourceActor);
       } catch (cause) {
         if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)

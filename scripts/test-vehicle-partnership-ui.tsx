@@ -21,6 +21,11 @@ const failure=renderToStaticMarkup(<ui.PartnershipFailure error={new Error("ال
 assert.match(failure,/role="alert"/);assert.match(failure,/إعادة المحاولة/);assert.match(failure,/المصدر غير متاح/);assert.doesNotMatch(failure,/لا توجد حركات|لا توجد مستحقات/);
 const html=renderToStaticMarkup(<ui.PartnershipBalances rights={[{id:1,category:"profit",direction:"credit",memberId:2,memberName:"أحمد علي",amount:"100000.00",status:"approved",closingId:3,closingVersion:2,paymentState:{totalAmount:"100000.00",approvedPaidAmount:"0.00",remainingAmount:"100000.00",reservedAmount:"40000.00",availableAmount:"60000.00",payable:true,approvalStatus:"approved"}}]} driverEntries={[]} onPay={()=>{}}/>);
 assert.match(html,/أحمد علي/);assert.match(html,/40,000.00 د.ع/);assert.match(html,/60,000.00 د.ع/);assert.match(html,/0.00 د.ع/);assert.match(html,/طلب صرف/);assert.match(html,/المعلّق/);assert.match(html,/لا يمثل دفعة منفذة/);
+const advance={id:4,category:"advance",direction:"credit",memberId:2,memberName:"الشريك الأصلي",amount:"100.00",status:"approved",closingId:null,closingVersion:null,advanceClosingId:5,advanceClosingVersion:7,paymentState:{totalAmount:"100.00",approvedPaidAmount:"20.00",remainingAmount:"80.00",reservedAmount:"30.00",availableAmount:"50.00",payable:true,approvalStatus:"approved"}};
+const advances=renderToStaticMarkup(<ui.PartnershipBalances rights={[advance]} driverEntries={[]} onPay={()=>{}}/>);
+assert.match(advances,/طلب تسديد سلفة/);assert.match(advances,/30.00 د.ع/);assert.match(advances,/50.00 د.ع/);
+const unclosed=renderToStaticMarkup(<ui.PartnershipBalances rights={[{...advance,advanceClosingId:null,advanceClosingVersion:null}]} driverEntries={[]} onPay={()=>{}}/>);
+assert.doesNotMatch(unclosed,/طلب تسديد سلفة/);assert.match(unclosed,/اعتماد شهر المصروف/);
 const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:0}}});
 client.setQueryData(["vehicle-partnership",12,"setup"],{vehicle:{name:"السيارة المشتركة",plate_number:"بغداد 123"},partnership:null,configuredElsewhere:false,canApprove:true});
 const initial=renderToStaticMarkup(<QueryClientProvider client={client}><ui.default vehicleId={12}/></QueryClientProvider>);
