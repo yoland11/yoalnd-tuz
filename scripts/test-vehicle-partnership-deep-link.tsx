@@ -1,0 +1,17 @@
+import assert from "node:assert/strict";
+import * as React from "react";
+import {renderToStaticMarkup} from "react-dom/server";
+import {createRequire} from "node:module";
+const {Router}=createRequire(import.meta.url)("wouter") as typeof import("wouter");
+const {QueryClient,QueryClientProvider}=createRequire(import.meta.url)("@tanstack/react-query") as typeof import("@tanstack/react-query");
+(globalThis as any).React=React;
+const {default:VehiclesPage}=await import("../src/views/admin/vehicles");
+const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:0}}});
+client.setQueryData(["admin","vehicle",12,"detail"],{vehicle:{id:12,name:"مركبة الشراكة",plateNumber:"بغداد123",odometerKm:0,purchasePrice:0,status:"available"},maintenance:[],odometerHistory:[]});
+client.setQueryData(["admin","vehicle",12,"financial"],{summary:{tripCount:0,transportationRevenue:0,vehicleExpenses:0,netProfit:0},trips:[],expenses:[]});
+client.setQueryData(["vehicle-partnership",12,"setup"],{vehicle:{name:"مركبة الشراكة",plate_number:"بغداد123"},partnership:null,configuredElsewhere:false,canApprove:true});
+const render=(url:string)=>renderToStaticMarkup(<Router ssrPath={url}><QueryClientProvider client={client}><VehiclesPage/></QueryClientProvider></Router>);
+assert.ok(render("/admin/vehicles/12?tab=partnership").includes("الاتفاق والشريكان"),"real Wouter pathname-only useLocation must still open requested partnership tab");
+assert.ok(render("/admin/vehicles/12").includes("تحديث العداد"),"ordinary original vehicle deep link retains overview");
+client.clear();
+console.log("PASS real original vehicle with actual Wouter SSR query behavior: partnership link opens usable setup and legacy route retains overview.");

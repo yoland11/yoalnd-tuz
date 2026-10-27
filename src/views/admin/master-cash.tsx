@@ -170,6 +170,12 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   payroll_run: "دورة رواتب",
   expense: "مصروف",
   vehicle_expense: "مصروف سيارة",
+  vehicle_partnership_activity: "دخل نشاط شراكة المركبة",
+  vehicle_partnership_cost: "تكلفة شراكة المركبة",
+  vehicle_partnership_right: "رأس مال الشراكة",
+  vehicle_partnership_closing: "إغلاق شراكة المركبة",
+  vehicle_partnership_settlement: "صرف حصة شريك",
+  vehicle_partnership_driver: "صرف مستحق سائق رحلة",
 };
 const sourceTypeLabel = (sourceType: string | null | undefined) =>
   (sourceType && SOURCE_TYPE_LABELS[sourceType]) || "طلب مالي";
@@ -414,7 +420,10 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   const { toast } = useToast();
   const reportRef = useRef<HTMLDivElement>(null);
   const [showForm, setShowForm] = useState(false);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(() => {
+    const requested = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("transaction");
+    return requested && /^[1-9]\d*$/.test(requested) && Number.isSafeInteger(Number(requested)) ? Number(requested) : null;
+  });
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
   const [filters, setFilters] = useState({ from: addDays(todayBaghdad(), -30), to: todayBaghdad(), status: "", direction: "", department: "", voucherType: "", requestedBy: "", search: "" });
@@ -462,6 +471,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   });
 
   const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["vehicle-partnership"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "master-cash"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "finance"] });
     // Phase 15: approving/rejecting/reversing changes the official balance, so

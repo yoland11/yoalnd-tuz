@@ -6,20 +6,21 @@ import {canonicalPartnershipJson} from "../src/lib/vehicle-partnership/canonical
 import {calculatePartnershipClosing} from "../src/lib/vehicle-partnership/closing";
 import {PARTNERSHIP_TABLE_NAMES} from "../src/server/vehicle-partnership/repository";
 const actor={id:7,name:"محاسب",role:"employee",isActive:true,permissions:["accounting"]},dialect=new PgDialect(),calls:string[]=[];
-let headers:any[]=[],claims:any[]=[],consumed:any[]=[],trips:any[]=[],fail=false,opening:any="0.00",branchId:number|null=null;
+let headers:any[]=[],claims:any[]=[],consumed:any[]=[],trips:any[]=[],costs:any[]=[],fail=false,opening:any="0.00",branchId:number|null=null,activation="2026-10-01";
+const activityRanges:{from:string;to:string}[]=[];
 const tx={execute:async(statement:any)=>{const q=dialect.sqlToQuery(statement);calls.push(q.sql);
  if(q.sql.includes("to_regclass"))return {rows:PARTNERSHIP_TABLE_NAMES.map(name=>({name,present:true}))};
  if(q.sql.includes("FROM fleet_vehicles"))return {rows:[{id:12,branch_id:branchId,is_active:true,name:"نيسان"}]};
  if(q.sql.includes("FROM vehicle_partnerships"))return {rows:[{id:1,vehicle_id:12,ownership_type:"partnership",registration_owner:"شركة",version:2}]};
- if(q.sql.includes("vp_agreement_history"))return {rows:[{id:3,revision:1,effective_from:"2026-10-01",status:"approved",policy:{depreciation:{kind:"none"},reserve:{kind:"none"},...(opening==null?{}:{openingLoss:opening})}}]};
+ if(q.sql.includes("vp_agreement_history"))return {rows:[{id:3,revision:1,effective_from:activation,status:"approved",policy:{depreciation:{kind:"none"},reserve:{kind:"none"},...(opening==null?{}:{openingLoss:opening})}}]};
  if(q.sql.includes("vp_agreement_members"))return {rows:[{id:11,party_kind:"customer",customer_id:1,ownership_basis_points:5000,profit_basis_points:5000,expense_basis_points:5000,capital_contribution:"10000000.00"},{id:12,party_kind:"supplier",supplier_id:2,ownership_basis_points:5000,profit_basis_points:5000,expense_basis_points:5000,capital_contribution:"10000000.00"}]};
  if(q.sql.includes("vp_closing_periods"))return {rows:headers};
  if(q.sql.includes("vp_closing_loss_claims"))return {rows:claims};
  if(q.sql.includes("vp_closing_consumed_sources"))return {rows:consumed};
  if(q.sql.includes("vp_closing_source_"))return {rows:[]};
- if(q.sql.includes("vp_original_trips"))return {rows:trips};
+ if(q.sql.includes("vp_original_trips")){const dates=q.params.filter((value):value is string=>typeof value==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(value));const [from,to]=dates;activityRanges.push({from,to});return {rows:trips.filter(row=>row.event_date==null||row.event_date>=from&&row.event_date<=to)};}
  if(q.sql.includes("vp_activity_annotations"))return {rows:[]};
- if(q.sql.includes("vp_original_costs")){if(fail)throw Error("current source unavailable");return {rows:[]};}
+ if(q.sql.includes("vp_original_costs")){if(fail)throw Error("current source unavailable");const [from,to]=q.params.filter((value):value is string=>typeof value==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(value));return {rows:costs.filter(row=>row.cost_date>=from&&row.cost_date<=to)};}
  throw Error(`unexpected monthly preview SQL ${q.sql}`);
 }};
 await assert.rejects(()=>previewClosing(tx,{...actor,permissions:[]},12,"2026-10"),(e:any)=>e.status===403);assert.equal(calls.length,0);
@@ -33,6 +34,22 @@ assert.equal(overridden.snapshot.policy.accountingMethod,"activity_clearing","dr
 opening=null;let result=await previewClosing(tx,actor,12,"2026-10");assert.equal(result.calculation.summary.complete,false,"unknown opening losses are not assumed zero");opening="0.00";
 result=await previewClosing(tx,actor,12,"2026-11");assert.equal(result.calculation.summary.complete,false,"missing preceding month blocks closing chronology");
 trips=[{source:"kosha",id:8,vehicle_id:12,driver_id:9,reference:"K-8",event_date:"2026-10-20",customer_name:"أحمد",mode:"ajn",status:"confirmed",customer_charge:"50000.00",contract_total:"100000.00",in_total:true,billing_source:null,billing_id:null}];result=await previewClosing(tx,actor,12,"2026-10");assert.equal(result.calculation.summary.complete,false,"an actual trip without approved income/driver proof cannot produce a fake complete monthly zero");trips=[];
+// A mid-month agreement does not adopt older bookings or costs. Only readiness
+// sources are bounded; the immutable monthly identity remains the whole month.
+activation="2026-10-27";
+const historicalTrip={source:"kosha",id:18,vehicle_id:12,driver_id:9,reference:"K-BEFORE",event_date:"2026-10-20",customer_name:"حجز قبل الشراكة",mode:"ajn",status:"confirmed",customer_charge:"50000.00",contract_total:"100000.00",in_total:true,billing_source:null,billing_id:null};
+trips=[historicalTrip];costs=[{id:40,vehicle_id:12,cost_date:"2026-10-20",expense_type:"fuel",amount:"900.00",status:"pending",reversed:"0.00"}];
+result=await previewClosing(tx,actor,12,"2026-10",override);
+assert.equal(result.calculation.summary.complete,true,"pre-partnership trips and unresolved costs must not block the first partial month");
+assert.equal(result.calculation.summary.cost,"0.00","pre-partnership costs are not adopted by the new agreement");
+assert.equal(result.from,"2026-10-01");assert.equal(result.snapshot.from,"2026-10-01","month identity and frozen layout are unchanged");
+assert.equal(activityRanges.at(-1)!.from,"2026-10-27","real original-source SQL starts at the first effective date");
+trips=[{...historicalTrip,id:19,reference:"K-AFTER",event_date:"2026-10-28"}];
+result=await previewClosing(tx,actor,12,"2026-10",override);assert.equal(result.calculation.summary.complete,false,"post-activation missing driver/income proof still blocks");assert.ok(result.approvalBlockers.some(b=>b.includes("K-AFTER")));
+trips=[];costs=[{...costs[0],id:41,cost_date:"2026-10-28"}];result=await previewClosing(tx,actor,12,"2026-10",override);assert.equal(result.calculation.summary.complete,false,"post-activation pending vehicle costs still block");
+trips=[{...historicalTrip,id:20,reference:"K-UNKNOWN",event_date:null}];costs=[];result=await previewClosing(tx,actor,12,"2026-10",override);assert.equal(result.calculation.summary.complete,false,"unknown trip dates remain unresolved instead of being assumed pre-partnership");
+trips=[];await previewClosing(tx,actor,12,"2026-11",override);assert.equal(activityRanges.at(-1)!.from,"2026-11-01","later months keep their normal source period");
+activation="2026-10-01";
 fail=true;await assert.rejects(()=>previewClosing(tx,actor,12,"2026-10"),/current source unavailable/);fail=false;
 headers=[{id:5,partnership_id:1,period:"2026-10-01",revision:1,version:0,status:"draft",policy_snapshot:{policy:{...first.snapshot.policy,accountingMethod:"activity_clearing"}}}];
 const reviewed=await previewClosing(tx,actor,12,"2026-10");

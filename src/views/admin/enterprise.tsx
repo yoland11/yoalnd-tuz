@@ -1802,6 +1802,7 @@ function VehicleProfitabilityTab({ active }: { active: boolean }) {
             <Button type="button" onClick={() => { setExpense((current) => ({ ...current, idempotencyKey: newVehicleExpenseKey() })); setExpenseOpen(true); }} disabled={!vehicleId} className="gap-2">
               <BadgeDollarSign className="h-4 w-4" /> إضافة مصروف سيارة
             </Button>
+            {vehicleId && <Link href={`/admin/vehicles/${vehicleId}?tab=partnership`} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-border/50 px-3 text-sm font-medium text-primary hover:bg-primary/5"><Users className="h-4 w-4" />الشراكة والأرباح</Link>}
           </div>
         </div>
         <div className="mt-2 flex flex-wrap items-end gap-2 border-t border-border/20 pt-3">

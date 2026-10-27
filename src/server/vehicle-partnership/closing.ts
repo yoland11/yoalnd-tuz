@@ -69,7 +69,11 @@ export async function previewClosing(tx:PartnershipExecutor,actor:PartnershipAct
   return {stored:true,provisional:false,vehicleId,partnershipId:root.id,...range,closingId:Number(current.id),status:String(current.status),version:Number(current.version),sourceDigest:String(current.source_digest),snapshot:stored.snapshot,calculation:stored.calculation,approvalBlockers:[] as string[]};
  }
  const evidence=await readClosingSourceEvidence(tx,actor,vehicleId,month);
- const currentActivity=await readVehicleActivity(tx,actor,{vehicleId,...range});
+ // The monthly identity stays intact, but a new mid-month agreement does not
+ // adopt older bookings or costs. Evidence already applies this same boundary.
+ // Unknown dates still reach the original activity reader and remain blockers.
+ const activityFrom=evidence.agreements[0].effectiveFrom>range.from?evidence.agreements[0].effectiveFrom:range.from;
+ const currentActivity=await readVehicleActivity(tx,actor,{vehicleId,from:activityFrom,to:range.to});
  const blockers=[...evidence.blockers,...currentActivity.blockers];
  const policyContainer=current?record(current.policy_snapshot):{};
  const policy=policyFrom(policyOverride??(policyContainer.policy==null?evidence.agreements.at(-1)!.policy:record(policyContainer.policy)));

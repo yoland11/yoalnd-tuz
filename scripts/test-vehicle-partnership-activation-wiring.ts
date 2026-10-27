@@ -1,0 +1,14 @@
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const vehicle=readFileSync("src/views/admin/vehicles.tsx","utf8"),enterprise=readFileSync("src/views/admin/enterprise.tsx","utf8"),cash=readFileSync("src/views/admin/master-cash.tsx","utf8"),api=readFileSync("src/server/api.ts","utf8");
+assert.match(vehicle,/<VehiclePartnership vehicleId=\{vehicleId\}/);
+assert.match(vehicle,/"partnership","الشراكة والأرباح"/);
+assert.match(vehicle,/get\("tab"\) === "partnership"/);
+assert.match(enterprise,/\/admin\/vehicles\/\$\{vehicleId\}\?tab=partnership/,"profitability report must open selected original vehicle partnership");
+for(const source of ["activity","cost","right","closing","settlement","driver"])assert.match(cash,new RegExp(`vehicle_partnership_${source}:\\s*"`),"principal must identify partnership source in original approval table");
+assert.match(cash,/get\("transaction"\)/,"original MASTER detail supports exact financial request deep link");
+assert.match(cash,/vehicle-partnership/,"approval invalidates partnership canonical queries");
+const branch=api.slice(api.indexOf('if (parts[0] === "vehicles" && parts[2] === "partnership")'),api.indexOf('if (parts[0] === "daily-operations")'));
+assert.match(branch,/createPartnershipSourceFinancialRequest/);
+assert.doesNotMatch(branch,/ensure.*Tables|UPDATE |INSERT INTO |approveAndExecuteFinancialTransaction/);
+console.log("PASS original vehicle/report/MASTER partnership entry points: original selected vehicle, exact financial-request deep link, source labels/cache refresh, trusted API writer and no duplicate posting boundary.");

@@ -47,6 +47,11 @@ const commands=[
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-agreements.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-activity.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-routes.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-activation-routes.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-workspace.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-ui.tsx"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-activation-wiring.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-deep-link.tsx"],
  ["scripts/test-vehicle-partnership-migration.mjs"],
 ];
 for(const args of commands){const result=spawnSync(process.execPath,args,{stdio:"inherit",env:process.env});if(result.error)throw result.error;if(result.status!==0)process.exit(result.status??1);}

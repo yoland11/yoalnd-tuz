@@ -412,6 +412,7 @@ import {
   createAndExecuteSourceFinancialTransaction,
   createFinancialTransaction,
   createSourceFinancialRequest,
+  createPartnershipSourceFinancialRequest,
   ensureMasterCashBoxTables,
   financialTransactionInputSchema,
   financialTransactionListSchema,
@@ -23249,7 +23250,7 @@ async function handleEnterpriseAdmin(
     const result = await handleVehiclePartnershipRequest(db, {
       id: auth.id, name: auth.fullName || auth.username, role: auth.role,
       permissions: auth.permissions, isActive: auth.isActive,
-    }, { method: req.method, parts, query: req.nextUrl.searchParams, readBody: () => req.json() });
+    }, { method: req.method, parts, query: req.nextUrl.searchParams, readBody: () => req.json() }, createPartnershipSourceFinancialRequest);
     if (!result) return error("مسار شراكة المركبة غير موجود", 404);
     const response = json(result.data, result.status);
     response.headers.set("Cache-Control", "private, no-store");
