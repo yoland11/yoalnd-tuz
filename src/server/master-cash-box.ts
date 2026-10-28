@@ -10,7 +10,8 @@ import { lockPartnershipOriginalVehicleExpense } from "./vehicle-partnership/cos
 import { prepareDistributionExecution, finishDistributionExecution, type DistributionExecution } from "./vehicle-partnership/distributions";
 import { prepareAdvancePaymentExecution, finishAdvancePaymentExecution, type AdvancePaymentExecution } from "./vehicle-partnership/advance-payments";
 import { prepareDriverPaymentExecution, finishDriverPaymentExecution, type DriverPaymentExecution } from "./vehicle-partnership/driver-payments";
-import { calculatePartnershipCashPosting } from "../lib/vehicle-partnership/cash";
+import { calculatePartnershipCashPosting, calculatePartnershipCashReversal } from "../lib/vehicle-partnership/cash";
+import { preparePartnershipCashReversal, finishPartnershipCashReversal, type PartnershipCashReversalPlan } from "./vehicle-partnership/cash-reversal";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import {
@@ -1533,15 +1534,32 @@ export async function reverseFinancialTransaction(
 ) {
   if (!existingTransaction) await ensureMasterCashBoxTables();
   if (!canApproveFinancialTransactions(actor))
-    throw new Error("عكس الحركة المالية متاح للمدير فقط");
+    throw new FinancialApprovalError("عكس الحركة المالية متاح للمدير فقط",403);
   const cleanReason = String(reason ?? "").trim();
-  if (cleanReason.length < 3) throw new Error("سبب العكس مطلوب");
+  if (cleanReason.length < 3) throw new FinancialApprovalError("سبب العكس مطلوب");
 
   const reverseInsideTransaction = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
     const [initial] = await tx.select().from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id, id)).limit(1);
-    if (!initial) throw new Error("المعاملة غير موجودة");
-    if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
+    if (!initial) throw new FinancialApprovalError("المعاملة غير موجودة",404);
+    let partnershipReversal: PartnershipCashReversalPlan | null = null;
+    if (initial.sourceType === "vehicle_partnership_settlement" || initial.sourceType === "vehicle_partnership_driver") {
+      try {
+        partnershipReversal = await preparePartnershipCashReversal(tx, initial, {
+          id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
+        }, cleanReason, options??{});
+      } catch (cause) {
+        if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)
+          throw new FinancialApprovalError(cause.message,cause.status===403?403:cause.status===404?404:409);
+        throw cause;
+      }
+      if (partnershipReversal.alreadyReversed) {
+        const [original] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,id)).limit(1);
+        const [reverse] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id,partnershipReversal.reverseId!)).limit(1);
+        if (!original || !reverse || reverse.approvalStatus!=="executed") throw new FinancialApprovalError("تعذر تأكيد عكس الصرف الأصلي");
+        return {original,reverse,alreadyReversed:true};
+      }
+    } else if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
       let result;
       try {
         result = await reversePartnershipFinancialTransaction(tx, initial, {
@@ -1559,21 +1577,21 @@ export async function reverseFinancialTransaction(
       return {original,reverse,alreadyReversed:result.alreadyReversed};
     }
     if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "reverse");
-    await lockGraduationPaymentSource(tx, initial, {requireActive:false});
+    if (!partnershipReversal) await lockGraduationPaymentSource(tx, initial, {requireActive:false});
     const [original] = await tx
       .select()
       .from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id, id))
       .limit(1)
       .for("update");
-    if (!original) throw new Error("المعاملة غير موجودة");
+    if (!original) throw new FinancialApprovalError("المعاملة غير موجودة",404);
     if (original.sourceType !== initial.sourceType || original.sourceId !== initial.sourceId)
-      throw new Error("تغيّرت هوية المعاملة؛ حدّث الصفحة وأعد المحاولة");
+      throw new FinancialApprovalError("تغيّرت هوية المعاملة؛ حدّث الصفحة وأعد المحاولة");
     if (original.approvalStatus !== "executed")
-      throw new Error("يمكن عكس الحركات المنفّذة فقط");
+      throw new FinancialApprovalError("يمكن عكس الحركات المنفّذة فقط");
     if (original.transactionType.endsWith("_reversal"))
-      throw new Error("لا يمكن عكس حركة عكسية");
-    if (options?.idempotencyKey) {
+      throw new FinancialApprovalError("لا يمكن عكس حركة عكسية");
+    if (!partnershipReversal && options?.idempotencyKey) {
       const [existingReverse] = await tx
         .select()
         .from(financialTransactionsTable)
@@ -1583,9 +1601,9 @@ export async function reverseFinancialTransaction(
         return { original, reverse: existingReverse, alreadyReversed: true };
     }
     if (original.reversedAt || original.reversalTxnId)
-      throw new Error("تم عكس هذه الحركة مسبقًا");
+      throw new FinancialApprovalError("تم عكس هذه الحركة مسبقًا");
 
-    const [priorReversal] = await tx
+    const [priorReversal] = partnershipReversal ? [] : await tx
       .select({
         amount: sql<number>`coalesce(sum(${financialTransactionsTable.amount}::numeric), 0)::float`,
       })
@@ -1596,37 +1614,50 @@ export async function reverseFinancialTransaction(
           eq(financialTransactionsTable.approvalStatus, "executed"),
         ),
       );
-    const originalAmount = money(original.amount);
-    const alreadyReversedAmount = money(priorReversal?.amount);
-    const remainingReversible = money(Math.max(originalAmount - alreadyReversedAmount, 0));
-    const requestedAmount = options?.amount == null ? originalAmount : money(options.amount);
+    // Feature cash stays exact; zero sentinels are never persisted or posted.
+    const originalAmount = partnershipReversal ? 0 : money(original.amount);
+    const alreadyReversedAmount = partnershipReversal ? 0 : money(priorReversal?.amount);
+    const remainingReversible = partnershipReversal ? 0 : money(Math.max(originalAmount - alreadyReversedAmount, 0));
+    const requestedAmount = partnershipReversal ? 0 : options?.amount == null ? originalAmount : money(options.amount);
     if (original.sourceType === "installment_payment" &&
       (Math.abs(requestedAmount-originalAmount)>.005 ||
         (options?.sourceType != null && options.sourceType !== original.sourceType) ||
         (options?.sourceId != null && String(options.sourceId) !== original.sourceId)))
-      throw new Error("العكس الجزئي أو تغيير مصدر دفعة القسط غير مدعوم؛ استخدم العكس الكامل");
+      throw new FinancialApprovalError("العكس الجزئي أو تغيير مصدر دفعة القسط غير مدعوم؛ استخدم العكس الكامل");
     if (original.sourceType === "installment_contract")
-      throw new Error("عكس مصالحة أقساط قديمة يتطلب مراجعة توزيع الدفعات؛ لم يتم تعديل السجل");
-    if (requestedAmount <= 0 || requestedAmount - remainingReversible > 0.005)
-      throw new Error("مبلغ العكس يتجاوز المبلغ المتبقي القابل للعكس");
+      throw new FinancialApprovalError("عكس مصالحة أقساط قديمة يتطلب مراجعة توزيع الدفعات؛ لم يتم تعديل السجل");
+    if (!partnershipReversal && (requestedAmount <= 0 || requestedAmount - remainingReversible > 0.005))
+      throw new FinancialApprovalError("مبلغ العكس يتجاوز المبلغ المتبقي القابل للعكس");
 
     const lock = await tx.execute(
       sql`SELECT * FROM master_cash_box WHERE code = 'MASTER' FOR UPDATE`,
     );
     const cashRaw = (lock.rows?.[0] ?? {}) as any;
-    if (!cashRaw.id) throw new Error("الصندوق الرئيسي غير مهيأ");
+    if (!cashRaw.id) throw new FinancialApprovalError("الصندوق الرئيسي غير مهيأ");
+    let exactReversal: ReturnType<typeof calculatePartnershipCashReversal> | null = null;
+    if (partnershipReversal) {
+      const effect = resolvePartnershipFinancialEffect({...original,sourceEvent:original.sourceEvent??""});
+      if (original.id!==partnershipReversal.originalId || original.amount!==partnershipReversal.amount || original.sourceType!==partnershipReversal.sourceType || original.sourceId!==partnershipReversal.sourceId || original.transactionType!==partnershipReversal.transactionType || !effect || effect.cash!=="out" || effect.operating!=="none" || effect.reversal || effect.debit!==partnershipReversal.counterCode || effect.credit!=="1000")
+        throw new FinancialApprovalError("مصدر الصرف أو قيمته تغيرت بعد فحص العكس");
+      try {
+        exactReversal=calculatePartnershipCashReversal({amount:partnershipReversal.amount,currentBalance:cashRaw.current_balance,totalRevenue:cashRaw.total_revenue,totalExpenses:cashRaw.total_expenses,netProfit:cashRaw.net_profit});
+      } catch (cause) {
+        if (cause instanceof PartnershipValidationError) throw new FinancialApprovalError(cause.message,409);
+        throw cause;
+      }
+    }
 
     const reverseDir: "revenue" | "expense" =
       original.direction === "revenue" ? "expense" : "revenue";
     const amount = requestedAmount;
-    const completesOriginal = alreadyReversedAmount + amount >= originalAmount - 0.005;
-    const before = money(cashRaw.current_balance);
-    const after = money(
+    const completesOriginal = partnershipReversal ? true : alreadyReversedAmount + amount >= originalAmount - 0.005;
+    const before = exactReversal ? 0 : money(cashRaw.current_balance);
+    const after = exactReversal ? 0 : money(
       reverseDir === "revenue" ? before + amount : before - amount,
     );
     const now = new Date();
 
-    const originalLedgerEntries = await tx
+    const originalLedgerEntries = partnershipReversal ? [] : await tx
       .select()
       .from(financialLedgerEntriesTable)
       .where(eq(financialLedgerEntriesTable.transactionId, original.id));
@@ -1636,7 +1667,7 @@ export async function reverseFinancialTransaction(
       .from(financialAccountsTable)
       .where(eq(financialAccountsTable.code, "1000"))
       .limit(1);
-    const counterCode = counterAccountCode(
+    const counterCode = partnershipReversal?.counterCode ?? counterAccountCode(
       reverseDir,
       original.department,
       original.transactionType,
@@ -1647,7 +1678,9 @@ export async function reverseFinancialTransaction(
       .where(eq(financialAccountsTable.code, counterCode))
       .limit(1);
     if (!cashAccount || !counterAccount)
-      throw new Error("دليل الحسابات غير مكتمل");
+      throw new FinancialApprovalError("دليل الحسابات غير مكتمل");
+    if (partnershipReversal && (cashAccount.accountType!=="asset" || cashAccount.isActive!==true || counterAccount.accountType!=="liability" || counterAccount.isActive!==true))
+      throw new FinancialApprovalError("حسابات عكس صرف الشراكة غير مكتملة أو غير مصنفة بصورة صحيحة");
 
     // 1) Create the reverse (adjustment) entry — executed immediately.
     const [insertedRaw] = await tx
@@ -1656,17 +1689,17 @@ export async function reverseFinancialTransaction(
         transactionNo: `FIN-TMP-${randomUUID()}`,
         transactionDate: todayBaghdad(),
         direction: reverseDir,
-        amount: String(amount),
+        amount: exactReversal?.amount ?? String(amount),
         department: original.department,
-        transactionType: "manual_reversal",
+        transactionType: partnershipReversal ? `${partnershipReversal.transactionType}_reversal` : "manual_reversal",
         description:
-          options?.description ??
+          partnershipReversal?.description ?? options?.description ??
           `عكس الحركة ${original.transactionNo}: ${cleanReason}`,
         paymentMethod: original.paymentMethod,
         sourceType: options?.sourceType ?? original.sourceType,
         sourceId: options?.sourceId == null ? original.sourceId : String(options.sourceId),
         sourceEvent: options?.sourceEvent ?? "reversal",
-        idempotencyKey: options?.idempotencyKey ?? `reversal:${original.id}`,
+        idempotencyKey: partnershipReversal?.idempotencyKey ?? options?.idempotencyKey ?? `reversal:${original.id}`,
         approvalStatus: "executed",
         requestedBy: actor.id,
         requestedByName: actor.name,
@@ -1676,8 +1709,8 @@ export async function reverseFinancialTransaction(
         executedBy: actor.id,
         executedByName: actor.name,
         executedAt: now,
-        balanceBefore: String(before),
-        balanceAfter: String(after),
+        balanceBefore: exactReversal?.before ?? String(before),
+        balanceAfter: exactReversal?.after ?? String(after),
         reversedTransactionId: original.id,
         reversalReason: cleanReason,
         reversedBy: actor.id,
@@ -1697,7 +1730,10 @@ export async function reverseFinancialTransaction(
     await tx
       .insert(financialLedgerEntriesTable)
       .values(
-        originalLedgerEntries.length
+        exactReversal
+          ? [{transactionId:reverse.id,accountId:cashAccount.id,entrySide:"debit",amount:exactReversal.amount,description:reverse.description},
+             {transactionId:reverse.id,accountId:counterAccount.id,entrySide:"credit",amount:exactReversal.amount,description:reverse.description}]
+          : originalLedgerEntries.length
           ? originalLedgerEntries.map((entry) => ({
               transactionId: reverse.id,
               accountId: entry.accountId,
@@ -1779,7 +1815,7 @@ export async function reverseFinancialTransaction(
           : undefined,
       );
     }
-    if (Number.isInteger(receiptVoucherId) && receiptVoucherId > 0 && isPaymentStateSourceType(original.sourceType))
+    if (!partnershipReversal && Number.isInteger(receiptVoucherId) && receiptVoucherId > 0 && isPaymentStateSourceType(original.sourceType))
       await reconcilePaymentState(tx, { sourceType: original.sourceType, sourceId: receiptVoucherId });
 
     // A reversed loan repayment must restore the liability, not create income.
@@ -1790,7 +1826,7 @@ export async function reverseFinancialTransaction(
         .set({ status: completesOriginal ? "reversed" : "partially_reversed", updatedAt: now })
         .where(eq(companyLoanRepaymentsTable.id, receiptVoucherId))
         .returning();
-      if (!repayment) throw new Error("دفعة سداد القرض المرتبطة غير موجودة");
+      if (!repayment) throw new FinancialApprovalError("دفعة سداد القرض المرتبطة غير موجودة");
       await tx.execute(sql`
         WITH net_repaid AS (
           SELECT coalesce(sum(greatest(ft.amount::numeric - coalesce((
@@ -1836,7 +1872,7 @@ export async function reverseFinancialTransaction(
         ))
         .returning();
       if (!vehicleExpense)
-        throw new Error("مصروف السيارة المرتبط بالحركة المعكوسة غير موجود");
+        throw new FinancialApprovalError("مصروف السيارة المرتبط بالحركة المعكوسة غير موجود");
       await tx.insert(financialAuditLogsTable).values({
         transactionId: original.id,
         action: "vehicle_expense_reversed",
@@ -1849,7 +1885,7 @@ export async function reverseFinancialTransaction(
     }
 
     // 4) Recompute master balance from executed entries (_reversal nets to zero).
-    const [tot] = await tx
+    const [tot] = exactReversal ? [] : await tx
       .select({
         cashNet: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus}='executed' and ${cashImpactSql()} and ${financialTransactionsTable.direction}='revenue' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.approvalStatus}='executed' and ${cashImpactSql()} and ${financialTransactionsTable.direction}='expense' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
         revenue: sql<number>`coalesce(sum(case
@@ -1862,17 +1898,17 @@ export async function reverseFinancialTransaction(
         else 0 end),0)::float`,
       })
       .from(financialTransactionsTable);
-    const revenue = money(tot?.revenue);
-    const expenses = money(tot?.expenses);
-    const current = money(money(cashRaw.opening_balance) + money(tot?.cashNet));
+    const revenue = exactReversal ? 0 : money(tot?.revenue);
+    const expenses = exactReversal ? 0 : money(tot?.expenses);
+    const current = exactReversal ? 0 : money(money(cashRaw.opening_balance) + money(tot?.cashNet));
     await tx
       .update(masterCashBoxTable)
       .set({
-        currentBalance: String(current),
-        availableBalance: String(current),
-        totalRevenue: String(revenue),
-        totalExpenses: String(expenses),
-        netProfit: String(money(revenue - expenses)),
+        currentBalance: exactReversal?.after ?? String(current),
+        availableBalance: exactReversal?.after ?? String(current),
+        totalRevenue: exactReversal?.totalRevenue ?? String(revenue),
+        totalExpenses: exactReversal?.totalExpenses ?? String(expenses),
+        netProfit: exactReversal?.netProfit ?? String(money(revenue - expenses)),
         version: Number(cashRaw.version ?? 0) + 1,
         updatedBy: actor.id,
         updatedByName: actor.name,
@@ -1935,8 +1971,8 @@ export async function reverseFinancialTransaction(
         newValues: {
           reversalTxnId: completesOriginal ? reverse.id : null,
           reversedAt: now.toISOString(),
-          reversedAmount: amount,
-          totalReversedAmount: money(alreadyReversedAmount + amount),
+          reversedAmount: exactReversal?.amount ?? amount,
+          totalReversedAmount: exactReversal?.amount ?? money(alreadyReversedAmount + amount),
           partial: !completesOriginal,
           sourceFlagged,
         },
@@ -1965,6 +2001,17 @@ export async function reverseFinancialTransaction(
     }
     await tx.insert(financialAuditLogsTable).values(auditRows);
 
+    if (partnershipReversal) {
+      try {
+        await finishPartnershipCashReversal(tx,partnershipReversal,reverse.id,{
+          id:Number(actor.id),name:actor.name,role:String(actor.role).toLowerCase(),permissions:actor.permissions??[],isActive:true,
+        });
+      } catch (cause) {
+        if (cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError)
+          throw new FinancialApprovalError(cause.message,cause.status===403?403:cause.status===404?404:409);
+        throw cause;
+      }
+    }
     if (withinTransaction) await withinTransaction(tx, { original, reverse });
     return { original, reverse };
   };

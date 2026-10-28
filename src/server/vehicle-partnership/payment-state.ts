@@ -6,6 +6,7 @@ import {resolvePartnershipFinancialEffect} from "./financial-classification";
 import {derivePartnershipConversion,type EntitlementConversion,type ConversionPayment,type ConversionCoverage} from "../../lib/vehicle-partnership/conversion";
 import {proveDriverCashCoverageSource} from "./driver-cash-source";
 import {proveDriverCoverageMapping} from "./driver-coverage-proof";
+import {provePartnershipCashReversalHistory} from "./cash-reversal-proof";
 
 export type PartnershipPaymentSource="vehicle_partnership_right"|"vehicle_partnership_settlement";
 export type PartnershipPaymentState={sourceType:PartnershipPaymentSource;sourceId:number;totalAmount:string;approvedPaidAmount:string;remainingAmount:string;reservedAmount:string;availableAmount:string;paymentStatus:"unpaid"|"partial"|"paid";approvalStatus:string;payable:boolean;nonCashSettledAmount?:string;conversionAmount?:string;pendingConversionAmount?:string;conversionCashPaidAmount?:string;conversionCashReservedAmount?:string;availableCoverageAmount?:string};
@@ -79,9 +80,16 @@ export async function reconcilePartnershipPaymentState(tx:PartnershipExecutor,in
    if(financialStatus!=="executed"||effect?.cash!=="out"||effect.operating!=="none"||effect.reversal||group.some(row=>row.purpose!=="internal_entitlement_settlement"||row.allocation_category!=="internal_entitlement"||row.conversion_allocation_id==null))conflict("تغطية السائق تخص صرفاً منفذاً وتحويلاً داخلياً أصلياً فقط");
    // Driver FI.source_id remains the employee settlement ID. It never becomes
    // an internal right ID or a second primary partner distribution.
-   const source=await proveDriverCashCoverageSource(tx,root,financialId);
-   if(String(source.settlementId)!==String(first.financial_source_id)||parseMoney(source.amount)!==amount||parseMoney(source.reversedAmount)!==reversed)conflict("تغطية الصرف لا تطابق تسوية أجرة السائق الأصلية");
-   await proveDriverCoverageMapping(tx,root,source,group);
+   if(reversed===amount){
+    // A fully refunded historical wage may later be cancelled/reopened. Prove
+    // its immutable cash return, without re-admitting that old wage as payable.
+    const history=await provePartnershipCashReversalHistory(tx,financialId),saved=history.proof.allocations;
+    if(history.originalId!==financialId||history.sourceType!=="vehicle_partnership_driver"||history.sourceId!==String(first.financial_source_id)||history.transactionType!=="vp_driver_payment"||history.partnershipId!==root.id||history.vehicleId!==root.vehicleId||parseMoney(history.amount)!==amount||!history.proof.driverMappingDigest||saved.length!==group.length||group.some(r=>!saved.some(a=>a.id===Number(r.allocation_id)&&a.rightId===Number(r.right_id)&&a.financialId===financialId&&a.parentId===Number(r.conversion_allocation_id)&&a.purpose===r.purpose&&a.amount===formatMoney(parseMoney(String(r.allocated_amount)))&&a.key===r.idempotency_key)))conflict("توزيعات عكس أجرة السائق لا تطابق سجلها الأصلي");
+   }else{
+    const source=await proveDriverCashCoverageSource(tx,root,financialId);
+    if(String(source.settlementId)!==String(first.financial_source_id)||parseMoney(source.amount)!==amount||parseMoney(source.reversedAmount)!==reversed)conflict("تغطية الصرف لا تطابق تسوية أجرة السائق الأصلية");
+    await proveDriverCoverageMapping(tx,root,source,group);
+   }
   }else{
    const effect=resolvePartnershipFinancialEffect({sourceType:first.financial_source_type==null?null:String(first.financial_source_type),transactionType:String(first.transaction_type),sourceEvent:String(first.financial_event),direction:String(first.financial_direction)});
    if(first.financial_source_type!=="vehicle_partnership_settlement"||!effect||effect.cash==="none"||effect.reversal)conflict("توزيع الاستحقاق لا يرتبط بحركة صرف أو قبض أصلية");

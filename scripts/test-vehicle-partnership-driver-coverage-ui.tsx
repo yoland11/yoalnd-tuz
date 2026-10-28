@@ -14,7 +14,7 @@ const selected={...original};
 const attempt=ui.createDriverCoverageAttempt(base,selected,true,"driver-sync-ui-0001");
 selected.closingId=6;selected.month="2026-09";selected.version=9;selected.sourceDigest="c".repeat(64);
 const command=ui.buildDriverCoverageCommand(attempt,"  مراجعة دفعات السائقين الأصلية  ",true);
-assert.deepEqual(command,{closingId:5,expectedVersion:7,expectedDigest:"b".repeat(64),idempotencyKey:"driver-sync-ui-0001",reason:"مراجعة دفعات السائقين الأصلية"},"a changing month selector must not retarget a confirmed attempt");
+assert.deepEqual(command,{closingId:5,expectedVersion:7,expectedDigest:"b".repeat(64),idempotencyKey:"driver-sync-ui-0001",reason:"مراجعة دفعات السائقين الأصلية",includeReversalSummary:true},"a changing month selector must not retarget a confirmed attempt");
 assert.ok(Object.isFrozen(attempt)&&Object.isFrozen(attempt.closing)&&Object.isFrozen(command),"the target and retry body must stay immutable");
 assert.equal(ui.canSyncDriverCoverage({...original,status:"distributed"},true),true);
 for(const closing of [null,{...original,status:"draft"},{...original,status:"review"},{...original,status:"pending"},{...original,closingId:0},{...original,version:-1},{...original,version:0.5},{...original,month:"2026-13"},{...original,month:"2026-8"},{...original,month:"0000-08"},{...original,sourceDigest:null},{...original,sourceDigest:"B".repeat(64)}]){
@@ -42,6 +42,8 @@ for(const permission of [true,false,undefined]){
   const mounted=renderToStaticMarkup(<QueryClientProvider client={reportClient}><Reports vehicleId={12} vehicleName="المركبة المشتركة" plateNumber="بغداد 123" workspace={{...reportWorkspace,canApprove:permission}}/></QueryClientProvider>);
   assert.equal(mounted.includes("ربط دفعات السائقين بالشهر"),permission===true,"the original report must use the actual server approval permission");
 }
+const reversedReport=renderToStaticMarkup(<QueryClientProvider client={reportClient}><Reports vehicleId={12} vehicleName="المركبة" plateNumber="123" workspace={{...reportWorkspace,requests:[{id:71,sourceType:"vehicle_partnership_driver",sourceId:"61",sourceEvent:"driver_fee_settlement",status:"executed",amount:"40.00",date:"2026-08-20",description:"أجرة رحلة معكوسة",reversalTxnId:72,reversedAt:"2026-08-21T10:00:00Z"}]}}/></QueryClientProvider>);
+assert.match(reversedReport,/سجل الصرف المعكوس/);assert.doesNotMatch(reversedReport,/معاينة وصل 80mm/);assert.match(reversedReport,/transaction=71/);
 reportClient.clear();
 const reportSource=readFileSync("src/views/admin/vehicle-partnership-reports.tsx","utf8");
 const coverageName=reportSource.match(/import\s+(\w+)\s+from\s+["']\.\/vehicle-driver-coverage["']/)?.[1];
@@ -60,6 +62,7 @@ assert.doesNotMatch(table,/<script>/);
 assert.match(table,/dir="rtl"/);assert.match(table,/dir="ltr"/);assert.match(table,/<th[^>]*scope="col"/);
 const empty={...result,matchedPayments:0,amount:"0.00",coveredAmount:"0.00",uncoveredAmount:"0.00",results:[]};
 assert.match(renderToStaticMarkup(<ui.DriverCoverageResultTable result={empty}/>),/لا توجد دفعات سائقين منفذة مطابقة/);
+assert.match(renderToStaticMarkup(<ui.DriverCoverageResultTable result={{...empty,reversedPayments:1}}/>),/معكوسة بالكامل/);
 assert.throws(()=>renderToStaticMarkup(<ui.DriverCoverageResultTable result={{...result,results:[{...result.results[0],amount:"1e6"}]}}/>),"invalid response money must never become zero or a no-data result");
 assert.throws(()=>renderToStaticMarkup(<ui.DriverCoverageResultTable result={{...result,coveredAmount:"1.00"}}/>),"a mismatched result total cannot be displayed as a successful classification");
 
@@ -81,7 +84,7 @@ try{
   const saved=await ui.submitDriverCoverageAttempt(attempt,command,callbacks);
   assert.deepEqual(saved,result);assert.deepEqual(events,["saved","refresh","refresh-error"],"a failed view refresh must preserve the confirmed save result");
   assert.equal(bodies[0],bodies[1],"retry retains the exact nonce, target, version, digest and reason");
-  assert.deepEqual(JSON.parse(bodies[1]),{closingId:5,expectedVersion:7,expectedDigest:"b".repeat(64),idempotencyKey:"driver-sync-ui-0001",reason:"مراجعة دفعات السائقين الأصلية"});
+  assert.deepEqual(JSON.parse(bodies[1]),{closingId:5,expectedVersion:7,expectedDigest:"b".repeat(64),idempotencyKey:"driver-sync-ui-0001",reason:"مراجعة دفعات السائقين الأصلية",includeReversalSummary:true});
   globalThis.fetch=(async()=>Response.json({message:"تغيرت نسخة الشهر",code:"CONFLICT",requestId:"REQ-coverage-conflict",retryable:false},{status:409})) as typeof fetch;
   await assert.rejects(()=>ui.submitDriverCoverageAttempt(attempt,command,callbacks),(error:unknown)=>Boolean(error&&typeof error==="object"&&"status" in error&&error.status===409&&"requestId" in error&&error.requestId==="REQ-coverage-conflict"));
   assert.deepEqual(events,["saved","refresh","refresh-error"],"an API conflict is not an empty or successful result");

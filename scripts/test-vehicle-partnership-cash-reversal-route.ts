@@ -1,0 +1,15 @@
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import vm from "node:vm";
+import ts from "typescript";
+const tree=ts.createSourceFile("src/server/api.ts",readFileSync("src/server/api.ts","utf8"),ts.ScriptTarget.Latest,true);let branch:ts.IfStatement|undefined;
+function visit(n:ts.Node){if(ts.isIfStatement(n)&&n.expression.getText(tree)==='method === "POST" && action === "reverse"')branch=n;ts.forEachChild(n,visit);}visit(tree);assert.ok(branch);
+class FinancialApprovalError extends Error{constructor(message:string,public status=409){super(message);}}
+let notifications=0,messages=0,activity=0,failure:any=null,replay=false,authorized=true,logged:any[]=[];
+const run=vm.runInNewContext(ts.transpileModule(`(async function(){${branch.getText(tree)}})`,{compilerOptions:{module:ts.ModuleKind.None,target:ts.ScriptTarget.ES2022}}).outputText,{method:"POST",action:"reverse",id:71,auth:{},financeUser:{id:7,name:"مدير"},req:new Request("https://example.test/api/admin/master-cash/transactions/71/reverse",{method:"POST",headers:{"x-request-id":"REQ-reverse-test"}}),hasVoucherPermission:()=>authorized,canApproveFinancialTransactions:()=>authorized,body:async()=>({reason:"إرجاع صرف خاطئ"}),reverseFinancialTransaction:async()=>{if(failure)throw failure;return {original:{id:71,transactionNo:"FIN-71",amount:"40.00"},reverse:{id:72,transactionNo:"FIN-72",reversalReason:"إرجاع صرف خاطئ"},alreadyReversed:replay};},formatCurrency:(v:any)=>String(v),logAdminActivity:async()=>{activity++;},createNotification:async()=>{notifications++;},sendTelegramMessage:async()=>{messages++;},json:(payload:any,status=200)=>({payload,status}),error:(message:string,status=400,meta:any={})=>({status,payload:{message,...meta}}),FinancialApprovalError,makeRequestId:(value:string)=>value,safeServerError:()=>({message:"safe failure"}),console:{warn:(...v:any[])=>logged.push(v),error:(...v:any[])=>logged.push(v)}});
+await run();assert.equal(notifications,1);assert.equal(messages,1);assert.equal(activity,1);
+replay=true;const repeated=await run();assert.equal(repeated.status,200);assert.equal(notifications,1,"an exact reversal retry must not send another financial notification");assert.equal(messages,1);assert.equal(activity,1);
+replay=false;failure=new FinancialApprovalError("مصدر الصرف تغير",409);const conflict=await run();assert.equal(conflict.status,409);assert.equal(conflict.payload.code,"CONFLICT");assert.equal(conflict.payload.requestId,"REQ-reverse-test");assert.equal(conflict.payload.retryable,false);
+failure=Object.assign(new Error("private database detail"),{code:"XX000"});const failed=await run();assert.equal(failed.status,500);assert.equal(failed.payload.requestId,"REQ-reverse-test");assert.equal(failed.payload.code,"DATABASE_ERROR");assert.ok(!JSON.stringify(failed).includes("private database detail"));assert.ok(logged.length>=2);
+authorized=false;failure=null;assert.equal((await run()).status,403);
+console.log("PASS original MASTER reversal route: strict permission, one notification per actual reversal, known conflict contract and safe unexpected error/request ID.");

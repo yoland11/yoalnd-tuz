@@ -29,6 +29,7 @@ const workspace: PartnershipReportWorkspace = {
   closings: [{ closingId: 11, month: "2026-09", status: "approved", version: 4, revision: 2, sourceDigest: "", financialTransactionId: 20 }],
   requests: [{ id: 30, sourceType: "vehicle_partnership_settlement", sourceId: "1", sourceEvent: "distribution", status: "executed", amount: "20.00", date: "2026-10-01", description: "صرف حصة" }], from: "2026-10-01", to: "2026-10-27",
 };
+assert.equal((await import("../src/lib/vehicle-partnership/reports")).isPartnershipPayoutRequest({...workspace.requests[0],reversalTxnId:72,reversedAt:"2026-10-28T10:00:00Z"}),false,"a reversed original remains history, never a payable/printable executed cash receipt");
 const branding = { companyName: "مجموعة علي جان", companyPhone: "07700000000", logoUrl: "/images/logo.svg" };
 const identity = { vehicleName: "نيسان <img src=x onerror=alert(1)>", plateNumber: "22-A-123", generatedAt: "2026-10-27 13:15" };
 const statements = buildPartnerStatements(workspace);

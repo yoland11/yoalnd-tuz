@@ -24,3 +24,10 @@ export function calculatePartnershipCashPosting(input:{amount:string;currentBala
     totalRevenue:formatMoney(totalRevenue),totalExpenses:formatMoney(totalExpenses),netProfit:formatMoney(netProfit),
   };
 }
+
+/** Returning an already settled liability is cash-in, not new operating income. */
+export function calculatePartnershipCashReversal(input:{amount:string;currentBalance:string;totalRevenue:string;totalExpenses:string;netProfit:string}){
+  const amount=parseMoney(input.amount),before=parseSignedMoney(input.currentBalance);
+  if(amount<=0n)throw new PartnershipValidationError("مبلغ عكس الصرف يجب أن يكون موجباً");
+  return {amount:formatMoney(amount),before:formatMoney(before),after:formatMoney(before+amount),totalRevenue:formatMoney(parseMoney(input.totalRevenue)),totalExpenses:formatMoney(parseMoney(input.totalExpenses)),netProfit:formatMoney(parseSignedMoney(input.netProfit))};
+}

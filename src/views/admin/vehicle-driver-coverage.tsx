@@ -18,12 +18,12 @@ const digest=z.string().regex(/^[a-f0-9]{64}$/);
 const positiveId=z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const closingSchema=z.object({closingId:positiveId,month:z.string().regex(/^(?!0000)\d{4}-(?:0[1-9]|1[0-2])$/),status:z.enum(["approved","distributed"]),version:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),sourceDigest:digest});
 const keySchema=z.string().trim().min(8).max(180);
-const commandSchema=z.object({closingId:positiveId,expectedVersion:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),expectedDigest:digest,idempotencyKey:keySchema,reason:z.string().trim().min(3).max(2000)}).strict();
+const commandSchema=z.object({closingId:positiveId,expectedVersion:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),expectedDigest:digest,idempotencyKey:keySchema,reason:z.string().trim().min(3).max(2000),includeReversalSummary:z.literal(true).optional()}).strict();
 export type DriverCoverageCommand=Readonly<z.infer<typeof commandSchema>>;
 export type DriverCoverageAttempt=Readonly<{base:string;closing:Readonly<z.infer<typeof closingSchema>>;idempotencyKey:string}>;
 const exactAmount=z.string().regex(/^(?:0|[1-9]\d{0,13})\.\d{2}$/);
 const resultSchema:z.ZodType<DriverCoverageSyncResult>=z.object({
-  closingId:positiveId,revision:positiveId,sourceDigest:digest,matchedPayments:z.number().int().nonnegative().max(200),
+  closingId:positiveId,revision:positiveId,sourceDigest:digest,matchedPayments:z.number().int().nonnegative().max(200),reversedPayments:z.number().int().nonnegative().max(200).optional(),
   amount:exactAmount,coveredAmount:exactAmount,uncoveredAmount:exactAmount,
   results:z.array(z.object({financialTransactionId:positiveId,transactionNo:z.string().trim().min(1),amount:exactAmount,coveredAmount:exactAmount,uncoveredAmount:exactAmount,alreadyLinked:z.boolean()}).strict()).max(200),
 }).strict();
@@ -46,7 +46,7 @@ export function createDriverCoverageAttempt(base:string,closing:Closing|null,can
 export function buildDriverCoverageCommand(attempt:DriverCoverageAttempt,reason:string,canApprove:boolean):DriverCoverageCommand{
   if(!canApprove)throw new Error("ربط الدفعات متاح للإدارة فقط");
   if(!closingSchema.safeParse(attempt.closing).success)throw new Error("بيانات الشهر المثبت غير صالحة؛ ابدأ محاولة جديدة");
-  const parsed=commandSchema.safeParse({closingId:attempt.closing.closingId,expectedVersion:attempt.closing.version,expectedDigest:attempt.closing.sourceDigest,idempotencyKey:attempt.idempotencyKey,reason});
+  const parsed=commandSchema.safeParse({closingId:attempt.closing.closingId,expectedVersion:attempt.closing.version,expectedDigest:attempt.closing.sourceDigest,idempotencyKey:attempt.idempotencyKey,reason,includeReversalSummary:true});
   if(!parsed.success)throw new Error("اكتب سبب الربط من 3 إلى 2000 حرف وتحقق من مرجع المحاولة");
   return Object.freeze(parsed.data);
 }
@@ -56,7 +56,7 @@ function checkedResult(value:unknown,command?:DriverCoverageCommand):DriverCover
   if(!parsed.success)throw new Error("نتيجة ربط دفعات السائقين غير مكتملة؛ أعد المحاولة بالمرجع نفسه");
   const result=parsed.data;
   if(command&&(result.closingId!==command.closingId||result.sourceDigest!==command.expectedDigest))throw new Error("نتيجة الربط لا تطابق الشهر والبصمة المثبتين");
-  if(result.matchedPayments!==result.results.length||new Set(result.results.map(row=>row.financialTransactionId)).size!==result.results.length)throw new Error("نتيجة الربط لا تطابق سندات الصرف الأصلية");
+  if(result.matchedPayments!==result.results.length||result.matchedPayments+(result.reversedPayments??0)>200||new Set(result.results.map(row=>row.financialTransactionId)).size!==result.results.length)throw new Error("نتيجة الربط لا تطابق سندات الصرف الأصلية");
   for(const row of result.results)if(parseMoney(row.coveredAmount)+parseMoney(row.uncoveredAmount)!==parseMoney(row.amount))throw new Error("مبالغ سند ربط السائق غير متوازنة");
   for(const field of ["amount","coveredAmount","uncoveredAmount"] as const)if(result.results.reduce((sum,row)=>sum+parseMoney(row[field]),0n)!==parseMoney(result[field]))throw new Error("إجمالي الربط لا يطابق مبالغ سنداته الأصلية");
   return result;
@@ -79,6 +79,7 @@ export function DriverCoverageResultTable({result}:{result:DriverCoverageSyncRes
   const verified=checkedResult(result);
   return <div dir="rtl" className="flex min-w-0 flex-col gap-3">
     <p className="max-w-prose text-sm leading-6">المبالغ تخص سندات الصرف الأصلية. «مدفوع خارج التحويل» مبلغ مدفوع بالفعل؛ لا يتحول إلى استحقاق جديد.</p>
+    {(verified.reversedPayments??0)>0&&<p className="rounded-lg bg-muted/40 p-3 text-sm leading-6">تم التحقق من {verified.reversedPayments} دفعات معكوسة بالكامل واستبعادها من التغطية الجديدة. سنداتها وسجل عكسها محفوظة.</p>}
     {verified.matchedPayments===0?<p className="rounded-lg bg-muted/40 p-3 text-sm">لا توجد دفعات سائقين منفذة مطابقة لأجور هذا الشهر المعتمد. لم تُنشأ دفعة أو تكلفة جديدة.</p>:<div className="min-w-0 rounded-xl border border-border/50">
       <Table className="min-w-[760px] text-right">
         <caption className="sr-only">نتيجة ربط دفعات السائقين بسنداتها الأصلية</caption>

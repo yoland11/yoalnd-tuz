@@ -13,14 +13,15 @@ import {reserveClosingConversions} from "./closing-rights";
 import {prepareDriverPaymentExecution} from "./driver-payments";
 import {proveDriverCashCoverageSource} from "./driver-cash-source";
 import {driverCoverageDigest,driverCoverageKey,normalizeDriverCoverageMapping,readSavedDriverCoverage,proveDriverCoverageMapping} from "./driver-coverage-proof";
+import {provePartnershipCashReversalHistory} from "./cash-reversal-proof";
 import {appendPartnershipAudit,lockPartnership,partnershipRows,PartnershipRepositoryError,type PartnershipExecutor} from "./repository";
 
 type Row=Record<string,unknown>;
 function conflict(message:string):never{throw new PartnershipRepositoryError(message,409,"CONFLICT");}
 function object(value:unknown):Row{if(!value||typeof value!=="object"||Array.isArray(value))conflict("إثبات ربط دفعات الشهر غير مكتمل");return value as Row;}
-const schema=z.object({closingId:z.number().int().positive(),expectedVersion:z.number().int().nonnegative(),expectedDigest:z.string().regex(/^[a-f0-9]{64}$/),idempotencyKey:z.string().trim().min(8).max(180),reason:z.string().trim().min(3).max(2000)}).strict();
+const schema=z.object({closingId:z.number().int().positive(),expectedVersion:z.number().int().nonnegative(),expectedDigest:z.string().regex(/^[a-f0-9]{64}$/),idempotencyKey:z.string().trim().min(8).max(180),reason:z.string().trim().min(3).max(2000),includeReversalSummary:z.boolean().optional()}).strict();
 const resultRow=z.object({financialTransactionId:z.number().int().positive(),transactionNo:z.string().min(1),amount:z.string(),coveredAmount:z.string(),uncoveredAmount:z.string(),alreadyLinked:z.boolean()}).strict();
-const resultSchema=z.object({closingId:z.number().int().positive(),revision:z.number().int().positive(),sourceDigest:z.string(),matchedPayments:z.number().int().nonnegative().max(200),amount:z.string(),coveredAmount:z.string(),uncoveredAmount:z.string(),results:z.array(resultRow).max(200)}).strict();
+const resultSchema=z.object({closingId:z.number().int().positive(),revision:z.number().int().positive(),sourceDigest:z.string(),matchedPayments:z.number().int().nonnegative().max(200),reversedPayments:z.number().int().nonnegative().max(200).optional(),amount:z.string(),coveredAmount:z.string(),uncoveredAmount:z.string(),results:z.array(resultRow).max(200)}).strict();
 export type DriverCoverageSyncResult=z.infer<typeof resultSchema>;
 type Context=Awaited<ReturnType<typeof lockClosingContext>>;
 
@@ -54,7 +55,7 @@ async function allocationRows(tx:PartnershipExecutor,financialId:number){
 }
 function checkedResult(value:unknown,closingId:number,sourceDigest:string):DriverCoverageSyncResult{
  const parsed=resultSchema.safeParse(value);if(!parsed.success)conflict("نتيجة ربط الشهر المحفوظة غير صالحة");const result=parsed.data;
- if(result.closingId!==closingId||result.sourceDigest!==sourceDigest||result.matchedPayments!==result.results.length||new Set(result.results.map(r=>r.financialTransactionId)).size!==result.results.length)conflict("نتيجة الربط لا تطابق مصدرها الأصلي");
+ if(result.closingId!==closingId||result.sourceDigest!==sourceDigest||result.matchedPayments!==result.results.length||result.matchedPayments+(result.reversedPayments??0)>200||new Set(result.results.map(r=>r.financialTransactionId)).size!==result.results.length)conflict("نتيجة الربط لا تطابق مصدرها الأصلي");
  for(const row of result.results)if(parseMoney(row.coveredAmount)+parseMoney(row.uncoveredAmount)!==parseMoney(row.amount))conflict("مبالغ نتيجة الربط غير متوازنة");
  for(const field of ["amount","coveredAmount","uncoveredAmount"] as const)if(result.results.reduce((sum,r)=>sum+parseMoney(r[field]),0n)!==parseMoney(result[field]))conflict("إجمالي الربط لا يطابق سطوره");return result;
 }
@@ -85,14 +86,21 @@ export async function syncClosingDriverCoverage(db:PartnershipDatabase,actor:Par
   await reserveClosingConversions(tx,actor,{root,row,snapshot:verified.snapshot,financialId:monthlyId},true);
   const wages=wagesInMonth(verified.snapshot);
   for(const entryId of wages.keys()){const state=await reconcilePaymentState(tx,{sourceType:"vehicle_partnership_driver_entitlement",sourceId:entryId});if(!state)conflict("رصيد أجرة السائق الأصلي غير متاح");}
-  const payments=wages.size?partnershipRows(await tx.execute(sql`/* vp_driver_coverage_payments */ SELECT f.id AS financial_id,s.id AS settlement_id,s.entry_id,f.source_type,f.source_id,f.transaction_no FROM employee_finance_settlements s JOIN financial_transactions f ON f.id=s.financial_transaction_id WHERE s.entry_id IN (${sql.join([...wages.keys()].map(id=>sql`${id}`),sql`, `)}) AND s.settlement_type='payment' AND f.approval_status='executed' ORDER BY f.id,s.id LIMIT 201`)):[];
+  const payments=wages.size?partnershipRows(await tx.execute(sql`/* vp_driver_coverage_payments */ SELECT f.id AS financial_id,s.id AS settlement_id,s.entry_id,f.source_type,f.source_id,f.transaction_no,f.reversal_txn_id,f.reversed_at,coalesce((SELECT sum(r.amount) FROM financial_transactions r WHERE r.reversed_transaction_id=f.id AND r.approval_status='executed'),0)::text AS reversed_amount FROM employee_finance_settlements s JOIN financial_transactions f ON f.id=s.financial_transaction_id WHERE s.entry_id IN (${sql.join([...wages.keys()].map(id=>sql`${id}`),sql`, `)}) AND s.settlement_type='payment' AND f.approval_status='executed' ORDER BY f.id,s.id LIMIT 201`)):[];
   if(payments.length>200)throw new PartnershipRepositoryError("دفعات السائقين تتجاوز حد الربط الآمن؛ يلزم كشف مقسم",409,"LIMIT_EXCEEDED");
   if(new Set(payments.map(p=>partnershipId(Number(p.financial_id)))).size!==payments.length)conflict("سند صرف سائق مكرر بين التسويات");
   const results:DriverCoverageSyncResult["results"]=[];
+  let reversedPayments=0;
   let availableBudgets:Awaited<ReturnType<typeof budgets>>|null=null;
   for(const payment of payments){
    const financialId=partnershipId(Number(payment.financial_id)),settlementId=partnershipId(Number(payment.settlement_id)),entryId=partnershipId(Number(payment.entry_id)),frozen=wages.get(entryId);
    if(!frozen||payment.source_type!=="vehicle_partnership_driver"||String(payment.source_id)!==String(settlementId))conflict("دفعة السائق لا تعود لتسويتها الأصلية");
+   const reversed=parseMoney(String(payment.reversed_amount));
+   if(reversed>0n||payment.reversal_txn_id!=null||payment.reversed_at!=null){
+    const history=await provePartnershipCashReversalHistory(tx,financialId);
+    if(history.originalId!==financialId||history.partnershipId!==root.id||history.vehicleId!==vehicleId||history.sourceType!=="vehicle_partnership_driver"||history.sourceId!==String(settlementId)||history.transactionType!=="vp_driver_payment"||history.proof.driverEntryId!==entryId||history.reverseId!==Number(payment.reversal_txn_id)||parseMoney(history.amount)!==reversed||payment.reversed_at==null)conflict("عكس أجرة السائق غير كامل أو لا يطابق سندها الأصلي");
+    reversedPayments++;continue; // Proven full return, never another coverage.
+   }
    const plan=await prepareDriverPaymentExecution(tx,{id:financialId,sourceType:"vehicle_partnership_driver",sourceId:String(settlementId)},actor),source=await proveDriverCashCoverageSource(tx,root,financialId),origin=plan.context.proof;
    const wage=object(frozen.sourceSnapshot),financial=object(frozen.financial);
    if(!plan.alreadyExecuted||plan.financialId!==financialId||plan.context.root.id!==root.id||plan.context.root.vehicleId!==vehicleId||source.settlementId!==settlementId||source.entryId!==entryId||origin.entryId!==entryId||origin.expenseId!==Number(frozen.expenseId)||origin.costFundingId!==Number(frozen.costFundingId)||origin.accrualFinancialId!==Number(financial.id)||origin.sourceDigest!==frozen.sourceDigest||source.sourceDigest!==origin.sourceDigest||source.entryAmount!==origin.amount||source.entryDate!==origin.entryDate||canonicalPartnershipJson(plan.context.funding.source_snapshot)!==canonicalPartnershipJson(wage)||source.amount!==plan.amount||source.entryDate.slice(0,7)!==String(row.period).slice(0,7)||parseMoney(source.reversedAmount)!==0n||source.reversalTxnId!=null||source.reversedAt!=null)conflict("صرف السائق معكوس أو لا يطابق أجرة شهره الأصلي المجمدة");
@@ -124,7 +132,7 @@ export async function syncClosingDriverCoverage(db:PartnershipDatabase,actor:Par
    results.push({financialTransactionId:financialId,transactionNo:source.transactionNo,amount:source.amount,coveredAmount,uncoveredAmount,alreadyLinked});
   }
   const sum=(field:"amount"|"coveredAmount"|"uncoveredAmount")=>formatMoney(results.reduce((s,r)=>s+parseMoney(r[field]),0n));
-  const result=checkedResult({closingId:command.closingId,revision:Number(row.revision),sourceDigest:command.expectedDigest,matchedPayments:results.length,amount:sum("amount"),coveredAmount:sum("coveredAmount"),uncoveredAmount:sum("uncoveredAmount"),results},command.closingId,command.expectedDigest);
+  const result=checkedResult({closingId:command.closingId,revision:Number(row.revision),sourceDigest:command.expectedDigest,matchedPayments:results.length,...(command.includeReversalSummary?{reversedPayments}:{}),amount:sum("amount"),coveredAmount:sum("coveredAmount"),uncoveredAmount:sum("uncoveredAmount"),results},command.closingId,command.expectedDigest);
   await appendPartnershipAudit(tx,{vehicleId,partnershipId:root.id,actor,action:"driver_conversion_sync",reason:command.reason,newValues:{operationKey,fingerprint,result,cashImpact:"none",newPayment:false}});return result;
  });
 }

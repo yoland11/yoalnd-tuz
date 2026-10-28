@@ -70474,11 +70474,14 @@ async function handleMasterCash(
           return error("عكس الحركة المالية متاح للمدير فقط", 403);
         const payload = await body(req);
         try {
-          const { original, reverse } = await reverseFinancialTransaction(
+          const result = await reverseFinancialTransaction(
             id,
             financeUser,
             String(payload?.reason ?? ""),
           );
+          const {original,reverse}=result;
+          if ("alreadyReversed" in result && result.alreadyReversed)
+            return json({ok:true,original,reverse,alreadyReversed:true});
           const amountText = formatCurrency(original.amount);
           void logAdminActivity(
             req,
@@ -70513,8 +70516,14 @@ async function handleMasterCash(
             /* telegram is best-effort */
           }
           return json({ ok: true, original, reverse });
-        } catch (err: any) {
-          return error(err?.message || "تعذر عكس الحركة المالية", 400);
+        } catch (reverseError) {
+          const requestId=makeRequestId(req.headers.get("x-request-id"));
+          if(reverseError instanceof FinancialApprovalError){
+            console.warn("Master cash reversal rejected",{requestId,transactionId:id,actorId:financeUser.id,status:reverseError.status,message:reverseError.message});
+            return error(reverseError.message,reverseError.status,{code:reverseError.status===403?"PERMISSION_DENIED":reverseError.status===404?"NOT_FOUND":"CONFLICT",requestId,retryable:false});
+          }
+          console.error("Master cash reversal failed",{requestId,transactionId:id,actorId:financeUser.id,error:safeServerError(reverseError)});
+          return error("تعذر إكمال العكس؛ حدّث حالة السند قبل إعادة المحاولة وراجع رقم الطلب.",500,{code:"DATABASE_ERROR",requestId,retryable:false});
         }
       }
 

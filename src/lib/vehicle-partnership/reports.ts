@@ -14,7 +14,7 @@ export type ReportRight = {
 };
 export type ReportDriver = { entryId: number; employeeId: number; employeeName: string | null; amount: string; entryDate: string; status: string; paymentState: ReportPaymentState };
 export type ReportClosing = { closingId: number; month: string; status: string; version: number; revision: number; sourceDigest: string | null; financialTransactionId: number | null };
-export type ReportRequest = { id: number; sourceType: string; sourceId: string; sourceEvent: string; status: string; amount: string; date: string; description: string | null };
+export type ReportRequest = { id: number; sourceType: string; sourceId: string; sourceEvent: string; status: string; amount: string; date: string; description: string | null; reversedAt?:string|null; reversalTxnId?:number|null };
 export type PartnershipReportWorkspace = { rights: ReportRight[]; driverEntries: ReportDriver[]; closings: ReportClosing[]; requests: ReportRequest[]; from?: string; to?: string; canApprove?: boolean };
 export type StatementRow = Omit<ReportRight, "paymentState"> & ReportPaymentState;
 export type PartnerStatement = { key: string; memberId: number | null; name: string; rows: StatementRow[] };
@@ -100,7 +100,9 @@ const payoutRules: Record<string, { sourceType: string; type: string; account: s
   advance_reimbursement: { sourceType: "vehicle_partnership_settlement", type: "vp_partner_advance_repayment", account: "VP-ADVANCE", title: "وصل استرداد سلفة الشريك", category: "advance" },
   driver_fee_settlement: { sourceType: "vehicle_partnership_driver", type: "vp_driver_payment", account: "VP-DRIVER", title: "وصل صرف أجرة سائق" },
 };
-export function isPartnershipPayoutRequest(request: ReportRequest): boolean { return request.status === "executed" && Object.hasOwn(payoutRules, request.sourceEvent) && payoutRules[request.sourceEvent].sourceType === request.sourceType; }
+function isOriginalPayout(request:ReportRequest){return request.status==="executed"&&Object.hasOwn(payoutRules,request.sourceEvent)&&payoutRules[request.sourceEvent].sourceType===request.sourceType;}
+export function isPartnershipPayoutRequest(request: ReportRequest): boolean { return isOriginalPayout(request)&&!request.reversedAt&&request.reversalTxnId==null; }
+export function isPartnershipReversedPayoutRequest(request:ReportRequest):boolean{return isOriginalPayout(request)&&Boolean(request.reversedAt||request.reversalTxnId!=null);}
 
 /** Receipt proof is obtained only through the existing authorized transaction
  * detail. Pending/approved requests and reversed payouts never become receipts. */
