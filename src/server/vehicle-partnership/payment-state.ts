@@ -4,6 +4,8 @@ import {PartnershipValidationError} from "../../lib/vehicle-partnership/types";
 import {lockPartnership,partnershipRows,PartnershipRepositoryError,type PartnershipExecutor} from "./repository";
 import {resolvePartnershipFinancialEffect} from "./financial-classification";
 import {derivePartnershipConversion,type EntitlementConversion,type ConversionPayment,type ConversionCoverage} from "../../lib/vehicle-partnership/conversion";
+import {proveDriverCashCoverageSource} from "./driver-cash-source";
+import {proveDriverCoverageMapping} from "./driver-coverage-proof";
 
 export type PartnershipPaymentSource="vehicle_partnership_right"|"vehicle_partnership_settlement";
 export type PartnershipPaymentState={sourceType:PartnershipPaymentSource;sourceId:number;totalAmount:string;approvedPaidAmount:string;remainingAmount:string;reservedAmount:string;availableAmount:string;paymentStatus:"unpaid"|"partial"|"paid";approvalStatus:string;payable:boolean;nonCashSettledAmount?:string;conversionAmount?:string;pendingConversionAmount?:string;conversionCashPaidAmount?:string;conversionCashReservedAmount?:string;availableCoverageAmount?:string};
@@ -25,7 +27,7 @@ export async function reconcilePartnershipPaymentState(tx:PartnershipExecutor,in
  const right=rights[0],category=String(right.category),status=String(right.status);
  if(positiveId(right.id)!==sourceId||Number(right.partnership_id)!==root.id||!["pending","approved","cancelled","reversed"].includes(status)||!["capital","profit","loss","advance","loss_recovery","internal_entitlement"].includes(category))conflict("بيانات استحقاق الشراكة أو حالته غير صالحة");
  const total=parseMoney(String(right.amount));
- const rows=partnershipRows(await tx.execute(sql`/* vp_payment_allocations */ SELECT a.id AS allocation_id,a.right_id,a.purpose,a.conversion_allocation_id,a.amount::text AS allocated_amount,a.financial_transaction_id,f.amount::text AS financial_amount,f.approval_status AS financial_status,f.direction AS financial_direction,f.source_type AS financial_source_type,f.source_id AS financial_source_id,f.source_event AS financial_event,f.transaction_type,ar.partnership_id AS allocation_partnership_id,ar.category AS allocation_category,h.id AS closing_id,h.partnership_id AS closing_partnership_id,h.financial_transaction_id AS closing_financial_id,h.status AS closing_status,e.vehicle_id AS cost_vehicle_id,e.financial_transaction_id AS cost_financial_transaction_id,
+ const rows=partnershipRows(await tx.execute(sql`/* vp_payment_allocations */ SELECT a.id AS allocation_id,a.right_id,a.purpose,a.conversion_allocation_id,a.idempotency_key,a.amount::text AS allocated_amount,a.financial_transaction_id,f.amount::text AS financial_amount,f.approval_status AS financial_status,f.direction AS financial_direction,f.source_type AS financial_source_type,f.source_id AS financial_source_id,f.source_event AS financial_event,f.transaction_type,ar.partnership_id AS allocation_partnership_id,ar.category AS allocation_category,h.id AS closing_id,h.partnership_id AS closing_partnership_id,h.financial_transaction_id AS closing_financial_id,h.status AS closing_status,e.vehicle_id AS cost_vehicle_id,e.financial_transaction_id AS cost_financial_transaction_id,
  coalesce((SELECT sum(r.amount) FROM financial_transactions r WHERE r.reversed_transaction_id=f.id AND r.approval_status='executed'),0)::text AS reversed_amount,
  EXISTS(SELECT 1 FROM financial_transactions r WHERE r.reversed_transaction_id=f.id AND r.approval_status='executed' AND (r.direction=f.direction OR r.amount<=0 OR r.source_type IS DISTINCT FROM f.source_type OR r.source_id IS DISTINCT FROM f.source_id OR (CASE WHEN f.source_type='vehicle_expense' THEN coalesce(r.source_event,'') NOT IN ('reversal','vehicle_expense_reversal') ELSE r.source_event IS DISTINCT FROM 'reversal' END) OR r.transaction_type IS DISTINCT FROM CASE WHEN f.source_type='vehicle_expense' THEN 'manual_reversal' ELSE f.transaction_type||'_reversal' END)) AS invalid_reversal
  FROM vehicle_partnership_settlement_allocations a JOIN financial_transactions f ON f.id=a.financial_transaction_id JOIN vehicle_partnership_rights ar ON ar.id=a.right_id LEFT JOIN vehicle_partnership_closings h ON f.source_type='vehicle_partnership_closing' AND f.source_id=h.id::text LEFT JOIN vehicle_expenses e ON f.source_type='vehicle_expense' AND f.source_id=e.id::text
@@ -72,6 +74,14 @@ export async function reconcilePartnershipPaymentState(tx:PartnershipExecutor,in
   const originalCost=first.financial_source_type==="vehicle_expense";
   if(originalCost){
    if(first.financial_direction!=="expense"||Number(first.cost_vehicle_id)!==root.vehicleId||Number(first.cost_financial_transaction_id)!==financialId||group.some(row=>row.purpose!=="internal_entitlement_settlement"))conflict("حركة المصروف لا تمثل تسوية أصلية لاستحقاق نقل هذه المركبة");
+  }else if(first.financial_source_type==="vehicle_partnership_driver"){
+   const effect=resolvePartnershipFinancialEffect({sourceType:"vehicle_partnership_driver",transactionType:String(first.transaction_type),sourceEvent:String(first.financial_event),direction:String(first.financial_direction)});
+   if(financialStatus!=="executed"||effect?.cash!=="out"||effect.operating!=="none"||effect.reversal||group.some(row=>row.purpose!=="internal_entitlement_settlement"||row.allocation_category!=="internal_entitlement"||row.conversion_allocation_id==null))conflict("تغطية السائق تخص صرفاً منفذاً وتحويلاً داخلياً أصلياً فقط");
+   // Driver FI.source_id remains the employee settlement ID. It never becomes
+   // an internal right ID or a second primary partner distribution.
+   const source=await proveDriverCashCoverageSource(tx,root,financialId);
+   if(String(source.settlementId)!==String(first.financial_source_id)||parseMoney(source.amount)!==amount||parseMoney(source.reversedAmount)!==reversed)conflict("تغطية الصرف لا تطابق تسوية أجرة السائق الأصلية");
+   await proveDriverCoverageMapping(tx,root,source,group);
   }else{
    const effect=resolvePartnershipFinancialEffect({sourceType:first.financial_source_type==null?null:String(first.financial_source_type),transactionType:String(first.transaction_type),sourceEvent:String(first.financial_event),direction:String(first.financial_direction)});
    if(first.financial_source_type!=="vehicle_partnership_settlement"||!effect||effect.cash==="none"||effect.reversal)conflict("توزيع الاستحقاق لا يرتبط بحركة صرف أو قبض أصلية");

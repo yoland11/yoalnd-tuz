@@ -9,6 +9,7 @@ import {requestPartnershipDriverPayment} from "./driver-payments";
 import {requestPartnerDistribution} from "./distributions";
 import {requestPartnerAdvancePayment} from "./advance-payments";
 import {submitPartnershipCost} from "./costing";
+import {syncClosingDriverCoverage} from "./driver-coverage";
 import {closingPolicySchema,previewClosing} from "./closing";
 import {saveClosingDraft,transitionClosing} from "./closing-lifecycle";
 import {authorizePartnership,readVehiclePartnership,saveVehicleAgreement,approveVehicleAgreement,rejectVehicleAgreement,searchPartnershipParties,type PartnershipActor,type PartnershipDatabase} from "./agreements";
@@ -56,9 +57,11 @@ export async function handleVehiclePartnershipRequest(db:PartnershipDatabase,act
   const data=parts[3]==="driver-accrual"?await submitPartnershipDriverAccrual(db,actor,vehicleId,body,writer):parts[3]==="driver-payments"?await requestPartnershipDriverPayment(db,actor,vehicleId,body,writer):parts[3]==="advance-payments"?await requestPartnerAdvancePayment(db,actor,vehicleId,body,writer):await requestPartnerDistribution(db,actor,vehicleId,body,writer);
   return {data,status:201};
  }
- if(parts[3]==="closings"&&parts.length===5&&["preview","draft","transition"].includes(parts[4])){
+ if(parts[3]==="closings"&&parts.length===5&&["preview","draft","transition","driver-coverage"].includes(parts[4])){
+  if(parts[4]==="driver-coverage")authorizePartnership(actor,true);
   if(method!=="POST")throw new PartnershipRepositoryError("طريقة الإغلاق غير متاحة",405,"METHOD_NOT_ALLOWED");
   const body=await readObject(request);
+  if(parts[4]==="driver-coverage")return {data:await syncClosingDriverCoverage(db,actor,vehicleId,body),status:200};
   if(parts[4]==="preview"){
    const parsed=z.object({month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),policy:closingPolicySchema.optional()}).strict().safeParse(body);
    if(!parsed.success)throw new PartnershipValidationError(parsed.error.issues.map(i=>i.message).join("؛ "));

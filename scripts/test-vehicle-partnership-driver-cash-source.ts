@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import {existsSync} from "node:fs";
+import {PgDialect} from "drizzle-orm/pg-core";
+import {driverAccrualDigest,driverAccrualSnapshot} from "../src/server/vehicle-partnership/driver";
+
+assert.ok(existsSync("src/server/vehicle-partnership/driver-cash-source.ts"),"converted internal rights need an independent original-driver-cash proof, without payout recursion");
+const {proveDriverCashCoverageSource}=await import("../src/server/vehicle-partnership/driver-cash-source");
+type Row=Record<string,any>;
+function fixture(){
+ const dialect=new PgDialect(),calls:Array<{sql:string;params:any[]}>=[],root={id:1,vehicleId:12};
+ const cost:Row={id:21,vehicle_id:12,driver_id:9,expense_type:"driver_wage",amount:"25000.00",cost_date:"2026-10-20",booking_id:8,service_order_id:null,description:"أجرة الرحلة",attachments:[],financial_transaction_id:null,company_status:null,company_source_type:null,company_source_id:null};
+ const entry:Row={id:51,employee_id:9,entry_type:"trip_driver_fee",direction:"payable",source_type:"vehicle_expense",source_id:"21",status:"settled",entry_date:"2026-10-20",amount:"25000.00",settled_amount:"not authority",remaining_amount:"not authority"};
+ const funding:Row={id:31,partnership_id:1,vehicle_expense_id:21,employee_finance_entry_id:51,payer_member_id:null,funding_kind:"other",cost_class:"operating",status:"approved",reason:"أجرة مستحقة",financial_transaction_id:91,source_snapshot:driverAccrualSnapshot(cost,51,"أجرة مستحقة"),source_digest:driverAccrualDigest(cost,51,"أجرة مستحقة")};
+ const accrual:Row={id:91,source_type:"vehicle_partnership_cost",source_id:"31",source_event:"driver_accrual",transaction_type:"vp_driver_accrual",direction:"expense",transaction_date:"2026-10-20",amount:"25000.00",approval_status:"executed",balance_before:null,balance_after:null,reversed_transaction_id:null,reversal_txn_id:null,reversed_at:null,reversed_amount:"0.00",invalid_reversal:false};
+ const financial:Row={id:101,transaction_no:"FIN-2026-000101",source_type:"vehicle_partnership_driver",source_id:"61",source_event:"driver_fee_settlement",transaction_type:"vp_driver_payment",direction:"expense",transaction_date:"2026-10-26",payment_method:"cash",amount:"4000.00",approval_status:"executed",approved_by:3,executed_by:3,approved_at:"2026-10-26T12:00:00.000Z",executed_at:"2026-10-26T12:00:00.000Z",balance_before:"10000.00",balance_after:"6000.00",reversed_transaction_id:null,reversal_txn_id:null,reversed_at:null,reversed_amount:"0.00",invalid_reversal:false};
+ const settlement:Row={id:61,entry_id:51,settlement_type:"payment",settlement_date:"2026-10-26",payment_method:"cash",payroll_line_id:null,amount:"4000.00",financial_transaction_id:101};
+ let financialRows:Row[]=[financial],settlements:Row[]=[settlement],entries:Row[]=[entry],costs:Row[]=[cost],fundings:Row[]=[funding],accruals:Row[]=[accrual],failAt="",badJournal=false;
+ const tx={execute:async(statement:any)=>{
+  const q=dialect.sqlToQuery(statement);calls.push(q);
+  assert.match(q.sql,/^\s*(?:\/\*[\s\S]*?\*\/\s*)?SELECT\b/i,"cash source proof must only read");
+  assert.doesNotMatch(q.sql,/FOR UPDATE|FOR KEY SHARE|\bFROM staff\b|\bFROM fleet_vehicles\b|\bFROM master_cash_box\b/i,"caller already holds root; proof must not introduce lock inversion/current-activity/cache dependencies");
+  if(failAt&&q.sql.includes(failAt))throw new Error("cash source SQL unavailable");
+  if(q.sql.includes("vp_driver_cash_source_financial")){assert.deepEqual(q.params,[101]);assert.match(q.sql,/invalid_reversal/);return {rows:financialRows};}
+  if(q.sql.includes("vp_driver_cash_source_settlement")){assert.ok(q.params.includes(101));assert.ok(q.params.includes(Number(financial.source_id)));assert.match(q.sql,/LIMIT 3/);return {rows:settlements};}
+  if(q.sql.includes("vp_driver_cash_source_entry")){assert.deepEqual(q.params,[Number(settlement.entry_id)]);return {rows:entries};}
+  if(q.sql.includes("vp_driver_cash_source_expense")){assert.deepEqual(q.params,[Number(entry.source_id),12]);return {rows:costs};}
+  if(q.sql.includes("vp_driver_cash_source_funding")){assert.deepEqual(q.params,[51]);assert.match(q.sql,/status='approved'/);assert.match(q.sql,/LIMIT 2/);return {rows:fundings};}
+  if(q.sql.includes("vp_driver_cash_source_accrual")){assert.deepEqual(q.params,[91]);return {rows:accruals};}
+  if(q.sql.includes("vp_activity_journal_proof")){const cash=q.params[0]===101;assert.ok(cash||q.params[0]===91);return {rows:badJournal?[]:[{id:1,entry_side:"debit",amount:cash?financial.amount:accrual.amount,code:cash?"VP-DRIVER":"5000"},{id:2,entry_side:"credit",amount:cash?financial.amount:accrual.amount,code:cash?"1000":"VP-DRIVER"}]};}
+  throw new Error("Unexpected cash source query: "+q.sql);
+ }};
+ return {tx,calls,root,cost,entry,funding,accrual,financial,settlement,set financialRows(v:Row[]){financialRows=v;},set settlements(v:Row[]){settlements=v;},set entries(v:Row[]){entries=v;},set costs(v:Row[]){costs=v;},set fundings(v:Row[]){fundings=v;},set accruals(v:Row[]){accruals=v;},set failAt(v:string){failAt=v;},set badJournal(v:boolean){badJournal=v;}};
+}
+const run=(f:ReturnType<typeof fixture>)=>proveDriverCashCoverageSource(f.tx,f.root,101),conflict=(e:any)=>e.status===409&&e.code==="CONFLICT";
+for(const status of ["approved","partially_settled","settled"]){const f=fixture();f.entry.status=status;const before=structuredClone({financial:f.financial,entry:f.entry,settlement:f.settlement});const proof=await run(f);assert.deepEqual(proof,{financialId:101,settlementId:61,entryId:51,expenseId:21,costFundingId:31,accrualFinancialId:91,driverId:9,amount:"4000.00",entryAmount:"25000.00",entryDate:"2026-10-20",transactionDate:"2026-10-26",paymentMethod:"cash",reversedAmount:"0.00",reversalTxnId:null,reversedAt:null,transactionNo:"FIN-2026-000101",sourceDigest:f.funding.source_digest});assert.deepEqual({financial:f.financial,entry:f.entry,settlement:f.settlement},before);}
+async function rejects(mutate:(f:ReturnType<typeof fixture>)=>void){const f=fixture();mutate(f);await assert.rejects(()=>run(f),conflict);}
+// Executed is not a substitute for the original approval and cash execution
+// evidence. Preserve inactive historical actors; do not recheck current roles.
+for(const [key,value]of [["approved_by",null],["executed_by",0],["approved_at",null],["executed_at",null],["approved_at","invalid"],["executed_at","2026-10-26T11:59:59Z"]] as const)await rejects(f=>{f.financial[key]=value;});
+for(const [key,value]of Object.entries({source_type:"vehicle_partnership_settlement",source_id:"51",source_event:"distribution",transaction_type:"vp_partner_distribution",direction:"revenue",approval_status:"pending",amount:"0.00",balance_before:null,balance_after:"6001.00",payment_method:"other",transaction_date:"2026-10-19",reversed_transaction_id:99,invalid_reversal:true,reversed_amount:"4001.00",transaction_no:""}))await rejects(f=>{f.financial[key]=value;});
+for(const [key,value]of Object.entries({id:62,entry_id:52,settlement_type:"offset",settlement_date:"2026-10-25",payment_method:"transfer",payroll_line_id:3,amount:"4001.00",financial_transaction_id:102}))await rejects(f=>{f.settlement[key]=value;});
+for(const [key,value]of Object.entries({employee_id:10,entry_type:"salary",direction:"receivable",source_type:"salary",source_id:"22",status:"pending",entry_date:"2026-10-21",amount:"3999.00"}))await rejects(f=>{f.entry[key]=value;});
+for(const [key,value]of Object.entries({vehicle_id:13,driver_id:10,expense_type:"fuel",amount:"25001.00",cost_date:"2026-10-21",description:"تعديل غير معتمد"}))await rejects(f=>{f.cost[key]=value;});
+for(const [key,value]of Object.entries({partnership_id:2,vehicle_expense_id:22,employee_finance_entry_id:52,payer_member_id:8,funding_kind:"partner_advance",cost_class:"capital",status:"pending",source_digest:"bad",reason:"سبب مختلف"}))await rejects(f=>{f.funding[key]=value;});
+for(const [key,value]of Object.entries({source_type:"vehicle_expense",source_id:"32",source_event:"partner_paid_cost",transaction_type:"vp_partner_operating_advance",direction:"revenue",approval_status:"pending",amount:"25001.00",transaction_date:"2026-10-21",balance_before:"0.00",balance_after:"0.00",reversal_txn_id:92,reversed_at:"2026-10-27T10:00:00Z",reversed_transaction_id:90,reversed_amount:"1.00",invalid_reversal:true}))await rejects(f=>{f.accrual[key]=value;});
+await rejects(f=>{f.funding.source_snapshot={...f.funding.source_snapshot,amount:"25001.00"};});
+await rejects(f=>{f.cost.financial_transaction_id=80;f.cost.company_status="executed";f.cost.company_source_type="vehicle_expense";f.cost.company_source_id="21";});
+await rejects(f=>{f.settlements=[f.settlement,{...f.settlement,id:62}];});await rejects(f=>{f.settlements=[];});await rejects(f=>{f.fundings=[f.funding,{...f.funding,id:32}];});await rejects(f=>{f.fundings=[];});await rejects(f=>{f.entries=[];});await rejects(f=>{f.costs=[];});await rejects(f=>{f.accruals=[];});await rejects(f=>{f.badJournal=true;});
+for(const method of ["cash","transfer","pos"]){const f=fixture();f.financial.payment_method=method;f.settlement.payment_method=method;assert.equal((await run(f)).paymentMethod,method);}
+{const f=fixture(),large="90071992547409.91";f.financial.amount=large;f.financial.balance_before="90071992547409.92";f.financial.balance_after="0.01";f.settlement.amount=large;f.entry.amount=large;f.cost.amount=large;f.accrual.amount=large;f.funding.source_snapshot=driverAccrualSnapshot(f.cost,51,f.funding.reason);f.funding.source_digest=driverAccrualDigest(f.cost,51,f.funding.reason);const proof=await run(f);assert.equal(proof.amount,large);assert.equal(proof.entryAmount,large);}
+for(const reversal of ["1500.00","4000.00"]){const f=fixture();f.financial.reversed_amount=reversal;f.financial.reversal_txn_id=102;f.financial.reversed_at="2026-10-27T12:00:00.000Z";const proof=await run(f);assert.equal(proof.reversedAmount,reversal);assert.equal(proof.reversalTxnId,102);assert.equal(proof.reversedAt,"2026-10-27T12:00:00.000Z");}
+for(const marker of ["vp_driver_cash_source_financial","vp_driver_cash_source_settlement","vp_driver_cash_source_entry","vp_driver_cash_source_expense","vp_driver_cash_source_funding","vp_driver_cash_source_accrual","vp_activity_journal_proof"]){const f=fixture();f.failAt=marker;await assert.rejects(()=>run(f),/cash source SQL unavailable/);}
+for(const [root,financialId]of [[{id:0,vehicleId:12},101],[{id:1,vehicleId:0},101],[{id:1,vehicleId:12},0]] as const){const f=fixture();await assert.rejects(()=>proveDriverCashCoverageSource(f.tx,root,financialId),(e:any)=>e.status===422);assert.equal(f.calls.length,0);}
+console.log("PASS independent original driver cash proof: exact settlement/entry/funding/expense identity, original accrual and cash journals, historical reversals, no current-activity/cache authority and read-only SQL with propagated failures.");
