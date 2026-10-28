@@ -63,6 +63,8 @@ const steps = [
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice customer search", "pnpm", ["run", "test:sales-customer-search"]],
   ["Credit invoices sync a valid financial payment method", "pnpm", ["run", "test:invoice-credit-sync"]],
+  ["Grouped sales returns rules and contracts", "pnpm", ["run", "test:sales-returns"]],
+  ["Grouped sales returns PostgreSQL integration (isolated TEST only)", "pnpm", ["run", "test:sales-returns-db"]],
   ["Sales invoice product search", "pnpm", ["run", "test:sales-product-search"]],
   ["Kosha routed instruction persistence", "pnpm", ["run", "test:kosha-instruction-store"]],
   ["Kosha staff detail instruction redaction", "pnpm", ["run", "test:kosha-staff-detail"]],

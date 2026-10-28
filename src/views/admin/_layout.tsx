@@ -22,6 +22,7 @@ import {
   Database,
   Archive,
   Receipt,
+  Undo2,
   ShoppingCart,
   BarChart3,
   PenTool,
@@ -436,6 +437,13 @@ export const NAV: NavItem[] = [
     label: "فواتير المبيعات",
     icon: Receipt,
     perm: "invoices",
+  },
+  {
+    href: "/admin/sales-returns",
+    label: "مرتجعات المبيعات",
+    icon: Undo2,
+    perm: "sales_returns.view",
+    anyPerm: ["sales_returns.view", "sales_returns.create", "sales_returns.approve"],
   },
   {
     href: "/admin/purchases",
@@ -943,6 +951,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       navItem("/admin/pos"),
       navItem("/admin/sales"),
+      navItem("/admin/sales-returns"),
       navItem("/admin/purchases"),
       navItem("/admin/coupons"),
     ],

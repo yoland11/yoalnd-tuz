@@ -184,6 +184,7 @@ const TimelinesPage = lazy(() =>
 );
 const EnterpriseCommandCenterPage = lazy(() => import("./enterprise"));
 const VehiclesPage = lazy(() => import("./vehicles"));
+const SalesReturnsPage = lazy(() => import("./sales-returns"));
 const ReportDesignerPage = lazy(() =>
   import("./report-designer").then((module) => ({
     default: module.ReportDesignerPage,
@@ -371,6 +372,18 @@ export default function Admin() {
                 <EnterpriseCommandCenterPage />
               </Guard>
             )}
+          </Route>
+          <Route path="/admin/sales-returns/:id/edit">
+            {() => <Guard me={me} anyPerm={["sales_returns.create"]}><SalesReturnsPage /></Guard>}
+          </Route>
+          <Route path="/admin/sales-returns/new">
+            {() => <Guard me={me} anyPerm={["sales_returns.create"]}><SalesReturnsPage /></Guard>}
+          </Route>
+          <Route path="/admin/sales-returns/:id">
+            {() => <Guard me={me} anyPerm={["sales_returns.view", "sales_returns.create", "sales_returns.approve"]}><SalesReturnsPage /></Guard>}
+          </Route>
+          <Route path="/admin/sales-returns">
+            {() => <Guard me={me} anyPerm={["sales_returns.view", "sales_returns.create", "sales_returns.approve"]}><SalesReturnsPage /></Guard>}
           </Route>
           <Route path="/admin/vehicles/:id">
             {() => <Guard me={me} perm="dashboard"><VehiclesPage /></Guard>}

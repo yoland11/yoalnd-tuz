@@ -59,6 +59,14 @@ const SALES_AND_INVOICE_PERMISSION_IDS = new Set<string>([
   "sales_invoice.customer.link",
   "sales_invoice.customer.relink",
   "sales_invoice.customer.repair",
+  "sales_returns.view",
+  "sales_returns.create",
+  "sales_returns.approve",
+  "sales_returns.inventory",
+  "sales_returns.settle",
+  "sales_returns.allocation_override",
+  "sales_returns.reverse",
+  "sales_returns.print",
 ]);
 const startsWithAny = (id: string, prefixes: string[]) =>
   prefixes.some((prefix) => id.startsWith(prefix));

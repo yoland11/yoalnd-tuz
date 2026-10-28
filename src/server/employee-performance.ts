@@ -12,6 +12,7 @@
 import { sql } from "drizzle-orm";
 import { partnershipIncomePredicate } from "./vehicle-partnership/financial-classification";
 import { db } from "@workspace/db";
+import { salesInvoiceReturnCreditsSql } from "./sales-returns";
 
 export type PerfRange = { from: string; to: string };
 
@@ -191,6 +192,8 @@ export async function computeEmployeeScores(range: PerfRange = defaultRange()): 
   const from = range.from;
   const to = range.to;
   const toPlus = `${to} 23:59:59`;
+  // Sales-return debt deductions settle part of an invoice without cash.
+  const returnCredits = await salesInvoiceReturnCreditsSql(sql`sales_invoices.id`);
 
   const [staffR, tasksR, attR, finR, salesR, revR, dmgR, actR] = await Promise.all([
     db.execute(sql`select id, full_name, username, role, permissions from staff where is_active = true order by id`),
@@ -231,7 +234,7 @@ export async function computeEmployeeScores(range: PerfRange = defaultRange()): 
         count(*)::int as invoices_created,
         coalesce(sum(total::numeric) filter (where status = 'active' and financially_reversed = false),0)::float as sales_revenue,
         coalesce(sum(least(paid_amount::numeric, total::numeric)) filter (where status = 'active' and financially_reversed = false),0)::float as sales_collected,
-        coalesce(sum(greatest(total::numeric - paid_amount::numeric, 0)) filter (where status = 'active' and financially_reversed = false),0)::float as sales_outstanding,
+        coalesce(sum(greatest(total::numeric - paid_amount::numeric - ${returnCredits}, 0)) filter (where status = 'active' and financially_reversed = false),0)::float as sales_outstanding,
         coalesce(avg(total::numeric) filter (where status = 'active' and financially_reversed = false),0)::float as average_invoice,
         coalesce(max(total::numeric) filter (where status = 'active' and financially_reversed = false),0)::float as highest_invoice,
         count(*) filter (where status = 'cancelled')::int as cancelled_invoices,

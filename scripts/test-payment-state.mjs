@@ -23,9 +23,13 @@ check("only executed financial approvals count as official money", engine.includ
 check("pending and rejected requests are excluded by the executed-only source", engine.includes("approval_status = 'executed'"));
 check("reversal directions net against original approved payments", engine.includes("ELSE -amount::numeric"));
 check("receipt allocation reversals reduce officially paid money", engine.includes("a.reversed_amount"));
-check("canonical state keeps zero paid documents unpaid", engine.includes("approved_paid <= 0 THEN 'unpaid'"));
+// Applied sales-return debt deductions settle like money for the status and
+// remaining balance, but paid stays approved cash only; other sources add zero.
+check("canonical state keeps zero paid documents unpaid", engine.includes("computed.approved_paid + computed.credits <= 0 THEN 'unpaid'"));
 check("canonical state maps partial approved money to partial", engine.includes("ELSE 'partial'"));
-check("canonical state maps full approved money to paid", engine.includes("approved_paid >= computed.total_amount THEN 'paid'"));
+check("canonical state maps full approved money to paid", engine.includes("computed.approved_paid + computed.credits >= computed.total_amount THEN 'paid'"));
+check("sales-return credits lower remaining without counting as paid cash", engine.includes("SET ${paid} = least(computed.total_amount, computed.approved_paid),") && engine.includes("greatest(computed.total_amount - computed.approved_paid - computed.credits, 0)"));
+check("only sales invoices read sales-return credits", engine.includes('input.sourceType === "sales_invoice" && (await salesReturnCreditsAvailable(tx))') && engine.includes("return_credits AS (SELECT 0::numeric AS value)"));
 check("reconciliation locks the source row inside the caller transaction", engine.includes("FOR UPDATE"));
 check("legacy service orders reconcile without writing a missing updated_at column", engine.includes("service_order: { table: \"service_orders\"") && engine.includes("touchesUpdatedAt: false") && engine.includes("config.touchesUpdatedAt !== false"));
 check("approval execution invokes the canonical engine", cashBox.includes("await reconcilePaymentState(tx, { sourceType: transaction.sourceType, sourceId })"));

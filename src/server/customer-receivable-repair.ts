@@ -22,6 +22,7 @@ import {
   receiptVouchersTable,
   salesInvoicesTable,
 } from "@workspace/db";
+import { invoicesWithSalesReturns } from "./sales-returns";
 
 export const CUSTOMER_RECEIVABLE_BACKFILL_VERSION = "sales-receivables-v1";
 
@@ -297,6 +298,8 @@ export async function previewHistoricalCustomerReceivables(
   })) as InvoiceLike[];
   const invoiceIds = invoices.map((invoice) => invoice.id);
   const invoiceIdStrings = invoiceIds.map(String);
+  // Grouped returns keep their own debt deductions; a backfill would rewrite them.
+  const returnedInvoices = await invoicesWithSalesReturns(db, invoiceIds);
   const customers = (await db.query.customersTable.findMany({ limit: 100_000 })) as CustomerCandidate[];
   const allocations = invoiceIds.length
     ? await db.query.receiptVoucherAllocationsTable.findMany({
@@ -433,6 +436,8 @@ export async function previewHistoricalCustomerReceivables(
     if (match.ambiguous) errors.push("توجد أكثر من مطابقة محتملة للعميل");
     if (!match.customer) errors.push("تعذر تحديد العميل بشكل آمن");
     if (ledgerRows.length > 1) errors.push("توجد قيود ذمة مكررة للفاتورة");
+    if (returnedInvoices.has(invoice.id))
+      errors.push("الفاتورة مرتبطة بمرتجع مبيعات مجمّع؛ رصيدها يُدار من مركز المرتجعات");
 
     const activeTransactions = invoiceTransactions.some(activeFinancial);
     const cancelled = ["cancelled", "canceled", "deleted"].includes(invoice.status);
@@ -594,6 +599,8 @@ export async function executeHistoricalCustomerReceivableRepair(
           throw new Error("تم عكس الفاتورة مالياً أثناء التنفيذ");
         if (money(invoice.total) !== item.invoiceTotal)
           throw new Error("تغيّر إجمالي الفاتورة بعد المعاينة؛ أعد Dry Run");
+        if ((await invoicesWithSalesReturns(tx, [item.invoiceId])).size)
+          throw new Error("ارتبطت الفاتورة بمرتجع مبيعات بعد المعاينة؛ أعد Dry Run");
 
         const duplicate = await tx.execute(sql`
           SELECT id FROM customer_receivable_ledger

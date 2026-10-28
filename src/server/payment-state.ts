@@ -64,6 +64,17 @@ export function isPaymentStateSourceType(value: string | null | undefined): valu
   return value === "vehicle_partnership_right" || value === "vehicle_partnership_settlement" || value === "vehicle_partnership_driver_entitlement" || Boolean(value && Object.prototype.hasOwnProperty.call(SOURCES, value));
 }
 
+// Grouped sales returns (migration 0130) lower an invoice's remaining debt
+// through applied invoice_credit settlements. They are not cash: paid_amount
+// stays the money actually received. Until the table exists the term is zero.
+let salesReturnCreditsReady = false;
+async function salesReturnCreditsAvailable(tx: { execute: (query: any) => Promise<any> }) {
+  if (salesReturnCreditsReady) return true;
+  const result = await tx.execute(sql`SELECT to_regclass('public.sales_return_settlements') IS NOT NULL AS ready`);
+  salesReturnCreditsReady = (result.rows ?? [])[0]?.ready === true;
+  return salesReturnCreditsReady;
+}
+
 /**
  * Rebuild the stored payment snapshot from approved money inside the caller's
  * transaction. Reversal entries net against their original executed entry by
@@ -128,6 +139,13 @@ export async function reconcilePaymentState(
         )
       )`
     : sql`, installment_financials AS (SELECT 0::numeric AS value)`;
+  const returnCredits = input.sourceType === "sales_invoice" && (await salesReturnCreditsAvailable(tx))
+    ? sql`, return_credits AS (
+        SELECT coalesce(sum(s.amount::numeric), 0)::numeric AS value
+        FROM sales_return_settlements s
+        WHERE s.kind = 'invoice_credit' AND s.status = 'applied' AND s.invoice_id = ${sourceId}
+      )`
+    : sql`, return_credits AS (SELECT 0::numeric AS value)`;
 
   const result = await tx.execute(sql`
     WITH source AS (
@@ -145,17 +163,18 @@ export async function reconcilePaymentState(
         AND source_id = ${String(sourceId)}
         AND approval_status = 'executed'
     )
-    ${allocations}${installments}, computed AS (
+    ${allocations}${installments}${returnCredits}, computed AS (
       SELECT source.id, source.total_amount,
-        greatest(direct_financials.value + allocations.value + installment_financials.value, 0)::numeric AS approved_paid
-      FROM source, direct_financials, allocations, installment_financials
+        greatest(direct_financials.value + allocations.value + installment_financials.value, 0)::numeric AS approved_paid,
+        greatest(return_credits.value, 0)::numeric AS credits
+      FROM source, direct_financials, allocations, installment_financials, return_credits
     )
     UPDATE ${table} document
     SET ${paid} = least(computed.total_amount, computed.approved_paid),
-        ${remaining} = greatest(computed.total_amount - computed.approved_paid, 0),
+        ${remaining} = greatest(computed.total_amount - computed.approved_paid - computed.credits, 0),
         ${status} = CASE
-          WHEN computed.total_amount <= 0 OR computed.approved_paid <= 0 THEN 'unpaid'
-          WHEN computed.approved_paid >= computed.total_amount THEN 'paid'
+          WHEN computed.total_amount <= 0 OR computed.approved_paid + computed.credits <= 0 THEN 'unpaid'
+          WHEN computed.approved_paid + computed.credits >= computed.total_amount THEN 'paid'
           ELSE 'partial'
         END${updatedAt}
     FROM computed
@@ -163,7 +182,7 @@ export async function reconcilePaymentState(
     RETURNING document.id,
       computed.total_amount::text AS total_amount,
       least(computed.total_amount, computed.approved_paid)::text AS approved_paid_amount,
-      greatest(computed.total_amount - computed.approved_paid, 0)::text AS remaining_amount,
+      greatest(computed.total_amount - computed.approved_paid - computed.credits, 0)::text AS remaining_amount,
       document.${status}::text AS payment_status
   `);
   const row = (result.rows ?? [])[0];

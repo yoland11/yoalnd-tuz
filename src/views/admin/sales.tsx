@@ -11,8 +11,9 @@ import {
   Plus, Trash2, Search, FileText, Save, RefreshCw,
   ShoppingCart, X, ChevronLeft, ChevronRight, Barcode, PauseCircle, PlayCircle,
   QrCode, Download,
-  Printer, Ban, ScanLine, MessageCircle, Package,
+  Printer, Ban, ScanLine, MessageCircle, Package, Undo2,
 } from "lucide-react";
+import { Link } from "wouter";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -104,6 +105,7 @@ type SalesInvoice = {
   id: number; invoiceNo: string; date: string; customerId?: number | null; customerName: string; customerPhone?: string;
   subtotal: string; discountAmount: string; taxAmount: string; offerDeliveryFee?: string; total: string;
   paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
+  returnCredits?: string;
   status: string; isInternal: number; notes?: string; createdByName: string; createdAt: string;
   createdByRole?: string; updatedByName?: string; updatedByRole?: string; updatedAt?: string;
   branchId?: number | null; branchName?: string | null; branchCode?: string | null;
@@ -1494,6 +1496,9 @@ function InvoiceListView({
           <Button variant="outline" size="sm" onClick={() => { void downloadRegisterReportPdf(); }} disabled={loading || !!error || !!registerReportAction}>
             <Download className="ml-1 h-4 w-4" />{registerReportAction === "pdf" ? "جارٍ الحفظ..." : "حفظ PDF"}
           </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link href="/admin/sales-returns/new"><Undo2 className="ml-1 h-4 w-4" />إنشاء مرتجع مجمّع</Link>
+          </Button>
         </div>
         {canRepairCustomerLinks ? <Button variant="outline" size="sm" onClick={() => setCustomerLinkRepairOpen(true)}>ربط الفواتير القديمة بالعملاء</Button> : null}
       </div>
@@ -2161,8 +2166,10 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     : isCashPaymentMethod(draft.paymentMethod)
       ? total
       : Math.min(total, toNumber(draft.paidAmount));
-  const remainingAmount = Math.max(total - paidAmount, 0);
-  const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+  // A grouped sales return may have lowered the debt without any cash.
+  const returnCredits = toNumber(invoice?.returnCredits);
+  const remainingAmount = Math.max(total - paidAmount - returnCredits, 0);
+  const paymentStatus = paidAmount + returnCredits >= total ? "paid" : paidAmount + returnCredits > 0 ? "partial" : "unpaid";
 
   async function saveChanges() {
     const validItems = items.filter((item) => item.productName.trim() && item.quantity > 0);
@@ -2296,7 +2303,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
       total,
       paid: paidAmount,
       remaining: remainingAmount,
-      notes: invoice!.notes,
+      notes: [invoice!.notes, returnCredits > 0 ? `خُصم مرتجع مبيعات من المتبقي: ${formatCurrency(returnCredits)}` : null].filter(Boolean).join(" · ") || null,
       qrDataUrl: invoice!.qr?.dataUrl,
       qrCaption: invoice!.invoiceNo,
       logoUrl: logoSrc(settings),
@@ -2457,6 +2464,11 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
               <Download className="w-4 h-4 ml-1" />
               تحميل QR
             </Button>
+            {invoice?.status === "active" && !invoice?.financiallyReversed && invoice?.customerId ? (
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/admin/sales-returns/new?customerId=${invoice.customerId}&invoiceId=${invoice.id}`}><Undo2 className="w-4 h-4 ml-1" />إرجاع منتجات</Link>
+              </Button>
+            ) : null}
             {canCancel && invoice?.status === "active" && !invoice?.financiallyReversed && (
               <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)}>
                 <Ban className="w-4 h-4 ml-1" />
@@ -2658,6 +2670,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                   <span>الإجمالي</span>
                   <span className="text-primary">{formatCurrency(total)}</span>
                 </div>
+                {returnCredits > 0 ? <div className="flex justify-between text-sm"><span className="text-muted-foreground">خصم مرتجع مبيعات</span><span>- {formatCurrency(returnCredits)}</span></div> : null}
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">المتبقي</span>
                   <span>{formatCurrency(remainingAmount)}</span>

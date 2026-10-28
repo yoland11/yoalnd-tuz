@@ -1,6 +1,8 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { loadDailyOperations } from "./booking-daily-operations";
 import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
+import { SalesReturnError, salesInvoiceReturnCredits, salesInvoiceReturnCreditsSql, salesReturnsForInvoice } from "./sales-returns";
+import { handleSalesReturnsRequest } from "./sales-returns-routes";
 import { resolvePartnershipFinancialEffect, partnershipIncomePredicate } from "./vehicle-partnership/financial-classification";
 import { PartnershipRepositoryError } from "./vehicle-partnership/repository";
 import { PartnershipValidationError } from "@/lib/vehicle-partnership/types";
@@ -207,6 +209,7 @@ import {
   ne,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import {
   adminSessionsTable,
@@ -919,6 +922,14 @@ export const ALL_PERMISSIONS = [
   "sales_invoice.customer.link",
   "sales_invoice.customer.relink",
   "sales_invoice.customer.repair",
+  "sales_returns.view",
+  "sales_returns.create",
+  "sales_returns.approve",
+  "sales_returns.inventory",
+  "sales_returns.settle",
+  "sales_returns.allocation_override",
+  "sales_returns.reverse",
+  "sales_returns.print",
   "whatsapp",
   "accounting",
   // Without it (and outside admin/manager) an employee on /admin/expenses sees
@@ -30125,7 +30136,9 @@ async function handleCodSettlement(req: NextRequest, orderId: number) {
 
   const total = money(invoice.total);
   const priorPaid = money(invoice.paidAmount);
-  const remaining = money(Math.max(total - priorPaid, 0));
+  // A sales-return debt deduction already lowered what the customer owes.
+  const credited = await salesInvoiceReturnCredits(db, invoice.id);
+  const remaining = money(Math.max(total - priorPaid - credited, 0));
   if (remaining <= 0) return error("الفاتورة مدفوعة بالكامل", 409);
   const received = money(data.receivedAmount);
   if (received <= 0) return error("أدخل مبلغاً مستلماً صحيحاً", 400);
@@ -30133,7 +30146,7 @@ async function handleCodSettlement(req: NextRequest, orderId: number) {
     return error(`المبلغ أكبر من المتبقي (${formatCurrency(remaining)})`, 400);
 
   const newPaid = money(priorPaid + received);
-  const newRemaining = money(Math.max(total - newPaid, 0));
+  const newRemaining = money(Math.max(total - newPaid - credited, 0));
   const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
   const a = actor(auth);
   const fActor = financialActor(auth);
@@ -30414,7 +30427,8 @@ async function handleCodConfirmation(req: NextRequest, orderId: number) {
   const total = money(invoice.total);
   const priorPaid = money(invoice.paidAmount);
   const newPaid = money(Math.min(priorPaid + received, total));
-  const newRemaining = money(Math.max(total - newPaid, 0));
+  const credited = await salesInvoiceReturnCredits(db, invoice.id);
+  const newRemaining = money(Math.max(total - newPaid - credited, 0));
   const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
 
   await db
@@ -39273,6 +39287,16 @@ async function handleAdmin(
   // generic server error.
   if (section === "sales-invoices")
     return handleSalesInvoices(req, parts, section);
+  if (section === "sales-returns") {
+    const auth = await getAdminUser(req);
+    if (!auth) return error("غير مخول", 401);
+    const result = await handleSalesReturnsRequest(db, {
+      id: auth.id, name: auth.fullName || auth.username, role: auth.role, permissions: auth.permissions,
+    }, { method: req.method, parts: parts.slice(2), query: req.nextUrl.searchParams, readBody: () => req.json() });
+    const response = json(result.data, result.status);
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
+  }
   if (section === "purchase-invoices")
     return handlePurchaseInvoicesWithErrorMapping(req, parts, section);
 
@@ -54148,12 +54172,16 @@ function invoiceRegisterSearchPattern(value: string) {
   return `%${value.replace(/[\\%_]/g, "\\$&")}%`;
 }
 
+// `credits` is the applied sales-return debt deduction of a sales invoice
+// (zero for purchases). It settles the invoice like a payment without being
+// cash, so the status and remaining views count it while paid stays cash.
 function invoicePaymentStatusCondition(
   paidColumn: any,
   totalColumn: any,
   status: InvoicePaymentStatus,
+  credits: SQL = sql`0`,
 ) {
-  const paid = sql`COALESCE(${paidColumn}::numeric, 0)`;
+  const paid = sql`(COALESCE(${paidColumn}::numeric, 0) + ${credits})`;
   const total = sql`COALESCE(${totalColumn}::numeric, 0)`;
   if (status === "unpaid") return sql`${paid} = 0`;
   if (status === "partial") return sql`${paid} > 0 AND ${paid} < ${total}`;
@@ -54212,25 +54240,27 @@ function mapSalesInvoiceSaveError(errorValue: unknown, step: string) {
 }
 
 function invoiceRegisterView<T extends Record<string, any>>(row: T) {
+  const settled = (Number(row.paidAmount) || 0) + (Number(row.returnCredits) || 0);
   return {
     ...row,
-    paymentStatus: deriveInvoicePaymentStatus(row.paidAmount, row.total),
-    remainingAmount: String(invoiceRemainingBalance(row.paidAmount, row.total)),
+    paymentStatus: deriveInvoicePaymentStatus(settled, row.total),
+    remainingAmount: String(invoiceRemainingBalance(settled, row.total)),
   };
 }
 
 async function invoiceRegisterSummary(
   table: any,
-  columns: { status: any; paidAmount: any; total: any },
+  columns: { status: any; paidAmount: any; total: any; credits?: SQL },
   conditions: any[],
 ) {
-  const paid = sql`COALESCE(${columns.paidAmount}::numeric, 0)`;
+  const cash = sql`COALESCE(${columns.paidAmount}::numeric, 0)`;
+  const paid = sql`(${cash} + ${columns.credits ?? sql`0`})`;
   const total = sql`COALESCE(${columns.total}::numeric, 0)`;
   const [row] = await db
     .select({
       totalInvoices: sql<number>`COUNT(*)::int`,
       totalSales: sql<string>`COALESCE(SUM(${total}), 0)::text`,
-      collectedTotal: sql<string>`COALESCE(SUM(LEAST(${paid}, ${total})), 0)::text`,
+      collectedTotal: sql<string>`COALESCE(SUM(LEAST(${cash}, ${total})), 0)::text`,
       averageInvoice: sql<string>`COALESCE(AVG(${total}), 0)::text`,
       cancelledInvoices: sql<number>`COUNT(*) FILTER (WHERE ${columns.status} = 'cancelled')::int`,
       refundedInvoices: sql<number>`COUNT(*) FILTER (WHERE ${columns.status} = 'refunded')::int`,
@@ -55704,18 +55734,20 @@ async function handleSalesInvoices(
       )`);
     }
     const conds = [...baseConds];
+    const returnCredits = await salesInvoiceReturnCreditsSql(salesInvoicesTable.id);
     if (paymentStatus) {
       conds.push(
         invoicePaymentStatusCondition(
           salesInvoicesTable.paidAmount,
           salesInvoicesTable.total,
           paymentStatus,
+          returnCredits,
         ),
       );
       if (!status) conds.push(eq(salesInvoicesTable.status, "active"));
     }
     const rows = await db
-      .select(salesInvoiceRecordColumns)
+      .select({ ...salesInvoiceRecordColumns, returnCredits: sql<string>`${returnCredits}::text` })
       .from(salesInvoicesTable)
       .where(and(...conds) as any)
       .orderBy(desc(salesInvoicesTable.date), desc(salesInvoicesTable.id))
@@ -55732,6 +55764,7 @@ async function handleSalesInvoices(
           status: salesInvoicesTable.status,
           paidAmount: salesInvoicesTable.paidAmount,
           total: salesInvoicesTable.total,
+          credits: returnCredits,
         },
         conds,
       ),
@@ -55833,6 +55866,11 @@ async function handleSalesInvoices(
             financialMovementIds: [],
             alreadyCancelled: true,
           };
+        // Cancelling restores every line's stock and money; with a live return
+        // that would count the returned quantity twice.
+        const linkedReturns = await salesReturnsForInvoice(tx, id, "active");
+        if (linkedReturns.length)
+          throw new CheckoutError(`لا يمكن إلغاء الفاتورة لأنها مرتبطة بمرتجع مبيعات نشط (${linkedReturns.join("، ")}). اعكس المرتجع أو ألغِه أولاً.`, 409);
         const items = await tx
           .select()
           .from(salesInvoiceItemsTable)
@@ -56514,6 +56552,7 @@ async function handleSalesInvoices(
       qr,
       delivery,
       lastPayment: lastPayments.get(id) ?? null,
+      returnCredits: String(await salesInvoiceReturnCredits(db, id)),
     });
   }
 
@@ -57147,7 +57186,7 @@ async function handleSalesInvoices(
       .select()
       .from(salesInvoiceItemsTable)
       .where(eq(salesInvoiceItemsTable.invoiceId, id));
-    const parsedItems =
+    let parsedItems =
       b.items !== undefined ? await resolveSalesInvoiceProductLines(
         salesInvoiceItems(b.items),
         b.items,
@@ -57156,6 +57195,27 @@ async function handleSalesInvoices(
       ) : null;
     if (parsedItems && parsedItems.length === 0)
       return error("أضف منتجاً واحداً على الأقل إلى الفاتورة", 400);
+    // Return rows point at these original lines and were priced with the
+    // invoice's discount and tax; changing either would rewrite returned
+    // history. The edit form always resends the lines, so unchanged lines keep
+    // their original rows and the other invoice fields stay editable.
+    if (parsedItems || b.discountAmount !== undefined || b.taxAmount !== undefined) {
+      const linkedReturns = await salesReturnsForInvoice(db, id, "any");
+      if (linkedReturns.length) {
+        const lineKey = (line: { productId?: unknown; productName?: unknown; quantity?: unknown; unitPrice?: unknown; discount?: unknown }) =>
+          [line.productId ?? "", String(line.productName ?? "").trim(), Number(line.quantity ?? 0).toFixed(3), money(line.unitPrice).toFixed(2), money(line.discount).toFixed(2)].join("|");
+        // Compare what was submitted: resolving re-prices catalog lines.
+        const nextLines = (parsedItems ? salesInvoiceItems(b.items) : []).map(lineKey).sort();
+        const currentLines = oldItems.map(lineKey).sort();
+        const linesChanged = Boolean(parsedItems) && (nextLines.length !== currentLines.length || nextLines.some((line, index) => line !== currentLines[index]));
+        const pricingChanged =
+          (b.discountAmount !== undefined && Math.abs(money(b.discountAmount) - money(existing.discountAmount)) >= 0.01) ||
+          (b.taxAmount !== undefined && Math.abs(money(b.taxAmount) - money(existing.taxAmount)) >= 0.01);
+        if (linesChanged || pricingChanged)
+          return error(`لا يمكن تعديل منتجات الفاتورة أو خصمها أو ضريبتها لأنها مرتبطة بمرتجع مبيعات (${linkedReturns.join("، ")}). عدّل البيانات الأخرى فقط، أو اعكس المرتجع أولاً.`, 409, { code: "CONFLICT" });
+        parsedItems = null;
+      }
+    }
     const subtotal = parsedItems
       ? parsedItems.reduce(
           (sum, item) => sum + item.quantity * item.unitPrice,
@@ -57530,6 +57590,9 @@ async function deleteSalesInvoice(
       );
     if (Number(links.returns) > 0)
       return error("لا يمكن الحذف: الفاتورة مرتبطة بمرتجع مبيعات.", 409);
+    const groupedReturns = await salesReturnsForInvoice(db, id, "any");
+    if (groupedReturns.length)
+      return error(`لا يمكن الحذف: الفاتورة مرتبطة بمرتجع مبيعات (${groupedReturns.join("، ")}).`, 409, { code: "CONFLICT" });
   } catch (err) {
     console.error("sales invoice delete link-check failed", {
       invoiceId: id,
@@ -75618,6 +75681,11 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
+    if (err instanceof SalesReturnError) {
+      const requestId = makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN sales return operation rejected", {requestId, path:req.nextUrl.pathname, status:err.status, code:err.code});
+      return error(err.message, err.status, {code: err.code, requestId, retryable:false});
+    }
     if (err instanceof PartnershipRepositoryError || err instanceof PartnershipValidationError) {
       const requestId = makeRequestId(req.headers.get("x-request-id"));
       console.warn("AJN vehicle partnership operation rejected", {requestId, path:req.nextUrl.pathname, status:err.status, code:err.code});

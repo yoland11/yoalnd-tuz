@@ -11,6 +11,7 @@ import {
   type CustomerStatementEntry,
   type CustomerStatementLine,
 } from "@/server/customer-account-summary";
+import { salesReturnStatementLines, salesReturnsReady } from "@/server/sales-returns";
 
 export {
   buildCustomerStatement,
@@ -52,6 +53,12 @@ export async function getCustomerAccountDocuments(
 ): Promise<CustomerAccountDocument[]> {
   const cid = customer.id;
   const phone = (customer.phone ?? "").trim();
+  // Debt removed by approved sales returns, read from its own settlement rows
+  // (never inferred from snapshot gaps); zero before migration 0130.
+  const credited = (await salesReturnsReady(executor))
+    ? sql`(SELECT coalesce(sum(s.amount::numeric), 0) FROM sales_return_settlements s
+        WHERE s.kind = 'invoice_credit' AND s.status = 'applied' AND s.invoice_id = sales_invoices.id)`
+    : sql`0::numeric`;
   // The phone fallback is written inline per source below, referencing each
   // table's own phone column (orders/sales use customer_phone; service/kosha use
   // phone) and only for rows that still carry no customer_id.
@@ -62,7 +69,8 @@ export async function getCustomerAccountDocuments(
              created_at AS doc_date,
              total::numeric AS total, remaining_amount::numeric AS remaining,
              payment_status,
-             (customer_id = ${cid}) AS linked_by_id
+             (customer_id = ${cid}) AS linked_by_id,
+             ${credited} AS credited
       FROM sales_invoices
       WHERE status = 'active' AND financially_reversed = false
         AND (customer_id = ${cid}
@@ -70,7 +78,7 @@ export async function getCustomerAccountDocuments(
       UNION ALL
       SELECT 'order', id, 'ORD-' || id, created_at,
              total::numeric, remaining_amount::numeric, payment_status,
-             (customer_id = ${cid})
+             (customer_id = ${cid}), 0::numeric
       FROM orders
       WHERE archived_at IS NULL AND status <> 'cancelled'
         AND (customer_id = ${cid}
@@ -78,7 +86,7 @@ export async function getCustomerAccountDocuments(
       UNION ALL
       SELECT 'service_order', id, coalesce(tracking_code, 'SRV-' || id), created_at,
              total_amount::numeric, remaining_amount::numeric, payment_status,
-             (customer_id = ${cid})
+             (customer_id = ${cid}), 0::numeric
       FROM service_orders
       WHERE archived_at IS NULL AND status <> 'cancelled'
         AND (customer_id = ${cid}
@@ -86,7 +94,7 @@ export async function getCustomerAccountDocuments(
       UNION ALL
       SELECT 'kosha_booking', id, coalesce(tracking_code, 'KOSHA-' || id), created_at,
              total_amount::numeric, remaining_amount::numeric, payment_status,
-             (customer_id = ${cid})
+             (customer_id = ${cid}), 0::numeric
       FROM kosha_bookings
       WHERE archived_at IS NULL AND status <> 'cancelled'
         AND (customer_id = ${cid}
@@ -94,7 +102,7 @@ export async function getCustomerAccountDocuments(
     )
     SELECT source_type, source_id, reference, doc_date,
            total::text AS total, remaining::text AS remaining,
-           payment_status, linked_by_id
+           payment_status, linked_by_id, credited::text AS credited
     FROM docs
     ORDER BY doc_date DESC NULLS LAST, source_id DESC
   `);
@@ -102,6 +110,7 @@ export async function getCustomerAccountDocuments(
   return rows.map((row) => {
     const total = num(row.total);
     const remaining = Math.min(Math.max(num(row.remaining), 0), Math.max(total, 0));
+    const credited = Math.min(Math.max(num(row.credited), 0), Math.max(total - remaining, 0));
     return {
       sourceType: String(row.source_type) as CustomerAccountSourceType,
       sourceId: Number(row.source_id),
@@ -113,8 +122,9 @@ export async function getCustomerAccountDocuments(
             ? String(row.doc_date)
             : null,
       total: round2(total),
-      paid: round2(Math.max(total - remaining, 0)),
+      paid: round2(Math.max(total - remaining - credited, 0)),
       remaining: round2(remaining),
+      credited: round2(credited),
       paymentStatus: String(row.payment_status ?? "unpaid"),
       linkedById: row.linked_by_id === true || row.linked_by_id === "t",
     } satisfies CustomerAccountDocument;
@@ -183,5 +193,6 @@ export async function getCustomerStatement(
     debit: num(row.debit),
     credit: num(row.credit),
   }));
-  return buildCustomerStatement([...debitLines, ...creditLines]);
+  const returnLines: CustomerStatementLine[] = await salesReturnStatementLines(executor, cid);
+  return buildCustomerStatement([...debitLines, ...creditLines, ...returnLines]);
 }

@@ -18,9 +18,11 @@ export type CustomerAccountDocument = {
   reference: string;
   date: string | null;
   total: number;
-  /** Approved/posted paid = total − reconciled remaining (never client input). */
+  /** Approved/posted paid = total − reconciled remaining − return credits (never client input). */
   paid: number;
   remaining: number;
+  /** Debt removed by approved sales returns (not cash). Sales invoices only. */
+  credited?: number;
   paymentStatus: string;
   /** true = matched by canonical customer_id; false = matched by exact phone fallback. */
   linkedById: boolean;
@@ -32,6 +34,8 @@ export type CustomerAccountSummary = {
   totalReceivable: number;
   /** Σ approved/posted money received against those documents. */
   totalPaid: number;
+  /** Σ debt removed by approved sales returns (never counted as paid). */
+  totalReturnCredits: number;
   /** The one "في الذمة" figure = Σ reconciled remaining. */
   currentBalance: number;
   documentCount: number;
@@ -112,11 +116,13 @@ export function summarizeCustomerAccount(
 ): CustomerAccountSummary {
   let totalReceivable = 0;
   let totalPaid = 0;
+  let totalReturnCredits = 0;
   let currentBalance = 0;
   let unlinkedByPhoneCount = 0;
   for (const document of documents) {
     totalReceivable += document.total;
     totalPaid += document.paid;
+    totalReturnCredits += document.credited ?? 0;
     currentBalance += document.remaining;
     if (!document.linkedById) unlinkedByPhoneCount += 1;
   }
@@ -124,6 +130,7 @@ export function summarizeCustomerAccount(
     customerId,
     totalReceivable: round2(totalReceivable),
     totalPaid: round2(totalPaid),
+    totalReturnCredits: round2(totalReturnCredits),
     currentBalance: round2(currentBalance),
     documentCount: documents.length,
     unlinkedByPhoneCount,

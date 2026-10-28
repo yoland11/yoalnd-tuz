@@ -9,9 +9,12 @@ for(const sourceType of ["graduation_order","sales_invoice","purchase_invoice"] 
  const tx={execute:async(q:SQL)=>{queries.push(dialect.sqlToQuery(q));return {rows:[{id:42,total_amount:"100",approved_paid_amount:"40",remaining_amount:"60",payment_status:"partial"}]};}};
  const state=await reconcilePaymentState(tx,{sourceType,sourceId:42});
  assert.equal(state!.approvedPaidAmount,"40");
- assert.equal(queries.length,sourceType==="graduation_order"?2:1,"graduation canonical approval must also project its linked invoice; unrelated sources unchanged");
+ // Sales invoices first run a read-only to_regclass probe for migration 0130 (sales-return credits).
+ const statements=queries.filter((query)=>!/^SELECT to_regclass\('public\.sales_return_settlements'\) IS NOT NULL AS ready$/.test(query.sql));
+ assert.equal(queries.length-statements.length,sourceType==="sales_invoice"?1:0,"only sales invoices probe for sales-return credits");
+ assert.equal(statements.length,sourceType==="graduation_order"?2:1,"graduation canonical approval must also project its linked invoice; unrelated sources unchanged");
  if(sourceType==="graduation_order"){
-  const {sql,params}=queries[1];assert.match(sql,/UPDATE sales_invoices/);assert.match(sql,/invoice\.id = source\.invoice_id/);
+  const {sql,params}=statements[1];assert.match(sql,/UPDATE sales_invoices/);assert.match(sql,/invoice\.id = source\.invoice_id/);
   assert.match(sql,/NOT EXISTS[\s\S]*financial_transactions/,"never overwrite independent invoice financial history");
   assert.match(sql,/NOT EXISTS[\s\S]*receipt_voucher_allocations/,"never overwrite independent invoice allocations");
   assert.match(sql,/NOT EXISTS\s*\(SELECT 1 FROM installment_contracts/,"never overwrite independent installment payment authority");
