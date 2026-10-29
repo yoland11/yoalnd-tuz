@@ -11,10 +11,13 @@ const sanitizer = api.statements.find(node => ts.isFunctionDeclaration(node) && 
 assert.ok(sanitizer, "actual API input sanitizer is available");
 const sanitizerJs = ts.transpileModule(sanitizer.getText(api), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const expressions = [];
+const vehicleStart = source.indexOf('if (section === "vehicles" && parts[1] && parts[2] === "financial"');
+const vehicleEnd = source.indexOf('if (section === "vehicles" && parts[1] && parts[2] === "expenses"', vehicleStart);
+assert.ok(vehicleStart > 0 && vehicleEnd > vehicleStart);
 function visit(node) {
   if (ts.isPropertyAssignment(node)) {
     const name = node.name.getText(api), expression = node.initializer.getText(api);
-    if ((name === "tripProfit" && expression.includes("executedTransportationRevenue")) ||
+    if ((name === "tripProfit" && node.getStart(api) > vehicleStart && node.getStart(api) < vehicleEnd) ||
         (name === "netProfit" && expression.includes("transportationRevenue") && expression.includes("vehicleExpenses"))) {
       expressions.push({ name, expression, line: api.getLineAndCharacterOfPosition(node.getStart(api)).line + 1 });
     }
@@ -35,7 +38,7 @@ for (const row of expressions) {
   function calculate(revenue, expenses) {
     return vm.runInNewContext(`${sanitizerJs}\n(${row.expression})`, {
       transportationRevenue: revenue, vehicleExpenses: expenses,
-      executedTransportationRevenue: revenue, tripExpenses: expenses,
+      executedTransportationRevenue: revenue, fee: revenue, tripExpenses: expenses,
       stats: { transportationRevenue: revenue, vehicleExpenses: expenses },
       tripExpenseOf: () => expenses, serviceOrderByExpense: new Map(), order: { id: 1 },
     }, { timeout: 1000 });

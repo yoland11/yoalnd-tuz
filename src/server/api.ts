@@ -23419,8 +23419,8 @@ async function handleEnterpriseAdmin(
       const total = money(booking.totalAmount);
       const paid = money(booking.paidAmount);
       const fee = money(booking.transportationFee);
-      // Partial booking payments are attributed pro-rata. This is deterministic,
-      // reversals-safe, and never creates a second cash or revenue movement.
+      // Keep the legacy collection attribution separate from the recorded fee.
+      // Vehicle income uses the full fee; neither value posts a cash movement.
       const executedTransportationRevenue = total > 0 ? money(fee * Math.min(1, Math.max(0, paid / total))) : 0;
       const tripExpenses = tripExpenseOf((expense) => expense.bookingId === booking.id);
       const driver = booking.transportationDriverId ? driverById.get(booking.transportationDriverId) : null;
@@ -23436,7 +23436,7 @@ async function handleEnterpriseAdmin(
         executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
         driverName: driver?.fullName || driver?.username || null,
         tripExpense: money(tripExpenses),
-        tripProfit: executedTransportationRevenue - tripExpenses,
+        tripProfit: fee - tripExpenses,
       };
     });
     // Booking-centre transport on service orders, with expenses linked to them (0128).
@@ -23458,7 +23458,7 @@ async function handleEnterpriseAdmin(
         executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
         driverName: driver?.fullName || driver?.username || null,
         tripExpense: money(tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id))),
-        tripProfit: executedTransportationRevenue - tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id)),
+        tripProfit: fee - tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id)),
       });
     }
     trips.sort((a, b) => String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? "")) || b.bookingId - a.bookingId);
@@ -23488,12 +23488,12 @@ async function handleEnterpriseAdmin(
         paymentMethod: expense.paymentMethod,
       };
     });
-    const transportationRevenue = money(trips.reduce((sum, row) => sum + row.executedTransportationRevenue, 0));
+    const transportationRevenue = money(trips.reduce((sum, row) => sum + row.transportationFee, 0));
     const vehicleExpenses = money(expenses.reduce((sum, row) => sum + row.effectiveAmount, 0));
     const categories = Object.fromEntries(VEHICLE_EXPENSE_TYPES.map((type) => [type, money(expenses.filter((row) => row.expenseType === type).reduce((sum, row) => sum + row.effectiveAmount, 0))]));
     return json({
       vehicle: { id: vehicle.id, name: vehicle.name, plateNumber: vehicle.plateNumber, status: vehicle.status },
-      summary: { transportationRevenue, vehicleExpenses, netProfit: transportationRevenue - vehicleExpenses, tripCount: trips.filter((row) => row.executedTransportationRevenue > 0).length, categories },
+      summary: { transportationRevenue, vehicleExpenses, netProfit: transportationRevenue - vehicleExpenses, tripCount: trips.length, categories },
       trips,
       expenses,
       capabilities: { serviceExpenseLink },
@@ -23786,10 +23786,10 @@ async function handleEnterpriseAdmin(
       const statsResult: any = await db.execute(sql`
         select v.id,
           (select count(*)::int from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled') as trip_count,
-          (select coalesce(sum(case when k.total_amount::numeric > 0 then k.transportation_fee::numeric * least(1, greatest(0, k.paid_amount::numeric / k.total_amount::numeric)) else 0 end),0)::float from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled') as transportation_revenue,
+          (select coalesce(sum(greatest(0, coalesce(k.transportation_fee::numeric,0))),0)::float from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled') as transportation_revenue,
           (select coalesce(sum(e.amount::numeric),0)::float from vehicle_expenses e where e.vehicle_id=v.id and e.status='executed') as vehicle_expenses,
           (select count(*)::int from service_orders s where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId'=v.id::text and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode'='ajn' and s.archived_at is null and s.status not in ('cancelled','canceled')) as service_trip_count,
-          (select coalesce(sum(case when s.total_amount::numeric > 0 then coalesce(nullif(${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'fee','')::numeric,0) * least(1, greatest(0, s.deposit_amount::numeric / s.total_amount::numeric)) else 0 end),0)::float from service_orders s where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId'=v.id::text and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode'='ajn' and s.archived_at is null and s.status not in ('cancelled','canceled')) as service_transportation_revenue
+          (select coalesce(sum(greatest(0, coalesce(nullif(${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'fee','')::numeric,0))),0)::float from service_orders s where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId'=v.id::text and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode'='ajn' and s.archived_at is null and s.status not in ('cancelled','canceled')) as service_transportation_revenue
         from fleet_vehicles v
       `);
       // Kosha bookings (own columns) and service orders (booking-centre transport) both count.

@@ -13,7 +13,7 @@ export function transportTotalDelta(prior: BookingTransport, nextFee: number) {
   return round((Number(nextFee) || 0) - included);
 }
 
-/** The part of a transport fee already collected, credited to its vehicle by paid / total. */
+/** Legacy analytical share of booking collections; not the full recorded vehicle income. */
 export function executedTransportRevenue(fee: unknown, paid: unknown, total: unknown) {
   const totalValue = Number(total) || 0;
   if (totalValue <= 0) return 0;

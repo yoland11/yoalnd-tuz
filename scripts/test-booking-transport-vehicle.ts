@@ -15,7 +15,7 @@ assert.equal(transportTotalDelta({ mode: "ajn", fee: 25_000, inTotal: true }, 0)
 assert.equal(transportTotalDelta({ mode: "customer", fee: 0, inTotal: false }, 0), 0);
 assert.equal(transportTotalDelta({ mode: "ajn", fee: 25_000 }, 0), 0, "removing an informational fee leaves the total alone");
 
-// 2. The vehicle is credited with the collected share only.
+// 2. Legacy collection attribution remains separate from full recorded vehicle income.
 assert.equal(executedTransportRevenue(25_000, 500_000, 1_250_000), 10_000, "40% paid → 40% of the fee");
 assert.equal(executedTransportRevenue(25_000, 1_300_000, 1_250_000), 25_000, "never more than the fee");
 assert.equal(executedTransportRevenue(25_000, 0, 1_250_000), 0);

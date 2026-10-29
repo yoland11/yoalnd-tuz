@@ -1,0 +1,13 @@
+# Vehicle income uses the full recorded transport fee
+
+The owner explicitly requires a saved 15,000 IQD transport fee to appear as 15,000 vehicle income, independent of partial booking collections. The current vehicle financial GET and fleet-list SQL instead multiply the fee by booking paid/total. This is why the UI shows 11,538.46. This task changes the analytical vehicle income basis, not cash collection or an approved accounting source.
+
+Use the saved full fee from each existing eligible AJN trip exactly once in vehicle income and trip profit. Keep the existing exclusions for cancelled/archived/customer-responsibility trips and vehicle assignment. Keep original approved-effective expenses and signed results. Count the existing eligible trip records consistently with the fleet list. No duplicate customer charge or change to booking total, paid, remaining, approval, cash, ledger or historical rows.
+
+Preserve `executedTransportationRevenue`, `executionStatus` and the existing `executedTransportRevenue()` helper as a legacy analytical share of booking collections. Do not redefine those as full cash payments. Hide the confusing collection-share column from both original vehicle trip views and label command-center income/trip count as recorded, not executed cash. The original booking accounts remain the place for actual collections and receivables. Vehicle print uses the same corrected original view.
+
+Rejected alternatives: changing the global collection helper would silently change existing payment meaning; introducing another vehicle/revenue system duplicates existing records. The selected approach changes only the original read-model and misleading labels/column, as required by the owner.
+
+Caller audit: `vehicles.tsx` and `enterprise.tsx` consume the vehicle financial summary. Booking operations and koshas use fleet identity/active fields only. The partnership view only invalidates this cache. Monthly partnership recognition, source evidence, rights and posting use their own original source snapshots; they never consume this summary or fleet stats. The separate partnership `transportCashAttribution` remains unchanged.
+
+No migration, new dependency, financial transaction or Production diagnostic business write. Tests execute actual API mapper/loop/summary expressions, actual Drizzle fleet SQL, actual trip JSX/metric and formatter with controlled fixtures. Cover partially/unpaid/fully paid bookings, both sources, full fee despite different booking totals, expenses affecting only profit, signed loss, zero fee, original collection compatibility, scope filters and UI column counts. Database write/concurrency coverage remains SKIPPED without isolated TEST configuration.

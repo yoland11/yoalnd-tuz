@@ -11,7 +11,7 @@ function check(label, condition) {
 function money(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
-function transportRevenue(total, paid, fee) {
+function collectedTransportShare(total, paid, fee) {
   return total > 0 ? money(fee * Math.min(1, Math.max(0, paid / total))) : 0;
 }
 function netProfit(revenue, expenses) {
@@ -21,10 +21,10 @@ function netProfit(revenue, expenses) {
 // Scenario A: the transport fee is a component of one customer booking total,
 // never a second sale or cash movement.
 check("AJN transport adds once to the customer booking total", money(500000 + 50000) === 550000);
-check("AJN transport has a distinct analytical revenue component", transportRevenue(550000, 550000, 50000) === 50000);
-check("partial payment attributes transport revenue proportionally", transportRevenue(550000, 275000, 50000) === 25000);
-check("reversed or zero official payment produces no transport revenue", transportRevenue(550000, 0, 50000) === 0);
-check("customer-responsibility transport creates no revenue", transportRevenue(500000, 500000, 0) === 0);
+check("full booking collection can cover the saved transport fee", collectedTransportShare(550000, 550000, 50000) === 50000);
+check("legacy collection attribution stays proportional, separate from full recorded income", collectedTransportShare(550000, 275000, 50000) === 25000);
+check("zero official payment has no collection attribution", collectedTransportShare(550000, 0, 50000) === 0);
+check("customer-responsibility transport has no collection attribution", collectedTransportShare(500000, 500000, 0) === 0);
 
 // Scenario B / D: vehicle is an analytical profitability account only.
 check("vehicle profit subtracts executed expenses without mutating revenue", netProfit(500000, 180000) === 320000);
@@ -54,7 +54,7 @@ check("vehicle expense retries reuse an idempotency key only for identical reque
 check("staff vehicle expense UI posts vehicle and odometer details", staffExpenseUI.includes("/staff/koshas/vehicle-expense-requests") && staffExpenseUI.includes("vehicleId") && staffExpenseUI.includes("odometerKm"));
 check("Kosha portal has a direct vehicle expense shortcut that preselects vehicle mode", staffPortalUI.includes('nav("/staff/koshas/expenses?mode=vehicle")') && staffExpenseUI.includes('.get("mode") === "vehicle"'));
 check("cash approval source links open the selected vehicle profitability view", masterCashUI.includes("VE-(\\d+)-") && masterCashUI.includes("&vehicle=${encodeURIComponent(vehicleId)}") && masterCashUI.includes("referenceNo={row.sourceReference}"));
-check("transport revenue is an analytical pro-rata calculation, not a new cash transaction", api.includes("executedTransportationRevenue = total > 0"));
+check("legacy booking collection attribution is analytical and creates no cash transaction", api.includes("executedTransportationRevenue = total > 0"));
 const destructiveStatements = migration
   .split(/\r?\n/)
   .map((line) => line.trim().toUpperCase())
@@ -66,4 +66,5 @@ if (failures) {
   process.exit(1);
 }
 await import("./test-vehicle-loss-display.mjs");
+await import("./test-vehicle-full-transport-fee.mjs");
 console.log("AJN VEHICLE TRANSPORT CONTRACT PASSED — single booking, canonical cash, analytical vehicle profitability.");
