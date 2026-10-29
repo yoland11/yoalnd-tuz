@@ -23436,7 +23436,7 @@ async function handleEnterpriseAdmin(
         executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
         driverName: driver?.fullName || driver?.username || null,
         tripExpense: money(tripExpenses),
-        tripProfit: money(executedTransportationRevenue - tripExpenses),
+        tripProfit: executedTransportationRevenue - tripExpenses,
       };
     });
     // Booking-centre transport on service orders, with expenses linked to them (0128).
@@ -23458,7 +23458,7 @@ async function handleEnterpriseAdmin(
         executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
         driverName: driver?.fullName || driver?.username || null,
         tripExpense: money(tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id))),
-        tripProfit: money(executedTransportationRevenue - tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id))),
+        tripProfit: executedTransportationRevenue - tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id)),
       });
     }
     trips.sort((a, b) => String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? "")) || b.bookingId - a.bookingId);
@@ -23493,7 +23493,7 @@ async function handleEnterpriseAdmin(
     const categories = Object.fromEntries(VEHICLE_EXPENSE_TYPES.map((type) => [type, money(expenses.filter((row) => row.expenseType === type).reduce((sum, row) => sum + row.effectiveAmount, 0))]));
     return json({
       vehicle: { id: vehicle.id, name: vehicle.name, plateNumber: vehicle.plateNumber, status: vehicle.status },
-      summary: { transportationRevenue, vehicleExpenses, netProfit: money(transportationRevenue - vehicleExpenses), tripCount: trips.filter((row) => row.executedTransportationRevenue > 0).length, categories },
+      summary: { transportationRevenue, vehicleExpenses, netProfit: transportationRevenue - vehicleExpenses, tripCount: trips.filter((row) => row.executedTransportationRevenue > 0).length, categories },
       trips,
       expenses,
       capabilities: { serviceExpenseLink },
@@ -23798,7 +23798,7 @@ async function handleEnterpriseAdmin(
         data: rows.map((row) => ({
           ...row,
           purchasePrice: money(row.purchasePrice),
-          stats: (() => { const stats: { tripCount: number; transportationRevenue: number; vehicleExpenses: number } = statsById.get(row.id) ?? { tripCount: 0, transportationRevenue: 0, vehicleExpenses: 0 }; return { ...stats, netProfit: money(stats.transportationRevenue - stats.vehicleExpenses) }; })(),
+          stats: (() => { const stats: { tripCount: number; transportationRevenue: number; vehicleExpenses: number } = statsById.get(row.id) ?? { tripCount: 0, transportationRevenue: 0, vehicleExpenses: 0 }; return { ...stats, netProfit: stats.transportationRevenue - stats.vehicleExpenses }; })(),
           latitude: row.latitude ? Number(row.latitude) : null,
           longitude: row.longitude ? Number(row.longitude) : null,
           lastLocationAt: enterpriseDate(row.lastLocationAt),

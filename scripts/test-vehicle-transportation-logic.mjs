@@ -65,4 +65,5 @@ if (failures) {
   console.error(`AJN VEHICLE TRANSPORT CONTRACT FAILED — ${failures} check(s) failed.`);
   process.exit(1);
 }
+await import("./test-vehicle-loss-display.mjs");
 console.log("AJN VEHICLE TRANSPORT CONTRACT PASSED — single booking, canonical cash, analytical vehicle profitability.");

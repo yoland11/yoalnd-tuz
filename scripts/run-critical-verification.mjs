@@ -57,6 +57,7 @@ const steps = [
   ["Booking payments reach the cash box", "pnpm", ["run", "test:booking-cashbox"]],
   ["Company loans follow their financial request", "pnpm", ["run", "test:company-loans"]],
   ["Booking transport reaches the vehicle accounts", "pnpm", ["run", "test:booking-transport"]],
+  ["Vehicle transportation and actual signed result contracts", "pnpm", ["run", "test:vehicle-transportation"]],
   ["Single-vehicle partnership domain and schema contracts", "pnpm", ["run", "test:vehicle-partnership"]],
   ["Vehicle partnership PostgreSQL integration (isolated TEST only)", "pnpm", ["run", "test:vehicle-partnership-db"]],
   ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],
