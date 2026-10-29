@@ -5,6 +5,7 @@ type Rule={sourceType:string;sourceEvent:string;direction:"revenue"|"expense";ca
 /** Server-owned catalog. Neither a client flag nor the word 'expense' decides
  * cash impact. Resolve again from the actual approved source before posting. */
 export const PARTNERSHIP_POSTING_TYPES={
+ vp_opening_loss:{sourceType:"vehicle_partnership_opening",sourceEvent:"opening_loss",direction:"revenue",cash:"none",operating:"none",debit:"VP-LOSS",credit:"VP-OPENING-CLEAR"},
  vp_internal_entitlement:{sourceType:"vehicle_partnership_activity",sourceEvent:"internal_entitlement",direction:"expense",cash:"none",operating:"none",debit:"VP-INTERNAL",credit:"VP-PAYABLE"},
  vp_external_attribution:{sourceType:"vehicle_partnership_activity",sourceEvent:"external_attribution",direction:"revenue",cash:"none",operating:"none",debit:"VP-ACTIVITY",credit:"VP-ATTRIBUTION"},
  vp_partner_operating_advance:{sourceType:"vehicle_partnership_cost",sourceEvent:"partner_paid_cost",direction:"expense",cash:"none",operating:"expense",debit:"5000",credit:"VP-ADVANCE"},

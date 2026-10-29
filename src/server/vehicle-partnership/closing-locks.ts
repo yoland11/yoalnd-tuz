@@ -39,11 +39,11 @@ type CandidateSet=Record<Group,number[]>;
  * original vehicle-cost events share root locking; late sources remain
  * explicit closing/adjustment blockers. Live concurrency needs isolated TEST.
  */
-export async function lockClosingOriginalSources(tx:PartnershipExecutor,actor:PartnershipActor,vehicleId:number,month:string):Promise<void>{
+export async function lockClosingOriginalSources(tx:PartnershipExecutor,actor:PartnershipActor,vehicleId:number,month:string,options:{historicalSettlement?:boolean}={}):Promise<void>{
  authorizePartnership(actor);partnershipId(vehicleId);const range=closingMonthBounds(month);
  const root=await lockPartnership(tx,vehicleId);
  await readOriginalVehicle(tx,actor,vehicleId);
- if(root.ownershipType!=="partnership")changed("المركبة لا تستخدم اتفاق شراكة فعالاً");
+ if(root.ownershipType!=="partnership"&&!options.historicalSettlement)changed("المركبة لا تستخدم اتفاق شراكة فعالاً");
  const activity=(field:"kosha_booking_id"|"service_order_id"|"delivery_order_id",alias:string)=>sql`EXISTS(SELECT 1 FROM vehicle_partnership_activity a WHERE a.partnership_id=${root.id} AND ${sql.raw(`a.${field}=${alias}.id`)} AND a.recognition_date<=${range.to}::date)`;
  const sourceQueries:Record<"kosha"|"service"|"delivery",SQL>={
   kosha:sql`SELECT k.id FROM kosha_bookings k WHERE (k.transportation_vehicle_id=${vehicleId} AND k.transportation_mode='ajn' AND k.archived_at IS NULL AND k.status NOT IN ('cancelled','canceled') AND (left(k.event_date,10) BETWEEN ${range.from} AND ${range.to} OR k.event_date IS NULL OR k.event_date !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}')) OR ${activity("kosha_booking_id","k")} OR EXISTS(SELECT 1 FROM vehicle_partnership_cost_funding c WHERE c.partnership_id=${root.id} AND c.source_snapshot->>'bookingId'=k.id::text) OR EXISTS(SELECT 1 FROM vehicle_expenses e WHERE e.vehicle_id=${vehicleId} AND e.booking_id=k.id AND e.expense_date::date<=${range.to}::date)`,

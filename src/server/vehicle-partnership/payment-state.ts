@@ -6,6 +6,7 @@ import {resolvePartnershipFinancialEffect} from "./financial-classification";
 import {derivePartnershipConversion,type EntitlementConversion,type ConversionPayment,type ConversionCoverage} from "../../lib/vehicle-partnership/conversion";
 import {proveDriverCashCoverageSource} from "./driver-cash-source";
 import {proveDriverCoverageMapping} from "./driver-coverage-proof";
+import {proveAdvanceCoverageMapping} from "./advance-coverage-proof";
 import {provePartnershipCashReversalHistory} from "./cash-reversal-proof";
 
 export type PartnershipPaymentSource="vehicle_partnership_right"|"vehicle_partnership_settlement";
@@ -29,6 +30,8 @@ export async function reconcilePartnershipPaymentState(tx:PartnershipExecutor,in
  if(positiveId(right.id)!==sourceId||Number(right.partnership_id)!==root.id||!["pending","approved","cancelled","reversed"].includes(status)||!["capital","profit","loss","advance","loss_recovery","internal_entitlement"].includes(category))conflict("بيانات استحقاق الشراكة أو حالته غير صالحة");
  const total=parseMoney(String(right.amount));
  const rows=partnershipRows(await tx.execute(sql`/* vp_payment_allocations */ SELECT a.id AS allocation_id,a.right_id,a.purpose,a.conversion_allocation_id,a.idempotency_key,a.amount::text AS allocated_amount,a.financial_transaction_id,f.amount::text AS financial_amount,f.approval_status AS financial_status,f.direction AS financial_direction,f.source_type AS financial_source_type,f.source_id AS financial_source_id,f.source_event AS financial_event,f.transaction_type,ar.partnership_id AS allocation_partnership_id,ar.category AS allocation_category,h.id AS closing_id,h.partnership_id AS closing_partnership_id,h.financial_transaction_id AS closing_financial_id,h.status AS closing_status,e.vehicle_id AS cost_vehicle_id,e.financial_transaction_id AS cost_financial_transaction_id,
+ EXISTS(SELECT 1 FROM financial_audit_logs audit WHERE audit.transaction_id=f.id AND audit.action='vehicle_partnership_financial_requested' AND audit.new_values->'sourceSnapshot'->>'formatVersion'='2' AND audit.new_values->'sourceSnapshot'->'command'->>'originMode'='approved_advance') AS advance_source_only,
+ EXISTS(SELECT 1 FROM financial_audit_logs audit WHERE audit.transaction_id=f.id AND audit.action='vehicle_partnership_advance_conversion_mapped') AS advance_mapping_present,
  coalesce((SELECT sum(r.amount) FROM financial_transactions r WHERE r.reversed_transaction_id=f.id AND r.approval_status='executed'),0)::text AS reversed_amount,
  EXISTS(SELECT 1 FROM financial_transactions r WHERE r.reversed_transaction_id=f.id AND r.approval_status='executed' AND (r.direction=f.direction OR r.amount<=0 OR r.source_type IS DISTINCT FROM f.source_type OR r.source_id IS DISTINCT FROM f.source_id OR (CASE WHEN f.source_type='vehicle_expense' THEN coalesce(r.source_event,'') NOT IN ('reversal','vehicle_expense_reversal') ELSE r.source_event IS DISTINCT FROM 'reversal' END) OR r.transaction_type IS DISTINCT FROM CASE WHEN f.source_type='vehicle_expense' THEN 'manual_reversal' ELSE f.transaction_type||'_reversal' END)) AS invalid_reversal
  FROM vehicle_partnership_settlement_allocations a JOIN financial_transactions f ON f.id=a.financial_transaction_id JOIN vehicle_partnership_rights ar ON ar.id=a.right_id LEFT JOIN vehicle_partnership_closings h ON f.source_type='vehicle_partnership_closing' AND f.source_id=h.id::text LEFT JOIN vehicle_expenses e ON f.source_type='vehicle_expense' AND f.source_id=e.id::text
@@ -96,6 +99,11 @@ export async function reconcilePartnershipPaymentState(tx:PartnershipExecutor,in
    if(!group.some(row=>String(row.right_id)===String(first.financial_source_id)&&row.purpose===first.financial_event))conflict("هوية مصدر الصرف لا تطابق توزيع الاستحقاق الأساسي");
    const allowed=first.financial_event==="distribution"?["distribution","internal_entitlement_settlement"]:first.financial_event==="advance_reimbursement"?["advance_reimbursement","internal_entitlement_settlement"]:[String(first.financial_event)];
    if(group.some(row=>!allowed.includes(String(row.purpose))))conflict("غرض توزيع الصرف غير مطابق للمصدر");
+   if(first.transaction_type==='vp_partner_advance_repayment'&&first.advance_source_only===true&&(first.advance_mapping_present===true||group.some(r=>r.purpose==='internal_entitlement_settlement'))){
+    if(financialStatus!=='executed'||reversed!==0n&&reversed!==amount)conflict('ربط السلفة يخص صرفاً منفذاً أو عكساً كاملاً موثقاً فقط');
+    if(reversed===amount){const history=await provePartnershipCashReversalHistory(tx,financialId),saved=history.proof.allocations;if(history.originalId!==financialId||history.sourceType!=='vehicle_partnership_settlement'||history.sourceId!==String(first.financial_source_id)||history.transactionType!=='vp_partner_advance_repayment'||history.partnershipId!==root.id||history.vehicleId!==root.vehicleId||parseMoney(history.amount)!==amount||!history.proof.advanceMappingDigest||saved.length!==group.length||group.some(r=>!saved.some(a=>a.id===Number(r.allocation_id)&&a.rightId===Number(r.right_id)&&a.financialId===financialId&&a.parentId===(r.conversion_allocation_id==null?null:Number(r.conversion_allocation_id))&&a.purpose===r.purpose&&a.amount===formatMoney(parseMoney(String(r.allocated_amount)))&&a.key===r.idempotency_key)))conflict('توزيعات السلفة المعكوسة لا تطابق سجلها الأصلي');}
+    else await proveAdvanceCoverageMapping(tx,root,financialId,group);
+   }
   }
   const byPurpose=new Map<string,Row[]>();for(const row of group){const purpose=String(row.purpose),items=byPurpose.get(purpose)??[];items.push(row);byPurpose.set(purpose,items);}
   for(const [purpose,items] of byPurpose){

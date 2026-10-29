@@ -1,5 +1,6 @@
 /** Serializable partnership facts. No database, approval or cashbox dependency. */
 export type Money = string;
+export const ORIGINAL_VEHICLE_OPERATING_COST_TYPES:readonly string[]=["fuel","driver_wage","maintenance","repair","oil_change","tires","insurance","registration","washing","fees_parking","cleaning","parking","toll"];
 export type PartyReference = {kind:"customer"|"supplier"|"staff";id:number};
 export type Share = {key:string;basisPoints:number};
 export type Allocation = {key:string;amount:Money};

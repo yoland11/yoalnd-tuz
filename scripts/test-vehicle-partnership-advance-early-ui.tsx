@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+(globalThis as any).React=React;
+const ui=await import('../src/views/admin/vehicle-partnership');
+const advance={id:101,category:'advance',direction:'credit',memberId:11,memberName:'الشريك الأصلي',amount:'100.00',status:'approved',closingId:null,closingVersion:null,advanceClosingId:null,advanceClosingVersion:null,paymentState:{totalAmount:'100.00',approvedPaidAmount:'40.00',remainingAmount:'60.00',reservedAmount:'20.00',availableAmount:'40.00',payable:true,approvalStatus:'approved'}};
+const html=renderToStaticMarkup(<ui.PartnershipBalances rootVersion={3} rights={[advance]} driverEntries={[]} onPay={()=>{}}/>);assert.match(html,/طلب تسديد سلفة/,'approved original advance can request repayment without closing');assert.doesNotMatch(html,/يلزم اعتماد شهر المصروف/);
+assert.equal(typeof ui.makePartnershipPaymentAttempt,'function');const target={kind:'advance' as const,id:101,name:'الشريك الأصلي',available:'40.00',version:3,originMode:'approved_advance' as const},input={amount:'40.00',transactionDate:'2026-08-20',paymentMethod:'cash',reason:'تسديد السلفة بعد الموافقة',idempotencyKey:'early-ui-0001'};
+const attempt=ui.makePartnershipPaymentAttempt(target,3,input);target.version=4;target.available='0.00';assert.equal(attempt.route,'/advance-payments');assert.equal(attempt.command.originMode,'approved_advance');assert.equal(attempt.command.expectedVersion,3);assert.equal(attempt.command.amount,'40.00');assert.ok(Object.isFrozen(attempt)&&Object.isFrozen(attempt.command));assert.throws(()=>ui.makePartnershipPaymentAttempt({...target,available:'40.00'},3,{...input,amount:'40.01'}));
+const legacy=ui.makePartnershipPaymentAttempt({kind:'profit',id:4,name:'شريك',available:'100.00',version:7},3,input);assert.equal(legacy.route,'/distributions');assert.equal(legacy.command.expectedVersion,7);assert.equal('originMode' in legacy.command,false);
+console.log('PASS early advance UI: approved original unclosed advance is payable, exact root-version v2 request, frozen target/body and unchanged legacy profit request.');

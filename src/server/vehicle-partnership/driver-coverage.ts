@@ -23,6 +23,7 @@ const schema=z.object({closingId:z.number().int().positive(),expectedVersion:z.n
 const resultRow=z.object({financialTransactionId:z.number().int().positive(),transactionNo:z.string().min(1),amount:z.string(),coveredAmount:z.string(),uncoveredAmount:z.string(),alreadyLinked:z.boolean()}).strict();
 const resultSchema=z.object({closingId:z.number().int().positive(),revision:z.number().int().positive(),sourceDigest:z.string(),matchedPayments:z.number().int().nonnegative().max(200),reversedPayments:z.number().int().nonnegative().max(200).optional(),amount:z.string(),coveredAmount:z.string(),uncoveredAmount:z.string(),results:z.array(resultRow).max(200)}).strict();
 export type DriverCoverageSyncResult=z.infer<typeof resultSchema>;
+export const partnershipCoverageResultSchema=resultSchema;
 type Context=Awaited<ReturnType<typeof lockClosingContext>>;
 
 function wagesInMonth(snapshot:Awaited<ReturnType<typeof verifySubmittedClosing>>["snapshot"]){

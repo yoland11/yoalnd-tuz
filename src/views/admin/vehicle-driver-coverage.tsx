@@ -13,7 +13,7 @@ import type {DriverCoverageSyncResult} from "@/server/vehicle-partnership/driver
 import {adminFetch,apiErrorMessage} from "./_lib";
 
 type Closing={closingId:number;month:string;status:string;version:number;sourceDigest:string|null};
-type Props={base:string;closing:Closing|null;canApprove:boolean;refresh:()=>Promise<unknown>};
+type Props={base:string;closing:Closing|null;canApprove:boolean;refresh:()=>Promise<unknown>;kind?:"driver"|"advance"};
 const digest=z.string().regex(/^[a-f0-9]{64}$/);
 const positiveId=z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const closingSchema=z.object({closingId:positiveId,month:z.string().regex(/^(?!0000)\d{4}-(?:0[1-9]|1[0-2])$/),status:z.enum(["approved","distributed"]),version:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),sourceDigest:digest});
@@ -63,9 +63,9 @@ function checkedResult(value:unknown,command?:DriverCoverageCommand):DriverCover
 }
 
 /** Save errors propagate as AJN errors; a later refresh cannot undo success. */
-export async function submitDriverCoverageAttempt(attempt:DriverCoverageAttempt,command:DriverCoverageCommand,{onSaved,refresh,onRefreshError}:{onSaved:(result:DriverCoverageSyncResult)=>void;refresh:()=>Promise<unknown>;onRefreshError:(error:unknown)=>void}):Promise<DriverCoverageSyncResult>{
+export async function submitDriverCoverageAttempt(attempt:DriverCoverageAttempt,command:DriverCoverageCommand,{onSaved,refresh,onRefreshError}:{onSaved:(result:DriverCoverageSyncResult)=>void;refresh:()=>Promise<unknown>;onRefreshError:(error:unknown)=>void},kind:"driver"|"advance"="driver"):Promise<DriverCoverageSyncResult>{
   if(command.closingId!==attempt.closing.closingId||command.expectedVersion!==attempt.closing.version||command.expectedDigest!==attempt.closing.sourceDigest||command.idempotencyKey!==attempt.idempotencyKey)throw new Error("بيانات المحاولة لا تطابق الشهر المثبت");
-  const result=checkedResult(await adminFetch<DriverCoverageSyncResult>(`${attempt.base}/closings/driver-coverage`,{method:"POST",body:JSON.stringify(command)}),command);
+  const result=checkedResult(await adminFetch<DriverCoverageSyncResult>(`${attempt.base}/closings/${kind==="advance"?"advance-coverage":"driver-coverage"}`,{method:"POST",body:JSON.stringify(command)}),command);
   onSaved(result);
   try{await refresh();}catch(error){onRefreshError(error);}
   return result;
@@ -75,14 +75,14 @@ function Money({value}:{value:string}){
   return <bdi dir="ltr" className="whitespace-nowrap tabular-nums">{formatReportMoney(value)}</bdi>;
 }
 
-export function DriverCoverageResultTable({result}:{result:DriverCoverageSyncResult}){
+export function DriverCoverageResultTable({result,kind="driver"}:{result:DriverCoverageSyncResult;kind?:"driver"|"advance"}){
   const verified=checkedResult(result);
   return <div dir="rtl" className="flex min-w-0 flex-col gap-3">
     <p className="max-w-prose text-sm leading-6">المبالغ تخص سندات الصرف الأصلية. «مدفوع خارج التحويل» مبلغ مدفوع بالفعل؛ لا يتحول إلى استحقاق جديد.</p>
     {(verified.reversedPayments??0)>0&&<p className="rounded-lg bg-muted/40 p-3 text-sm leading-6">تم التحقق من {verified.reversedPayments} دفعات معكوسة بالكامل واستبعادها من التغطية الجديدة. سنداتها وسجل عكسها محفوظة.</p>}
-    {verified.matchedPayments===0?<p className="rounded-lg bg-muted/40 p-3 text-sm">لا توجد دفعات سائقين منفذة مطابقة لأجور هذا الشهر المعتمد. لم تُنشأ دفعة أو تكلفة جديدة.</p>:<div className="min-w-0 rounded-xl border border-border/50">
+    {verified.matchedPayments===0?<p className="rounded-lg bg-muted/40 p-3 text-sm">{kind==="advance"?"لا توجد دفعات سلف منفذة مطابقة لمصادر هذا الشهر المعتمد.":"لا توجد دفعات سائقين منفذة مطابقة لأجور هذا الشهر المعتمد."} لم تُنشأ دفعة أو تكلفة جديدة.</p>:<div className="min-w-0 rounded-xl border border-border/50">
       <Table className="min-w-[760px] text-right">
-        <caption className="sr-only">نتيجة ربط دفعات السائقين بسنداتها الأصلية</caption>
+        <caption className="sr-only">{kind==="advance"?"نتيجة ربط دفعات السلف بسنداتها الأصلية":"نتيجة ربط دفعات السائقين بسنداتها الأصلية"}</caption>
         <TableHeader><TableRow className="bg-muted/40">{["سند الصرف الأصلي","المبلغ المنفذ فعلياً","مغطى من التحويل","مدفوع خارج التحويل","حالة الربط"].map(label=><TableHead key={label} scope="col" className="p-3 text-right">{label}</TableHead>)}</TableRow></TableHeader>
         <TableBody>{verified.results.map(row=><TableRow key={row.financialTransactionId}>
           <TableCell className="max-w-64 break-words p-3"><bdi dir="ltr" className="font-medium">{row.transactionNo}</bdi></TableCell>
@@ -97,7 +97,7 @@ export function DriverCoverageResultTable({result}:{result:DriverCoverageSyncRes
   </div>;
 }
 
-export default function VehicleDriverCoverage({base,closing,canApprove,refresh}:Props){
+export default function VehicleDriverCoverage({base,closing,canApprove,refresh,kind="driver"}:Props){
   const reasonId=useId();
   const [attempt,setAttempt]=useState<DriverCoverageAttempt|null>(null),[open,setOpen]=useState(false),[reason,setReason]=useState("");
   const [command,setCommand]=useState<DriverCoverageCommand|null>(null),[pending,setPending]=useState(false),[error,setError]=useState<unknown>(null);
@@ -131,7 +131,7 @@ export default function VehicleDriverCoverage({base,closing,canApprove,refresh}:
       await submitDriverCoverageAttempt(attempt,body,{
         onSaved:result=>{setSaved({month:attempt.closing.month,result});setRefreshError(null);setOpen(false);setAttempt(null);setReason("");commandRef.current=null;setCommand(null);},
         refresh,onRefreshError:failure=>setRefreshError(failure),
-      });
+      },kind);
     }catch(failure){setError(failure);}finally{busyRef.current=false;setPending(false);}
   }
 
@@ -144,23 +144,23 @@ export default function VehicleDriverCoverage({base,closing,canApprove,refresh}:
   if(!canApprove)return null;
   return <div dir="rtl" className="mt-5 flex min-w-0 flex-col gap-4 border-t border-border/50 pt-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="flex min-w-0 flex-1 flex-col gap-1"><h4 className="font-semibold">ربط دفعات السائقين المنفذة</h4><p className="max-w-prose text-sm leading-6 text-muted-foreground">تصنيف الدفعات المنفذة على سنداتها الأصلية ضمن تحويلات الشهر المعتمد، بما فيها الدفعات السابقة للإغلاق. لا ينشئ الربط صرفاً نقدياً أو دفعة أو تكلفة جديدة.</p></div>
-      <Button type="button" variant="outline" className="min-h-11 w-full sm:w-auto" disabled={!available||pending} onClick={()=>attempt?setOpen(true):beginNewAttempt()}>ربط دفعات السائقين بالشهر</Button>
+      <div className="flex min-w-0 flex-1 flex-col gap-1"><h4 className="font-semibold">{kind==="advance"?"ربط دفعات سلف الشركاء المنفذة":"ربط دفعات السائقين المنفذة"}</h4><p className="max-w-prose text-sm leading-6 text-muted-foreground">تصنيف الدفعات المنفذة على سنداتها الأصلية ضمن تحويلات الشهر المعتمد، بما فيها الدفعات السابقة للإغلاق. لا ينشئ الربط صرفاً نقدياً أو دفعة أو تكلفة جديدة.</p></div>
+      <Button type="button" variant="outline" className="min-h-11 w-full sm:w-auto" disabled={!available||pending} onClick={()=>attempt?setOpen(true):beginNewAttempt()}>{kind==="advance"?"ربط دفعات السلف بالشهر":"ربط دفعات السائقين بالشهر"}</Button>
     </div>
     {!available&&<p className="text-sm leading-6 text-muted-foreground">اختر شهراً معتمداً بنسخة وبصمة صالحتين لتفعيل الربط.</p>}
     {attempt&&!open&&<Alert><AlertTitle>محاولة ربط محفوظة</AlertTitle><AlertDescription><p>المحاولة تخص شهر <bdi dir="ltr">{attempt.closing.month}</bdi>، النسخة {attempt.closing.version}. استئنافها يحافظ على مرجعها وبياناتها.</p><Button type="button" variant="outline" className="mt-3 min-h-11" disabled={pending} onClick={()=>setOpen(true)}>استئناف المحاولة السابقة</Button></AlertDescription></Alert>}
     {Boolean(error)&&!open&&<Alert variant="destructive"><AlertTitle>تعذر ربط الدفعات</AlertTitle><AlertDescription className="break-words">{apiErrorMessage(error)}</AlertDescription></Alert>}
-    {saved&&<section aria-label="نتيجة ربط دفعات السائقين" className="flex min-w-0 flex-col gap-3">
+    {saved&&<section aria-label={kind==="advance"?"نتيجة ربط دفعات السلف":"نتيجة ربط دفعات السائقين"} className="flex min-w-0 flex-col gap-3">
       <p role="status" className="text-sm font-semibold">حُفظت نتيجة ربط دفعات شهر <bdi dir="ltr">{saved.month}</bdi> — مراجعة الإغلاق {saved.result.revision}</p>
-      <DriverCoverageResultTable result={saved.result}/>
+      <DriverCoverageResultTable result={saved.result} kind={kind}/>
       {Boolean(refreshError)&&<Alert><AlertTitle>حُفظ الربط وتعذر تحديث العرض</AlertTitle><AlertDescription><p className="break-words">{apiErrorMessage(refreshError)}</p><Button type="button" variant="outline" className="mt-3 min-h-11 gap-2" disabled={pending} onClick={()=>void retryRefresh()}><RefreshCw aria-hidden="true"/>تحديث العرض</Button></AlertDescription></Alert>}
     </section>}
     <Dialog open={open&&attempt!==null} onOpenChange={next=>{if(!next)closeConfirmation();}}>
       <DialogContent dir="rtl" className="max-h-[92dvh] overflow-y-auto">
-        <DialogHeader><DialogTitle>ربط دفعات السائقين بالشهر</DialogTitle><DialogDescription>راجع الشهر المثبت وسبب الربط قبل التأكيد.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>{kind==="advance"?"ربط دفعات السلف بالشهر":"ربط دفعات السائقين بالشهر"}</DialogTitle><DialogDescription>راجع الشهر المثبت وسبب الربط قبل التأكيد.</DialogDescription></DialogHeader>
         {attempt&&<form className="flex min-w-0 flex-col gap-4" onSubmit={event=>{event.preventDefault();void submit();}}>
           <dl className="flex flex-wrap gap-x-6 gap-y-2 rounded-lg bg-muted/40 p-3 text-sm"><div><dt className="text-muted-foreground">الشهر المثبت</dt><dd className="mt-1 font-semibold"><bdi dir="ltr">{attempt.closing.month}</bdi></dd></div><div><dt className="text-muted-foreground">نسخة الإغلاق</dt><dd className="mt-1 font-semibold">{attempt.closing.version}</dd></div></dl>
-          <p className="max-w-prose text-sm leading-7">سيُضاف الربط إلى سندات الصرف المنفذة نفسها، ويشمل دفعات أجور هذا الشهر التي صُرفت قبل الإغلاق. لن يُنشأ صرف من الصندوق أو سند مالي أو دفعة أو تكلفة جديدة. المبلغ غير المغطى يبقى «مدفوع خارج التحويل» ولا يصبح مستحقاً للصرف مرة أخرى.</p>
+          <p className="max-w-prose text-sm leading-7">سيُضاف الربط إلى سندات الصرف المنفذة نفسها، ويشمل الدفعات المطابقة لمصادر الشهر التي صُرفت قبل الإغلاق. لن يُنشأ صرف من الصندوق أو سند مالي أو دفعة أو تكلفة جديدة. المبلغ غير المغطى يبقى «مدفوع خارج التحويل» ولا يصبح مستحقاً للصرف مرة أخرى.</p>
           <p className="max-w-prose text-sm leading-6 text-muted-foreground">الشهر ونسخته مثبتان لهذه المحاولة حتى لو تغير الاختيار في الصفحة. بعد الإرسال، تعيد المحاولة البيانات ومرجع الربط نفسيهما.</p>
           <FieldGroup><Field data-disabled={pending||command!==null}><FieldLabel htmlFor={reasonId}>سبب الربط *</FieldLabel><Textarea id={reasonId} required minLength={3} maxLength={2000} value={reason} disabled={pending||command!==null} onChange={event=>setReason(event.target.value)} aria-describedby={`${reasonId}-help`}/><FieldDescription id={`${reasonId}-help`}>{command?"السبب مثبت مع المحاولة السابقة. لتغييره اختر بدء محاولة جديدة أدناه.":"اكتب سبب مراجعة وربط هذه الدفعات من 3 إلى 2000 حرف."}</FieldDescription></Field></FieldGroup>
           {Boolean(error)&&<Alert variant="destructive"><AlertTitle>تعذر إكمال الربط</AlertTitle><AlertDescription className="flex flex-col gap-2"><p className="break-words">{apiErrorMessage(error)}</p>{command&&<p>قد يكون الطلب السابق وصل إلى الخادم. أعد المحاولة بالبيانات نفسها لاسترجاع نتيجته بأمان.</p>}</AlertDescription></Alert>}

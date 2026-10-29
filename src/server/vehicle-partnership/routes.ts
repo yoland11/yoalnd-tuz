@@ -10,6 +10,9 @@ import {requestPartnerDistribution} from "./distributions";
 import {requestPartnerAdvancePayment} from "./advance-payments";
 import {submitPartnershipCost} from "./costing";
 import {syncClosingDriverCoverage} from "./driver-coverage";
+import {readPeriodAttributionReview,approvePeriodAttribution,revokePeriodAttribution} from "./period-attributions";
+import {readOpeningLossReview,requestOpeningLoss} from "./opening-loss";
+import {syncClosingAdvanceCoverage} from "./advance-coverage";
 import {closingPolicySchema,previewClosing} from "./closing";
 import {saveClosingDraft,transitionClosing} from "./closing-lifecycle";
 import {authorizePartnership,readVehiclePartnership,saveVehicleAgreement,approveVehicleAgreement,rejectVehicleAgreement,searchPartnershipParties,type PartnershipActor,type PartnershipDatabase} from "./agreements";
@@ -49,6 +52,20 @@ export async function handleVehiclePartnershipRequest(db:PartnershipDatabase,act
   if(method!=="GET")throw new PartnershipRepositoryError("مساحة الشراكة للعرض فقط",405,"METHOD_NOT_ALLOWED");
   return {data:await readPartnershipWorkspace(db,actor,vehicleId,{from:request.query.get("from"),to:request.query.get("to")}),status:200};
  }
+ if(parts[3]==="period-attributions"){
+  authorizePartnership(actor,true);
+  if(parts.length===4&&method==="GET")return {data:await readPeriodAttributionReview(db,actor,vehicleId,request.query.get("month")??""),status:200};
+  if(parts.length===4&&method==="POST")return {data:await approvePeriodAttribution(db,actor,vehicleId,await readObject(request)),status:201};
+  if(parts.length===5&&parts[4]==="revoke"&&method==="POST")return {data:await revokePeriodAttribution(db,actor,vehicleId,await readObject(request)),status:200};
+  throw new PartnershipRepositoryError("طريقة أو مسار تسوية الفترة غير متاح",405,"METHOD_NOT_ALLOWED");
+ }
+ if(parts[3]==='opening-loss'&&parts.length===4){
+  authorizePartnership(actor,true);
+  if(method==='GET')return {data:await readOpeningLossReview(db,actor,vehicleId),status:200};
+  if(method==='POST'){if(!writer)throw new PartnershipRepositoryError('مسار الطلب المالي غير متاح',503,'SETUP_REQUIRED');return {data:await requestOpeningLoss(db,actor,vehicleId,await readObject(request),writer),status:201};}
+  throw new PartnershipRepositoryError('طريقة إثبات الخسارة غير متاحة',405,'METHOD_NOT_ALLOWED');
+ }
+ if(parts[3]==='closings'&&parts[4]==='advance-coverage'&&parts.length===5){authorizePartnership(actor,true);if(method!=='POST')throw new PartnershipRepositoryError('طريقة ربط السلف غير متاحة',405,'METHOD_NOT_ALLOWED');return {data:await syncClosingAdvanceCoverage(db,actor,vehicleId,await readObject(request)),status:200};}
  if(parts.length===4&&["driver-accrual","driver-payments","distributions","advance-payments","costs"].includes(parts[3])){
   if(method!=="POST")throw new PartnershipRepositoryError("طريقة الطلب غير متاحة",405,"METHOD_NOT_ALLOWED");
   if(!writer)throw new PartnershipRepositoryError("مسار الطلب المالي غير متاح",503,"SETUP_REQUIRED");

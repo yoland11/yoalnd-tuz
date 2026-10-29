@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {existsSync} from 'node:fs';
+assert.ok(existsSync('src/lib/vehicle-partnership/opening-loss.ts'),'opening loss needs a source-owned exact original-member proof rather than an unapproved number');
+const {openingLossDeclaration,openingLossClaims}=await import('../src/lib/vehicle-partnership/opening-loss');
+const first={id:5,revision:1,effectiveFrom:'2026-08-20',status:'approved',policy:{openingLoss:'100.01'},members:[{id:11,party:{kind:'customer',id:1},expenseBasisPoints:5000},{id:12,party:{kind:'supplier',id:2},expenseBasisPoints:5000}]};
+const command={vehicleId:12,partnershipId:1,actorId:7,reference:'OPEN-2026-08',reason:'مطابقة رصيد الخسارة الافتتاحية'};
+const result=openingLossDeclaration(first,command);assert.equal(result.amount,'100.01');assert.equal(result.agreementId,5);assert.equal(result.effectiveFrom,'2026-08-20');assert.equal(result.members.length,2);assert.equal(result.members[0].amount,'50.01');assert.equal(result.members[1].amount,'50.00');assert.equal(result.members[0].partyKey,'customer:1');assert.equal(result.members[1].partyKey,'supplier:2');
+const proof={...result,declarationId:90,financialTransactionId:71,sourceDigest:'a'.repeat(64)},claims=openingLossClaims(proof,'2026-08-01');assert.equal(claims[0].key,'opening:declaration:90:member:11');assert.equal(claims[0].remaining,'50.01');assert.equal(claims[0].period,'2026-08-01');assert.equal(claims[0].agreementId,5);assert.equal(claims[0].memberId,11);
+assert.throws(()=>openingLossClaims(proof,'2026-09-01'),'opening claims belong to the real first month only');
+for(const value of [null,{...first,status:'pending'},{...first,policy:{openingLoss:'0.00'}},{...first,policy:{}},{...first,members:[first.members[0]]},{...first,members:first.members.map(m=>({...m,expenseBasisPoints:4000}))}])assert.throws(()=>openingLossDeclaration(value,command));
+for(const value of [{...command,reference:''},{...command,reason:'ا'},{...command,actorId:0}])assert.throws(()=>openingLossDeclaration(first,value));
+const independent=openingLossDeclaration({...first,members:[{...first.members[0],profitBasisPoints:1000,ownershipBasisPoints:2000},{...first.members[1],profitBasisPoints:9000,ownershipBasisPoints:8000}]},command);assert.deepEqual(independent.members.map((m:any)=>m.amount),['50.01','50.00'],'opening loss uses original expense/loss shares, never ownership or later profit shares');
+const tiny=openingLossDeclaration({...first,policy:{openingLoss:'0.01'}},command);assert.equal(openingLossClaims({...tiny,declarationId:91,financialTransactionId:72,sourceDigest:'c'.repeat(64)},'2026-08-01').length,1,'rounding a zero share must not invalidate a real small opening loss');
+console.log('PASS exact opening loss: nonzero declared first agreement, original typed members/expense shares, evidence required, cent conservation and first-month claim identity.');

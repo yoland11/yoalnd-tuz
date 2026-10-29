@@ -15,6 +15,7 @@ const ACCOUNTS={
  "VP-INVESTMENT":{name:"استثمارات رأسمالية لشراكة المركبة",type:"asset"},
  "VP-PROFIT":{name:"أرباح شراكة المركبة المعتمدة للتوزيع",type:"liability"},
  "VP-LOSS":{name:"خسائر الشراكة المثبتة على أطرافها الأصلية",type:"asset"},
+ "VP-OPENING-CLEAR":{name:"مقابل إثبات خسائر الشراكة الافتتاحية المعتمدة",type:"equity"},
  "VP-RESERVE":{name:"احتياطي شراكة المركبة المعتمد",type:"equity"},
  "VP-RESULT":{name:"تخصيص نتيجة نشاط الشراكة من المصادر الأصلية",type:"equity"},
  "VP-COST-CLEAR":{name:"تسوية كلفة نشاط شراكة المركبة",type:"equity"},

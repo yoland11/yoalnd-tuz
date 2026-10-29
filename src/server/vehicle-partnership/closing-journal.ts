@@ -3,6 +3,7 @@ import {calculatePartnershipClosing,closingMonthBounds,type ClosingSource,type C
 import {formatMoney,parseMoney} from "../../lib/vehicle-partnership/money";
 import {PartnershipValidationError} from "../../lib/vehicle-partnership/types";
 import type {ClosingSnapshot} from "./closing";
+import {closingOpeningAllocations} from "./closing-opening";
 
 export type ClosingJournalLeg={accountCode:string;direction:"debit"|"credit";amount:string};
 export type ClosingJournal={legs:ClosingJournalLeg[];amount:string;transactionType:"vp_month_profit"|"vp_month_loss"};
@@ -29,6 +30,7 @@ function sameRows(actual:unknown,expected:unknown[],key:(row:Record<string,unkno
  * rather than duplicating that allocation algorithm inside a posting template.
  */
 export function buildClosingJournal(snapshot:ClosingSnapshot):ClosingJournal{
+ if(snapshot.openingLoss)closingOpeningAllocations(snapshot);
  object(snapshot);id(snapshot.vehicleId);id(snapshot.partnershipId);
  if(snapshot.formatVersion!==1||!Number.isSafeInteger(snapshot.setupVersion)||snapshot.setupVersion<0||typeof snapshot.from!=="string")invalid();
  const bounds=closingMonthBounds(snapshot.from.slice(0,7));if(snapshot.from!==bounds.from||snapshot.to!==bounds.to)invalid();

@@ -13,6 +13,8 @@ import {appendPartnershipAudit,lockPartnership,partnershipRows,PartnershipReposi
 import type {PartnershipFinancialRequestWriter,TrustedPartnershipRequest} from "./accounting";
 import {PARTNERSHIP_POSTING_TYPES} from "./financial-classification";
 import {reserveClosingConversions,approveClosingRights} from "./closing-rights";
+import {closingOpeningAllocations} from "./closing-opening";
+import {reconcilePaymentState} from "../payment-state";
 import {assertClosingUnused} from "./closing-unused";
 
 type Row=Record<string,unknown>;
@@ -52,7 +54,7 @@ async function checkedPreview(tx:PartnershipExecutor,actor:PartnershipActor,vehi
  const result=await previewClosing(tx,actor,vehicleId,String(row.period).slice(0,7));
  if(result.stored||result.sourceDigest!==row.source_digest)conflict("مصادر الشهر تغيرت بعد المراجعة؛ احفظ مسودة جديدة قبل الاعتماد");
  if(result.approvalBlockers.length)conflict(result.approvalBlockers.join("؛ "));
- if(result.snapshot.lossClaims.some(claim=>claim.key.startsWith("opening:")&&parseMoney(claim.remaining)>0n))conflict("الخسارة الافتتاحية تحتاج مصدر تسوية معتمداً قبل إغلاق الشهر");
+ if(!result.snapshot.openingLoss&&result.snapshot.lossClaims.some(claim=>claim.key.startsWith("opening:")&&parseMoney(claim.remaining)>0n))conflict("الخسارة الافتتاحية تحتاج مصدر تسوية معتمداً قبل إغلاق الشهر");
  return result;
 }
 /** One existing feature monthly identity. Drafts never post money or consume
@@ -99,7 +101,8 @@ export async function transitionClosing(db:PartnershipDatabase,actor:Partnership
    if(proof.journal.legs.length||parseMoney(proof.journal.amount)!==0n)conflict("الإغلاق المعتمد ليس خالياً من القيود");
    const audit=partnershipRows(await tx.execute(sql`/* vp_month_zero_approval */ SELECT EXISTS(SELECT 1 FROM financial_audit_logs a WHERE a.action='vehicle_partnership_closing_approved_zero' AND a.actor_id=${Number(current.approved_by)} AND a.transaction_id IS NULL AND a.new_values->>'closingId'=${String(current.id)} AND a.new_values->>'partnershipId'=${String(root.id)} AND a.new_values->>'vehicleId'=${String(vehicleId)} AND a.new_values->>'sourceDigest'=${String(current.source_digest)} AND a.new_values->>'revision'=${String(current.revision)} AND a.new_values->>'version'=${String(current.version)} AND a.new_values->>'status'='approved') AS proven`));
    if(audit.length!==1||audit[0].proven!==true)conflict("الموافقة الإدارية على النسخة الصفرية غير مثبتة");
-   await assertClosingUnused(tx,actor,{root,row:current,snapshot:proof.snapshot,financialId:null});
+   const rights=await assertClosingUnused(tx,actor,{root,row:current,snapshot:proof.snapshot,financialId:null});
+   if(rights.length){const reversed=partnershipRows(await tx.execute(sql`/* vp_month_zero_reverse_rights */ UPDATE vehicle_partnership_rights SET status='reversed' WHERE partnership_id=${root.id} AND closing_line_id IN (SELECT id FROM vehicle_partnership_closing_lines WHERE closing_id=${Number(current.id)} AND revision=${Number(current.revision)}) AND status='approved' RETURNING id`));if(canonicalPartnershipJson(reversed.map(r=>partnershipId(Number(r.id))).sort((a,b)=>a-b))!==canonicalPartnershipJson([...rights].sort((a,b)=>a-b)))conflict("حقوق النسخة الصفرية تغيرت أثناء إعادة الفتح");for(const sourceId of rights)await reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId});}
    const changed=partnershipRows(await tx.execute(sql`/* vp_month_reopen_zero */ UPDATE vehicle_partnership_closings SET status='draft',revision=revision+1,version=version+1,approved_by=NULL,approved_at=NULL WHERE id=${Number(current.id)} AND version=${Number(current.version)} AND status='approved' AND financial_transaction_id IS NULL RETURNING *,period::text AS period`));
    if(changed.length!==1)conflict("نسخة الإغلاق تغيرت أثناء إعادة الفتح");next=changed[0];
   }
@@ -139,6 +142,7 @@ export async function transitionClosing(db:PartnershipDatabase,actor:Partnership
  * Operation/audit rows never masquerade as source or allocation evidence. */
 export function closingSubmissionLines(snapshot:ClosingSnapshot,revision:number){
  partnershipId(revision);const result:Array<{key:string;kind:string;amount:string;snapshot:unknown;agreementId?:number;memberId?:number}>=[];
+ if(snapshot.openingLoss)for(const opening of closingOpeningAllocations(snapshot))result.push({key:opening.key,kind:opening.kind,amount:opening.amount,agreementId:opening.agreementId,memberId:opening.memberId,snapshot:opening.proof});
  for(const source of snapshot.sourceSnapshots){
   const proof=object(source.snapshot),amount=object(proof.financial).amount;if(typeof amount!=="string")conflict("مبلغ مصدر الإغلاق غير موثق");
   if(!/^financial:[1-9]\d*$/.test(source.key))conflict("مرجع مصدر الإغلاق غير صالح");
@@ -150,12 +154,15 @@ export function closingSubmissionLines(snapshot:ClosingSnapshot,revision:number)
  const journal=buildClosingJournal(snapshot);result.push({key:`summary:${revision}`,kind:"summary",amount:journal.amount,snapshot:{snapshot,journal}});
  if(new Set(result.map(item=>item.key)).size!==result.length)conflict("مصدر أو توزيع شهري مكرر");return result;
 }
-export async function lockClosingContext(tx:PartnershipExecutor,actor:PartnershipActor,closingId:number){
+export async function lockClosingContext(tx:PartnershipExecutor,actor:PartnershipActor,closingId:number,options:{historicalSettlement?:boolean}={}){
  authorizePartnership(actor);partnershipId(closingId);
  const found=partnershipRows(await tx.execute(sql`/* vp_month_scope */ SELECT h.id,h.period::text,p.vehicle_id,h.partnership_id FROM vehicle_partnership_closings h JOIN vehicle_partnerships p ON p.id=h.partnership_id WHERE h.id=${closingId}`));
  if(!found.length)throw new PartnershipRepositoryError("مصدر الإغلاق غير موجود",404,"NOT_FOUND");if(found.length!==1)throw new Error("Ambiguous monthly source identity");
  const vehicleId=partnershipId(Number(found[0].vehicle_id)),root=await lockPartnership(tx,vehicleId);await readOriginalVehicle(tx,actor,vehicleId);
- await lockClosingOriginalSources(tx,actor,vehicleId,String(found[0].period).slice(0,7));
+ // Server-only historical obligation path. A draft/pending month may never use
+ // this exception to create new activity after ownership ends.
+ if(options.historicalSettlement){const original=await header(tx,root.id,{id:closingId},false);if(!original||!['approved','distributed'].includes(String(original.status)))conflict("تسوية الالتزام التاريخي تحتاج شهراً معتمداً أصلياً");}
+ await lockClosingOriginalSources(tx,actor,vehicleId,String(found[0].period).slice(0,7),options);
  const row=await header(tx,root.id,{id:closingId});if(!row||row.period!==found[0].period||Number(found[0].partnership_id)!==root.id)conflict("هوية مصدر الإغلاق تغيرت");
  return {root,row};
 }

@@ -4,6 +4,7 @@ import {parseMoney} from "../../lib/vehicle-partnership/money";
 import {reconcilePaymentState} from "../payment-state";
 import {authorizePartnership,partnershipId,type PartnershipActor} from "./agreements";
 import type {ClosingRightsContext} from "./closing-rights";
+import {closingOpeningAllocations} from "./closing-opening";
 import {partnershipRows,PartnershipRepositoryError,type PartnershipExecutor} from "./repository";
 
 type Row=Record<string,unknown>;
@@ -21,12 +22,13 @@ const revisionPrefix=(input:ClosingRightsContext)=>`vp:closing:${Number(input.ro
  * payments, creating missing rights, or reapplying the unused-period gate. */
 async function proveRevision(tx:PartnershipExecutor,input:ClosingRightsContext,status:"approved"|"reversed"){
  context(input);if(!["approved","reversed"].includes(status))conflict("حالة إثبات حق الإغلاق غير صالحة");
- const expected=new Map<string,{category:string;kind:string;agreementId:number;memberId:number;amount:string;proof:Row}>();
+ const expected=new Map<string,{category:string;kind:string;agreementId:number;memberId:number;amount:string;proof:Row;financialId:number|null}>();
+ if(input.snapshot.openingLoss)for(const opening of closingOpeningAllocations(input.snapshot))expected.set(opening.key,opening);
  for(const [kind,category,items] of [["profit_allocation","profit",input.snapshot.calculation.profitAllocations],["loss_allocation","loss",input.snapshot.calculation.lossAllocations],["loss_recovery","loss_recovery",input.snapshot.calculation.lossRecoveries]] as const){
-  for(const [index,item] of items.entries())if(parseMoney(item.amount)>0n){partnershipId(item.agreementId);partnershipId(item.memberId);expected.set(`${kind}:${index}:${item.agreementId}:${item.memberId}`,{category,kind,agreementId:item.agreementId,memberId:item.memberId,amount:item.amount,proof:item as unknown as Row});}
+  for(const [index,item] of items.entries())if(parseMoney(item.amount)>0n){partnershipId(item.agreementId);partnershipId(item.memberId);expected.set(`${kind}:${index}:${item.agreementId}:${item.memberId}`,{category,kind,agreementId:item.agreementId,memberId:item.memberId,amount:item.amount,proof:item as unknown as Row,financialId:input.financialId});}
  }
- if(expected.size>500||input.financialId==null&&expected.size)conflict("الحقوق الموجبة تتطلب قيداً مالياً معتمداً ضمن حد المراجعة");
- const lines=partnershipRows(await tx.execute(sql`/* vp_unused_allocation_lines */ SELECT id,source_key,line_kind,agreement_id,member_id,amount::text,snapshot FROM vehicle_partnership_closing_lines WHERE closing_id=${Number(input.row.id)} AND revision=${Number(input.row.revision)} AND line_kind IN ('profit_allocation','loss_allocation','loss_recovery') ORDER BY id LIMIT 501`));
+ if(expected.size>500||[...expected.values()].some(value=>value.financialId==null))conflict("الحقوق الموجبة تتطلب قيداً مالياً معتمداً ضمن حد المراجعة");
+ const lines=partnershipRows(await tx.execute(sql`/* vp_unused_allocation_lines */ SELECT id,source_key,line_kind,agreement_id,member_id,amount::text,snapshot FROM vehicle_partnership_closing_lines WHERE closing_id=${Number(input.row.id)} AND revision=${Number(input.row.revision)} AND (line_kind IN ('profit_allocation','loss_allocation','loss_recovery') OR (line_kind='adjustment' AND left(source_key,20)='opening:declaration:')) ORDER BY id LIMIT 501`));
  const rights=partnershipRows(await tx.execute(sql`/* vp_unused_monthly_rights */ SELECT r.*,r.amount::text FROM vehicle_partnership_rights r LEFT JOIN vehicle_partnership_closing_lines l ON l.id=r.closing_line_id WHERE (l.closing_id=${Number(input.row.id)} AND l.revision=${Number(input.row.revision)}) OR r.event_key LIKE ${revisionPrefix(input)+"%"} OR (${input.financialId}::integer IS NOT NULL AND r.financial_transaction_id=${input.financialId} AND r.category IN ('profit','loss','loss_recovery')) ORDER BY r.id LIMIT 501`));
  if(lines.length>500||rights.length>500||lines.length!==expected.size||rights.length!==expected.size)conflict("حقوق الإغلاق أو سطور توزيعه ناقصة أو مكررة");
  const lineIds=new Set<number>(),rightIds=new Set<number>(),result:number[]=[],amounts=new Map<number,bigint>();
@@ -36,14 +38,14 @@ async function proveRevision(tx:PartnershipExecutor,input:ClosingRightsContext,s
   lineIds.add(lineId);expected.delete(String(line.source_key));
   let lossRightId:number|undefined;
   if(value.category==="loss_recovery"){
-   const key=String(value.proof.lossKey);if(!/^right:[1-9]\d*$/.test(key))conflict("مصدر استرداد خسارة الإغلاق غير موثق");lossRightId=partnershipId(Number(key.slice(6)));
+   const key=String(value.proof.lossKey);if(/^right:[1-9]\d*$/.test(key))lossRightId=partnershipId(Number(key.slice(6)));else {const matches=rights.filter(r=>r.category==='loss'&&object(r.source_snapshot).key===key&&r.status===status);if(matches.length!==1||!input.snapshot.openingLoss)conflict("مصدر استرداد خسارة الإغلاق غير موثق");lossRightId=partnershipId(Number(matches[0].id));}
    const claims=input.snapshot.lossClaims.filter(claim=>claim.key===key);
    if(claims.length!==1||claims[0].category!=="loss"||claims[0].agreementId!==value.agreementId||claims[0].memberId!==value.memberId||parseMoney(claims[0].remaining)<parseMoney(value.amount))conflict("استرداد الخسارة لا يطابق رصيد طرفه الأصلي");
   }
   const proof={...value.proof,closingId:Number(input.row.id),revision:Number(input.row.revision),sourceDigest:String(input.row.source_digest),...(lossRightId?{lossRightId}:{})};
   const matches=rights.filter(right=>Number(right.closing_line_id)===lineId);if(matches.length!==1)conflict("حق الإغلاق الأصلي مفقود أو مكرر");
   const right=matches[0],rightId=partnershipId(Number(right.id));
-  if(rightIds.has(rightId)||Number(right.partnership_id)!==input.root.id||Number(right.agreement_id)!==value.agreementId||Number(right.member_id)!==value.memberId||parseMoney(String(right.amount))!==parseMoney(value.amount)||right.category!==value.category||right.direction!==(value.category==="loss"?"debit":"credit")||right.status!==status||right.event_key!==`${revisionPrefix(input)}${value.category}:${lineId}`||Number(right.financial_transaction_id)!==input.financialId||canonicalPartnershipJson(right.source_snapshot)!==canonicalPartnershipJson(proof))conflict("حق الشريك لا يطابق أصل نسخة الإغلاق");
+  if(rightIds.has(rightId)||Number(right.partnership_id)!==input.root.id||Number(right.agreement_id)!==value.agreementId||Number(right.member_id)!==value.memberId||parseMoney(String(right.amount))!==parseMoney(value.amount)||right.category!==value.category||right.direction!==(value.category==="loss"?"debit":"credit")||right.status!==status||right.event_key!==`${revisionPrefix(input)}${value.category}:${lineId}`||Number(right.financial_transaction_id)!==value.financialId||canonicalPartnershipJson(right.source_snapshot)!==canonicalPartnershipJson(proof))conflict("حق الشريك لا يطابق أصل نسخة الإغلاق");
   rightIds.add(rightId);result.push(rightId);amounts.set(rightId,parseMoney(value.amount));
  }
  if(expected.size||rights.some(right=>!rightIds.has(Number(right.id))))conflict("يوجد حق شهري خارج التوزيع المجمد");
@@ -64,7 +66,7 @@ export async function assertClosingUnused(tx:PartnershipExecutor,actor:Partnersh
  const proven=await proveRevision(tx,input,"approved"),result=proven.ids;
  // A loss can be consumed by a recovery even if a downstream header has been
  // damaged. Do not infer that an absent later header makes the loss unused.
- const recovered=partnershipRows(await tx.execute(sql`/* vp_unused_loss_recoveries */ SELECT rr.id FROM vehicle_partnership_rights rr WHERE rr.category='loss_recovery' AND rr.status='approved' AND rr.source_snapshot->>'lossRightId' IN (SELECT r.id::text FROM vehicle_partnership_rights r JOIN vehicle_partnership_closing_lines l ON l.id=r.closing_line_id WHERE l.closing_id=${Number(input.row.id)} AND l.revision=${Number(input.row.revision)} AND r.partnership_id=${input.root.id} AND r.category='loss') ORDER BY rr.id LIMIT 1`));
+ const recovered=partnershipRows(await tx.execute(sql`/* vp_unused_loss_recoveries */ SELECT rr.id FROM vehicle_partnership_rights rr WHERE rr.category='loss_recovery' AND rr.status='approved' AND rr.source_snapshot->>'lossRightId' IN (SELECT r.id::text FROM vehicle_partnership_rights r JOIN vehicle_partnership_closing_lines l ON l.id=r.closing_line_id WHERE l.closing_id=${Number(input.row.id)} AND l.revision=${Number(input.row.revision)} AND r.partnership_id=${input.root.id} AND r.category='loss') AND NOT EXISTS(SELECT 1 FROM vehicle_partnership_closing_lines own WHERE own.id=rr.closing_line_id AND own.closing_id=${Number(input.row.id)} AND own.revision=${Number(input.row.revision)}) ORDER BY rr.id LIMIT 1`));
  if(recovered.length)conflict("استُخدمت خسارة الشهر في استرداد معتمد؛ يلزم تصحيح الفترة");
  for(const sourceId of result){
   const state=await reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId});

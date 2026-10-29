@@ -173,6 +173,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   vehicle_partnership_activity: "دخل نشاط شراكة المركبة",
   vehicle_partnership_cost: "تكلفة شراكة المركبة",
   vehicle_partnership_right: "رأس مال الشراكة",
+  vehicle_partnership_opening: "إثبات خسارة افتتاحية للشراكة",
   vehicle_partnership_closing: "إغلاق شراكة المركبة",
   vehicle_partnership_settlement: "صرف حصة شريك",
   vehicle_partnership_driver: "صرف مستحق سائق رحلة",

@@ -31,6 +31,7 @@ for(const key of ["","short","a".repeat(181)])assert.throws(()=>ui.createDriverC
 assert.equal(renderToStaticMarkup(<ui.default base={base} closing={original} canApprove={false} refresh={async()=>{}}/>),"","staff cannot see the principal-only action");
 const ready=renderToStaticMarkup(<ui.default base={base} closing={original} canApprove refresh={async()=>{}}/>);
 assert.match(ready,/ربط دفعات السائقين بالشهر/);assert.doesNotMatch(ready,/<button[^>]*disabled=/);
+const advanceReady=renderToStaticMarkup(<ui.default base={base} closing={original} kind="advance" canApprove refresh={async()=>{}}/>);assert.match(advanceReady,/ربط دفعات السلف بالشهر/);assert.doesNotMatch(advanceReady,/ربط دفعات السائقين بالشهر/);
 
 // Exercise the actual reports mount with the server's permission DTO.
 const {QueryClient,QueryClientProvider}=createRequire(import.meta.url)("@tanstack/react-query") as typeof import("@tanstack/react-query");
@@ -85,6 +86,8 @@ try{
   assert.deepEqual(saved,result);assert.deepEqual(events,["saved","refresh","refresh-error"],"a failed view refresh must preserve the confirmed save result");
   assert.equal(bodies[0],bodies[1],"retry retains the exact nonce, target, version, digest and reason");
   assert.deepEqual(JSON.parse(bodies[1]),{closingId:5,expectedVersion:7,expectedDigest:"b".repeat(64),idempotencyKey:"driver-sync-ui-0001",reason:"مراجعة دفعات السائقين الأصلية",includeReversalSummary:true});
+  globalThis.fetch=(async(input,init)=>{assert.equal(String(input),'/api/admin/enterprise/vehicles/12/partnership/closings/advance-coverage');assert.equal(String(init?.body),bodies[1]);return Response.json(result);}) as typeof fetch;
+  await ui.submitDriverCoverageAttempt(attempt,command,{onSaved:()=>{},refresh:async()=>{},onRefreshError:()=>{}},'advance');
   globalThis.fetch=(async()=>Response.json({message:"تغيرت نسخة الشهر",code:"CONFLICT",requestId:"REQ-coverage-conflict",retryable:false},{status:409})) as typeof fetch;
   await assert.rejects(()=>ui.submitDriverCoverageAttempt(attempt,command,callbacks),(error:unknown)=>Boolean(error&&typeof error==="object"&&"status" in error&&error.status===409&&"requestId" in error&&error.requestId==="REQ-coverage-conflict"));
   assert.deepEqual(events,["saved","refresh","refresh-error"],"an API conflict is not an empty or successful result");

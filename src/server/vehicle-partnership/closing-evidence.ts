@@ -2,6 +2,7 @@ import {createHash} from "node:crypto";
 import {canonicalPartnershipJson} from "../../lib/vehicle-partnership/canonical";
 import type {ClosingSource,ClosingTerm} from "../../lib/vehicle-partnership/closing";
 import {formatMoney,parseMoney} from "../../lib/vehicle-partnership/money";
+import {ORIGINAL_VEHICLE_OPERATING_COST_TYPES} from "../../lib/vehicle-partnership/types";
 import {PartnershipRepositoryError} from "./repository";
 
 type RecordValue=Record<string,unknown>;
@@ -129,7 +130,7 @@ export function collectClosingEvidence(input:ClosingEvidenceInput){
   }
   if(parseMoney(financial.amount)!==parseMoney(s.amount))fail("مبلغ مصروف الشركة لا يطابق الحركة المالية الأصلية");
   if(!term){if(relevant)fail("اتفاق مصروف الشركة الأصلي غير متاح");continue;}
-  const known=["fuel","driver_wage","maintenance","repair","oil_change","tires","insurance","registration","washing","fees_parking","cleaning","parking","toll"];
+  const known=ORIGINAL_VEHICLE_OPERATING_COST_TYPES;
   if(relevant&&!known.includes(String(s.expenseType)))blockers.push(`مصروف ${cost.expenseId} غير مصنف تشغيلياً أو رأسمالياً`);
   if(relevant&&["rejected","cancelled"].includes(String(s.status))&&financial.status==="executed")blockers.push(`مصروف ${cost.expenseId} حالته لا تطابق حركة الصندوق`);
   const returned=cost.reversals.filter(r=>r.status==="executed").reduce((sum,r)=>sum+parseMoney(r.amount),0n);

@@ -12,6 +12,7 @@ import {executePartnershipCostFinancialTransaction,partnershipCostPostingType,pr
 import {lockPartnershipCostContext} from "./costing";
 import {lockPartnershipCapitalContext} from "./capital";
 import {executePartnershipCapitalFinancialTransaction} from "./capital-posting";
+import {executeOpeningLoss,rejectOpeningLoss,reverseOpeningLoss} from "./opening-loss-posting";
 import {transitionDriverAccrual} from "./driver-posting";
 import {executeClosingFinancialTransaction,rejectClosingFinancialTransaction} from "./closing-posting";
 import {reverseClosingFinancialTransaction} from "./closing-reversal";
@@ -33,6 +34,7 @@ async function internalRightProof(tx:PartnershipExecutor,activity:Row,financialI
  * Internal approval is an obligation, never cash or customer sales. */
 export async function executePartnershipFinancialTransaction(tx:PartnershipExecutor,initial:FinancialIdentity,actor:PartnershipActor,note?:string|null):Promise<{id:number;rightId?:number}>{
  authorizePartnership(actor,true);
+ if(initial.sourceType==="vehicle_partnership_opening")return executeOpeningLoss(tx,initial,actor,note);
  if(initial.sourceType==="vehicle_partnership_closing")return executeClosingFinancialTransaction(tx,initial,actor,note);
  if(initial.sourceType==="vehicle_partnership_cost")return executePartnershipCostFinancialTransaction(tx,initial,actor,note);
  if(initial.sourceType==="vehicle_partnership_right")return executePartnershipCapitalFinancialTransaction(tx,initial,actor,note);
@@ -106,6 +108,7 @@ function cleanReason(value:string):string{
  if(typeof value!=="string"||value.trim().length<3||value.trim().length>2000)throw new PartnershipValidationError("سبب واضح للعملية مطلوب");return value.trim();
 }
 export async function rejectPartnershipFinancialTransaction(tx:PartnershipExecutor,initial:FinancialIdentity,actor:PartnershipActor,reason:string,mode:"reject"|"cancel"="reject"):Promise<{id:number}>{
+ if(initial.sourceType==="vehicle_partnership_opening")return rejectOpeningLoss(tx,initial,actor,reason,mode);
  if(initial.sourceType==="vehicle_partnership_settlement"&&initial.transactionType==="vp_partner_advance_repayment")return rejectAdvancePaymentFinancialTransaction(tx,initial,actor,reason,mode);
  if(initial.sourceType==="vehicle_partnership_driver")return rejectDriverPaymentFinancialTransaction(tx,initial,actor,reason,mode);
  if(initial.sourceType==="vehicle_partnership_settlement")return rejectDistributionFinancialTransaction(tx,initial,actor,reason,mode);
@@ -130,6 +133,7 @@ export type PartnershipReversalOptions={amount?:number;idempotencyKey?:string;so
 /** Full reversal of an unused non-cash source. Used/closed obligations require
  * an approved correction, never a fake cash refund or historical overwrite. */
 export async function reversePartnershipFinancialTransaction(tx:PartnershipExecutor,initial:FinancialIdentity,actor:PartnershipActor,reason:string,options:PartnershipReversalOptions,numberFinancial:(id:number)=>string):Promise<{originalId:number;reverseId:number;alreadyReversed:boolean}>{
+ if(initial.sourceType==="vehicle_partnership_opening")return reverseOpeningLoss(tx,initial,actor,reason,options,numberFinancial);
  if(initial.sourceType==="vehicle_partnership_closing")return reverseClosingFinancialTransaction(tx,initial,actor,reason,options,numberFinancial);
  authorizePartnership(actor,true);const activityId=activityIdFor(initial),why=cleanReason(reason);
  if(options.sourceType!=null&&options.sourceType!==initial.sourceType||options.sourceId!=null&&String(options.sourceId)!==String(initial.sourceId)||options.sourceEvent!=null&&options.sourceEvent!=="reversal")conflict("لا يمكن تغيير مصدر عكس استحقاق النقل");

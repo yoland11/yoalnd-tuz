@@ -9,6 +9,10 @@ import {authorizePartnership,partnershipId,readOriginalVehicle,type PartnershipA
 import {readVehicleActivity} from "./activity";
 import {readClosingSourceEvidence} from "./closing-source-repository";
 import {buildClosingJournal,type ClosingJournal} from "./closing-journal";
+import {projectPeriodAttributions} from "../../lib/vehicle-partnership/period-attributions";
+import {readPeriodAttributions} from "./period-attribution-proof";
+import {openingLossClaims,type ApprovedOpeningLoss} from "../../lib/vehicle-partnership/opening-loss";
+import {readApprovedOpeningLoss} from "./opening-loss-proof";
 import {lockPartnership,partnershipRows,PartnershipRepositoryError,type PartnershipExecutor} from "./repository";
 
 type Row=Record<string,unknown>;
@@ -21,7 +25,7 @@ const reserve=z.union([z.object({kind:z.literal("none")}).strict(),z.object({kin
 export const closingPolicySchema=z.object({depreciation:depreciation.nullable().default(null),reserve:reserve.nullable().default(null),resultAllocation:z.literal("dated_results").nullable().default(null),sharedCostBasis:z.literal("expense_date").nullable().default(null),accountingMethod:z.literal("activity_clearing").nullable().default(null)}).strict();
 export type ClosingPolicy=z.infer<typeof closingPolicySchema>;
 type SourceBundle=Awaited<ReturnType<typeof readClosingSourceEvidence>>;
-export type ClosingSnapshot={formatVersion:1;vehicleId:number;partnershipId:number;setupVersion:number;from:string;to:string;policy:ClosingPolicy;agreements:SourceBundle["agreements"];sourceSnapshots:SourceBundle["snapshots"];lossClaims:ClosingLossClaim[];previousClosing:{id:number;revision:number;sourceDigest:string}|null;calculation:ClosingCalculation};
+export type ClosingSnapshot={formatVersion:1;vehicleId:number;partnershipId:number;setupVersion:number;from:string;to:string;policy:ClosingPolicy;agreements:SourceBundle["agreements"];sourceSnapshots:SourceBundle["snapshots"];lossClaims:ClosingLossClaim[];previousClosing:{id:number;revision:number;sourceDigest:string}|null;calculation:ClosingCalculation;openingLoss?:ApprovedOpeningLoss};
 function policyFrom(value:Row):ClosingPolicy{
  const parsed=closingPolicySchema.safeParse({depreciation:value.depreciation,reserve:value.reserve,resultAllocation:value.resultAllocation,sharedCostBasis:value.sharedCostBasis,accountingMethod:value.accountingMethod});
  if(!parsed.success)throw new PartnershipValidationError("سياسة إغلاق الشراكة غير صالحة؛ راجع الإهلاك والاحتياطي وأساس التوزيع");return parsed.data;
@@ -80,6 +84,10 @@ export async function previewClosing(tx:PartnershipExecutor,actor:PartnershipAct
  const consumed=partnershipRows(await tx.execute(sql`/* vp_closing_consumed_sources */ SELECT l.source_key,h.id AS closing_id,h.period::text FROM vehicle_partnership_closing_lines l JOIN vehicle_partnership_closings h ON h.id=l.closing_id WHERE h.partnership_id=${root.id} AND h.status IN ('approved','distributed') AND l.revision=h.revision AND h.period<${range.from}::date AND l.source_key LIKE 'financial:%' ORDER BY l.id LIMIT 10001`));
  if(consumed.length>10000)throw new PartnershipRepositoryError("سجل مصادر الإغلاقات يتجاوز حد المراجعة؛ لا يمكن تجاهل مصادر قديمة",409,"LIMIT_EXCEEDED");
  const consumedKeys=new Set<string>();for(const line of consumed){const key=String(line.source_key);if(!/^financial:[1-9]\d*$/.test(key)||consumedKeys.has(key))conflict("مصدر مالي مستخدم في أكثر من إغلاق معتمد");consumedKeys.add(key);}
+ const unconsumed=evidence.historySources.filter(source=>!consumedKeys.has(source.key)),unconsumedKeys=new Set(unconsumed.map(source=>source.key));
+ const attributions=await readPeriodAttributions(tx,root,unconsumed,evidence.historySnapshots.filter(snapshot=>unconsumedKeys.has(snapshot.key)));
+ const classified=projectPeriodAttributions({vehicleId,partnershipId:root.id,...range,historySources:evidence.historySources,historySnapshots:evidence.historySnapshots,consumedKeys:[...consumedKeys],attributions});
+ evidence.sources=classified.sources;evidence.snapshots=classified.snapshots;evidence.historySources=classified.historySources;evidence.historySnapshots=classified.historySnapshots;blockers.push(...classified.blockers);
  for(const source of evidence.historySources){
   if(source.date>range.to)continue;
   if(source.date<range.from&&!consumedKeys.has(source.key))blockers.push(`مصدر ${source.key} من فترة سابقة غير مسوّاة؛ يلزم إغلاق فترته أو تصحيح مؤرخ معتمد`);
@@ -102,16 +110,13 @@ export async function previewClosing(tx:PartnershipExecutor,actor:PartnershipAct
  const approved=periods.filter(h=>["approved","distributed"].includes(String(h.status))&&String(h.period)<range.from).sort((a,b)=>String(a.period).localeCompare(String(b.period)));
  const initialPeriod=evidence.agreements[0].effectiveFrom.slice(0,7)+"-01";
  let openingVerified=false;
+ let openingProof:ApprovedOpeningLoss|null=null;
  const claims:ClosingLossClaim[]=[];
  if(range.from===initialPeriod&&approved.length===0){
   const opening=evidence.agreements[0].policy.openingLoss;
   if(typeof opening==="string"){
-   const openingAmount=parseMoney(opening);openingVerified=true;
-   const term=evidence.terms[0];
-   for(const line of allocateMoney(openingAmount,term.members.map(m=>({key:`member:${m.id}`,basisPoints:m.expenseBasisPoints})))){
-    const member=term.members.find(m=>`member:${m.id}`===line.key)!;
-    if(parseMoney(line.amount)>0n)claims.push({key:`opening:agreement:${term.id}:member:${member.id}`,category:"loss",period:range.from,agreementId:term.id,memberId:member.id,partyKey:member.partyKey,remaining:line.amount});
-   }
+   const openingAmount=parseMoney(opening);openingVerified=openingAmount===0n;
+   if(openingAmount>0n){openingProof=await readApprovedOpeningLoss(tx,root,evidence.agreements[0]);if(openingProof){claims.push(...openingLossClaims(openingProof,range.from));openingVerified=true;}else blockers.push("الخسارة الافتتاحية تحتاج إثباتاً وموافقة مالية منفذة قبل إغلاق الشهر");}
   }
  }else{
   let next=initialPeriod;
@@ -134,7 +139,7 @@ export async function previewClosing(tx:PartnershipExecutor,actor:PartnershipAct
   }
  }
  const calculation=calculatePartnershipClosing({...range,terms:evidence.terms,sources:evidence.sources,lossClaims:claims,openingBalanceVerified:openingVerified,policy,blockers});
- const snapshot:ClosingSnapshot={formatVersion:1,vehicleId,partnershipId:root.id,setupVersion:root.version,...range,policy,agreements:evidence.agreements,sourceSnapshots:evidence.snapshots,lossClaims:claims,previousClosing:approved.at(-1)?{id:Number(approved.at(-1)!.id),revision:Number(approved.at(-1)!.revision),sourceDigest:String(approved.at(-1)!.source_digest)}:null,calculation};
+ const snapshot:ClosingSnapshot={formatVersion:1,vehicleId,partnershipId:root.id,setupVersion:root.version,...range,policy,agreements:evidence.agreements,sourceSnapshots:evidence.snapshots,lossClaims:claims,previousClosing:approved.at(-1)?{id:Number(approved.at(-1)!.id),revision:Number(approved.at(-1)!.revision),sourceDigest:String(approved.at(-1)!.source_digest)}:null,calculation,...(openingProof?{openingLoss:openingProof}:{})};
  const approvalBlockers=[...calculation.summary.blockers];
  if(policy.accountingMethod!=="activity_clearing")approvalBlockers.push("يجب إقرار سياسة الإغلاق المحاسبي وتصفية استحقاق النقل الداخلي قبل الاعتماد");
  const dateParts=new Map(new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Baghdad",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(new Date()).map(part=>[part.type,part.value]));

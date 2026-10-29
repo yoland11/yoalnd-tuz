@@ -15,8 +15,9 @@ import {prepareClosingFinancialRequest} from "./closing-lifecycle";
 import {prepareDistributionFinancialRequest} from "./distributions";
 import {prepareAdvancePaymentFinancialRequest} from "./advance-payments";
 import {prepareDriverPaymentFinancialRequest} from "./driver-payments";
+import {prepareOpeningLossRequest} from "./opening-loss";
 
-export type PartnershipFinancialRequestReference={sourceType:"vehicle_partnership_activity"|"vehicle_partnership_cost"|"vehicle_partnership_right"|"vehicle_partnership_closing"|"vehicle_partnership_settlement"|"vehicle_partnership_driver";sourceId:number;distribution?:unknown;driverPayment?:unknown;advancePayment?:unknown};
+export type PartnershipFinancialRequestReference={sourceType:"vehicle_partnership_activity"|"vehicle_partnership_cost"|"vehicle_partnership_right"|"vehicle_partnership_closing"|"vehicle_partnership_settlement"|"vehicle_partnership_driver"|"vehicle_partnership_opening";sourceId:number;distribution?:unknown;driverPayment?:unknown;advancePayment?:unknown};
 export type PartnershipFinancialRequestWriter=(tx:PartnershipExecutor,reference:PartnershipFinancialRequestReference,actor:PartnershipActor)=>Promise<{id:number;approvalStatus:string}>;
 export type TrustedPartnershipRequest={
  sourceType:PartnershipFinancialRequestReference["sourceType"];sourceId:number;
@@ -77,6 +78,7 @@ export async function lockPartnershipActivityContext(tx:PartnershipExecutor,acto
  * direction, account or cash-impact flag. Validate its original locked source
  * and immutable proof again before constructing the pending financial row. */
 export async function preparePartnershipFinancialRequest(tx:PartnershipExecutor,reference:PartnershipFinancialRequestReference,actor:PartnershipActor):Promise<TrustedPartnershipRequest>{
+ if(reference.sourceType==="vehicle_partnership_opening")return prepareOpeningLossRequest(tx,reference as {sourceType:"vehicle_partnership_opening";sourceId:number},actor);
  if(reference.sourceType==="vehicle_partnership_settlement"&&reference.advancePayment!==undefined){
   if(reference.distribution!==undefined||reference.driverPayment!==undefined)throw new PartnershipValidationError("طلب تسديد السلفة لا يجمع مصادر صرف أخرى");
   return prepareAdvancePaymentFinancialRequest(tx,{sourceType:"vehicle_partnership_settlement",sourceId:reference.sourceId,advancePayment:reference.advancePayment},actor);

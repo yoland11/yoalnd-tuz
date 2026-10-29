@@ -4,6 +4,7 @@ import {formatMoney,parseMoney} from "../../lib/vehicle-partnership/money";
 import {reconcilePaymentState} from "../payment-state";
 import {authorizePartnership,partnershipId,type PartnershipActor} from "./agreements";
 import type {ClosingSnapshot} from "./closing";
+import {closingOpeningAllocations,proveClosingOpening} from "./closing-opening";
 import {partnershipRows,PartnershipRepositoryError,type PartnershipExecutor} from "./repository";
 
 type Row=Record<string,unknown>;
@@ -62,22 +63,23 @@ export async function reserveClosingConversions(tx:PartnershipExecutor,actor:Par
  * Profit/capital/advances remain distinct; no payable is produced per trip. */
 export async function approveClosingRights(tx:PartnershipExecutor,actor:PartnershipActor,input:ClosingRightsContext):Promise<number[]>{
  authorizePartnership(actor,true);context(input);if(input.row.status!=="approved")conflict("يجب اعتماد الإغلاق قبل إثبات حقوق الشركاء");
- const expected=new Map<string,{category:string;kind:string;agreementId:number;memberId:number;amount:string;proof:Row}>();
+ const expected=new Map<string,{category:string;kind:string;agreementId:number;memberId:number;amount:string;proof:Row;financialId:number|null}>();
+ if(input.snapshot.openingLoss){await proveClosingOpening(tx,input);for(const opening of closingOpeningAllocations(input.snapshot))expected.set(opening.key,opening);}
  for(const [kind,category,items] of [["profit_allocation","profit",input.snapshot.calculation.profitAllocations],["loss_allocation","loss",input.snapshot.calculation.lossAllocations],["loss_recovery","loss_recovery",input.snapshot.calculation.lossRecoveries]] as const){
-  for(const [index,item] of items.entries())if(parseMoney(item.amount)>0n)expected.set(`${kind}:${index}:${item.agreementId}:${item.memberId}`,{category,kind,agreementId:item.agreementId,memberId:item.memberId,amount:item.amount,proof:item as unknown as Row});
+  for(const [index,item] of items.entries())if(parseMoney(item.amount)>0n)expected.set(`${kind}:${index}:${item.agreementId}:${item.memberId}`,{category,kind,agreementId:item.agreementId,memberId:item.memberId,amount:item.amount,proof:item as unknown as Row,financialId:input.financialId});
  }
- if(input.financialId==null&&expected.size)conflict("الحقوق الموجبة تتطلب قيداً مالياً معتمداً");
- const rows=partnershipRows(await tx.execute(sql`/* vp_month_allocation_lines */ SELECT id,source_key,line_kind,agreement_id,member_id,amount::text,snapshot FROM vehicle_partnership_closing_lines WHERE closing_id=${Number(input.row.id)} AND revision=${Number(input.row.revision)} AND line_kind IN ('profit_allocation','loss_allocation','loss_recovery') ORDER BY id LIMIT 501`));
+ if([...expected.values()].some(value=>value.financialId==null))conflict("الحقوق الموجبة تتطلب قيداً مالياً معتمداً");
+ const rows=partnershipRows(await tx.execute(sql`/* vp_month_allocation_lines */ SELECT id,source_key,line_kind,agreement_id,member_id,amount::text,snapshot FROM vehicle_partnership_closing_lines WHERE closing_id=${Number(input.row.id)} AND revision=${Number(input.row.revision)} AND (line_kind IN ('profit_allocation','loss_allocation','loss_recovery') OR (line_kind='adjustment' AND left(source_key,20)='opening:declaration:')) ORDER BY id LIMIT 501`));
  if(rows.length!==expected.size||rows.length>500)conflict("سطور توزيع الشهر ناقصة أو مكررة");
  const existing=partnershipRows(await tx.execute(sql`/* vp_month_rights_proof */ SELECT r.*,r.amount::text FROM vehicle_partnership_rights r JOIN vehicle_partnership_closing_lines l ON l.id=r.closing_line_id WHERE l.closing_id=${Number(input.row.id)} AND l.revision=${Number(input.row.revision)} ORDER BY r.id LIMIT 501`));
- if(existing.length>rows.length)conflict("حقوق شهرية مكررة");const seen=new Set<number>(),result:number[]=[];
- for(const row of rows){
+ if(existing.length>rows.length)conflict("حقوق شهرية مكررة");const seen=new Set<number>(),result:number[]=[],openingRights=new Map<string,number>();
+ for(const row of rows.sort((a,b)=>Number(b.line_kind==='adjustment')-Number(a.line_kind==='adjustment')||Number(a.id)-Number(b.id))){
   const value=expected.get(String(row.source_key)),lineId=partnershipId(Number(row.id));
   if(!value||row.line_kind!==value.kind||Number(row.agreement_id)!==value.agreementId||Number(row.member_id)!==value.memberId||parseMoney(String(row.amount))!==parseMoney(value.amount)||canonicalPartnershipJson(row.snapshot)!==canonicalPartnershipJson(value.proof))conflict("سطر توزيع الشريك لا يطابق النتيجة المعتمدة");
   expected.delete(String(row.source_key));const eventKey=`vp:closing:${Number(input.row.id)}:r${Number(input.row.revision)}:${value.category}:${lineId}`;
   let lossRightId:number|undefined;
   if(value.category==="loss_recovery"){
-   const lossKey=String(value.proof.lossKey);if(!/^right:[1-9]\d*$/.test(lossKey))conflict("الخسارة الافتتاحية تحتاج مصدراً معتمداً مستقلاً");lossRightId=partnershipId(Number(lossKey.slice(6)));
+   const lossKey=String(value.proof.lossKey);if(/^right:[1-9]\d*$/.test(lossKey))lossRightId=partnershipId(Number(lossKey.slice(6)));else lossRightId=openingRights.get(lossKey);if(!lossRightId)conflict("الخسارة الافتتاحية تحتاج مصدراً معتمداً مستقلاً");
    const originals=partnershipRows(await tx.execute(sql`/* vp_month_recovered_loss */ SELECT id,partnership_id,agreement_id,member_id,amount::text,category,status FROM vehicle_partnership_rights WHERE id=${lossRightId} FOR UPDATE`));
    const claim=input.snapshot.lossClaims.find(item=>item.key===lossKey);
    if(originals.length!==1||originals[0].category!=="loss"||originals[0].status!=="approved"||Number(originals[0].partnership_id)!==input.root.id||Number(originals[0].agreement_id)!==value.agreementId||Number(originals[0].member_id)!==value.memberId||!claim||parseMoney(claim.remaining)<parseMoney(value.amount))conflict("استرداد الخسارة لا يعود لرصيد الطرف الأصلي المعتمد");
@@ -85,14 +87,14 @@ export async function approveClosingRights(tx:PartnershipExecutor,actor:Partners
   const proof={...value.proof,closingId:Number(input.row.id),revision:Number(input.row.revision),sourceDigest:String(input.row.source_digest),...(lossRightId?{lossRightId}:{})};
   const prior=existing.filter(item=>Number(item.closing_line_id)===lineId);let right:Row;
   if(prior.length){
-   right=prior[0];if(prior.length!==1||Number(right.partnership_id)!==input.root.id||Number(right.agreement_id)!==value.agreementId||Number(right.member_id)!==value.memberId||parseMoney(String(right.amount))!==parseMoney(value.amount)||right.category!==value.category||right.direction!==(value.category==="loss"?"debit":"credit")||right.status!=="approved"||right.event_key!==eventKey||Number(right.financial_transaction_id)!==input.financialId||canonicalPartnershipJson(right.source_snapshot)!==canonicalPartnershipJson(proof))conflict("حق شريك سابق لا يطابق قيد الإغلاق");
+   right=prior[0];if(prior.length!==1||Number(right.partnership_id)!==input.root.id||Number(right.agreement_id)!==value.agreementId||Number(right.member_id)!==value.memberId||parseMoney(String(right.amount))!==parseMoney(value.amount)||right.category!==value.category||right.direction!==(value.category==="loss"?"debit":"credit")||right.status!=="approved"||right.event_key!==eventKey||Number(right.financial_transaction_id)!==value.financialId||canonicalPartnershipJson(right.source_snapshot)!==canonicalPartnershipJson(proof))conflict("حق شريك سابق لا يطابق قيد الإغلاق");
    seen.add(Number(right.id));
   }else{
-   const inserted=partnershipRows(await tx.execute(sql`/* vp_month_right_insert */ INSERT INTO vehicle_partnership_rights (partnership_id,agreement_id,member_id,closing_line_id,amount,category,direction,event_key,financial_transaction_id,source_snapshot,status,created_by,reason) VALUES (${input.root.id},${value.agreementId},${value.memberId},${lineId},${value.amount},${value.category},${value.category==="loss"?"debit":"credit"},${eventKey},${input.financialId},${JSON.stringify(proof)}::jsonb,'approved',${actor.id},${String(input.row.reason)}) RETURNING *`));
+   const inserted=partnershipRows(await tx.execute(sql`/* vp_month_right_insert */ INSERT INTO vehicle_partnership_rights (partnership_id,agreement_id,member_id,closing_line_id,amount,category,direction,event_key,financial_transaction_id,source_snapshot,status,created_by,reason) VALUES (${input.root.id},${value.agreementId},${value.memberId},${lineId},${value.amount},${value.category},${value.category==="loss"?"debit":"credit"},${eventKey},${value.financialId},${JSON.stringify(proof)}::jsonb,'approved',${actor.id},${String(input.row.reason)}) RETURNING *`));
    if(inserted.length!==1)throw new Error("Monthly partner right insert was not confirmed");right=inserted[0];
   }
   const rightId=partnershipId(Number(right.id)),state=await reconcilePaymentState(tx,{sourceType:"vehicle_partnership_right",sourceId:rightId});
-  if(!state||state.totalAmount!==value.amount||state.approvalStatus!=="approved")conflict("حالة حق الشريك لا تطابق قيد الإغلاق");result.push(rightId);
+  if(!state||state.totalAmount!==value.amount||state.approvalStatus!=="approved")conflict("حالة حق الشريك لا تطابق قيد الإغلاق");result.push(rightId);if(value.kind==='adjustment')openingRights.set(String(row.source_key),rightId);
  }
  if(existing.some(right=>!seen.has(Number(right.id))))conflict("حق شهري خارج التوزيع المعتمد");
  await reserveClosingConversions(tx,actor,input,true);
