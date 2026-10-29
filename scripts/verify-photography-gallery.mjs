@@ -2,12 +2,14 @@
 // Run: node scripts/verify-photography-gallery.mjs
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const { build } = require("../node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js");
+const esbuildPackage = readdirSync(join(process.cwd(), "node_modules", ".pnpm")).find((name) => name.startsWith("esbuild@"));
+if (!esbuildPackage) throw new Error("esbuild is not installed in the pnpm store");
+const { build } = require(`../node_modules/.pnpm/${esbuildPackage}/node_modules/esbuild/lib/main.js`);
 
 const bundle = await build({
   entryPoints: ["src/server/photography-gallery.ts"],

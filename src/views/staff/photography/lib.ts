@@ -18,6 +18,8 @@ export const PHOTO_STAGE_LABEL: Record<string, string> = Object.fromEntries(PHOT
 export type PhotographyEvent = {
   id: number;
   clientToken: string;
+  bookingId?: number | null;
+  bookingCode?: string | null;
   groomName: string;
   eventName: string | null;
   eventDate: string;
@@ -28,6 +30,29 @@ export type PhotographyEvent = {
   orderCount: number;
   createdAt: string;
   resourceWindow?: BookingResourceWindow | null;
+};
+
+export type PhotographyBookingChoice = {
+  id: number;
+  number: string;
+  customerName: string;
+  phone: string;
+  eventName: string;
+  eventDate: string | null;
+  eventTime: string;
+  location: string | null;
+  status: string;
+  services: string[];
+  workspaceHref: string;
+};
+
+export type PhotographyBookingDetail = Omit<PhotographyBookingChoice, "services"> & {
+  services: Array<Record<string, unknown>>;
+  assignedEmployees: Array<{ id: number; name: string }>;
+  operationalNotes: string | null;
+  images: Array<{ id: number; title: string }>;
+  attachments: Array<{ id: number; title: string; type: string }>;
+  linkedEventRef: string | null;
 };
 
 export type PhotographyOrder = {
@@ -114,7 +139,11 @@ export const photographyApi = {
   },
   event: (ref: string) => adminFetch<PhotographyEventDetail>(`${base}/events/${encodeURIComponent(ref)}`),
   createEvent: (payload: Record<string, unknown>): Promise<PhotographyEvent | QueuedResult> => mutateOrQueue<PhotographyEvent>(`${base}/events`, { method: "POST", body: JSON.stringify(payload) }),
+  createLinkedEvent: (payload: Record<string, unknown>) => adminFetch<PhotographyEvent>(`${base}/events`, { method: "POST", body: JSON.stringify(payload) }),
+  bookingSearch: (query: string) => adminFetch<{ data: PhotographyBookingChoice[] }>(`${base}/booking-search?q=${encodeURIComponent(query)}`),
+  bookingDetail: (id: number) => adminFetch<PhotographyBookingDetail>(`${base}/booking-search/${id}`),
   updateEvent: (ref: string, payload: Record<string, unknown>) => adminFetch<PhotographyEvent>(`${base}/events/${encodeURIComponent(ref)}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  linkEventBooking: (ref: string, bookingId: number) => adminFetch<PhotographyEvent>(`${base}/events/${encodeURIComponent(ref)}/link-booking`, { method: "POST", body: JSON.stringify({ bookingId }) }),
   archiveEvent: (ref: string) => adminFetch<PhotographyEvent>(`${base}/events/${encodeURIComponent(ref)}/archive`, { method: "POST", body: "{}" }),
   deleteEvent: (ref: string) => adminFetch<{ ok: boolean }>(`${base}/events/${encodeURIComponent(ref)}`, { method: "DELETE" }),
   orders: (search = "", status = "", opts: { photographerId?: number | null; eventRef?: string } = {}) => {

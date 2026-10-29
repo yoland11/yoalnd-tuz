@@ -32964,6 +32964,16 @@ async function handleBookingOperations(
     }
   }
 
+  if (resource === "group-photos") {
+    if (source !== "service") return error("لقطات التصوير متاحة للحجوزات الخدمية فقط", 422);
+    const write = can("booking_documents_manage", "booking_edit");
+    return handleBookingGroupPhotos(
+      req, id, auth, write,
+      `/api/admin/booking-operations/service/${id}/group-photos`,
+      int(parts[5]) ?? undefined, parts[6],
+    );
+  }
+
   if (resource === "staff-assignment") {
     if (!canManageBookingStaffAssignments(auth))
       return error("تخصيص الموظفين متاح للمدير فقط", 403);
@@ -61482,6 +61492,7 @@ const PhotographyEventCreateSchema = z.object({
   location: z.string().trim().optional().default(""),
   assignedStaffId: z.coerce.number().int().positive().optional().nullable(),
   resourceWindow:z.unknown().optional(),
+  bookingId: z.coerce.number().int().positive().optional(),
 });
 
 const PhotographyOrderCreateSchema = z.object({
@@ -61569,6 +61580,170 @@ function canAccessPhotographyEvent(
     event.assignedStaffId === user.id ||
     crewEventIds?.has(event.id) === true
   );
+}
+
+const BOOKING_GROUP_PHOTO_BUCKET =
+  process.env.AJN_DOCUMENT_PRIVATE_BUCKET || CUSTOMER_PRIVATE_BUCKET;
+
+function bookingGroupPhotoJson(
+  row: typeof photographyUploadsTable.$inferSelect,
+  base: string,
+  uploadedByName: string | null,
+  canEdit = true,
+) {
+  return {
+    id: row.id,
+    fileName: row.fileName,
+    mimeType: row.mimeType,
+    note: typeof row.metadata?.note === "string" ? row.metadata.note : "",
+    uploadedBy: row.uploadedBy,
+    uploadedByName,
+    canEdit,
+    createdAt: row.createdAt.toISOString(),
+    url: `${base}/${row.id}/file`,
+    thumbnailUrl: typeof row.metadata?.thumbnailPath === "string" ? `${base}/${row.id}/file?size=thumb` : null,
+  };
+}
+
+/** Both booking and photography entry points use this booking-scoped record and private object. */
+async function handleBookingGroupPhotos(
+  req: NextRequest,
+  bookingId: number,
+  actor: AdminUser,
+  canWrite: boolean,
+  base: string,
+  photoId?: number,
+  action?: string,
+  restrictEditsToOwner = false,
+) {
+  const booking = await db.query.serviceOrdersTable.findFirst({
+    where: eq(serviceOrdersTable.id, bookingId),
+  });
+  if (!booking) return error("الحجز غير موجود", 404);
+  const method = req.method;
+  if (method === "GET" && !photoId) {
+    const rows = await db.query.photographyUploadsTable.findMany({
+      where: and(eq(photographyUploadsTable.bookingId, bookingId), eq(photographyUploadsTable.kind, "group_photo")),
+      orderBy: [desc(photographyUploadsTable.createdAt)],
+      limit: 500,
+    });
+    const staffIds = [...new Set(rows.map((row) => row.uploadedBy).filter((id): id is number => !!id))];
+    const staff = staffIds.length
+      ? await db.query.staffTable.findMany({ where: inArray(staffTable.id, staffIds) })
+      : [];
+    const names = new Map(staff.map((row) => [row.id, row.fullName || row.username]));
+    return json({ canUpload: canWrite, data: rows.map((row) => bookingGroupPhotoJson(row, base, row.uploadedBy ? names.get(row.uploadedBy) ?? null : null,
+      canWrite && (!restrictEditsToOwner || isPhotographyManager(actor) || row.uploadedBy === actor.id))) });
+  }
+  const photo = photoId
+    ? await db.query.photographyUploadsTable.findFirst({
+        where: and(eq(photographyUploadsTable.id, photoId), eq(photographyUploadsTable.bookingId, bookingId), eq(photographyUploadsTable.kind, "group_photo")),
+      })
+    : null;
+  if (photoId && !photo) return error("الصورة غير موجودة", 404);
+  if (method === "GET" && photo && action === "file") {
+    if (!BOOKING_GROUP_PHOTO_BUCKET || !STORAGE_URL || !STORAGE_SERVICE_KEY)
+      return error("تخزين الصور الخاصة غير مهيأ", 503);
+    const thumbnailPath = typeof photo.metadata?.thumbnailPath === "string" ? photo.metadata.thumbnailPath : null;
+    const useThumbnail = req.nextUrl.searchParams.get("size") === "thumb" && !!thumbnailPath;
+    const objectPath = useThumbnail ? thumbnailPath : photo.storagePath;
+    if (!objectPath?.startsWith(`bookings/group-photos/${bookingId}/`))
+      return error("مسار الصورة غير صالح", 409);
+    const object = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${BOOKING_GROUP_PHOTO_BUCKET}/${objectPath}`, {
+      headers: { apikey: STORAGE_SERVICE_KEY, authorization: `Bearer ${STORAGE_SERVICE_KEY}` },
+    });
+    if (!object.ok || !object.body) return error("تعذر تحميل الصورة", 502);
+    return new NextResponse(object.body, { headers: {
+      "content-type": useThumbnail ? String(photo.metadata?.thumbnailMime || "image/jpeg") : photo.mimeType || "application/octet-stream",
+      "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+    } });
+  }
+  if (!canWrite) return error("لا تملك صلاحية تعديل لقطات هذا الحجز", 403);
+  if (photo && (method === "PATCH" || method === "DELETE") && restrictEditsToOwner && !isPhotographyManager(actor) && photo.uploadedBy !== actor.id)
+    return error("تعديل أو حذف الصورة متاح لرافعها أو مدير التصوير", 403);
+  if (method === "POST" && !photoId) {
+    if (!BOOKING_GROUP_PHOTO_BUCKET || !STORAGE_URL || !STORAGE_SERVICE_KEY)
+      return error("تخزين الصور الخاصة غير مهيأ", 503);
+    const form = await req.formData();
+    const file = form.get("file");
+    if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function")
+      return error("اختر صورة صالحة", 422);
+    if (file.size < 32 || file.size > 8 * 1024 * 1024)
+      return error("حجم الصورة يجب أن يكون أقل من 8 ميغابايت", 413);
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const mime = imageMimeFromBytes(bytes);
+    if (!mime || !["image/jpeg", "image/png", "image/webp"].includes(mime))
+      return error("صيغة الصورة غير مدعومة", 415);
+    const thumbnail = form.get("thumbnail");
+    let thumbnailBytes: Buffer | null = null;
+    let thumbnailMime: string | null = null;
+    if (thumbnail && typeof thumbnail !== "string" && typeof thumbnail.arrayBuffer === "function") {
+      if (thumbnail.size < 32 || thumbnail.size > 512 * 1024) return error("حجم الصورة المصغّرة غير صالح", 413);
+      thumbnailBytes = Buffer.from(await thumbnail.arrayBuffer());
+      thumbnailMime = imageMimeFromBytes(thumbnailBytes);
+      if (!thumbnailMime || !["image/jpeg", "image/png", "image/webp"].includes(thumbnailMime))
+        return error("صيغة الصورة المصغّرة غير مدعومة", 415);
+    }
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const path = `bookings/group-photos/${bookingId}/${checksum}.${storageExtension(mime)}`;
+    const thumbnailPath = thumbnailBytes && thumbnailMime
+      ? `bookings/group-photos/${bookingId}/${checksum}-thumb.${storageExtension(thumbnailMime)}` : null;
+    const existing = await db.query.photographyUploadsTable.findFirst({
+      where: and(eq(photographyUploadsTable.bookingId, bookingId), eq(photographyUploadsTable.kind, "group_photo"), eq(photographyUploadsTable.storagePath, path)),
+    });
+    if (existing) return json({ data: bookingGroupPhotoJson(existing, base, null), duplicate: true });
+    const stored = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${BOOKING_GROUP_PHOTO_BUCKET}/${path}`, {
+      method: "POST",
+      headers: { apikey: STORAGE_SERVICE_KEY, authorization: `Bearer ${STORAGE_SERVICE_KEY}`, "content-type": mime, "x-upsert": "false" },
+      body: bodyFromBuffer(bytes),
+    });
+    if (!stored.ok && stored.status !== 409) return error("تعذر حفظ الصورة الخاصة", 503);
+    if (thumbnailBytes && thumbnailMime && thumbnailPath) {
+      const storedThumbnail = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${BOOKING_GROUP_PHOTO_BUCKET}/${thumbnailPath}`, {
+        method: "POST",
+        headers: { apikey: STORAGE_SERVICE_KEY, authorization: `Bearer ${STORAGE_SERVICE_KEY}`, "content-type": thumbnailMime, "x-upsert": "false" },
+        body: bodyFromBuffer(thumbnailBytes),
+      });
+      if (!storedThumbnail.ok && storedThumbnail.status !== 409) return error("تعذر حفظ الصورة المصغّرة", 503);
+    }
+    const note = String(form.get("note") ?? "").trim().slice(0, 1000);
+    const [row] = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(734722, ${bookingId})`);
+      const found = await tx.query.photographyUploadsTable.findFirst({
+        where: and(eq(photographyUploadsTable.bookingId, bookingId), eq(photographyUploadsTable.kind, "group_photo"), eq(photographyUploadsTable.storagePath, path)),
+      });
+      if (found) return [found];
+      return tx.insert(photographyUploadsTable).values({
+        bookingId,
+        kind: "group_photo",
+        storagePath: path,
+        fileUrl: "private",
+        fileName: file.name.slice(0, 255),
+        mimeType: mime,
+        accessLevel: "team",
+        metadata: { note, checksum, ...(thumbnailPath ? { thumbnailPath, thumbnailMime } : {}) },
+        uploadedBy: actor.id,
+      }).returning();
+    });
+    await logAdminActivity(req, "booking_group_photo_uploaded", "service_order", bookingId, { photoId: row.id });
+    return json({ data: bookingGroupPhotoJson(row, base, actor.fullName || actor.username) }, 201);
+  }
+  if (method === "PATCH" && photo) {
+    const parsed = z.object({ note: z.string().trim().max(1000) }).safeParse(await body(req));
+    if (!parsed.success) return validationError("booking-group-photos.note", parsed);
+    const [updated] = await db.update(photographyUploadsTable)
+      .set({ metadata: { ...photo.metadata, note: parsed.data.note } })
+      .where(eq(photographyUploadsTable.id, photo.id)).returning();
+    await logAdminActivity(req, "booking_group_photo_note_updated", "service_order", bookingId, { photoId: photo.id });
+    return json({ data: bookingGroupPhotoJson(updated, base, null) });
+  }
+  if (method === "DELETE" && photo) {
+    await db.delete(photographyUploadsTable).where(eq(photographyUploadsTable.id, photo.id));
+    await logAdminActivity(req, "booking_group_photo_removed", "service_order", bookingId, { photoId: photo.id });
+    return json({ ok: true });
+  }
+  return error("الإجراء غير مدعوم", 405);
 }
 
 // ── Field-shoot helpers ──────────────────────────────────────────────────────
@@ -62547,6 +62722,104 @@ async function handlePhotographyStaffPortal(
             (typeof row.id === "number" && crewEventIds.has(row.id)),
         );
 
+  if (resource === "booking-search" && method === "GET" && !ref) {
+    const query = (req.nextUrl.searchParams.get("q") ?? "").trim().slice(0, 80);
+    if (query.length < 2) return json({ data: [] });
+    const accessibleEvents = manager ? [] : await db.query.photographyEventsTable.findMany({
+      where: or(eq(photographyEventsTable.assignedStaffId, auth.id), inArray(photographyEventsTable.id, [...crewEventIds])),
+      columns: { bookingId: true },
+    });
+    const accessibleIds = [...new Set(accessibleEvents.map((row) => row.bookingId).filter((id): id is number => !!id))];
+    if (!manager && !accessibleIds.length) return json({ data: [] });
+    const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+    const matches = await db.query.serviceOrdersTable.findMany({
+      where: and(
+        sql`${serviceOrdersTable.archivedAt} is null`,
+        manager ? undefined : inArray(serviceOrdersTable.id, accessibleIds),
+        or(
+          ilike(serviceOrdersTable.customerName, pattern),
+          ilike(serviceOrdersTable.phone, pattern),
+          ilike(serviceOrdersTable.trackingCode, pattern),
+          ilike(serviceOrdersTable.eventLocation, pattern),
+          sql`${serviceOrdersTable.id}::text ilike ${pattern}`,
+          sql`coalesce(${serviceOrdersTable.customFields}->>'eventName', ${serviceOrdersTable.customFields}->>'eventType', '') ilike ${pattern}`,
+        ),
+      ),
+      orderBy: [desc(serviceOrdersTable.createdAt)],
+      limit: 20,
+    });
+    const serviceIds = [...new Set(matches.map((row) => row.serviceId))];
+    const services = serviceIds.length ? await db.query.servicesTable.findMany({ where: inArray(servicesTable.id, serviceIds) }) : [];
+    const serviceNames = new Map(services.map((row) => [row.id, row.nameAr || row.name]));
+    return json({ data: matches.map((row) => {
+      const fields = (row.customFields ?? {}) as Record<string, any>;
+      const selected = Array.isArray(fields.bookingCenterServices) ? fields.bookingCenterServices : [];
+      return {
+        id: row.id,
+        number: row.trackingCode || `AJN-BK-${row.id}`,
+        customerName: row.customerName,
+        phone: row.phone,
+        eventName: String(fields.eventName ?? fields.eventType ?? serviceNames.get(row.serviceId) ?? ""),
+        eventDate: row.eventDate,
+        eventTime: String(fields.eventStartTime ?? fields.eventTime ?? ""),
+        location: row.eventLocation,
+        status: row.status,
+        services: selected.length
+          ? selected.map((item: any) => String(item?.name ?? item?.label ?? item?.type ?? "")).filter(Boolean).slice(0, 8)
+          : [serviceNames.get(row.serviceId) ?? ""].filter(Boolean),
+        workspaceHref: `/admin/bookings/service/${row.id}`,
+      };
+    }) });
+  }
+
+  if (resource === "booking-search" && ref && method === "GET") {
+    const bookingId = int(ref);
+    if (!bookingId) return error("رقم الحجز غير صحيح", 400);
+    const booking = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, bookingId) });
+    if (!booking || booking.archivedAt) return error("الحجز غير موجود", 404);
+    const linked = await db.query.photographyEventsTable.findFirst({ where: eq(photographyEventsTable.bookingId, bookingId) });
+    if (!manager && (!linked || !canAccessPhotographyEvent(auth, linked, crewEventIds)))
+      return error("غير مخول بعرض هذا الحجز", 403);
+    const attachments = await db.query.entityDocumentsTable.findMany({
+      where: and(eq(entityDocumentsTable.entityType, "service_order"), eq(entityDocumentsTable.entityId, bookingId), sql`${entityDocumentsTable.archivedAt} is null`),
+      orderBy: [desc(entityDocumentsTable.createdAt)],
+      limit: 100,
+    });
+    const fields = (booking.customFields ?? {}) as Record<string, any>;
+    const primaryService = await db.query.servicesTable.findFirst({ where: eq(servicesTable.id, booking.serviceId) });
+    const chosenServices = Array.isArray(fields.bookingCenterServices) ? fields.bookingCenterServices : [];
+    const assignedIds = [...new Set([...bookingAssignedStaff(fields).ids, ...(linked?.assignedStaffId ? [linked.assignedStaffId] : [])])];
+    const assignedStaff = assignedIds.length ? await db.query.staffTable.findMany({ where: inArray(staffTable.id, assignedIds) }) : [];
+    return json({
+      id: booking.id,
+      number: booking.trackingCode || `AJN-BK-${booking.id}`,
+      customerName: booking.customerName,
+      phone: booking.phone,
+      eventName: String(fields.eventName ?? fields.eventType ?? primaryService?.nameAr ?? primaryService?.name ?? ""),
+      eventDate: booking.eventDate,
+      eventTime: String(fields.eventStartTime ?? fields.eventTime ?? ""),
+      location: booking.eventLocation,
+      services: chosenServices.length ? chosenServices : primaryService ? [{ id: primaryService.id, name: primaryService.nameAr || primaryService.name }] : [],
+      assignedEmployees: assignedStaff.map((item) => ({ id: item.id, name: item.fullName || item.username })),
+      operationalNotes: booking.internalNotes,
+      images: attachments.filter((item) => item.documentType === "photo").map((item) => ({ id: item.id, title: item.title })),
+      attachments: attachments.filter((item) => item.documentType !== "photo").map((item) => ({ id: item.id, title: item.title, type: item.documentType })),
+      linkedEventRef: linked?.clientToken ?? null,
+      workspaceHref: `/admin/bookings/service/${booking.id}`,
+    });
+  }
+
+  if (resource === "group-photos") {
+    const bookingId = int(ref ?? undefined);
+    if (!bookingId) return error("رقم الحجز غير صحيح", 400);
+    const linked = await db.query.photographyEventsTable.findFirst({ where: eq(photographyEventsTable.bookingId, bookingId) });
+    if (!manager && (!linked || !canAccessPhotographyEvent(auth, linked, crewEventIds)))
+      return error("غير مخول بعرض صور هذا الحجز", 403);
+    return handleBookingGroupPhotos(req, bookingId, auth, true,
+      `/api/staff/photography/group-photos/${bookingId}`,
+      int(parts[4]) ?? undefined, parts[5], true);
+  }
+
   if (resource === "backfill") {
     if (!manager) return error("هذا الإجراء يحتاج صلاحية مدير التصوير", 403);
     if (method !== "GET" && method !== "POST")
@@ -62729,6 +63002,26 @@ async function handlePhotographyStaffPortal(
       if (!parsed.success)
         return validationError("staff.photography.events.create", parsed);
       const data = parsed.data;
+      const existing = await db.query.photographyEventsTable.findFirst({
+        where: eq(photographyEventsTable.clientToken, data.clientToken),
+      });
+      if (existing) {
+        if (data.bookingId && existing.bookingId !== data.bookingId)
+          return error("هذه المناسبة مرتبطة بحجز مختلف", 409);
+        if (!canAccessPhotographyEvent(auth, existing, crewEventIds))
+          return error("غير مخول بهذه المناسبة", 403);
+        return json(await formatPhotographyEvent(existing));
+      }
+      if (data.bookingId) {
+        const linkedEvent = await db.query.photographyEventsTable.findFirst({
+          where: eq(photographyEventsTable.bookingId, data.bookingId),
+        });
+        if (linkedEvent) {
+          if (!canAccessPhotographyEvent(auth, linkedEvent, crewEventIds))
+            return error("غير مخول بهذه المناسبة", 403);
+          return json(await formatPhotographyEvent(linkedEvent));
+        }
+      }
       const assignedId =
         manager && data.assignedStaffId ? data.assignedStaffId : auth.id;
       const assigned = await db.query.staffTable.findFirst({
@@ -62739,12 +63032,65 @@ async function handlePhotographyStaffPortal(
       });
       if (!assigned || (!manager && assigned.id !== auth.id))
         return error("المصور المسؤول غير صحيح", 400);
-      const existing = await db.query.photographyEventsTable.findFirst({
-        where: eq(photographyEventsTable.clientToken, data.clientToken),
-      });
-      if (existing) {
-        if(!canAccessPhotographyEvent(auth,existing,crewEventIds))return error("المناسبة تخص حساباً آخر",403);
-        return json(await formatPhotographyEvent(existing));
+      if (data.bookingId) {
+        const booking = await db.query.serviceOrdersTable.findFirst({
+          where: eq(serviceOrdersTable.id, data.bookingId),
+        });
+        if (!booking || booking.archivedAt) return error("الحجز غير موجود", 404);
+        const existingLinked = await db.query.photographyEventsTable.findFirst({
+          where: eq(photographyEventsTable.bookingId, booking.id),
+        });
+        if (existingLinked) {
+          if (!canAccessPhotographyEvent(auth, existingLinked, crewEventIds))
+            return error("غير مخول بهذه المناسبة", 403);
+          return json(await formatPhotographyEvent(existingLinked));
+        }
+        if (!manager) return error("ربط مناسبة جديدة بحجز يحتاج صلاحية مدير التصوير", 403);
+        const fields = (booking.customFields ?? {}) as Record<string, any>;
+        const linked = await db.transaction(async (tx) => {
+          await tx.execute(sql`select pg_advisory_xact_lock(734721, ${booking.id})`);
+          const found = await tx.query.photographyEventsTable.findFirst({
+            where: eq(photographyEventsTable.bookingId, booking.id),
+          });
+          if (found) return { row: found, created: false };
+          const [row] = await tx.insert(photographyEventsTable).values({
+            bookingId: booking.id,
+            bookingCode: booking.trackingCode || `AJN-BK-${booking.id}`,
+            clientToken: data.clientToken,
+            groomName: booking.customerName,
+            eventName: String(fields.eventName ?? fields.eventType ?? data.eventName ?? "مناسبة تصوير"),
+            eventDate: /^\d{4}-\d{2}-\d{2}$/.test(booking.eventDate ?? "") ? booking.eventDate! : data.eventDate,
+            location: booking.eventLocation || null,
+            phone: booking.phone,
+            eventStartTime: /^([01]\d|2[0-3]):[0-5]\d/.test(String(fields.eventStartTime ?? fields.eventTime ?? ""))
+              ? String(fields.eventStartTime ?? fields.eventTime).slice(0, 5) : null,
+            photographyItems: Array.isArray(fields.photographyItems) ? fields.photographyItems : [],
+            customerNotes: booking.notes,
+            internalNotes: booking.internalNotes,
+            syncState: "linked",
+            syncReason: "event_creation_booking_selection",
+            assignedStaffId: assigned.id,
+            assignedStaffName: assigned.fullName || assigned.username,
+            createdBy: auth.id,
+          }).returning();
+          if (!row) throw new BookingResourceConflictError("تعذر تأكيد مناسبة التصوير", 409);
+          await assertPhotographyResourceAllocation(tx, await readPhotographyResource(tx, row.id, true));
+          return { row, created: true };
+        });
+        if (!canAccessPhotographyEvent(auth, linked.row, crewEventIds))
+          return error("غير مخول بهذه المناسبة", 403);
+        if (linked.created) {
+          await logAdminActivity(req, "photography_event_booking_linked", "service_order", booking.id, { eventId: linked.row.id });
+          await addEntityTimeline({
+            entityType: "service_order", entityId: booking.id,
+            type: "photography_event_booking_linked",
+            title: "تم ربط مناسبة التصوير بالحجز",
+            body: linked.row.eventName || linked.row.groomName,
+            actor: erpActorFromAdmin(auth),
+            metadata: { eventId: linked.row.id },
+          });
+        }
+        return json(await formatPhotographyEvent(linked.row), linked.created ? 201 : 200);
       }
       const creation=await db.transaction(async tx=>{
         await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`photography-event-create:${data.clientToken}`}))`);
@@ -62832,6 +63178,51 @@ async function handlePhotographyStaffPortal(
       if (!event || !canAccessPhotographyEvent(auth, event, crewEventIds))
         return error("المناسبة غير موجودة", 404);
       return json(await formatPhotographyEventDetail(event));
+    }
+    if (method === "POST" && ref && action === "link-booking") {
+      if (!manager) return error("ربط المناسبات بالحجوزات يحتاج صلاحية مدير التصوير", 403);
+      const event = await getPhotographyEventByRef(ref);
+      if (!event) return error("المناسبة غير موجودة", 404);
+      const parsed = z.object({ bookingId: z.coerce.number().int().positive() }).safeParse(await body(req));
+      if (!parsed.success) return validationError("staff.photography.events.link-booking", parsed);
+      const booking = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, parsed.data.bookingId) });
+      if (!booking || booking.archivedAt) return error("الحجز غير موجود", 404);
+      if (event.bookingId && event.bookingId !== booking.id) return error("المناسبة مرتبطة بحجز آخر", 409);
+      const result = await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(734721, ${booking.id})`);
+        const current = await tx.query.photographyEventsTable.findFirst({ where: eq(photographyEventsTable.id, event.id) });
+        const duplicate = await tx.query.photographyEventsTable.findFirst({ where: eq(photographyEventsTable.bookingId, booking.id) });
+        const duplicateShoot = await tx.query.photographyShootsTable.findFirst({ where: eq(photographyShootsTable.bookingId, booking.id) });
+        if (!current || (current.bookingId && current.bookingId !== booking.id) || (duplicate && duplicate.id !== event.id) || (duplicateShoot && duplicateShoot.eventId !== event.id))
+          return { conflict: true as const, row: null };
+        if (current.bookingId === booking.id) return { conflict: false as const, row: current, duplicate: true };
+        const [linked] = await tx.update(photographyEventsTable).set({
+          bookingId: booking.id,
+          bookingCode: booking.trackingCode || `AJN-BK-${booking.id}`,
+          groomName: booking.customerName,
+          phone: booking.phone,
+          eventName: current.eventName || String((booking.customFields as any)?.eventName ?? (booking.customFields as any)?.eventType ?? "مناسبة تصوير"),
+          location: current.location || booking.eventLocation,
+          customerNotes: current.customerNotes || booking.notes,
+          internalNotes: current.internalNotes || booking.internalNotes,
+          syncState: "linked",
+          syncReason: "manual_event_booking_link",
+          updatedAt: new Date(),
+        }).where(eq(photographyEventsTable.id, event.id)).returning();
+        await tx.update(photographyShootsTable).set({ bookingId: booking.id, updatedAt: new Date() })
+          .where(eq(photographyShootsTable.eventId, event.id));
+        await assertPhotographyResourceAllocation(tx, await readPhotographyResource(tx, linked.id, true));
+        return { conflict: false as const, row: linked, duplicate: false };
+      });
+      if (result.conflict || !result.row) return error("يوجد مناسبة أخرى مرتبطة بهذا الحجز", 409);
+      if (!result.duplicate) {
+        await logAdminActivity(req, "photography_event_booking_linked", "service_order", booking.id, { eventId: event.id });
+        await addEntityTimeline({ entityType: "service_order", entityId: booking.id,
+          type: "photography_event_booking_linked", title: "تم ربط مناسبة تصوير موجودة بالحجز",
+          body: result.row.eventName || result.row.groomName, actor: erpActorFromAdmin(auth),
+          metadata: { eventId: event.id }, });
+      }
+      return json(await formatPhotographyEvent(result.row));
     }
     if (method === "POST" && ref && action === "orders") {
       const event = await getPhotographyEventByRef(ref);

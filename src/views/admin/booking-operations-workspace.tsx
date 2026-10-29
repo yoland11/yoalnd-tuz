@@ -102,6 +102,7 @@ import { useBookingThermalReceiptPrint } from "@/components/booking-thermal-rece
 import { useBookingTransportPrint, type BookingTransportPrintData } from "@/components/booking-transport-print";
 import { AccountSummaryCard } from "./payment-collection";
 import { CustomerFinancialSummary } from "./customer-financial-summary";
+import { BookingGroupPhotos } from "@/components/booking-group-photos";
 import "./booking-operations-workspace.css";
 
 export type BookingOperationsBooking = {
@@ -267,6 +268,7 @@ const TAB_LABELS: Array<[string, string, typeof Boxes]> = [
   ["profitability", "ربحية الحجز", CircleDollarSign],
   ["tasks", "المهام", ListChecks],
   ["documents", "المستندات", FileText],
+  ["group-photos", "لقطات جماعية", Camera],
   ["activity", "النشاط والتايملاين", History],
 ];
 
@@ -570,7 +572,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
           </DropdownMenu>
           {whatsappNumber ? <Button variant="outline" onClick={() => window.open(`https://wa.me/${whatsappNumber}`, "_blank", "noopener,noreferrer")}><MessageCircle /> إرسال</Button> : null}
           <IssueWorkOrderButton defaults={{ booking: { type: booking.source === "kosha" ? "kosha_booking" : "service_order", id: booking.id }, customerId: booking.customerId ?? null, customerName: booking.customerName, contextLabel: `الحجز ${booking.number} · ${booking.customerName}` }} />
-          <DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          <DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem>{booking.source === "service" ? <DropdownMenuItem onSelect={() => changeTab("group-photos")}><Camera /> لقطات جماعية</DropdownMenuItem> : null}<DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
           <Button className="ajn-op-primary" onClick={() => changeTab("finance")}><Banknote /> تسجيل دفعة</Button>
         </div>
       </div>
@@ -597,7 +599,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
     {booking.source === "service" && booking.services.some((service) => service.type === "photography") ? <PhotographyProductionPanel bookingId={booking.id} /> : null}
 
     <div className="ajn-op-workspace-grid"><main><Tabs value={tab} onValueChange={changeTab} className="ajn-op-tabs">
-      <TabsList>{TAB_LABELS.map(([value, label, Icon]) => <TabsTrigger key={value} value={value}><Icon /> {label}{overview.data && value in overview.data.counts && <em>{(overview.data.counts as any)[value]}</em>}</TabsTrigger>)}</TabsList>
+      <TabsList>{TAB_LABELS.filter(([value]) => value !== "group-photos" || booking.source === "service").map(([value, label, Icon]) => <TabsTrigger key={value} value={value}><Icon /> {label}{overview.data && value in overview.data.counts && <em>{(overview.data.counts as any)[value]}</em>}</TabsTrigger>)}</TabsList>
       <TabsContent value="overview"><OverviewTab data={overview.data} loading={overview.isLoading} error={overview.error} booking={booking} onTab={changeTab} readiness={readinessQuery.data} readinessLoading={readinessQuery.isFetching} readinessError={readinessQuery.error} onReadinessRetry={()=>void readinessQuery.refetch()} /></TabsContent>
       <TabsContent value="products"><ProductsTab base={base} queryKey={key} /></TabsContent>
       <TabsContent value="assets"><AssetsTab base={base} queryKey={key} onSaved={()=>{void queryClient.invalidateQueries({queryKey:["admin","booking-workspace",booking.source,booking.id]});void queryClient.invalidateQueries({queryKey:["admin","booking-center"]});void queryClient.invalidateQueries({queryKey:["admin","enterprise","daily-operations"]});}} /></TabsContent>
@@ -608,6 +610,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
       <TabsContent value="profitability"><BookingProfitabilityPanel endpoint={`${base}/profitability`} queryKey={key}/></TabsContent>
       <TabsContent value="tasks"><TasksTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       <TabsContent value="documents"><DocumentsTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
+      {booking.source === "service" ? <TabsContent value="group-photos"><BookingGroupPhotos bookingId={booking.id} /></TabsContent> : null}
       <TabsContent value="activity"><ActivityTab base={base} queryKey={key} /></TabsContent>
     </Tabs></main><BookingSidebar booking={booking} data={overview.data} invoiceUrl={invoiceUrl} paymentUrl={paymentUrl} onTab={changeTab} department={department} responsibleTeam={responsibleTeam} readiness={readinessQuery.isError ? undefined : readinessQuery.data} /></div>
 

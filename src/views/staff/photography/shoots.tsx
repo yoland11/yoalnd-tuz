@@ -14,6 +14,7 @@ import { formatCurrency } from "@/lib/money";
 import { LiveScanner } from "../live-scanner";
 import { ShootMediaPanel } from "./post";
 import { ShootGalleryPanel } from "./gallery";
+import { BookingGroupPhotos } from "@/components/booking-group-photos";
 import {
   CHECKLIST_ITEMS, SHOOT_STAGES, SHOOT_STAGE_LABEL, nextStage, readPositionOnce, shootApi,
   type PhotographyAsset, type ShootApproval, type ShootBoard, type ShootCard, type ShootDetail, type ShootStage, type ShootWorkVersion,
@@ -400,6 +401,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
           <div><dt className="text-muted-foreground">المتبقي</dt><dd className="font-medium tabular-nums">{data.remainingPayment == null ? data.paymentIndicator : formatCurrency(data.remainingPayment)}</dd></div>
         </dl>
         {data.bookingCode ? <p className="mt-2 text-xs font-bold text-primary">{data.bookingCode}</p> : null}
+        {data.bookingId ? <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" asChild><a href={`/admin/bookings/service/${data.bookingId}`}>فتح مساحة عمل الحجز</a></Button><Button type="button" variant="outline" size="sm" onClick={() => document.getElementById("booking-group-photos")?.scrollIntoView({ behavior: "smooth" })}>لقطات جماعية</Button></div> : null}
         {myPendingAssignment ? (
           <div className="mt-3 grid grid-cols-2 gap-2">
             <Button disabled={busy} onClick={() => respondToAssignment("accept")}>قبول المهمة</Button>
@@ -599,6 +601,8 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
       <ShootEquipment shootRef={shootRef} equipment={data.equipment} onChanged={load} />
 
       <ShootMediaPanel shootRef={shootRef} />
+
+      {data.bookingId ? <BookingGroupPhotos bookingId={data.bookingId} portal /> : null}
 
       <ShootGalleryPanel shootRef={shootRef} />
 

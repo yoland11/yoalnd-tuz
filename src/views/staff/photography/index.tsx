@@ -25,6 +25,7 @@ import { countOps, flushQueue, isQueued } from "../offline";
 import {
   PHOTO_STAGES, PHOTO_STAGE_LABEL, newClientToken, photographyApi, photoMoney,
   readLocalEvent, saveLocalEvent, type PhotographyAsset, type PhotographyEvent, type PhotographyEventDetail,
+  type PhotographyBookingChoice, type PhotographyBookingDetail,
   type PhotographyOrder, type PhotographyPrice, type PhotographyStage,
 } from "./lib";
 import { LiveScanner } from "../live-scanner";
@@ -121,6 +122,11 @@ export function EventForm({ me, initialEvent, onCreated }: { me: AdminMe; initia
   const inFlight = useRef(false), mounted = useRef(true);
   const [photographers, setPhotographers] = useState<Awaited<ReturnType<typeof photographyApi.photographers>>>([]);
   const [busy, setBusy] = useState(false);
+  const [bookingQuery, setBookingQuery] = useState("");
+  const [bookingResults, setBookingResults] = useState<PhotographyBookingChoice[]>([]);
+  const [bookingSearchError, setBookingSearchError] = useState("");
+  const [bookingLoading, setBookingLoading] = useState(false);
+  const [selectedBooking, setSelectedBooking] = useState<PhotographyBookingDetail | null>(null);
   const [employeesLoading, setEmployeesLoading] = useState(true), [employeeError, setEmployeeError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [period, setPeriod] = useState(() => initialEvent?.resourceWindow ? resourceWindowDraftOf(initialEvent.resourceWindow) : emptyResourceWindowDraft());
@@ -137,6 +143,38 @@ export function EventForm({ me, initialEvent, onCreated }: { me: AdminMe; initia
     finally { if (mounted.current) setEmployeesLoading(false); }
   }, []);
   useEffect(() => { void loadPhotographers(); }, [loadPhotographers]);
+  useEffect(() => {
+    if (selectedBooking || bookingQuery.trim().length < 2) { setBookingResults([]); setBookingSearchError(""); setBookingLoading(false); return; }
+    let cancelled = false;
+    setBookingLoading(true);
+    const timer = window.setTimeout(() => {
+      photographyApi.bookingSearch(bookingQuery.trim()).then((result) => {
+        if (!cancelled) { setBookingResults(result.data); setBookingSearchError(""); }
+      }).catch((cause) => {
+        if (!cancelled) { setBookingResults([]); setBookingSearchError(apiErrorMessage(cause)); }
+      }).finally(() => { if (!cancelled) setBookingLoading(false); });
+    }, 300);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [bookingQuery, selectedBooking]);
+  async function selectBooking(choice: PhotographyBookingChoice) {
+    setBookingLoading(true);
+    try {
+      const booking = await photographyApi.bookingDetail(choice.id);
+      setSelectedBooking(booking);
+      setBookingQuery("");
+      setBookingResults([]);
+      setForm((current) => ({
+        ...current,
+        groomName: booking.customerName,
+        eventName: booking.eventName,
+        eventDate: booking.eventDate || "",
+        location: booking.location || "",
+        assignedStaffId: current.assignedStaffId,
+      }));
+    } catch (cause) {
+      toast({ title: "تعذر تحميل الحجز", description: apiErrorMessage(cause), variant: "destructive" });
+    } finally { setBookingLoading(false); }
+  }
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (inFlight.current || employeeError || employeesLoading || !form.groomName.trim() || !form.eventDate) return;
@@ -144,19 +182,23 @@ export function EventForm({ me, initialEvent, onCreated }: { me: AdminMe; initia
     // The period is optional: left empty, the photographer holds the whole event day.
     let resourceWindow = null;
     if (Object.values(period).some(Boolean)) {
-      try { resourceWindow = resourceWindowFromLocal(period, form.eventDate); }
-      catch (cause) { setSaveError(cause instanceof Error ? cause.message : "تحقق من ترتيب المواعيد"); return; }
+      if (!selectedBooking) {
+        try { resourceWindow = resourceWindowFromLocal(period, form.eventDate); }
+        catch (cause) { setSaveError(cause instanceof Error ? cause.message : "تحقق من ترتيب المواعيد"); return; }
+      }
     }
     inFlight.current = true; setBusy(true);
     const clientToken = clientTokenRef.current;
-    const payload = { ...form, eventDate: resourceWindow ? resourceWindowCalendar(resourceWindow).eventDate : form.eventDate, ...(resourceWindow ? { resourceWindow } : {}), clientToken };
-    const localEvent = { ...payload, id: 0, assignedStaffName: photographers.find((item) => item.id === form.assignedStaffId)?.name || me.fullName || me.username, status: "pending_sync", orderCount: 0, createdAt: new Date().toISOString() } as PhotographyEvent;
+    const payload = { ...form, eventDate: resourceWindow ? resourceWindowCalendar(resourceWindow).eventDate : form.eventDate, ...(resourceWindow ? { resourceWindow } : {}), ...(selectedBooking ? { bookingId: selectedBooking.id } : {}), clientToken };
     try {
-      const result = await photographyApi.createEvent(payload);
-      saveLocalEvent(isQueued(result) ? localEvent : result);
+      const result = selectedBooking ? await photographyApi.createLinkedEvent(payload) : await photographyApi.createEvent(payload);
+      if (!selectedBooking) {
+        const localEvent = { ...payload, id: 0, assignedStaffName: photographers.find((item) => item.id === form.assignedStaffId)?.name || me.fullName || me.username, status: "pending_sync", orderCount: 0, createdAt: new Date().toISOString() } as PhotographyEvent;
+        saveLocalEvent(isQueued(result) ? localEvent : result);
+      }
       if (!mounted.current) return;
       toast({ title: isQueued(result) ? "تم حفظ مسودة المناسبة دون اتصال" : "تم بدء المناسبة", description: isQueued(result) ? "يلزم تأكيد توفر المصور من الخادم قبل تسجيل الطلبات." : "يمكنك الآن تسجيل طلبات الصور بسرعة." });
-      if (onCreated) onCreated(); else navigate(`/staff/photography/events/${clientToken}/register`);
+      if (onCreated) onCreated(); else navigate(`/staff/photography/events/${isQueued(result) ? clientToken : result.clientToken}/register`);
     } catch (cause) { if (mounted.current) { const message = apiErrorMessage(cause); setSaveError(message); toast({ title: "تعذر بدء المناسبة", description: message, variant: "destructive" }); } }
     finally { inFlight.current = false; if (mounted.current) setBusy(false); }
   }
@@ -164,15 +206,21 @@ export function EventForm({ me, initialEvent, onCreated }: { me: AdminMe; initia
     <form onSubmit={submit} className="space-y-4 rounded-xl border border-border/30 bg-card p-4">
       <div><h2 className="font-bold text-foreground">{initialEvent ? "تأكيد مسودة المناسبة" : "إنشاء مناسبة جديدة"}</h2><p className="mt-1 text-xs text-muted-foreground">فترة التشغيل اختيارية (بتوقيت بغداد)؛ بدونها يُحجز المصور طوال يوم المناسبة.</p></div>
       <fieldset disabled={busy} className="min-w-0 space-y-4">
-      <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم العريس *</span><Input value={form.groomName} onChange={(event) => setForm({ ...form, groomName: event.target.value })} /></label>
-      <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم المناسبة</span><Input value={form.eventName} onChange={(event) => setForm({ ...form, eventName: event.target.value })} /></label>
-      <div className="grid gap-3 sm:grid-cols-2"><label className="block space-y-1"><span className="text-xs text-muted-foreground">التاريخ *</span><Input type="date" value={form.eventDate} onChange={(event) => setForm({ ...form, eventDate: event.target.value })} /></label><label className="block space-y-1"><span className="text-xs text-muted-foreground">الموقع</span><Input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} /></label></div>
+      {!initialEvent ? (
+      <div className="relative space-y-2 rounded-xl border border-primary/20 bg-primary/5 p-3">
+        <label htmlFor="event-booking-search" className="block text-sm font-bold">البحث عن حجز من مركز الحجوزات</label>
+        {selectedBooking ? <div className="space-y-2 rounded-lg border border-border/50 bg-card p-3"><div className="text-xs text-muted-foreground">الحجز المرتبط · {selectedBooking.number} · {selectedBooking.status}</div><div className="font-bold">{selectedBooking.customerName}</div><div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2"><span>{selectedBooking.eventName || "مناسبة"} · {selectedBooking.eventDate || "موعد غير محدد"} {selectedBooking.eventTime}</span><span>{selectedBooking.location || "الموقع غير محدد"}</span><span>{selectedBooking.phone}</span><span>{selectedBooking.services.length} خدمة · {selectedBooking.attachments.length + selectedBooking.images.length} مرفق</span></div><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" asChild><Link href={selectedBooking.workspaceHref}>فتح الحجز</Link></Button><Button type="button" variant="outline" size="sm" asChild><Link href={`${selectedBooking.workspaceHref}?tab=group-photos`}>فتح مساحة عمل الحجز</Link></Button><Button type="button" variant="ghost" size="sm" onClick={() => { setSelectedBooking(null); setForm((current) => ({ ...current, groomName: "", eventName: "", location: "" })); }}>تغيير الحجز</Button></div></div> : <><div className="relative"><Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input id="event-booking-search" value={bookingQuery} onChange={(event) => setBookingQuery(event.target.value)} placeholder="الاسم، رقم الحجز، الهاتف أو المناسبة" className="pr-9" autoComplete="off" /></div>{bookingLoading ? <p className="text-xs text-muted-foreground">جارٍ البحث…</p> : null}{bookingSearchError ? <p role="alert" className="text-xs text-destructive">تعذر البحث: {bookingSearchError}</p> : null}{bookingResults.length ? <div role="listbox" aria-label="نتائج الحجوزات" className="max-h-64 overflow-y-auto rounded-lg border border-border/50 bg-card shadow-sm">{bookingResults.map((choice) => <Button key={choice.id} type="button" variant="ghost" role="option" aria-selected="false" className="block h-auto w-full border-b border-border/30 px-3 py-2 text-right last:border-0" onClick={() => selectBooking(choice)}><span className="block font-semibold">{choice.number} · {choice.customerName}</span><span className="block text-xs text-muted-foreground">{choice.eventName || "مناسبة"} · {choice.eventDate || "موعد غير محدد"} · {choice.location || "الموقع غير محدد"} · {choice.status}</span><span className="block text-xs text-primary">{choice.services.join("، ")}</span></Button>)}</div> : bookingQuery.trim().length >= 2 && !bookingLoading && !bookingSearchError ? <p className="text-xs text-muted-foreground">لا توجد حجوزات مطابقة</p> : null}</>}
+      </div>
+      ) : null}
+      <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم العريس *</span><Input value={form.groomName} readOnly={!!selectedBooking} onChange={(event) => setForm({ ...form, groomName: event.target.value })} /></label>
+      <label className="block space-y-1"><span className="text-xs text-muted-foreground">اسم المناسبة</span><Input value={form.eventName} readOnly={!!selectedBooking} onChange={(event) => setForm({ ...form, eventName: event.target.value })} /></label>
+      <div className="grid gap-3 sm:grid-cols-2"><label className="block space-y-1"><span className="text-xs text-muted-foreground">التاريخ *{selectedBooking && !selectedBooking.eventDate ? " — أدخل تاريخ المناسبة لهذا الحجز" : ""}</span><Input type="date" value={form.eventDate} readOnly={!!selectedBooking?.eventDate} onChange={(event) => setForm({ ...form, eventDate: event.target.value })} /></label><label className="block space-y-1"><span className="text-xs text-muted-foreground">الموقع</span><Input value={form.location} readOnly={!!selectedBooking} onChange={(event) => setForm({ ...form, location: event.target.value })} /></label></div>
       <label className="block space-y-1"><span className="text-xs text-muted-foreground">المصور المسؤول</span><EmployeeSelect employees={photographers} value={String(form.assignedStaffId)} disabled={employeesLoading || !!employeeError} onValueChange={(value) => setForm({ ...form, assignedStaffId: Number(value) })} placeholder="اختر المصور" aria-label="المصور المسؤول" /></label>
       {employeeError ? <div role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm"><p>تعذر تحميل المصورين: {employeeError}</p><Button type="button" variant="outline" className="mt-2 min-h-11" onClick={() => void loadPhotographers()}>إعادة تحميل المصورين</Button></div> : null}
-      <BookingResourceWindowInputs draft={period} disabled={busy} required={false} onChange={(key, value) => { setPeriod(current => ({ ...current, [key]: value })); if (key === "eventStart" && value) setForm(current => ({ ...current, eventDate: value.slice(0, 10) })); setSaveError(""); }} />
+      {!selectedBooking ? <BookingResourceWindowInputs draft={period} disabled={busy} required={false} onChange={(key, value) => { setPeriod(current => ({ ...current, [key]: value })); if (key === "eventStart" && value) setForm(current => ({ ...current, eventDate: value.slice(0, 10) })); setSaveError(""); }} /> : null}
       </fieldset>
       {saveError ? <p role="alert" className="break-words rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">{saveError}</p> : null}
-      <Button className="min-h-11 w-full" disabled={busy || employeesLoading || !!employeeError || !form.groomName.trim() || !form.eventDate}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Camera className="ml-2 h-4 w-4" /> بدء المناسبة</>}</Button>
+      <Button className="min-h-11 w-full" disabled={busy || employeesLoading || !!employeeError || !form.groomName.trim() || !form.eventDate}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Camera className="ml-2 h-4 w-4" /> {selectedBooking ? "فتح المناسبة المرتبطة بالحجز" : "بدء المناسبة"}</>}</Button>
     </form>
   );
 }
@@ -218,9 +266,31 @@ function EventManagerBar({ event, onChanged }: { event: PhotographyEvent; onChan
   const pending=useRef(false),mounted=useRef(true);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const [form, setForm] = useState({ groomName: event.groomName, eventName: event.eventName ?? "", eventDate: event.eventDate, location: event.location ?? "", assignedStaffId: 0 });
+  const [bookingQuery, setBookingQuery] = useState("");
+  const [bookingResults, setBookingResults] = useState<PhotographyBookingChoice[]>([]);
+  const [bookingError, setBookingError] = useState("");
   const loadPhotographers=useCallback(async()=>{setEmployeesLoading(true);setEmployeeError("");try{const rows=await photographyApi.photographers();if(mounted.current)setPhotographers(rows);}catch(cause){if(mounted.current)setEmployeeError(apiErrorMessage(cause));}finally{if(mounted.current)setEmployeesLoading(false);}},[]);
   useEffect(()=>{if(open)void loadPhotographers();},[open,loadPhotographers]);
   useEffect(()=>{if(!open)setForm({groomName:event.groomName,eventName:event.eventName??"",eventDate:event.eventDate,location:event.location??"",assignedStaffId:0});},[event,open]);
+  useEffect(() => {
+    if (!open || event.bookingId || bookingQuery.trim().length < 2) { setBookingResults([]); return; }
+    let cancelled = false;
+    const timer = window.setTimeout(() => photographyApi.bookingSearch(bookingQuery.trim()).then((result) => {
+      if (!cancelled) { setBookingResults(result.data); setBookingError(""); }
+    }).catch((cause) => { if (!cancelled) setBookingError(apiErrorMessage(cause)); }), 300);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [open, event.bookingId, bookingQuery]);
+  async function linkBooking(booking: PhotographyBookingChoice) {
+    if (pending.current) return;
+    pending.current = true;
+    setBusy(true);
+    try {
+      await photographyApi.linkEventBooking(event.clientToken, booking.id);
+      toast({ title: "تم ربط المناسبة بالحجز", description: "بقيت أوقات العمل التي ضبطتها سابقاً كما هي." });
+      setBookingQuery(""); setOpen(false); onChanged();
+    } catch (cause) { toast({ title: "تعذر ربط الحجز", description: apiErrorMessage(cause), variant: "destructive" }); }
+    finally { pending.current = false; if (mounted.current) setBusy(false); }
+  }
   async function save() {
     if(pending.current||employeesLoading||employeeError)return;
     pending.current=true;
@@ -262,6 +332,7 @@ function EventManagerBar({ event, onChanged }: { event: PhotographyEvent; onChan
           <div className="grid gap-3 sm:grid-cols-2"><label className="block space-y-1"><span className="text-xs text-muted-foreground">التاريخ</span><Input aria-label="التاريخ" type="date" value={event.eventDate} disabled /><span className="block text-xs text-muted-foreground">لتغيير الموعد استخدم «فترة تشغيل الموارد» أدناه لحفظ التاريخ والفترة معاً.</span></label><label className="block space-y-1"><span className="text-xs text-muted-foreground">الموقع</span><Input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></label></div>
           <label className="block space-y-1"><span className="text-xs text-muted-foreground">إعادة تعيين المصور</span><EmployeeSelect employees={photographers} disabled={busy||employeesLoading||!!employeeError} value={form.assignedStaffId ? String(form.assignedStaffId) : ""} onValueChange={(value) => setForm({ ...form, assignedStaffId: Number(value) })} placeholder={`بدون تغيير (${event.assignedStaffName})`} emptyLabel={`بدون تغيير (${event.assignedStaffName})`} aria-label="إعادة تعيين المصور" /></label>
           {employeeError?<div role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm">تعذر تحميل المصورين: {employeeError}<Button type="button" variant="outline" className="mt-2" onClick={()=>void loadPhotographers()}>إعادة تحميل المصورين</Button></div>:null}
+          {event.bookingId ? <Button type="button" variant="outline" size="sm" asChild><Link href={`/admin/bookings/service/${event.bookingId}?tab=group-photos`}>فتح مساحة عمل الحجز · لقطات جماعية</Link></Button> : <div className="space-y-2 rounded-lg border border-border/40 p-3"><label className="block text-xs font-bold" htmlFor="link-existing-booking">ربط هذه المناسبة بحجز موجود</label><Input id="link-existing-booking" value={bookingQuery} onChange={(value) => setBookingQuery(value.target.value)} placeholder="رقم الحجز، اسم العميل أو الهاتف" />{bookingError ? <p role="alert" className="text-xs text-destructive">{bookingError}</p> : null}{bookingResults.map((booking) => <Button key={booking.id} type="button" variant="ghost" className="h-auto w-full justify-start text-right" disabled={busy} onClick={() => linkBooking(booking)}>{booking.number} · {booking.customerName} · {booking.eventDate || "بدون موعد"}</Button>)}</div>}
           <Button className="w-full" onClick={save} disabled={busy || employeesLoading || !!employeeError || !form.groomName.trim()}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "حفظ التعديلات"}</Button>
         </div>
       ) : null}

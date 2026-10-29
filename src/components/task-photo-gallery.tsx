@@ -1,5 +1,5 @@
-import { useRef, useState, type ChangeEvent } from "react";
-import { Camera, FileText, FolderOpen, ImagePlus, Loader2, Maximize2, RefreshCw, Trash2, Video, X } from "lucide-react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Camera, ChevronLeft, ChevronRight, FileText, FolderOpen, ImagePlus, Loader2, Maximize2, RefreshCw, Trash2, Video, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -20,30 +20,41 @@ export type TaskPhoto = {
 
 export type TaskFile = TaskPhoto;
 
-function PhotoLightbox({ photo, onClose }: { photo: TaskPhoto; onClose: () => void }) {
+function PhotoLightbox({ photo, onClose, onPrevious, onNext }: { photo: TaskPhoto; onClose: () => void; onPrevious?: () => void; onNext?: () => void }) {
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+      if (event.key === "ArrowLeft") onNext?.();
+      if (event.key === "ArrowRight") onPrevious?.();
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [onClose, onPrevious, onNext]);
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center bg-black/90 p-3" role="dialog" aria-modal="true" aria-label="معاينة الصورة">
       <Button variant="ghost" type="button" onClick={onClose} className="absolute left-4 top-[max(1rem,env(safe-area-inset-top))] grid h-11 w-11 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25" aria-label="إغلاق المعاينة">
         <X className="h-5 w-5" />
       </Button>
       <img src={photo.url} alt={photo.caption || photo.fileName || "صورة المهمة"} className="max-h-[88dvh] max-w-full object-contain" />
+      {onPrevious ? <Button variant="ghost" type="button" onClick={onPrevious} className="absolute right-3 top-1/2 h-11 w-11 -translate-y-1/2 rounded-full bg-white/20 text-white" aria-label="الصورة السابقة"><ChevronRight /></Button> : null}
+      {onNext ? <Button variant="ghost" type="button" onClick={onNext} className="absolute left-3 top-1/2 h-11 w-11 -translate-y-1/2 rounded-full bg-white/20 text-white" aria-label="الصورة التالية"><ChevronLeft /></Button> : null}
       {photo.caption ? <p className="absolute bottom-[max(1rem,env(safe-area-inset-bottom))] max-w-[90vw] rounded-lg bg-black/65 px-4 py-2 text-center text-sm text-white">{photo.caption}</p> : null}
     </div>
   );
 }
 
 export function TaskPhotoGallery({ photos, emptyText = "لا توجد صور مرفقة" }: { photos: TaskPhoto[]; emptyText?: string }) {
-  const [active, setActive] = useState<TaskPhoto | null>(null);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
   if (!photos.length) return <p className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-sm text-muted-foreground">{emptyText}</p>;
   return <>
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-      {photos.map((photo, index) => <Button size="flush" variant="ghost" key={photo.id ?? `${photo.url}-${index}`} type="button" onClick={() => setActive(photo)} className="group relative min-h-28 overflow-hidden rounded-xl border border-border bg-muted text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {photos.map((photo, index) => <Button size="flush" variant="ghost" key={photo.id ?? `${photo.url}-${index}`} type="button" onClick={() => setActiveIndex(index)} className="group relative min-h-28 overflow-hidden rounded-xl border border-border bg-muted text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <img src={photo.thumbnailUrl || photo.url} alt={photo.caption || photo.fileName || `صورة ${index + 1}`} className="h-32 w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]" />
         <span className="absolute left-2 top-2 grid h-9 w-9 place-items-center rounded-full bg-black/55 text-white"><Maximize2 className="h-4 w-4" /></span>
         {photo.caption ? <span className="absolute inset-x-0 bottom-0 line-clamp-2 bg-gradient-to-t from-black/85 to-black/10 px-2 pb-2 pt-6 text-xs text-white">{photo.caption}</span> : null}
       </Button>)}
     </div>
-    {active ? <PhotoLightbox photo={active} onClose={() => setActive(null)} /> : null}
+    {activeIndex !== null && photos[activeIndex] ? <PhotoLightbox photo={photos[activeIndex]} onClose={() => setActiveIndex(null)} onPrevious={photos.length > 1 ? () => setActiveIndex((activeIndex - 1 + photos.length) % photos.length) : undefined} onNext={photos.length > 1 ? () => setActiveIndex((activeIndex + 1) % photos.length) : undefined} /> : null}
   </>;
 }
 
