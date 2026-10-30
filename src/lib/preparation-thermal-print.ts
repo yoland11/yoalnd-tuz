@@ -12,6 +12,8 @@ export type PreparationThermalItem = {
 
 export type PreparationThermalInput = {
   bookingNumber: string;
+  documentType?: "booking" | "request";
+  occasionName?: string | null;
   customerName: string;
   eventDate: string | null;
   location: string | null;
@@ -24,6 +26,7 @@ const escapeHtml = (value: unknown): string =>
   );
 
 export function buildPreparationThermalHtml(input: PreparationThermalInput): string {
+  const isRequest = input.documentType === "request";
   const itemHtml = input.items.length
     ? input.items.map((item, index) => `
       <section class="item">
@@ -36,7 +39,7 @@ export function buildPreparationThermalHtml(input: PreparationThermalInput): str
         ${item.assigneeName ? `<div class="row"><span>المسؤول</span><b>${escapeHtml(item.assigneeName)}</b></div>` : ""}
         ${item.note ? `<div class="note">${escapeHtml(item.note)}</div>` : ""}
       </section>`).join("")
-    : '<p class="empty">لا توجد عناصر تجهيز مرتبطة بهذا الحجز.</p>';
+    : `<p class="empty">${isRequest ? "لا توجد عناصر تجهيز مرتبطة بهذا الطلب." : "لا توجد عناصر تجهيز مرتبطة بهذا الحجز."}</p>`;
 
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>قائمة تجهيز ${escapeHtml(input.bookingNumber)}</title><style>
     @page { size: 80mm auto; margin: 0; }
@@ -65,9 +68,10 @@ export function buildPreparationThermalHtml(input: PreparationThermalInput): str
     .empty { text-align: center; margin: 5mm 0; }
     .footer { border-top: 1px dashed #555; margin-top: 2mm; padding-top: 2mm; text-align: center; }
   </style></head><body><main class="receipt">
-    <div class="brand">AJN</div><div class="title">قائمة تجهيز الحجز</div><div class="rule"></div>
-    <div class="meta-field"><span>رقم الحجز</span><b class="code">${escapeHtml(input.bookingNumber)}</b></div>
+    <div class="brand">AJN</div><div class="title">${isRequest ? "قائمة تجهيز حسب الطلب" : "قائمة تجهيز الحجز"}</div><div class="rule"></div>
+    <div class="meta-field"><span>${isRequest ? "رقم طلب التجهيز" : "رقم الحجز"}</span><b class="code">${escapeHtml(input.bookingNumber)}</b></div>
     <div class="meta-field"><span>العميل</span><b>${escapeHtml(input.customerName)}</b></div>
+    ${isRequest && input.occasionName ? `<div class="meta-field"><span>المناسبة</span><b>${escapeHtml(input.occasionName)}</b></div>` : ""}
     <div class="meta-field"><span>تاريخ المناسبة</span><b class="num">${escapeHtml(input.eventDate || "الموعد غير محدد")}</b></div>
     ${input.location ? `<div class="meta-field"><span>الموقع</span><b>${escapeHtml(input.location)}</b></div>` : ""}
     <div class="rule"></div>${itemHtml}

@@ -46,4 +46,13 @@ const empty = buildPreparationThermalHtml({
 assert.match(empty, /لا توجد عناصر تجهيز/);
 assert.match(empty, /الموعد غير محدد/);
 
+const standalone = buildPreparationThermalHtml({
+  bookingNumber: "AJN-PREP-000008", documentType: "request", occasionName: "تخرج",
+  customerName: "ليلى", eventDate: null, location: null, items: [],
+});
+assert.match(standalone, /رقم طلب التجهيز/);
+assert.match(standalone, /AJN-PREP-000008/);
+assert.match(standalone, /تخرج/);
+assert.doesNotMatch(standalone, /رقم الحجز/);
+
 console.log("Preparation 80mm print composition verified.");

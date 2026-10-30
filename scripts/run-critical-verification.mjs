@@ -65,6 +65,7 @@ const steps = [
   ["Single-vehicle partnership domain and schema contracts", "pnpm", ["run", "test:vehicle-partnership"]],
   ["Vehicle partnership PostgreSQL integration (isolated TEST only)", "pnpm", ["run", "test:vehicle-partnership-db"]],
   ["Booking multi-trip transportation and 80mm receipt safety", "pnpm", ["run", "test:booking-transport-receipts"]],
+  ["Standalone preparation requests", "pnpm", ["run", "test:preparation-requests"]],
   ["Staff password visibility control", "pnpm", ["run", "test:staff-password-toggle"]],
   ["Sales invoice premium UI contract", "pnpm", ["run", "test:sales-invoice-ui"]],
   ["Sales invoice customer search", "pnpm", ["run", "test:sales-customer-search"]],

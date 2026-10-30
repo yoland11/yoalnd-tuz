@@ -10,11 +10,24 @@ type BookingRow = {
   archived_at: Date | null;
 };
 
-function executorWithBookings(bookings: BookingRow[], reservations: Record<string, unknown>[] = []) {
-  let calls = 0;
+function executorWithBookings(bookings: BookingRow[], reservations: Record<string, unknown>[] = [], serviceRows: Record<string, unknown>[] = []) {
   return {
-    execute: async () => ({ rows: ++calls === 1 ? reservations : bookings }),
+    execute: async (query: unknown) => {
+      const statement = JSON.stringify(query);
+      return { rows: statement.includes("stock_reservations") ? reservations : statement.includes("service_orders") ? serviceRows : bookings };
+    },
   };
+}
+
+async function includesManualOnlyServiceBooking() {
+  const cards = await listPreparationCards(executorWithBookings([], [], [{
+    id: 71, number: "SRV-71", customer_name: "هبة", event_date: "2026-11-02", event_location: "بغداد",
+    status: "booked", archived_at: null,
+    details: { bookingOperations: { manualPrepItems: [{ id: "m1", name: "قماش", department: "kosha", quantity: 1 }] } },
+  }]));
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0]?.source, "service");
+  assert.equal(cards[0]?.rollup.total, 1);
 }
 
 async function includesKoshaBookingWithoutStockReservation() {
@@ -60,4 +73,5 @@ async function keepsOneCardForAnAssignedKoshaBooking() {
 await includesKoshaBookingWithoutStockReservation();
 await excludesCancelledAndArchivedKoshaBookings();
 await keepsOneCardForAnAssignedKoshaBooking();
+await includesManualOnlyServiceBooking();
 console.log("Kosha preparation cards: passed");

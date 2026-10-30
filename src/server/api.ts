@@ -399,6 +399,7 @@ import {
   vehicleExpensesTable,
   vehicleMaintenanceRecordsTable,
   vehicleOdometerHistoryTable,
+  preparationRequestsTable,
 } from "@workspace/db";
 import {
   dailyCashListQuerySchema,
@@ -457,6 +458,18 @@ import {
   type BookingCenterPreparationRow,
   type PreparationSource,
 } from "@/server/booking-preparation";
+import {
+  createPreparationRequest,
+  canonicalPreparationItems,
+  getStandalonePreparationDetail,
+  listStandalonePreparationCards,
+  parsePreparationItems,
+  PreparationRequestError,
+  updateStandalonePreparationItem,
+  completeStandalonePreparationTask,
+  readPreparationAvailability,
+} from "@/server/preparation-requests";
+import { appendManualPreparationItems, preparationItemsHash } from "@/server/booking-preparation";
 import {
   assetSaleEligibility,
   calculateAssetSaleOutcome,
@@ -35243,14 +35256,141 @@ async function handlePreparation(
   parts: string[],
   section: string | undefined,
 ) {
-  if (section !== "preparation" || req.method !== "GET") return null;
-  const auth = await requireAnyPermission(req, ["preparation_view", "bookings", "orders", "koshas", "booking_operations_view"]);
+  if (section !== "preparation") return null;
+  const resource = parts[2];
+  const isWrite = req.method !== "GET";
+  const auth = await requireAnyPermission(req, isWrite ? ["preparation_manage"] : ["preparation_view", "bookings", "orders", "koshas", "booking_operations_view"]);
   if (isResponse(auth)) return auth;
-  const [bookingCenter, preparationCards] = await Promise.all([
+  if (resource === "customers" && req.method === "GET") {
+    const search = (req.nextUrl.searchParams.get("search") ?? "").trim().slice(0, 100);
+    const pattern = `%${search.replace(/[\\%_]/g, "\\$&")}%`;
+    const customers = await db.select({ id: customersTable.id, name: customersTable.name, fullName: customersTable.fullName, phone: customersTable.phone })
+      .from(customersTable).where(and(ne(customersTable.status, "deleted"), or(ilike(customersTable.name, pattern), ilike(customersTable.fullName, pattern), ilike(customersTable.phone, pattern))))
+      .orderBy(asc(customersTable.name)).limit(25);
+    return json({ customers });
+  }
+  if (resource === "catalog" && req.method === "GET") {
+    const source = req.nextUrl.searchParams.get("source");
+    if (source !== "product" && source !== "asset") return error("مصدر العنصر غير صالح", 400);
+    const search = (req.nextUrl.searchParams.get("search") ?? "").trim().slice(0, 100);
+    const pattern = `%${search.replace(/[\\%_]/g, "\\$&")}%`;
+    const products = await db.select({ id: productsTable.id, name: productsTable.name, nameAr: productsTable.nameAr, barcode: productsTable.barcode, isAsset: productsTable.isAsset })
+      .from(productsTable).where(and(eq(productsTable.isActive, true), isNull(productsTable.archivedAt), eq(productsTable.isAsset, source === "asset"), or(ilike(productsTable.name, pattern), ilike(productsTable.nameAr, pattern), ilike(productsTable.barcode, pattern))))
+      .orderBy(asc(productsTable.nameAr)).limit(25);
+    const availability = await readPreparationAvailability(products.map((product) => product.id));
+    return json({ products: products.map((product) => ({ ...product, available: availability.get(product.id)?.available ?? null })) });
+  }
+  if (resource === "eligible-staff" && req.method === "GET") {
+    const eligibleStaff = await db.select({ id: staffTable.id, name: staffTable.fullName, photoUrl: staffTable.photoUrl, department: staffTable.department, jobTitle: staffTable.jobTitle })
+      .from(staffTable).where(eq(staffTable.isActive, true)).orderBy(asc(staffTable.fullName)).limit(500);
+    return json({ eligibleStaff });
+  }
+  if (resource === "bookings" && req.method === "GET" && !parts[3]) {
+    const search = (req.nextUrl.searchParams.get("search") ?? "").trim().slice(0, 100);
+    const pattern = `%${search.replace(/[\\%_]/g, "\\$&")}%`;
+    const [serviceRows, koshaRows] = await Promise.all([
+      db.select({ id: serviceOrdersTable.id, number: serviceOrdersTable.trackingCode, customerName: serviceOrdersTable.customerName, eventDate: serviceOrdersTable.eventDate, customerId: serviceOrdersTable.customerId })
+        .from(serviceOrdersTable).where(and(isNull(serviceOrdersTable.archivedAt), sql`${serviceOrdersTable.status} NOT IN ('cancelled','canceled','ملغي','ملغى')`, or(ilike(serviceOrdersTable.customerName, pattern), ilike(serviceOrdersTable.trackingCode, pattern))))
+        .orderBy(desc(serviceOrdersTable.id)).limit(25),
+      db.select({ id: koshaBookingsTable.id, number: koshaBookingsTable.trackingCode, customerName: koshaBookingsTable.customerName, eventDate: koshaBookingsTable.eventDate, customerId: koshaBookingsTable.customerId })
+        .from(koshaBookingsTable).where(and(isNull(koshaBookingsTable.archivedAt), sql`${koshaBookingsTable.status} NOT IN ('cancelled','canceled','ملغي','ملغى')`, or(ilike(koshaBookingsTable.customerName, pattern), ilike(koshaBookingsTable.trackingCode, pattern))))
+        .orderBy(desc(koshaBookingsTable.id)).limit(25),
+    ]);
+    return json({ bookings: [
+      ...serviceRows.map((row) => ({ ...row, source: "service" as const, number: row.number || `SRV-${row.id}` })),
+      ...koshaRows.map((row) => ({ ...row, source: "kosha" as const, number: row.number || `KOSHA-${row.id}` })),
+    ] });
+  }
+  if (resource === "bookings" && req.method === "POST" && ["service", "kosha"].includes(parts[3] ?? "") && int(parts[4])) {
+    const source = parts[3] as "service" | "kosha";
+    const id = int(parts[4]) ?? 0;
+    try {
+      const raw = await body(req) as Record<string, unknown>;
+      const token = typeof raw?.requestToken === "string" ? raw.requestToken.trim() : "";
+      if (!z.string().uuid().safeParse(token).success) throw new PreparationRequestError("رمز الطلب غير صالح");
+      const draftItems = parsePreparationItems(raw?.items);
+      await ensureAdminExtensionsTables();
+      const result = await db.transaction(async (tx) => {
+        const locked = source === "kosha"
+          ? await tx.select({ id: koshaBookingsTable.id, status: koshaBookingsTable.status, archivedAt: koshaBookingsTable.archivedAt, details: koshaBookingsTable.bookingDetails })
+            .from(koshaBookingsTable).where(eq(koshaBookingsTable.id, id)).for("update").limit(1)
+          : await tx.select({ id: serviceOrdersTable.id, status: serviceOrdersTable.status, archivedAt: serviceOrdersTable.archivedAt, details: serviceOrdersTable.customFields })
+            .from(serviceOrdersTable).where(eq(serviceOrdersTable.id, id)).for("update").limit(1);
+        const row = locked[0];
+        if (!row) throw new PreparationRequestError("الحجز غير موجود", 404);
+        if (row.archivedAt || ["cancelled", "canceled", "ملغي", "ملغى"].includes(row.status)) throw new PreparationRequestError("لا يمكن تجهيز حجز ملغي أو مؤرشف", 409);
+        const details = row.details && typeof row.details === "object" && !Array.isArray(row.details) ? row.details as Record<string, unknown> : {};
+        const operations = details.bookingOperations && typeof details.bookingOperations === "object" && !Array.isArray(details.bookingOperations) ? details.bookingOperations as Record<string, unknown> : {};
+        const priorHash = (operations.preparationRequestTokens as Record<string, string> | undefined)?.[token];
+        if (priorHash) {
+          if (priorHash !== preparationItemsHash(draftItems)) throw new PreparationRequestError("رمز الطلب مستخدم لبيانات مختلفة", 409);
+          return { source, id, added: false };
+        }
+        const items = await canonicalPreparationItems(draftItems, (ids) => tx.select({ id: productsTable.id, name: productsTable.name, nameAr: productsTable.nameAr, barcode: productsTable.barcode, isAsset: productsTable.isAsset, isActive: productsTable.isActive, archivedAt: productsTable.archivedAt }).from(productsTable).where(inArray(productsTable.id, ids)).for("share"));
+        const appended = appendManualPreparationItems(operations, token, items, auth.id, draftItems);
+        if (appended.added) {
+          if (source === "kosha") await tx.update(koshaBookingsTable).set({ bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, { ...details, bookingOperations: appended.operations }, operations), updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id));
+          else await tx.update(serviceOrdersTable).set({ customFields: routedKoshaCustomFieldsSql(serviceOrdersTable.customFields, { ...details, bookingOperations: appended.operations }, {}, operations) }).where(eq(serviceOrdersTable.id, id));
+          await tx.insert(entityTimelineTable).values({
+            entityType: source === "kosha" ? "kosha_booking" : "service_order", entityId: id,
+            type: "preparation_item_added", title: "إضافة عناصر تجهيز حسب الطلب",
+            body: `${items.length} عنصر · ${items.map((item) => item.name).join("، ").slice(0, 500)}`,
+            actorId: auth.id, actorName: auth.fullName || auth.username,
+            metadata: { count: items.length, source: "custom_preparation" },
+          });
+        }
+        return { source, id, added: appended.added };
+      });
+      if (result.added) void logAdminActivity(req, "preparation_items_added", source === "kosha" ? "kosha_booking" : "service_order", id, { count: draftItems.length });
+      return json(result);
+    } catch (cause) {
+      if (cause instanceof PreparationRequestError) return error(cause.message, cause.status);
+      if (cause instanceof Error && cause.message.includes("بيانات مختلفة")) return error(cause.message, 409);
+      const requestId = makeRequestId();
+      console.error("booking preparation append failed", { requestId, error: safeServerError(cause) });
+      return error("تعذّر حفظ عناصر التجهيز", 500, { requestId });
+    }
+  }
+  if (resource === "requests") {
+    const id = parts[3] ? int(parts[3]) : 0;
+    if (req.method === "PATCH" && id && parts[4] === "items" && int(parts[5])) {
+      try {
+        const updated = await updateStandalonePreparationItem(id, int(parts[5])!, await body(req), auth.id);
+        void logAdminActivity(req, "preparation_item_updated", "preparation_request", id, { itemId: updated.itemId });
+        return json(updated);
+      } catch (cause) {
+        if (cause instanceof PreparationRequestError) return error(cause.message, cause.status);
+        const requestId = makeRequestId();
+        console.error("standalone preparation update failed", { requestId, error: safeServerError(cause) });
+        return error("تعذّر تحديث عنصر التجهيز", 500, { requestId });
+      }
+    }
+    if (req.method === "POST" && !parts[3]) {
+      try {
+        const created = await createPreparationRequest(await body(req), auth.id);
+        void logAdminActivity(req, "preparation_request_created", "preparation_request", created.id, { number: created.number });
+        return json(created, 201);
+      } catch (cause) {
+        if (cause instanceof PreparationRequestError) return error(cause.message, cause.status);
+        const requestId = makeRequestId();
+        console.error("preparation request create failed", { requestId, error: safeServerError(cause) });
+        return error("تعذّر حفظ طلب التجهيز", 500, { requestId });
+      }
+    }
+    if (req.method === "GET" && id) {
+      const detail = await getStandalonePreparationDetail(id);
+      return detail ? json(detail) : error("طلب التجهيز غير موجود", 404);
+    }
+    return error("مسار طلب التجهيز غير صحيح", 400);
+  }
+  if (resource) return null;
+  if (req.method !== "GET") return error("الطريقة غير مدعومة", 405);
+  const [bookingCenter, preparationCards, standaloneCards] = await Promise.all([
     listCentralBookingCenterRows(500),
     listPreparationCards(),
+    listStandalonePreparationCards(),
   ]);
-  const cards = mergeBookingCenterPreparationCards(bookingCenter.rows as BookingCenterPreparationRow[], preparationCards);
+  const cards = [...mergeBookingCenterPreparationCards(bookingCenter.rows as BookingCenterPreparationRow[], preparationCards), ...standaloneCards];
   const summary = {
     bookings: cards.length,
     totalItems: cards.reduce((sum, card) => sum + card.rollup.total, 0),
@@ -67978,22 +68118,25 @@ async function handleStaffPortal(
       const rows = (taskRows.rows ?? []) as any[];
       const serviceIds = rows.filter((r) => r.related_type === "service_order").map((r) => Number(r.related_id));
       const koshaIds = rows.filter((r) => r.related_type === "kosha_booking").map((r) => Number(r.related_id));
-      const [svc, ksh] = await Promise.all([
+      const requestIds = rows.filter((r) => r.related_type === "preparation_request").map((r) => Number(r.related_id));
+      const [svc, ksh, requests] = await Promise.all([
         serviceIds.length ? db.execute(sql`SELECT id, coalesce(tracking_code,'SRV-'||id) AS number, customer_name, event_date FROM service_orders WHERE id IN (${sql.join(serviceIds.map((i) => sql`${i}`), sql`,`)})`) : Promise.resolve({ rows: [] } as any),
         koshaIds.length ? db.execute(sql`SELECT id, coalesce(tracking_code,'KOSHA-'||id) AS number, customer_name, event_date FROM kosha_bookings WHERE id IN (${sql.join(koshaIds.map((i) => sql`${i}`), sql`,`)})`) : Promise.resolve({ rows: [] } as any),
+        requestIds.length ? db.select({ id: preparationRequestsTable.id, number: preparationRequestsTable.requestNo, customerName: preparationRequestsTable.customerName, eventDate: preparationRequestsTable.eventDate }).from(preparationRequestsTable).where(and(inArray(preparationRequestsTable.id, requestIds), eq(preparationRequestsTable.status, "active"))) : Promise.resolve([]),
       ]);
       const info = new Map<string, any>();
       for (const r of (svc.rows ?? []) as any[]) info.set(`service_order:${Number(r.id)}`, r);
       for (const r of (ksh.rows ?? []) as any[]) info.set(`kosha_booking:${Number(r.id)}`, r);
+      for (const r of requests) info.set(`preparation_request:${r.id}`, { number: r.number || `AJN-PREP-${String(r.id).padStart(6, "0")}`, customer_name: r.customerName, event_date: r.eventDate });
       return json({
-        tasks: rows.map((r) => {
+        tasks: rows.filter((r) => r.related_type !== "preparation_request" || info.has(`preparation_request:${Number(r.related_id)}`)).map((r) => {
           const b = info.get(`${r.related_type}:${Number(r.related_id)}`);
           return {
             taskId: Number(r.id),
             title: r.title,
             priority: r.priority ?? "normal",
             dueAt: r.due_at ?? null,
-            source: r.related_type === "kosha_booking" ? "kosha" : "service",
+            source: r.related_type === "preparation_request" ? "request" : r.related_type === "kosha_booking" ? "kosha" : "service",
             bookingId: Number(r.related_id),
             bookingNumber: b?.number ?? `#${r.related_id}`,
             customerName: b?.customer_name ?? "",
@@ -68005,6 +68148,19 @@ async function handleStaffPortal(
     if (method === "POST") {
       const parsed = z.object({ taskId: z.coerce.number().int().positive() }).safeParse(await body(req));
       if (!parsed.success) return validationError("staff.preparation.done", parsed);
+      const task = await db.query.tasksTable.findFirst({ where: eq(tasksTable.id, parsed.data.taskId) });
+      if (task?.taskType === "preparation" && task.relatedType === "preparation_request") {
+        try {
+          const completed = await completeStandalonePreparationTask(task.id, myId, auth.role === "admin" || auth.role === "manager");
+          if (!completed.alreadyCompleted) void logAdminActivity(req, "preparation_item_completed_by_staff", "preparation_request", completed.requestId, { itemId: completed.itemId, taskId: task.id, staffId: myId });
+          return json({ ok: true });
+        } catch (cause) {
+          if (cause instanceof PreparationRequestError) return error(cause.message, cause.status);
+          const requestId = makeRequestId();
+          console.error("staff preparation request completion failed", { requestId, error: safeServerError(cause) });
+          return error("تعذّر إكمال تجهيز العنصر", 500, { requestId });
+        }
+      }
       try {return json(await completePreparationTask(db,parsed.data.taskId,{id:myId,name:auth.fullName||auth.username,manager:auth.role==="admin"||auth.role==="manager"}));}
       catch(cause){if(cause instanceof PreparationAssignmentError){const requestId=makeRequestId(req.headers.get("x-request-id"));console.warn("AJN staff preparation completion rejected",{requestId,taskId:parsed.data.taskId,actorId:myId,status:cause.status});return error(cause.message,cause.status,{requestId})}throw cause}
     }

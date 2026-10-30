@@ -239,20 +239,23 @@ function Dashboard() {
 function MyPreparation() {
   const [tasks, setTasks] = useState<Awaited<ReturnType<typeof staffApi.myPreparation>>["tasks"] | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
-    staffApi.myPreparation().then((r) => setTasks(r.tasks ?? [])).catch(() => setTasks([]));
+    setError(null);
+    staffApi.myPreparation().then((r) => setTasks(r.tasks)).catch((cause) => setError(apiErrorMessage(cause, "تعذّر تحميل تجهيزاتك")));
   }, []);
   useEffect(() => { load(); }, [load]);
-  if (!tasks || !tasks.length) return null;
+  if (!error && (!tasks || !tasks.length)) return null;
   const done = async (taskId: number) => {
     setBusy(taskId);
-    try { await staffApi.completePreparation(taskId); load(); } catch { /* ignore */ } finally { setBusy(null); }
+    try { await staffApi.completePreparation(taskId); load(); } catch (cause) { setError(apiErrorMessage(cause, "تعذّر إكمال التجهيز")); } finally { setBusy(null); }
   };
   return (
     <section>
-      <h2 className="mb-2 flex items-center gap-1 text-sm font-bold"><ClipboardList className="h-4 w-4 text-primary" /> تجهيزاتي اليوم <span className="text-muted-foreground">({tasks.length})</span></h2>
+      <h2 className="mb-2 flex items-center gap-1 text-sm font-bold"><ClipboardList className="h-4 w-4 text-primary" /> تجهيزاتي اليوم <span className="text-muted-foreground">({tasks?.length ?? 0})</span></h2>
+      {error ? <div role="alert" className="mb-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error} <Button variant="link" type="button" onClick={load}>إعادة المحاولة</Button></div> : null}
       <div className="space-y-2">
-        {tasks.map((t) => (
+        {(tasks ?? []).map((t) => (
           <div key={t.taskId} className="rounded-xl border-2 border-primary/20 bg-card p-3">
             <div className="flex items-start justify-between gap-2">
               <div>

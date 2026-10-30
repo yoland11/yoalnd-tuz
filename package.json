@@ -131,6 +131,7 @@
     "test:export-pdf": "node ./scripts/test-export-pdf-dependencies.mjs",
     "test:preparation-print": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-thermal-print.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-print-controls.tsx && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-asset-names.ts",
     "test:preparation-cards": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-kosha-preparation-cards.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-center-coverage.ts",
+    "test:preparation-requests": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-standalone-preparation.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-existing-booking.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-create-ui.tsx && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-staff-completion.ts",
     "test:graduation-media": "node ./scripts/verify-graduation-media-gallery.mjs",
     "test:research-center": "node ./scripts/verify-research-center.mjs",
     "test:bride-dashboard": "node ./scripts/verify-bride-dashboard.mjs",

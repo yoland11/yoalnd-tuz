@@ -62,3 +62,4 @@ export * from "./hr";
 export * from "./catering";
 export * from "./bouquet-designer";
 export * from "./booking-penalties";
+export * from "./preparation";

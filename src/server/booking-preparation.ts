@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
 import { db } from "@workspace/db";
 import {normalizeQuantityLine} from "../lib/quantity-assets";
+import type { PreparationDraftItem } from "./preparation-requests";
 
 /**
  * قائمة التجهيز — the ONE read-only preparation view over EXISTING data. It never
@@ -16,6 +18,35 @@ import {normalizeQuantityLine} from "../lib/quantity-assets";
  */
 
 export type PreparationSource = "service" | "kosha";
+export const preparationItemsHash = (items: PreparationDraftItem[]) => createHash("sha256").update(JSON.stringify(items)).digest("hex");
+
+/** Pure operation used under a booking-row lock; retry tokens prevent duplicate checklist lines. */
+export function appendManualPreparationItems(
+  operations: Record<string, unknown>, token: string, items: PreparationDraftItem[], actorId: number,
+  tokenItems: PreparationDraftItem[] = items,
+): { operations: Record<string, unknown>; added: boolean } {
+  const hash = preparationItemsHash(tokenItems);
+  const tokens = operations.preparationRequestTokens && typeof operations.preparationRequestTokens === "object" && !Array.isArray(operations.preparationRequestTokens)
+    ? operations.preparationRequestTokens as Record<string, string> : {};
+  if (tokens[token]) {
+    if (tokens[token] !== hash) throw new Error("رمز الطلب مستخدم لبيانات مختلفة");
+    return { operations, added: false };
+  }
+  const existing = Array.isArray(operations.manualPrepItems) ? operations.manualPrepItems : [];
+  const now = new Date().toISOString();
+  return {
+    operations: {
+      ...operations,
+      manualPrepItems: [...existing, ...items.map((item) => ({
+        id: randomUUID(), name: item.name, department: item.department, quantity: item.quantity,
+        source: item.source, productId: item.productId ?? null, sku: item.sku ?? null,
+        infoOnly: Boolean(item.infoOnly), note: item.note ?? null, createdBy: actorId, createdAt: now,
+      }))],
+      preparationRequestTokens: { ...tokens, [token]: hash },
+    },
+    added: true,
+  };
+}
 const entityOf = (source: PreparationSource) => (source === "kosha" ? "kosha_booking" : "service_order");
 
 export type PreparationStatus =
@@ -48,6 +79,8 @@ export type PreparationItem = {
   totalStock: number;
   reservedByOthers: number;
   available: number;
+  /** Present only when a catalog reference has a verified read-only stock figure. */
+  availabilityKnown?: boolean;
   shortfall: number;
   status: PreparationStatus;
   /** Explicit checklist/physical evidence, NOT inferred stock availability. */
@@ -454,25 +487,55 @@ export async function listPreparationCards(executor: Executor = db): Promise<Pre
     const [source, idStr] = key.split(":");
     if (source === "service") serviceIds.push(Number(idStr));
   }
+  const serviceReservationFilter = serviceIds.length
+    ? sql`id IN (${sql.join(serviceIds.map((i) => sql`${i}`), sql`,`)})`
+    : sql`false`;
   const [serviceRows, koshaRows] = await Promise.all([
-    serviceIds.length
-      ? executor.execute(sql`SELECT id, coalesce(tracking_code, 'SRV-'||id) AS number, customer_name, event_date, event_location FROM service_orders WHERE id IN (${sql.join(serviceIds.map((i) => sql`${i}`), sql`,`)})`)
-      : Promise.resolve({ rows: [] } as any),
     executor.execute(sql`
-      SELECT id, coalesce(tracking_code, 'KOSHA-'||id) AS number, customer_name, event_date, status, archived_at
+      SELECT id, coalesce(tracking_code, 'SRV-'||id) AS number, customer_name, event_date, event_location,
+             status, archived_at, custom_fields AS details
+      FROM service_orders
+      WHERE archived_at IS NULL AND coalesce(status, '') NOT IN ('cancelled', 'canceled', 'ملغي', 'ملغى')
+        AND (${serviceReservationFilter} OR CASE
+          WHEN jsonb_typeof(custom_fields->'bookingOperations'->'manualPrepItems') = 'array'
+          THEN jsonb_array_length(custom_fields->'bookingOperations'->'manualPrepItems') > 0
+          ELSE false END)
+    `),
+    executor.execute(sql`
+      SELECT id, coalesce(tracking_code, 'KOSHA-'||id) AS number, customer_name, event_date, status, archived_at,
+             booking_details AS details
       FROM kosha_bookings
-      WHERE archived_at IS NULL AND coalesce(status, '') NOT IN ('cancelled', 'canceled')
+      WHERE archived_at IS NULL AND coalesce(status, '') NOT IN ('cancelled', 'canceled', 'ملغي', 'ملغى')
     `),
   ]);
   const infoByKey = new Map<string, any>();
-  for (const row of (serviceRows.rows ?? []) as any[]) infoByKey.set(`service:${Number(row.id)}`, row);
+  for (const row of (serviceRows.rows ?? []) as any[]) {
+    if (row.archived_at || ["cancelled", "canceled", "ملغي", "ملغى"].includes(String(row.status ?? ""))) continue;
+    const key = `service:${Number(row.id)}`;
+    infoByKey.set(key, row);
+    if (!byBooking.has(key)) byBooking.set(key, []);
+    if (!departmentsByBooking.has(key)) departmentsByBooking.set(key, new Set());
+  }
   for (const row of (koshaRows.rows ?? []) as any[]) {
-    if (row.archived_at || ["cancelled", "canceled"].includes(String(row.status ?? ""))) continue;
+    if (row.archived_at || ["cancelled", "canceled", "ملغي", "ملغى"].includes(String(row.status ?? ""))) continue;
     const key = `kosha:${Number(row.id)}`;
     infoByKey.set(key, row);
     if (!byBooking.has(key)) byBooking.set(key, []);
     if (!departmentsByBooking.has(key)) departmentsByBooking.set(key, new Set());
     departmentsByBooking.get(key)!.add("kosha");
+  }
+
+  for (const [key, row] of infoByKey) {
+    const operations = row.details?.bookingOperations ?? {};
+    const manualItems = Array.isArray(operations.manualPrepItems) ? operations.manualPrepItems : [];
+    for (const item of manualItems) {
+      const department = String(item?.department || "other");
+      departmentsByBooking.get(key)!.add(department);
+      if (item?.infoOnly) continue;
+      const saved = operations.productMeta?.[`manual:${String(item?.id ?? "")}`]?.prep?.status;
+      const status = ["ready", "completed", "shortage", "needs_purchase"].includes(String(saved)) ? String(saved) : "preparing";
+      byBooking.get(key)!.push({ status } as PreparationItem);
+    }
   }
 
   const cards: PreparationCard[] = [];
