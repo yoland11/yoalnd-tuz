@@ -29,6 +29,8 @@ const steps = [
   ["Booking center read preflight", "pnpm", ["run", "test:booking-center-read"]],
   ["Calendar read preflight", "pnpm", ["run", "test:calendar-read"]],
   ["Shared Arabic date field", "pnpm", ["run", "test:date-field"]],
+  ["Booking calendar department counters", "pnpm", ["run", "test:booking-calendar"]],
+  ["Booking calendar real database", "pnpm", ["run", "test:booking-calendar-db"]],
   ["Daily booking operations read model and permissions", "pnpm", ["run", "test:booking-daily-operations"]],
   ["Booking Center operational readiness evidence and permissions", "pnpm", ["run", "test:booking-readiness"]],
   ["Booking resource periods, source identity and original reservation guards", "pnpm", ["run", "test:booking-resource-period"]],

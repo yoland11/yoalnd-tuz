@@ -3,6 +3,8 @@ import { loadDailyOperations } from "./booking-daily-operations";
 import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
 import { SalesReturnError, salesInvoiceReturnCredits, salesInvoiceReturnCreditsSql, salesReturnsForInvoice } from "./sales-returns";
 import { handleSalesReturnsRequest } from "./sales-returns-routes";
+import { centralBookingDepartments, koshaBookingDepartments, serviceOrderDepartments } from "./booking-departments";
+import { BookingCalendarRangeError, parseBookingCalendarRange, readBookingCalendar } from "./booking-calendar";
 import { resolvePartnershipFinancialEffect, partnershipIncomePredicate } from "./vehicle-partnership/financial-classification";
 import { PartnershipRepositoryError } from "./vehicle-partnership/repository";
 import { PartnershipValidationError } from "@/lib/vehicle-partnership/types";
@@ -34984,18 +34986,6 @@ async function handleBookingOperations(
   return error("مسار عمليات الحجز غير موجود", 404);
 }
 
-function centralBookingDepartments(value: unknown) {
-  const normalized = String(value ?? "").toLowerCase();
-  if (/kosha|كوش/.test(normalized)) return ["kosha"];
-  if (/sound|audio|speaker|صوت/.test(normalized)) return ["sound"];
-  if (/photo|camera|تصوير/.test(normalized)) return ["photography"];
-  if (/flower|ورد/.test(normalized)) return ["flowers"];
-  if (/gift|هدية|توزيع/.test(normalized)) return ["gifts"];
-  if (/graduation|تخرج/.test(normalized)) return ["graduation"];
-  if (/rental|إيجار/.test(normalized)) return ["rental"];
-  return ["decorations"];
-}
-
 // Global damage & penalty reporting: KPIs + a filterable report across all
 // bookings. Read-only; paid/remaining are derived from executed cash movements.
 async function handlePenaltiesReport(
@@ -35301,11 +35291,6 @@ async function listCentralBookingCenterRows(rowCap: number) {
   const rows = [
     ...serviceOrders.map((order) => {
       const fields = (order.customFields ?? {}) as Record<string, any>;
-      const selected = Array.isArray(fields.bookingCenterServices)
-        ? fields.bookingCenterServices.map((item: any) =>
-            String(item?.type ?? ""),
-          )
-        : [];
       const service = serviceMap.get(order.serviceId);
       return {
         source: "service",
@@ -35316,20 +35301,7 @@ async function listCentralBookingCenterRows(rowCap: number) {
         customerName: order.customerName,
         phone: order.phone,
         bookingSource: fields.bookingSource === "store" ? "المتجر" : "الخدمات",
-        // Priority: the department list stamped at sync time (identifiers, survives
-        // renames), then the per-service breakdown, then legacy text classification.
-        // A mixed booking keeps every department it serves and is never split.
-        departments: (() => {
-          const stamped = (
-            Array.isArray(fields.departments) ? fields.departments : []
-          )
-            .map((value: unknown) => String(value ?? "").trim())
-            .filter(Boolean);
-          const merged = [...new Set([...stamped, ...selected])];
-          return merged.length
-            ? merged
-            : centralBookingDepartments(service?.type ?? service?.nameAr);
-        })(),
+        departments: serviceOrderDepartments(fields, service),
         eventDate: order.eventDate ?? "",
         eventTime: fields.eventTime ?? "",
         hall: order.eventLocation ?? "",
@@ -35357,33 +35329,7 @@ async function listCentralBookingCenterRows(rowCap: number) {
       customerName: booking.customerName,
       phone: booking.phone,
       bookingSource: "الكوشات",
-      departments: (() => {
-        const details = (booking.bookingDetails ?? {}) as Record<string, any>;
-        const detected = detectBookingDepartments({
-          signals: {
-            taxonomy: [
-              "kosha",
-              ...(Array.isArray(details.departments)
-                ? details.departments
-                : []),
-              details.department,
-              details.bookingType,
-              details.serviceType,
-              ...(Array.isArray(details.bookingCenterServices)
-                ? details.bookingCenterServices.map(
-                    (item: any) => item?.type ?? item?.key,
-                  )
-                : []),
-            ],
-            itemNames: Array.isArray(details.soundItems)
-              ? details.soundItems.map(
-                  (item: any) => item?.name ?? item?.productName,
-                )
-              : [],
-          },
-        });
-        return detected.length ? detected : ["kosha"];
-      })(),
+      departments: koshaBookingDepartments((booking.bookingDetails ?? {}) as Record<string, any>),
       eventDate: booking.eventDate ?? "",
       eventTime: booking.eventTime ?? "",
       hall: booking.hallLocation ?? "",
@@ -46565,113 +46511,25 @@ async function handleAdmin(
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
     const params = req.nextUrl.searchParams;
-    const fromText =
-      params.get("from") || new Date().toISOString().slice(0, 10);
-    const toText = params.get("to") || fromText;
+    let range: { from: string; to: string };
+    try {
+      range = parseBookingCalendarRange(params.get("from"), params.get("to"));
+    } catch (cause) {
+      if (cause instanceof BookingCalendarRangeError)
+        return error(cause.message, 422, { code: "VALIDATION_ERROR" });
+      throw cause;
+    }
     const serviceId = Number.parseInt(params.get("serviceId") ?? "", 10);
-    const crew = params.get("crew")?.trim();
-    const status = params.get("status")?.trim();
-    const [bookings, productOrders, services, koshaBookings] =
-      await Promise.all([
-        db.query.serviceOrdersTable.findMany({
-          where: and(
-            sql`${serviceOrdersTable.archivedAt} is null`,
-            status ? eq(serviceOrdersTable.status, status) : undefined,
-          ),
-          orderBy: [
-            asc(serviceOrdersTable.eventDate),
-            desc(serviceOrdersTable.createdAt),
-          ],
-          limit: 500,
-        }),
-        db.query.ordersTable.findMany({
-          where: and(
-            sql`${ordersTable.archivedAt} is null`,
-            gte(ordersTable.createdAt, new Date(`${fromText}T00:00:00`)),
-            lte(ordersTable.createdAt, new Date(`${toText}T23:59:59.999`)),
-          ),
-          orderBy: [desc(ordersTable.createdAt)],
-          limit: 100,
-        }),
-        db.query.servicesTable.findMany(),
-        db.query.koshaBookingsTable.findMany({
-          where: sql`${koshaBookingsTable.archivedAt} is null and ${koshaBookingsTable.status} <> 'cancelled'`,
-          orderBy: [asc(koshaBookingsTable.eventDate)],
-          limit: 500,
-        }),
-      ]);
-    const serviceMap = new Map(
-      services.map((service) => [service.id, service]),
-    );
-    const inRange = (dateValue: string | null | undefined) => {
-      if (!dateValue) return false;
-      const day = dateValue.slice(0, 10);
-      return day >= fromText && day <= toText;
-    };
-    const serviceEvents = bookings
-      .filter((booking) => inRange(booking.eventDate))
-      .filter(
-        (booking) =>
-          !Number.isFinite(serviceId) ||
-          serviceId <= 0 ||
-          booking.serviceId === serviceId,
-      )
-      .filter(
-        (booking) =>
-          !crew ||
-          String((booking.customFields as any)?.crewName ?? "").includes(crew),
-      )
-      .map((booking) => ({
-        id: booking.id,
-        kind: "service",
-        title:
-          serviceMap.get(booking.serviceId)?.nameAr ??
-          serviceMap.get(booking.serviceId)?.name ??
-          "حجز خدمة",
-        customerName: booking.customerName,
-        trackingCode: booking.trackingCode,
-        status: booking.status,
-        serviceId: booking.serviceId,
-        serviceType: serviceMap.get(booking.serviceId)?.type ?? null,
-        crewName: String((booking.customFields as any)?.crewName ?? ""),
-        date: booking.eventDate,
-        location: booking.eventLocation ?? "",
-      }));
-    const orderEvents = productOrders.map((order) => ({
-      id: order.id,
-      kind: "order",
-      title: "طلب متجر",
-      customerName: order.customerName,
-      trackingCode: order.trackingCode,
-      status: order.status,
-      date: order.createdAt.toISOString().slice(0, 10),
-      location: [order.governorate, order.area, order.address]
-        .filter(Boolean)
-        .join(" / "),
-    }));
-    const koshaEvents = koshaBookings
-      .filter((b) => inRange(b.eventDate))
-      .map((b) => {
-        const d = (b.bookingDetails ?? {}) as any;
-        return {
-          id: b.id,
-          kind: "kosha" as const,
-          title: "حجز كوشة",
-          customerName: b.customerName,
-          trackingCode: b.trackingCode ?? `KB-${b.id}`,
-          status: b.status,
-          date: b.eventDate,
-          location: [b.province, b.area, b.hallLocation]
-            .filter(Boolean)
-            .join(" / "),
-          primaryEmployeeName: d.primaryEmployeeName ?? null,
-          assistantEmployeeName: d.assistantEmployeeName ?? null,
-        };
-      });
-    return json({
-      events: [...serviceEvents, ...orderEvents, ...koshaEvents],
-      services: services.map(formatService),
+    const calendar = await readBookingCalendar(db, {
+      ...range,
+      serviceId: Number.isFinite(serviceId) && serviceId > 0 ? serviceId : null,
+      crew: params.get("crew")?.trim() || null,
+      status: params.get("status")?.trim() || null,
     });
+    const services = await db.query.servicesTable.findMany();
+    const response = json({ ...calendar, services: services.map(formatService) });
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
   }
 
   if (section === "messages") {

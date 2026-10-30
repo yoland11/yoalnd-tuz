@@ -146,6 +146,8 @@
     "test:booking-center-read": "node ./scripts/test-booking-center-read-preflight.mjs",
     "test:calendar-read": "node ./scripts/test-calendar-read-preflight.mjs",
     "test:date-field": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-date-field.tsx",
+    "test:booking-calendar": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-calendar-logic.ts",
+    "test:booking-calendar-db": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-calendar-integration.ts",
     "test:expense-category-access": "node ./scripts/verify-expense-category-access.mjs",
     "test:booking-penalties": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-penalties.ts",
     "diagnose:booking-finance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/diagnose-booking-finance.ts",
