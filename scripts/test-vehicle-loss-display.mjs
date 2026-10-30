@@ -17,7 +17,7 @@ assert.ok(vehicleStart > 0 && vehicleEnd > vehicleStart);
 function visit(node) {
   if (ts.isPropertyAssignment(node)) {
     const name = node.name.getText(api), expression = node.initializer.getText(api);
-    if ((name === "tripProfit" && node.getStart(api) > vehicleStart && node.getStart(api) < vehicleEnd) ||
+    if ((name === "tripProfit" && !expression.includes("value.profit") && node.getStart(api) > vehicleStart && node.getStart(api) < vehicleEnd) ||
         (name === "netProfit" && expression.includes("transportationRevenue") && expression.includes("vehicleExpenses"))) {
       expressions.push({ name, expression, line: api.getLineAndCharacterOfPosition(node.getStart(api)).line + 1 });
     }
@@ -26,7 +26,7 @@ function visit(node) {
 }
 visit(api);
 assert.equal(expressions.filter(row => row.name === "tripProfit").length, 2, "both original trip source results are covered");
-assert.equal(expressions.filter(row => row.name === "netProfit").length, 2, "detail summary and list stats are covered");
+assert.equal(expressions.filter(row => row.name === "netProfit").length, 1, "detail summary is covered; list stats live in addPlanVehicleStats (test-vehicle-transport-plans)");
 
 const formatter = { exports: {} };
 const formatterJs = ts.transpileModule(readFileSync(new URL("../src/lib/money.ts", import.meta.url), "utf8"), {

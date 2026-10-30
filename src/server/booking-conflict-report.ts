@@ -40,13 +40,14 @@ export async function loadBookingConflictReport(tx:ResourceExecutor,ref:BookingO
       if(!assets.has(productId))assets.set(productId,{productId,quantity:1});
     }
   }
-  if(assets.size+live.staffIds.length+Number(!!live.vehicleId)+Number(!!live.crewId)+Number(!!live.koshaId)>100)throw new BookingResourceConflictError("موارد الحجز كثيرة؛ يلزم فحصها على مجموعات",422);
+  const vehicleIds=live.vehicleIds??(live.vehicleId?[live.vehicleId]:[]);
+  if(assets.size+live.staffIds.length+vehicleIds.length+Number(!!live.crewId)+Number(!!live.koshaId)>100)throw new BookingResourceConflictError("موارد الحجز كثيرة؛ يلزم فحصها على مجموعات",422);
   const productIds=[...assets.keys()];
   const [productResult,nameResult]=await Promise.all([
     productIds.length?tx.execute(sql`SELECT p.id,p.name_ar,p.name,p.is_asset,p.stock,q.tracking_mode,q.unit_of_measure,q.quantity_checked_out,q.quantity_damaged,q.quantity_maintenance,q.quantity_missing,ap.status AS asset_status,ap.deleted_at AS asset_deleted_at
       FROM products p LEFT JOIN asset_quantity_profiles q ON q.product_id=p.id LEFT JOIN asset_profiles ap ON ap.product_id=p.id WHERE ${idsWhere(sql`p.id`,productIds)} LIMIT 101`):Promise.resolve({rows:[]}),
     tx.execute(sql`SELECT 'staff' AS kind,id,coalesce(nullif(full_name,''),username) AS name,is_active AS active,NULL::text AS status FROM staff WHERE ${idsWhere(sql`id`,live.staffIds)}
-      UNION ALL SELECT 'vehicle',id,name,is_active,status FROM fleet_vehicles WHERE ${idsWhere(sql`id`,live.vehicleId?[live.vehicleId]:[])}
+      UNION ALL SELECT 'vehicle',id,name,is_active,status FROM fleet_vehicles WHERE ${idsWhere(sql`id`,vehicleIds)}
       UNION ALL SELECT 'crew',id,name,is_active,status FROM crews WHERE ${idsWhere(sql`id`,live.crewId?[live.crewId]:[])}
       UNION ALL SELECT 'kosha',id,name,is_active,availability_status FROM koshas WHERE ${idsWhere(sql`id`,live.koshaId?[live.koshaId]:[])} LIMIT 101`),
   ]);
@@ -55,7 +56,7 @@ export async function loadBookingConflictReport(tx:ResourceExecutor,ref:BookingO
     if(!positive(product.id)||!assets.has(Number(product.id))||products.has(Number(product.id)))throw Error("Invalid resource product database response");
     products.set(Number(product.id),product);
   }
-  const expectedNames=new Set([...live.staffIds.map(id=>`staff:${id}`),...(live.vehicleId?[`vehicle:${live.vehicleId}`]:[]),...(live.crewId?[`crew:${live.crewId}`]:[]),...(live.koshaId?[`kosha:${live.koshaId}`]:[])]);
+  const expectedNames=new Set([...live.staffIds.map(id=>`staff:${id}`),...vehicleIds.map(id=>`vehicle:${id}`),...(live.crewId?[`crew:${live.crewId}`]:[]),...(live.koshaId?[`kosha:${live.koshaId}`]:[])]);
   const names=new Map<string,any>();
   for(const row of resourceRows(nameResult)){
     const key=`${row.kind}:${row.id}`;
@@ -130,7 +131,7 @@ export async function loadBookingConflictReport(tx:ResourceExecutor,ref:BookingO
     }
     return {...base,...status(await findBookingPhysicalConflict(live,productId,tx))};
   });
-  const resources:[ConflictReportRow["kind"],number,(...args:any[])=>Promise<any>][]=[...live.staffIds.map(id=>["staff",id,(b:any,i:number,t:any)=>findBookingStaffConflict(b,[i],t)] as ["staff",number,any]),...(live.vehicleId?[["vehicle",live.vehicleId,findBookingVehicleConflict] as ["vehicle",number,any]]:[]),...(live.crewId?[["crew",live.crewId,findBookingCrewConflict] as ["crew",number,any]]:[]),...(live.koshaId?[["kosha",live.koshaId,findBookingKoshaConflict] as ["kosha",number,any]]:[])];
+  const resources:[ConflictReportRow["kind"],number,(...args:any[])=>Promise<any>][]=[...live.staffIds.map(id=>["staff",id,(b:any,i:number,t:any)=>findBookingStaffConflict(b,[i],t)] as ["staff",number,any]),...vehicleIds.map(id=>["vehicle",id,findBookingVehicleConflict] as ["vehicle",number,any]),...(live.crewId?[["crew",live.crewId,findBookingCrewConflict] as ["crew",number,any]]:[]),...(live.koshaId?[["kosha",live.koshaId,findBookingKoshaConflict] as ["kosha",number,any]]:[])];
   for(const [kind,id,find] of resources)jobs.push(async()=>{
     const resource=names.get(`${kind}:${id}`);
     const base={key:`${kind}:${id}`,kind,name:String(resource?.name||"مورد غير متاح")};

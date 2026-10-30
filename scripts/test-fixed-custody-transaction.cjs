@@ -35,7 +35,8 @@ function loadModule(file, dependencies = {}) {
 }
 const conflictCore = loadModule('src/lib/booking-resource-conflicts.ts');
 const windows = loadModule('src/lib/booking-resource-window.ts', { './booking-resource-conflicts': conflictCore });
-const resources = loadModule('src/server/booking-resource-availability.ts', { '@/lib/booking-resource-window': windows, '@/lib/booking-resource-conflicts': conflictCore });
+const transportPlans = loadModule('src/lib/booking-transport-plan.ts', { './booking-resource-conflicts': conflictCore });
+const resources = loadModule('src/server/booking-resource-availability.ts', { '@/lib/booking-resource-window': windows, '@/lib/booking-resource-conflicts': conflictCore, '@/lib/booking-transport-plan': transportPlans });
 const table = (name, fields) => Object.assign({ name }, Object.fromEntries(fields.map((field) => [field, `${name}.${field}`])));
 const tables = {
   productsTable: table("products", ["id"]),

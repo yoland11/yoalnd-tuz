@@ -2,6 +2,7 @@ import { sql, type SQL } from "drizzle-orm";
 import type { BookingOperationRef } from "@/lib/booking-operational-readiness";
 import { bookingResourceSpan,readBookingResourceWindow } from "@/lib/booking-resource-window";
 import { resourceOccupancyTimestamps } from "@/lib/booking-resource-conflicts";
+import { validateTransportPlan } from "@/lib/booking-transport-plan";
 
 export type ResourceExecutor={execute(query:any):Promise<any>};
 export type TimedBookingRef=BookingOperationRef & {operations:Record<string,unknown>;eventDate?:string|null};
@@ -113,6 +114,16 @@ const activeBookings=sql`WITH bookings AS (
 )`;
 const jsonArray=(field:SQL)=>sql`CASE WHEN jsonb_typeof(${field})='array' THEN ${field} ELSE '[]'::jsonb END`;
 const validIds=(ids:number[])=>{if(ids.length>100||ids.some(id=>!Number.isSafeInteger(id)||id<=0))throw Error("Invalid resource identity");return [...new Set(ids)].sort((a,b)=>a-b)};
+/** Keep malformed saved plans visible as errors. Additional plan candidates are
+ * bounded by the same 500-row guard as the original reservation evidence. */
+function transportCandidates(rows:any[],kind:"vehicle"|"staff",ids:number[]){
+  return rows.filter(row=>{
+    const raw=row.details?.bookingOperations?.transportPlan;
+    const plan=raw==null?null:validateTransportPlan(raw);
+    if(row.transport_plan_only!==true)return true;
+    return !!plan?.trips.some(trip=>ids.includes((kind==="vehicle"?trip.vehicleId:trip.driverId)??-1));
+  });
+}
 /** Internal manager policy partition, not authorization. A reason alone never
  * waives the rest of a booking's crew/drivers. Callers must authenticate first. */
 export function staffConflictGroups(ids:number[],reason?:string|null,selected:number[]=[]){
@@ -147,9 +158,13 @@ export async function findBookingStaffConflict(reference:StaffTimedRef,ids:numbe
           WHERE a->>'employeeId'=s.staff_id::text OR a->>'staffId'=s.staff_id::text OR a->>'id'=s.staff_id::text)
       ))
     )
-    ) SELECT *,NULL::jsonb AS photo_identity FROM staff_bookings
+    ) SELECT *,false AS transport_plan_only,NULL::jsonb AS photo_identity FROM staff_bookings
+    UNION ALL SELECT b.source,b.id,b.event_date,b.details,true AS transport_plan_only,NULL::jsonb AS photo_identity
+      FROM bookings b WHERE NOT(b.source=${reference.source} AND b.id=${reference.id})
+        AND b.details->'bookingOperations'->'transportPlan' IS NOT NULL
     UNION ALL SELECT DISTINCT 'photography'::text AS source,e.id,e.event_date::text AS event_date,
       jsonb_build_object('bookingOperations',jsonb_build_object('resourceWindow',to_jsonb(e)->'resource_window')) AS details,
+      false AS transport_plan_only,
       jsonb_build_object('bookingIds',resolved.booking_ids,'central',CASE WHEN central.id IS NULL THEN NULL ELSE jsonb_build_object('id',central.id,'status',central.status,'archivedAt',central.archived_at,'eventDate',central.event_date,'details',jsonb_build_object('bookingOperations',central.custom_fields->'bookingOperations')) END) AS photo_identity
     FROM photography_events e LEFT JOIN photography_shoots sh ON sh.event_id=e.id
       LEFT JOIN photography_shoot_crew c ON c.shoot_id=sh.id
@@ -160,7 +175,7 @@ export async function findBookingStaffConflict(reference:StaffTimedRef,ids:numbe
       AND (e.assigned_staff_id IN (${sql.join(staffIds.map(id=>sql`${id}`),sql`, `)}) OR
         c.staff_id IN (${sql.join(staffIds.map(id=>sql`${id}`),sql`, `)}) AND lower(c.assignment_status) NOT IN ('rejected','revoked','removed','cancelled'))
     ORDER BY source,id LIMIT 501`);
-  return firstBookingOverlap(reference,resourceRows(result).map(projectPhotographyOccupancy).filter(row=>row!==null),true);
+  return firstBookingOverlap(reference,transportCandidates(resourceRows(result),"staff",staffIds).map(projectPhotographyOccupancy).filter(row=>row!==null),true);
 }
 
 /** Native, routed-service and original dispatch assignments share the SAME
@@ -173,11 +188,14 @@ async function dispatchResourceConflict(reference:TimedBookingRef,id:number,kind
       b.vehicle_id=${id} OR b.details->>'transportationVehicleId'=${String(id)} OR b.details->'bookingOperations'->'transportation'->>'vehicleId'=${String(id)} OR b.details->'transportation'->>'vehicleId'=${String(id)}))`:sql`false`;
   const column=kind==="vehicle"?sql`d.vehicle_id`:sql`d.crew_id`;
   const result=await connection.execute(sql`${activeBookings}
-    SELECT b.source,b.id,b.event_date,b.details FROM bookings b WHERE NOT(b.source=${reference.source} AND b.id=${reference.id})
+    SELECT b.source,b.id,b.event_date,b.details,false AS transport_plan_only FROM bookings b WHERE NOT(b.source=${reference.source} AND b.id=${reference.id})
     AND (${selected} OR EXISTS(SELECT 1 FROM dispatch_assignments d WHERE d.entity_id=b.id
       AND d.entity_type=CASE WHEN b.source='kosha' THEN 'kosha_booking' ELSE 'service_order' END
-      AND d.status IN ('assigned','en_route','active') AND ${column}=${id})) ORDER BY source,id LIMIT 501`);
-  return firstBookingOverlap(reference,resourceRows(result));
+      AND d.status IN ('assigned','en_route','active') AND ${column}=${id}))
+    UNION ALL SELECT b.source,b.id,b.event_date,b.details,true AS transport_plan_only FROM bookings b
+      WHERE ${kind==="vehicle"?sql`true`:sql`false`} AND NOT(b.source=${reference.source} AND b.id=${reference.id})
+        AND b.details->'bookingOperations'->'transportPlan' IS NOT NULL ORDER BY source,id LIMIT 501`);
+  return firstBookingOverlap(reference,transportCandidates(resourceRows(result),kind==="vehicle"?"vehicle":"staff",[id]));
 }
 export const findBookingVehicleConflict=(reference:TimedBookingRef,id:number,connection:ResourceExecutor)=>dispatchResourceConflict(reference,id,"vehicle",connection);
 export const findBookingCrewConflict=(reference:TimedBookingRef,id:number,connection:ResourceExecutor)=>dispatchResourceConflict(reference,id,"crew",connection);

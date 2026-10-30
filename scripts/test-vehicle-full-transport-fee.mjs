@@ -39,6 +39,8 @@ const mapper = compile(`${money.getText(api)}
 const tripExpenseOf=${variable("tripExpenseOf")};
 const trips=${variable("trips")};
 ${serviceLoop.getText(api)}
+const unallocatedBookings=${variable("unallocatedBookings")};
+const allocatedTransportationRevenue=${variable("allocatedTransportationRevenue")};
 const transportationRevenue=${variable("transportationRevenue")};
 const vehicleExpenses=${variable("vehicleExpenses")};
 exports.result={trips,summary:${summary.initializer.getText(api)}};`);
@@ -101,15 +103,15 @@ function renderFragment(fragment, context, jsx = true) {
   return renderToStaticMarkup(createElement(target.exports.Render));
 }
 const vehicleText = read("src/views/admin/vehicles.tsx"), vehicleAst = ts.createSourceFile("vehicles.tsx", vehicleText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const tripsNode = vehicleAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "Trips");
+const tripsNode = vehicleAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "VehicleTrips");
 assert.ok(tripsNode);
 const trip = project("service", 150000).trips[0];
-const vehicleHtml = renderFragment(`${tripsNode.getText(vehicleAst)}; exports.Render=()=> <Trips rows={rows}/>;`, { rows: [trip] });
+const vehicleHtml = renderFragment(`${tripsNode.getText(vehicleAst)}; exports.Render=()=> <VehicleTrips rows={rows}/>;`, { rows: [trip], transportMoney: value => value == null ? "غير موزّع" : formatter.exports.formatCurrency(value), TransportReceiptAction: () => null });
 assert.ok(vehicleHtml.includes("15,000"));
 assert.ok(!vehicleHtml.includes("11,538.46"), "vehicle trip table must not present collection share as income");
 assert.ok(!vehicleHtml.includes(">المنفذ<"));
-assert.equal((vehicleHtml.match(/<th\b/g) ?? []).length, 6);
-assert.ok(renderFragment(`${tripsNode.getText(vehicleAst)}; exports.Render=()=> <Trips rows={rows}/>;`, { rows: [] }).includes('colSpan="6"'));
+assert.equal((vehicleHtml.match(/<th\b/g) ?? []).length, 7);
+assert.ok(renderFragment(`${tripsNode.getText(vehicleAst)}; exports.Render=()=> <VehicleTrips rows={rows}/>;`, { rows: [], transportMoney: value => value == null ? "غير موزّع" : formatter.exports.formatCurrency(value), TransportReceiptAction: () => null }).includes('colSpan="7"'));
 
 const enterpriseText = read("src/views/admin/enterprise.tsx"), enterpriseAst = ts.createSourceFile("enterprise.tsx", enterpriseText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = enterpriseAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "VehicleProfitabilityTab");
@@ -118,18 +120,19 @@ let table, metric;
 function uiWalk(node) {
   if (ts.isJsxElement(node) && node.openingElement.tagName.getText(enterpriseAst) === "table" && node.getText(enterpriseAst).includes("data.trips")) table = node;
   if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(enterpriseAst) === "Metric" &&
-      node.attributes.properties.some(attribute => ts.isJsxAttribute(attribute) && attribute.name.getText(enterpriseAst) === "value" && attribute.initializer?.getText(enterpriseAst) === "{formatCurrency(data.summary.transportationRevenue)}")) metric = node;
+      node.attributes.properties.some(attribute => ts.isJsxAttribute(attribute) && attribute.name.getText(enterpriseAst) === "value" && attribute.initializer?.getText(enterpriseAst) === "{transportMoney(data.summary.transportationRevenue)}")) metric = node;
   ts.forEachChild(node, uiWalk);
 }
 uiWalk(component);
 assert.ok(table && metric);
 const commandHtml = renderFragment(`exports.Render=()=> <>${metric.getText(enterpriseAst)}${table.getText(enterpriseAst)}</>;`, {
   data: project("service", 150000), Route: () => null,
+  transportMoney: value => value == null ? "غير موزّع" : formatter.exports.formatCurrency(value), TransportReceiptAction: () => null,
   Metric: props => createElement("div", null, props.label, props.value),
 });
 assert.ok(commandHtml.includes("15,000"));
 assert.ok(!commandHtml.includes("11,538.46"), "command center must not present collection share as income");
 assert.ok(commandHtml.includes("إجمالي أجور النقل المسجلة"));
 assert.ok(!commandHtml.includes(">المنفذ<"));
-assert.equal((commandHtml.match(/<th\b/g) ?? []).length, 7);
+assert.equal((commandHtml.match(/<th\b/g) ?? []).length, 8);
 console.log("PASS full saved vehicle fees: actual two-source mapper/summary, original cash compatibility, signed profit, fleet SQL scope and original vehicle/command-center JSX.");

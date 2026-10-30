@@ -18,6 +18,8 @@ export function mergeBookingOperationalEvidence(current:any,patch:any,baselineOp
   const before=object(live.bookingOperations),proposed=object(incoming.bookingOperations),ops={...before,...proposed};
   delete ops.loading;if(Object.hasOwn(before,"loading"))ops.loading=before.loading;
   delete ops.resourceWindow;if(Object.hasOwn(before,"resourceWindow"))ops.resourceWindow=before.resourceWindow;
+  delete ops.transportPlan;if(Object.hasOwn(before,"transportPlan"))ops.transportPlan=before.transportPlan;
+  if(before.transportPlan!=null){delete ops.transportation;if(Object.hasOwn(before,"transportation"))ops.transportation=before.transportation}
   const existingMeta=object(before.productMeta),meta={...object(proposed.productMeta??before.productMeta)},delta=preparationDelta(incoming,baselineOperations);
   for(const [key,line] of Object.entries(existingMeta))if(line?.prep!=null)meta[key]={...object(meta[key]),prep:{...object(line.prep),...delta[key]}};
   if(Object.hasOwn(before,"productMeta")||Object.hasOwn(proposed,"productMeta"))ops.productMeta=meta;
@@ -33,12 +35,14 @@ export function mergeBookingOperationalEvidence(current:any,patch:any,baselineOp
  */
 export function bookingEvidenceWriteSql(column:SQLWrapper,patch:Record<string,any>,baselineOperations?:Record<string,any>){
   object(patch);const delta=preparationDelta(patch,baselineOperations);
-  const incoming={...patch};if(incoming.bookingOperations!=null){incoming.bookingOperations={...object(incoming.bookingOperations)};delete incoming.bookingOperations.loading;delete incoming.bookingOperations.resourceWindow}
+  const incoming={...patch};if(incoming.bookingOperations!=null){incoming.bookingOperations={...object(incoming.bookingOperations)};delete incoming.bookingOperations.loading;delete incoming.bookingOperations.resourceWindow;delete incoming.bookingOperations.transportPlan}
   return sql`(
     SELECT w.live || w.patch || CASE WHEN w.live ? 'bookingOperations' OR w.patch ? 'bookingOperations' THEN
-      jsonb_build_object('bookingOperations', o.live_ops || o.proposed_ops ||
+      jsonb_build_object('bookingOperations', o.live_ops ||
+        CASE WHEN o.live_ops->'transportPlan' IS NOT NULL AND o.live_ops->'transportPlan'<>'null'::jsonb THEN o.proposed_ops-'transportation' ELSE o.proposed_ops END ||
         CASE WHEN o.live_ops ? 'loading' THEN jsonb_build_object('loading',o.live_ops->'loading') ELSE '{}'::jsonb END ||
         CASE WHEN o.live_ops ? 'resourceWindow' THEN jsonb_build_object('resourceWindow',o.live_ops->'resourceWindow') ELSE '{}'::jsonb END ||
+        CASE WHEN o.live_ops ? 'transportPlan' THEN jsonb_build_object('transportPlan',o.live_ops->'transportPlan') ELSE '{}'::jsonb END ||
         CASE WHEN o.live_ops ? 'productMeta' OR o.proposed_ops ? 'productMeta' THEN
           jsonb_build_object('productMeta',m.proposed_meta || coalesce((
             SELECT jsonb_object_agg(e.key,coalesce(nullif(m.proposed_meta->e.key,'null'::jsonb),'{}'::jsonb) ||

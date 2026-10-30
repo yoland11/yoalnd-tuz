@@ -1,0 +1,15 @@
+import assert from "node:assert/strict";
+import * as React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+(globalThis as any).React=React;
+const {TransportReceiptControls,TransportReceiptSettingsFields}=await import("../src/components/transport-receipt-dialog");
+const {DEFAULT_TRANSPORT_RECEIPT_SETTINGS}=await import("../src/lib/transport-receipt");
+let html=renderToStaticMarkup(<TransportReceiptControls variant="driver" canFinancial={false} copies="1" onVariant={()=>{}} onCopies={()=>{}} disabled={false}/>);
+assert.match(html,/نسخة السائق/);assert.match(html,/نسخة العميل/);assert.match(html,/عدد النسخ/);assert.match(html,/min="1"/);assert.match(html,/max="5"/);
+assert.match(html,/<button[^>]*disabled[^>]*>نسخة العميل<\/button>/,"financial recipient disabled without permission");
+html=renderToStaticMarkup(<TransportReceiptControls variant="customer" canFinancial copies="0" onVariant={()=>{}} onCopies={()=>{}} disabled={false}/>);
+assert.match(html,/aria-invalid="true"/);assert.match(html,/من 1 إلى 5/);
+html=renderToStaticMarkup(<TransportReceiptSettingsFields settings={DEFAULT_TRANSPORT_RECEIPT_SETTINGS} onChange={()=>{}} disabled={false}/>);
+assert.equal((html.match(/role="checkbox"/g)||[]).length,14);
+assert.match(html,/إعدادات طباعة وصل النقل/);assert.match(html,/شعار الشركة/);assert.match(html,/مبلغ النقل/);
+console.log("PASS actual receipt controls: labelled RTL recipient/copies, financial variant guard, copy errors and fourteen setting toggles");

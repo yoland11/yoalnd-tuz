@@ -19,6 +19,7 @@ assert.equal(result.trips[0].profitability.contribution,"15000.00");assert.deepE
 assert.equal(result.internalIncome[0].amount,"30000.00");assert.equal(result.externalIncome.length,0,"original customer fee never added to internal entitlement");
 assert.equal(result.trips[0].bookingCollected,"40000.00");assert.equal(result.trips[0].transportCashAttribution,"20000.00","collection attribution separate from recognized 30000 entitlement");
 assert.equal(costIdentity(cost),"financial:91");
+assert.ok(deriveVehicleActivity({...input,trips:input.trips.map(trip=>({...trip,sharedPlan:true}))}).blockers.some((reason:string)=>/أكثر من سيارة/.test(reason)),"a fee shared across vehicles is never approved for one partner");
 result=deriveVehicleActivity({...input,costs:[cost,{...cost},fuel]});assert.equal(result.trips[0].profitability.cost,"15000.00","same original financial cost once");
 assert.throws(()=>deriveVehicleActivity({...input,costs:[cost,{...cost,amount:"9999.00"}]}),/متعارض|يطابق|conflict/);
 result=deriveVehicleActivity({...input,costs:[cost,{...fuel,reversed:"2000.00"}]});assert.equal(result.trips[0].profitability.cost,"13000.00","approved reversal nets original once");

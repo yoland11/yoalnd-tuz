@@ -27,6 +27,11 @@ import { updatePreparationItems, completePreparationTask } from "./booking-prepa
 import {sendBookingReminders} from "./booking-reminders";
 import {reviewPreparationTask} from "./booking-preparation-review";
 import { bookingEvidenceWriteSql } from "./booking-operations-write-guard";
+import { readTransportPlan,validateTransportPlan,prepareTransportPlanSave,TransportPlanError,type TransportPlan } from "@/lib/booking-transport-plan";
+import { reconcilePaymentState } from "./payment-state";
+import { readTransportReceipt,projectVehicleTransportBooking } from "./booking-transport-receipt";
+import { readVehicleTransportPlans,addPlanVehicleStats,assertPlanFitsPartnershipLedger,type VehicleTransportFinancialTrip } from "./vehicle-transport-plans";
+import { normalizeTransportReceiptSettings,DEFAULT_TRANSPORT_RECEIPT_SETTINGS } from "@/lib/transport-receipt";
 import { executedTransportRevenue, transportTotalDelta } from "@/lib/booking-transport";
 import { LoadingError } from "@/lib/booking-loading";
 import { parseDailyOperationsFilters } from "@/lib/booking-daily-operations";
@@ -6255,6 +6260,8 @@ const KoshaBookingUpdateSchema = z.object({
   transportationVehicleId: z.coerce.number().int().positive().optional().nullable(),
   transportationDriverId: z.coerce.number().int().positive().optional().nullable(),
   transportationNotes: z.string().max(2000).optional().nullable(),
+  transportPlan: z.unknown().optional(),
+  expectedTransportRevision: z.number().int().nonnegative().optional(),
   notes: z.string().optional().nullable(),
   status: z.enum(KOSHA_BOOKING_STATUS_VALUES).optional(),
   executionStage: z
@@ -22023,6 +22030,18 @@ async function handleAdminKoshas(
         const compatiblePatch = rawPatch && typeof rawPatch === "object"
           ? { ...(rawPatch as Record<string, unknown>) }
           : rawPatch;
+        let transportPlanChange:ReturnType<typeof prepareTransportPlanSave>|null=null;
+        if(compatiblePatch&&typeof compatiblePatch==="object"&&Object.hasOwn(compatiblePatch,"transportPlan")){
+          const details=(existing.bookingDetails??{}) as Record<string,any>;
+          const legacy=existing.transportationMode?{mode:existing.transportationMode,fee:Number(existing.transportationFee??0),vehicleId:existing.transportationVehicleId,driverId:existing.transportationDriverId,note:existing.transportationNotes}:details.bookingOperations?.transportation??null;
+          transportPlanChange=prepareTransportPlanSave(readTransportPlan({source:"kosha",id,bookingNumber:"",legacy,storedPlan:details.bookingOperations?.transportPlan}),compatiblePatch.transportPlan,compatiblePatch.expectedTransportRevision,canEditOrderFinancials(auth));
+          if(transportPlanChange.duplicate)return json({ok:true,duplicate:true});
+          if(Number(existing.paidAmount)>0)return error("لا يمكن تغيير خدمة النقل بعد تسجيل دفعات منفذة. استخدم تصحيحاً أو عكساً مالياً أولاً.",409);
+          const primary=transportPlanChange.plan.trips[0];
+          Object.assign(compatiblePatch,{transportationMode:"ajn",transportationFee:transportPlanChange.fee,transportationVehicleId:primary.vehicleId,transportationDriverId:primary.driverId,transportationNotes:primary.notes});
+        }else if(compatiblePatch&&typeof compatiblePatch==="object"&&(existing.bookingDetails as any)?.bookingOperations?.transportPlan!=null&&["transportationMode","transportationFee","transportationVehicleId","transportationDriverId","transportationNotes"].some(key=>Object.hasOwn(compatiblePatch,key))){
+          return error("هذا الحجز يحتوي خطة رحلات؛ عدّل النقل من محرر الرحلات حتى لا تُستبدل الأجور أو الرحلات المحفوظة",409);
+        }
         if (compatiblePatch && typeof compatiblePatch === "object") {
           const patch = compatiblePatch as Record<string, unknown>;
           const requestedKoshaId = Number(patch.koshaId);
@@ -22253,6 +22272,14 @@ async function handleAdminKoshas(
           const existingOps = ((existing.bookingDetails as any)?.bookingOperations ?? null) as Record<string, unknown> | null;
           if (existingOps && existingOps.transportation != null)
             (update.bookingDetails as any).bookingOperations = { ...((update.bookingDetails as any).bookingOperations ?? existingOps), transportation: null };
+          if(transportPlanChange){
+            const details=update.bookingDetails as Record<string,any>;
+            details.bookingOperations={...(details.bookingOperations??existingOps??{}),transportPlan:transportPlanChange.plan};
+            const pricing=((existing.bookingDetails as any)?.pricing??{}) as Record<string,any>;
+            // The ORIGINAL products recalculator reads pricing.totalAmount as the
+            // base. Keep that existing base in step with the one transport delta.
+            if(pricing.totalAmount!=null)details.pricing={...pricing,transportationFee:transportPlanChange.fee,totalAmount:money(Number(pricing.totalAmount)+transportPlanChange.fee-currentFee)};
+          }
         }
         const sameStringList = (left: unknown, right: unknown) =>
           JSON.stringify(normalizeKoshaStringList(left)) ===
@@ -22444,11 +22471,34 @@ async function handleAdminKoshas(
             };
           }
         }
-        let [row] = await db.transaction(async tx=>guardBookingResourceWrite(tx,{source:"kosha",id},async()=>tx
-          .update(koshaBookingsTable)
-          .set({ ...update, ...(Object.hasOwn(update, "bookingDetails") ? {bookingDetails: bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails, (update.bookingDetails ?? {}) as Record<string, any>)} : {}) })
-          .where(eq(koshaBookingsTable.id, id))
-          .returning()));
+        let transportPlanReplayed=false;
+        let [row] = await db.transaction(async tx=>guardBookingResourceWrite(tx,{source:"kosha",id},async()=>{
+          let canonicalPlan:TransportPlan|undefined;
+          if(transportPlanChange){
+            const latest=await tx.query.koshaBookingsTable.findFirst({where:eq(koshaBookingsTable.id,id)});
+            if(!latest)throw new TransportPlanError("الحجز غير موجود",404);
+            const details=(latest.bookingDetails??{}) as Record<string,any>;
+            const legacy=latest.transportationMode?{mode:latest.transportationMode,fee:Number(latest.transportationFee??0),vehicleId:latest.transportationVehicleId,driverId:latest.transportationDriverId,note:latest.transportationNotes}:details.bookingOperations?.transportation??null;
+            const decision=prepareTransportPlanSave(readTransportPlan({source:"kosha",id,bookingNumber:"",legacy,storedPlan:details.bookingOperations?.transportPlan}),parsed.data.transportPlan,parsed.data.expectedTransportRevision,canEditOrderFinancials(auth));
+            if(decision.duplicate){transportPlanReplayed=true;return [latest]}
+            const posted=await tx.execute(sql`SELECT id FROM financial_transactions WHERE source_type='kosha_booking' AND source_id=${String(id)} AND approval_status='executed' LIMIT 1`);
+            if(!Array.isArray(posted.rows))throw new Error("Invalid transport payment query response");
+            if(Number(latest.paidAmount)>0||posted.rows.length)throw new TransportPlanError("لا يمكن تغيير خدمة النقل بعد تسجيل دفعات منفذة. استخدم تصحيحاً أو عكساً مالياً أولاً.",409);
+            if(String(latest.updatedAt??"")!==String(existing.updatedAt??"")||Number(latest.totalAmount)!==Number(existing.totalAmount)||Number(latest.transportationFee??0)!==Number(existing.transportationFee??0))throw new TransportPlanError("تغيّرت بيانات الحجز؛ حدّث الصفحة قبل حفظ خطة النقل",409);
+            await assertPlanFitsPartnershipLedger(tx,decision.plan);
+            canonicalPlan=decision.plan;
+          }
+          const detailsSql=Object.hasOwn(update,"bookingDetails")?bookingEvidenceWriteSql(koshaBookingsTable.bookingDetails,(update.bookingDetails??{}) as Record<string,any>):undefined;
+          const rows=await tx.update(koshaBookingsTable)
+            .set({...update,...(detailsSql?{bookingDetails:canonicalPlan?sql`jsonb_set(${detailsSql},'{bookingOperations,transportPlan}',${JSON.stringify(canonicalPlan)}::jsonb,true)`:detailsSql}:{})})
+            .where(eq(koshaBookingsTable.id,id)).returning();
+          if(canonicalPlan){
+            await reconcilePaymentState(tx,{sourceType:"kosha_booking",sourceId:id});
+            await tx.execute(sql`INSERT INTO entity_timeline(entity_type,entity_id,type,title,actor_id,actor_name,metadata) VALUES('kosha_booking',${id},'transportation_set','تحديث خطة رحلات النقل',${auth.id},${auth.fullName||auth.username},${JSON.stringify({revision:canonicalPlan.revision,feeMode:canonicalPlan.feeMode,trips:canonicalPlan.trips.length,fee:transportPlanChange?.fee})}::jsonb)`);
+          }
+          return rows;
+        }));
+        if(transportPlanReplayed)return json({ok:true,duplicate:true});
         if (!row) {
           return error("تعذر حفظ تحديث حجز الكوشة", 409);
         }
@@ -22597,7 +22647,7 @@ async function handleAdminKoshas(
             message: timelineError instanceof Error ? timelineError.message : "unknown",
           }));
         }
-        if (transportationRequested) {
+        if (transportationRequested && !transportPlanChange) {
           const transportationEvent = (row as any).transportationMode === "ajn"
             ? "transportation_fee_updated"
             : "transportation_mode_selected";
@@ -23346,13 +23396,14 @@ async function handleEnterpriseAdmin(
       where: and(
         eq(koshaBookingsTable.transportationVehicleId, vehicleId),
         eq(koshaBookingsTable.transportationMode, "ajn"),
+        sql`${koshaBookingsTable.bookingDetails}->'bookingOperations'->'transportPlan' is null`,
         sql`${koshaBookingsTable.archivedAt} is null`,
         sql`${koshaBookingsTable.status} <> 'cancelled'`,
         from ? gte(koshaBookingsTable.eventDate, from) : undefined,
         to ? lte(koshaBookingsTable.eventDate, to) : undefined,
       ),
       orderBy: [desc(koshaBookingsTable.eventDate), desc(koshaBookingsTable.id)],
-      limit: 500,
+      limit: 501,
     });
     const serviceTripRows: any[] = ((await db.execute(sql`
       select s.id, s.tracking_code, s.customer_name, s.event_date::text as event_date, s.total_amount, s.deposit_amount, s.payment_status,
@@ -23360,15 +23411,19 @@ async function handleEnterpriseAdmin(
       from service_orders s
       where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId' = ${String(vehicleId)}
         and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode' = 'ajn'
+        and s.custom_fields->'bookingOperations'->'transportPlan' is null
         and s.archived_at is null and s.status not in ('cancelled', 'canceled')
         ${from ? sql`and s.event_date::text >= ${from}` : sql``}
         ${to ? sql`and s.event_date::text <= ${to}` : sql``}
       order by s.event_date desc nulls last, s.id desc
-      limit 500
+      limit 501
     `)) as any)?.rows ?? [];
+    const planBookings = await readVehicleTransportPlans(db,{vehicleId,from,to});
+    if(bookingRows.length>500||serviceTripRows.length>500)throw new TransportPlanError("تجاوزت الرحلات حد التقرير؛ اختر نطاق تاريخ أدق",422);
     const driverIds = [
       ...bookingRows.map((row) => row.transportationDriverId),
       ...serviceTripRows.map((row) => Number(row.transportation?.driverId)),
+      ...planBookings.flatMap(row=>row.plan.trips.map(trip=>trip.driverId)),
     ].filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value > 0);
     const drivers = driverIds.length ? await db.query.staffTable.findMany({ where: inArray(staffTable.id, [...new Set(driverIds)]) }) : [];
     const driverById = new Map(drivers.map((row) => [row.id, row]));
@@ -23379,8 +23434,9 @@ async function handleEnterpriseAdmin(
         to ? lte(vehicleExpensesTable.expenseDate, new Date(`${to}T23:59:59`)) : undefined,
       ),
       orderBy: [desc(vehicleExpensesTable.expenseDate), desc(vehicleExpensesTable.id)],
-      limit: 500,
+      limit: 501,
     });
+    if(expenseRows.length>500)throw new TransportPlanError("تجاوزت المصاريف حد التقرير؛ اختر نطاق تاريخ أدق",422);
     const executedTransactionIds = expenseRows
       .filter((row) => ["executed", "partially_reversed", "reversed"].includes(row.status) && Number.isInteger(row.financialTransactionId))
       .map((row) => Number(row.financialTransactionId));
@@ -23417,7 +23473,7 @@ async function handleEnterpriseAdmin(
       const reversed = money(reversedByTransaction.get(expense.financialTransactionId) ?? 0);
       return sum + Math.max(0, money(expense.amount) - reversed);
     }, 0);
-    const trips = bookingRows.map((booking) => {
+    const trips:VehicleTransportFinancialTrip[] = bookingRows.map((booking) => {
       const total = money(booking.totalAmount);
       const paid = money(booking.paidAmount);
       const fee = money(booking.transportationFee);
@@ -23464,6 +23520,13 @@ async function handleEnterpriseAdmin(
       });
     }
     trips.sort((a, b) => String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? "")) || b.bookingId - a.bookingId);
+    for(const booking of planBookings){
+      const expense=tripExpenseOf(row=>booking.source==="kosha"?row.bookingId===booking.id:serviceOrderByExpense.get(row.id)===booking.id);
+      const value=projectVehicleTransportBooking(booking.plan,vehicleId,{paid:booking.paid,total:booking.total,approvedExpense:expense});
+      const operations=value.operations.map(trip=>({id:trip.id,sequence:trip.sequence,destination:trip.destination,driverName:trip.driverId?(driverById.get(trip.driverId)?.fullName||driverById.get(trip.driverId)?.username||null):null}));
+      trips.push({source:booking.source,bookingId:booking.id,bookingNo:booking.bookingNo,customerName:booking.customerName,eventDate:booking.eventDate,transportationFee:value.customerCharge,executedTransportationRevenue:value.transportRevenue,paymentStatus:booking.paymentStatus,executionStatus:value.transportRevenue==null?"unallocated":value.transportRevenue>0?"executed":"pending",driverName:[...new Set(operations.map(trip=>trip.driverName).filter(Boolean))].join("، ")||null,tripExpense:value.expense,tripProfit:value.profit,operations});
+    }
+    trips.sort((a,b)=>String(b.eventDate??"").localeCompare(String(a.eventDate??""))||b.bookingId-a.bookingId);
     const expenses = expenseRows.map((expense) => {
       const reversed = expense.financialTransactionId ? money(reversedByTransaction.get(expense.financialTransactionId) ?? 0) : 0;
       const effectiveAmount = ["executed", "partially_reversed", "reversed"].includes(expense.status)
@@ -23490,12 +23553,14 @@ async function handleEnterpriseAdmin(
         paymentMethod: expense.paymentMethod,
       };
     });
-    const transportationRevenue = money(trips.reduce((sum, row) => sum + row.transportationFee, 0));
+    const unallocatedBookings=trips.filter(row=>row.transportationFee==null).length;
+    const allocatedTransportationRevenue = money(trips.reduce((sum, row) => sum + (row.transportationFee??0), 0));
+    const transportationRevenue = unallocatedBookings?null:allocatedTransportationRevenue;
     const vehicleExpenses = money(expenses.reduce((sum, row) => sum + row.effectiveAmount, 0));
     const categories = Object.fromEntries(VEHICLE_EXPENSE_TYPES.map((type) => [type, money(expenses.filter((row) => row.expenseType === type).reduce((sum, row) => sum + row.effectiveAmount, 0))]));
     return json({
       vehicle: { id: vehicle.id, name: vehicle.name, plateNumber: vehicle.plateNumber, status: vehicle.status },
-      summary: { transportationRevenue, vehicleExpenses, netProfit: transportationRevenue - vehicleExpenses, tripCount: trips.length, categories },
+      summary: { transportationRevenue, allocatedTransportationRevenue, unallocatedBookings, vehicleExpenses, netProfit: transportationRevenue==null?null:transportationRevenue - vehicleExpenses, tripCount: trips.reduce((sum,row)=>sum+(row.operations?.length??1),0), categories },
       trips,
       expenses,
       capabilities: { serviceExpenseLink },
@@ -23519,16 +23584,18 @@ async function handleEnterpriseAdmin(
       if (!(await vehicleExpenseServiceLinkReady()))
         return error("ربط مصروف السيارة بحجز خدمة يحتاج تطبيق ترقية قاعدة البيانات 0128 أولاً", 409);
       const [order] = ((await db.execute(sql`
-        select id, ${SERVICE_TRANSPORT} as transportation from service_orders where id = ${data.serviceOrderId}
+        select id, ${SERVICE_TRANSPORT} as transportation, custom_fields->'bookingOperations'->'transportPlan' as transport_plan from service_orders where id = ${data.serviceOrderId}
       `)) as any)?.rows ?? [];
       if (!order) return error("الحجز المرتبط غير موجود", 404);
-      if (order.transportation?.mode !== "ajn" || Number(order.transportation?.vehicleId) !== vehicleId)
+      const linkedPlan=readTransportPlan({source:"service",id:data.serviceOrderId,bookingNumber:"",legacy:order.transportation,storedPlan:order.transport_plan});
+      if (order.transportation?.mode !== "ajn" || (order.transport_plan==null?Number(order.transportation?.vehicleId) !== vehicleId:!linkedPlan.trips.some(trip=>trip.vehicleId===vehicleId)))
         return error("الحجز المرتبط لا يستخدم هذه السيارة للنقل", 400);
     }
     if (data.bookingId) {
       const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, data.bookingId) });
       if (!booking) return error("الحجز المرتبط غير موجود", 404);
-      if (booking.transportationVehicleId !== vehicleId)
+      const linkedPlan=readTransportPlan({source:"kosha",id:data.bookingId,bookingNumber:"",legacy:{mode:booking.transportationMode,fee:booking.transportationFee,vehicleId:booking.transportationVehicleId,driverId:booking.transportationDriverId,note:booking.transportationNotes},storedPlan:(booking.bookingDetails as any)?.bookingOperations?.transportPlan});
+      if (!linkedPlan.trips.some(trip=>trip.vehicleId===vehicleId))
         return error("الحجز المرتبط لا يستخدم هذه السيارة للنقل", 400);
     }
     const result = await db.transaction(async (tx) => {
@@ -23787,20 +23854,21 @@ async function handleEnterpriseAdmin(
       const rows = await db.query.fleetVehiclesTable.findMany({ orderBy: [asc(fleetVehiclesTable.name)] });
       const statsResult: any = await db.execute(sql`
         select v.id,
-          (select count(*)::int from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled') as trip_count,
-          (select coalesce(sum(greatest(0, coalesce(k.transportation_fee::numeric,0))),0)::float from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled') as transportation_revenue,
+          (select count(*)::int from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled' and k.booking_details->'bookingOperations'->'transportPlan' is null) as trip_count,
+          (select coalesce(sum(greatest(0, coalesce(k.transportation_fee::numeric,0))),0)::float from kosha_bookings k where k.transportation_vehicle_id=v.id and k.transportation_mode='ajn' and k.archived_at is null and k.status <> 'cancelled' and k.booking_details->'bookingOperations'->'transportPlan' is null) as transportation_revenue,
           (select coalesce(sum(e.amount::numeric),0)::float from vehicle_expenses e where e.vehicle_id=v.id and e.status='executed') as vehicle_expenses,
-          (select count(*)::int from service_orders s where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId'=v.id::text and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode'='ajn' and s.archived_at is null and s.status not in ('cancelled','canceled')) as service_trip_count,
-          (select coalesce(sum(greatest(0, coalesce(nullif(${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'fee','')::numeric,0))),0)::float from service_orders s where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId'=v.id::text and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode'='ajn' and s.archived_at is null and s.status not in ('cancelled','canceled')) as service_transportation_revenue
+          (select count(*)::int from service_orders s where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId'=v.id::text and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode'='ajn' and s.archived_at is null and s.status not in ('cancelled','canceled') and s.custom_fields->'bookingOperations'->'transportPlan' is null) as service_trip_count,
+          (select coalesce(sum(greatest(0, coalesce(nullif(${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'fee','')::numeric,0))),0)::float from service_orders s where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId'=v.id::text and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode'='ajn' and s.archived_at is null and s.status not in ('cancelled','canceled') and s.custom_fields->'bookingOperations'->'transportPlan' is null) as service_transportation_revenue
         from fleet_vehicles v
       `);
       // Kosha bookings (own columns) and service orders (booking-centre transport) both count.
+      const planBookings=await readVehicleTransportPlans(db,{});
       const statsById = new Map<number, { tripCount: number; transportationRevenue: number; vehicleExpenses: number }>((statsResult?.rows ?? []).map((row: any) => [Number(row.id), { tripCount: Number(row.trip_count ?? 0) + Number(row.service_trip_count ?? 0), transportationRevenue: money(money(row.transportation_revenue) + money(row.service_transportation_revenue)), vehicleExpenses: money(row.vehicle_expenses) }]));
       return json({
         data: rows.map((row) => ({
           ...row,
           purchasePrice: money(row.purchasePrice),
-          stats: (() => { const stats: { tripCount: number; transportationRevenue: number; vehicleExpenses: number } = statsById.get(row.id) ?? { tripCount: 0, transportationRevenue: 0, vehicleExpenses: 0 }; return { ...stats, netProfit: stats.transportationRevenue - stats.vehicleExpenses }; })(),
+          stats: addPlanVehicleStats(statsById.get(row.id) ?? { tripCount:0,transportationRevenue:0,vehicleExpenses:0 },planBookings,row.id),
           latitude: row.latitude ? Number(row.latitude) : null,
           longitude: row.longitude ? Number(row.longitude) : null,
           lastLocationAt: enterpriseDate(row.lastLocationAt),
@@ -31337,15 +31405,16 @@ const PreparationManualAddSchema = z.object({
   note: z.string().trim().max(2000).nullable().optional(),
 });
 const PreparationManualRemoveSchema = z.object({ key: z.string().trim().min(1).max(120) });
-// Operational transport service for a booking, managed from the workspace. Stored
-// additively in bookingOperations.transportation; it is informational and never
-// changes the booking total, so it is safe even after a payment is recorded.
+// Original transport aggregate: its AJN customer fee is included in the booking
+// total once. The optional trip plan is operational detail, not another charge.
 const BookingTransportationSchema = z.object({
   mode: z.enum(["ajn", "customer"]).nullable().optional(),
   fee: z.coerce.number().min(0).max(1_000_000_000).optional().default(0),
   vehicleId: z.coerce.number().int().positive().nullable().optional(),
   driverId: z.coerce.number().int().positive().nullable().optional(),
   note: z.string().trim().max(1000).nullable().optional(),
+  transportPlan: z.unknown().optional(),
+  expectedTransportRevision: z.number().int().nonnegative().optional(),
 });
 
 /** Service-order transport lives in custom_fields.bookingOperations.transportation. */
@@ -31501,6 +31570,7 @@ async function saveBookingOperations(
   reference: BookingOperationsReference,
   operations: Record<string, any>,
   connection: Pick<typeof db, "update"> = db,
+  transportPlan?: TransportPlan,
 ) {
   const details = { ...reference.details, bookingOperations: operations };
   if (reference.source === "kosha") {
@@ -31512,7 +31582,7 @@ async function saveBookingOperations(
     await connection
       .update(serviceOrdersTable)
       .set({
-        customFields: routedKoshaCustomFieldsSql(
+        customFields: transportPlan ? sql`jsonb_set(jsonb_set(${routedKoshaCustomFieldsSql(serviceOrdersTable.customFields,details,{},reference.operations)},'{bookingOperations,transportation}',${JSON.stringify(operations.transportation??null)}::jsonb,true),'{bookingOperations,transportPlan}',${JSON.stringify(transportPlan)}::jsonb,true)` : routedKoshaCustomFieldsSql(
           serviceOrdersTable.customFields,
           details,
           {},
@@ -31522,7 +31592,7 @@ async function saveBookingOperations(
       .where(eq(serviceOrdersTable.id, reference.id));
   }
   reference.details = details;
-  reference.operations = operations;
+  reference.operations = transportPlan ? {...operations,transportPlan} : operations;
 }
 
 async function stampBookingSoundDepartment(
@@ -33768,6 +33838,38 @@ async function handleBookingOperations(
   }
 
   if (resource === "transportation") {
+    const transportAction=req.nextUrl?.searchParams?.get("transportAction");
+    if(transportAction){
+      if(!can("booking_operations_view","orders","preparation_view","booking_finance_view"))return error("ليس لديك صلاحية عرض النقل",403);
+      if(transportAction==="settings"){
+        const canManage=auth.role==="admin"||auth.role==="manager"||hasPermission(auth,"settings");
+        if(method==="GET"){
+          const row=await db.query.settingsTable.findFirst({where:eq(settingsTable.key,"transportReceiptSettings")});
+          const response=json({settings:normalizeTransportReceiptSettings(row?.value),canManage});response.headers.set("Cache-Control","private, no-store");return response;
+        }
+        if(method!=="PUT")return error("الإجراء غير مدعوم",405);
+        if(!canManage)return error("ليس لديك صلاحية تعديل إعدادات طباعة وصل النقل",403);
+        const payload=await body(req);
+        if(!payload||typeof payload!=="object"||Array.isArray(payload)||Object.keys(payload).some(key=>!["settings","reset"].includes(key))||payload.reset!==true&&(payload.settings==null||typeof payload.settings!=="object"||Array.isArray(payload.settings)))throw new TransportPlanError("أرسل إعدادات طباعة صحيحة أو اطلب استعادة الإعدادات الافتراضية",422);
+        let settings:ReturnType<typeof normalizeTransportReceiptSettings>;
+        try{settings=normalizeTransportReceiptSettings(payload.reset===true?DEFAULT_TRANSPORT_RECEIPT_SETTINGS:payload.settings)}catch(cause){throw new TransportPlanError(cause instanceof Error?cause.message:"إعدادات غير صالحة",422)}
+        await db.insert(settingsTable).values({key:"transportReceiptSettings",value:settings}).onConflictDoUpdate({target:settingsTable.key,set:{value:settings,updatedAt:new Date()}});
+        return json({settings,canManage:true});
+      }
+      if(transportAction==="print-request"){
+        if(method!=="POST")return error("الإجراء غير مدعوم",405);
+        const payload=await body(req),copies=payload?.copies??1;
+        if(!payload||typeof payload!=="object"||Array.isArray(payload)||!Number.isInteger(copies)||copies<1||copies>5)throw new TransportPlanError("عدد نسخ وصل النقل يجب أن يكون من 1 إلى 5",422);
+        const branding=await getCachedPublicSettings();
+        const receipt=await readTransportReceipt(db,{source:reference.source,id:reference.id},{tripId:payload.tripId,variant:payload.variant},{canView:true,canViewCustomerCharge:canEditOrderFinancials(auth)||hasPermission(auth,"booking_finance_view"),company:{name:branding.site_name,phone:branding.phone,logoUrl:branding.logo_url},origin:req.nextUrl.origin});
+        const expectedRevision=payload.expectedRevision??0;
+        if(!Number.isSafeInteger(expectedRevision)||expectedRevision<0)throw new TransportPlanError("إصدار معاينة النقل غير صالح",422);
+        if(expectedRevision!==(receipt.sourceRevision??0))throw new TransportPlanError("تغيّرت رحلة النقل بعد فتح المعاينة؛ حدّث المعاينة قبل الطباعة",409);
+        await addEntityTimeline({entityType:reference.entityType,entityId:reference.id,type:"transport_receipt_print_requested",title:"طلب طباعة وصل نقل 80mm",actor:erpActorFromAdmin(auth),metadata:{transportReference:receipt.receiptReference,operationId:payload.tripId,format:"80mm",variant:receipt.variant,copies,physicalPrintConfirmed:false,requestId:makeRequestId(req.headers.get("x-request-id"))}});
+        return json({ok:true,physicalPrintConfirmed:false,receiptReference:receipt.receiptReference});
+      }
+      throw new TransportPlanError("إجراء وصل النقل غير مدعوم",422);
+    }
     // Kosha bookings keep transport on their own columns (the vehicle accounts read
     // them); service orders keep it in bookingOperations. A value saved by the older
     // booking-centre card stays readable until it is saved again.
@@ -33787,6 +33889,11 @@ async function handleBookingOperations(
     if (method === "GET") {
       if (!can("booking_operations_view", "orders", "preparation_view", "booking_finance_view"))
         return error("ليس لديك صلاحية العرض", 403);
+      if(req.nextUrl.searchParams.get("receipt")==="1"){
+        const branding=await getCachedPublicSettings();
+        const receipt=await readTransportReceipt(db,{source:reference.source,id:reference.id},{tripId:req.nextUrl.searchParams.get("tripId")??"",variant:(req.nextUrl.searchParams.get("variant")??"customer") as "customer"|"driver"|"internal"},{canView:true,canViewCustomerCharge:canEditOrderFinancials(auth)||hasPermission(auth,"booking_finance_view"),company:{name:branding.site_name,phone:branding.phone,logoUrl:branding.logo_url},origin:req.nextUrl.origin});
+        const response=json(receipt);response.headers.set("Cache-Control","private, no-store");return response;
+      }
       // «إسناد موارد النقل» may already have sent a vehicle; the card offers it.
       const [dispatched] = ((await db.execute(sql`
         select d.vehicle_id, v.name, v.plate_number from dispatch_assignments d
@@ -33795,8 +33902,18 @@ async function handleBookingOperations(
           and d.status in ('assigned', 'en_route', 'active')
         order by d.id desc limit 1
       `)) as any)?.rows ?? [];
+      const plan=readTransportPlan({source:reference.source,id:reference.id,bookingNumber:"",legacy:current,storedPlan:reference.operations.transportPlan});
+      const vehicleIds=[...new Set(plan.trips.map(trip=>trip.vehicleId).filter((value):value is number=>value!=null))];
+      const driverIds=[...new Set(plan.trips.map(trip=>trip.driverId).filter((value):value is number=>value!=null))];
+      const assignedVehicles=vehicleIds.length?((await db.execute(sql`select id,name,plate_number from fleet_vehicles where id in (${sql.join(vehicleIds.map(value=>sql`${value}`),sql`, `)})`)) as any).rows:[];
+      const assignedDrivers=driverIds.length?((await db.execute(sql`select id,full_name,username from staff where id in (${sql.join(driverIds.map(value=>sql`${value}`),sql`, `)})`)) as any).rows:[];
+      if(!Array.isArray(assignedVehicles)||!Array.isArray(assignedDrivers))throw new Error("Invalid transport assignment query response");
       return json({
         transportation: current,
+        transportPlan: plan,
+        assignmentOptions:{vehicles:assignedVehicles.map((value:any)=>({id:Number(value.id),name:String(value.name),plateNumber:value.plate_number??null})),drivers:assignedDrivers.map((value:any)=>({id:Number(value.id),fullName:value.full_name??value.username??null}))},
+        resourceOccupancy: bookingResourceSpan(reference.operations,reference.eventDate),
+        capabilities:{canEdit:can("booking_edit","orders","bookings")&&canEditOrderFinancials(auth)&&!(reference.source==="kosha"&&Number(row?.paidAmount??row?.paid_amount??0)>0),canPrintFinancial:canEditOrderFinancials(auth)||hasPermission(auth,"booking_finance_view")},
         dispatchVehicle: dispatched ? { id: Number(dispatched.vehicle_id), name: String(dispatched.name), plateNumber: dispatched.plate_number ?? null } : null,
       });
     }
@@ -33810,6 +33927,11 @@ async function handleBookingOperations(
       // owns its total and the vehicle accounts; a second copy here would diverge.
       if (reference.source === "kosha")
         return error("نقل حجز الكوشة يُحفظ في حجز الكوشة نفسه. حدّث الصفحة ثم احفظ من بطاقة خدمة النقل.", 409);
+      const submittedPlan=d.transportPlan===undefined?undefined:validateTransportPlan(d.transportPlan);
+      if(submittedPlan){
+        const decision=prepareTransportPlanSave(readTransportPlan({source:reference.source,id:reference.id,bookingNumber:"",legacy:current,storedPlan:reference.operations.transportPlan}),submittedPlan,d.expectedTransportRevision,canEditOrderFinancials(auth));
+        d.mode="ajn";d.fee=decision.fee;d.vehicleId=decision.plan.trips[0].vehicleId;d.driverId=decision.plan.trips[0].driverId;
+      }else if(reference.operations.transportPlan!=null)return error("هذا الحجز يحتوي خطة رحلات؛ عدّل النقل من محرر الرحلات حتى لا تُستبدل الأجور أو الرحلات المحفوظة",409);
       const fee = d.mode === "ajn" ? money(d.fee) : 0;
       let vehicleLabel: string | null = null;
       if (d.mode === "ajn") {
@@ -33825,9 +33947,18 @@ async function handleBookingOperations(
           if (!driver) return error("السائق المختار غير موجود", 404);
         }
       }
-      let saved: { transportation: Record<string, unknown> | null; totals: { before: number; after: number; delta: number } | null };
+      let saved: { transportation: Record<string, unknown> | null; totals: { before: number; after: number; delta: number } | null; transportPlan?:TransportPlan; duplicate?:boolean };
       try {
         saved = await db.transaction(async (tx) => guardBookingResourceWrite(tx, { source: reference.source, id: reference.id }, async (live) => {
+          if(["cancelled","canceled","deleted","completed","delivered","closed"].includes(String(live.status).toLowerCase()))throw new TransportPlanError("لا يمكن تعديل نقل حجز ملغي أو مكتمل",409);
+          const decision=submittedPlan?prepareTransportPlanSave(readTransportPlan({source:reference.source,id:reference.id,bookingNumber:"",legacy:live.operations.transportation,storedPlan:live.operations.transportPlan}),submittedPlan,d.expectedTransportRevision,canEditOrderFinancials(auth)):null;
+          if(decision?.duplicate){
+            const snapshot=live.operations.transportation;
+            if(snapshot!=null&&(typeof snapshot!=="object"||Array.isArray(snapshot)))throw new TransportPlanError("بيانات النقل المحفوظة غير صالحة",422);
+            return {transportation:(snapshot??null) as Record<string,unknown>|null,totals:null,transportPlan:decision.plan,duplicate:true};
+          }
+          if(!decision&&live.operations.transportPlan!=null)throw new TransportPlanError("تغيّرت خطة رحلات النقل؛ حدّث الصفحة واستخدم محرر الرحلات",409);
+          if(decision){await assertPlanFitsPartnershipLedger(tx,decision.plan);await reconcilePaymentState(tx,{sourceType:"service_order",sourceId:reference.id});}
           const [order] = ((await tx.execute(sql`
             select total_amount, deposit_amount, event_date::text as event_date from service_orders where id = ${reference.id} for update
           `)) as any)?.rows ?? [];
@@ -33864,7 +33995,7 @@ async function handleBookingOperations(
                 fee,
                 vehicleId: d.mode === "ajn" ? d.vehicleId ?? null : null,
                 driverId: d.mode === "ajn" ? d.driverId ?? null : null,
-                note: d.note ?? null,
+                note: decision?decision.plan.trips[0].notes:d.note ?? null,
                 inTotal: d.mode === "ajn",
                 updatedBy: auth.id,
                 updatedByName: (auth as any).fullName || auth.username,
@@ -33872,14 +34003,25 @@ async function handleBookingOperations(
               }
             : null;
           const fresh = { ...reference, details: live.details, operations: live.operations };
-          await saveBookingOperations(fresh, { ...live.operations, transportation }, tx);
-          return { transportation, totals };
+          const nextOperations:Record<string,unknown>={...live.operations,transportation};
+          if(decision&&delta!==0&&live.operations.baseBookingAmount!=null){
+            const base=Number(live.operations.baseBookingAmount);
+            if(!Number.isFinite(base)||base<0||base+delta<0)throw new TransportPlanError("السعر الأساسي للحجز غير متطابق؛ راجع التسعير قبل تعديل أجرة النقل",409);
+            nextOperations.baseBookingAmount=money(base+delta);
+          }
+          await saveBookingOperations(fresh, nextOperations, tx,decision?.plan);
+          if(decision){
+            await reconcilePaymentState(tx,{sourceType:"service_order",sourceId:reference.id});
+            await tx.execute(sql`INSERT INTO entity_timeline(entity_type,entity_id,type,title,actor_id,actor_name,metadata) VALUES(${reference.entityType},${reference.id},'transportation_set','تحديث خطة رحلات النقل',${auth.id},${auth.fullName||auth.username},${JSON.stringify({revision:decision.plan.revision,feeMode:decision.plan.feeMode,trips:decision.plan.trips.length,fee,totals})}::jsonb)`);
+          }
+          return { transportation, totals,...(decision?{transportPlan:decision.plan}:{}) };
         }));
       } catch (cause) {
         if (cause instanceof CheckoutError) return error(cause.message, cause.status, cause.options);
         throw cause;
       }
-      await addEntityTimeline({
+      if(saved.duplicate)return json({ok:true,...saved});
+      if(!saved.transportPlan)await addEntityTimeline({
         entityType: reference.entityType,
         entityId: reference.id,
         type: "transportation_set",
@@ -75953,6 +76095,11 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       const requestId = makeRequestId(req.headers.get("x-request-id"));
       console.warn("AJN graduation operation rejected", {requestId, path:req.nextUrl.pathname, status:err.status});
       return error(err.message, err.status, {code:"CONFLICT", requestId, retryable:false});
+    }
+    if(err instanceof TransportPlanError){
+      const requestId=makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN transport plan rejected",{requestId,path:req.nextUrl.pathname,status:err.status});
+      return error(err.message,err.status,{requestId,code:err.status===403?"PERMISSION_DENIED":err.status===409?"CONFLICT":"VALIDATION_ERROR",retryable:false});
     }
     if(err instanceof BookingResourceWindowError){
       const requestId=makeRequestId(req.headers.get("x-request-id"));

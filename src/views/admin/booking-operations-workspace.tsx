@@ -12,6 +12,9 @@ import { BookingLoadingPanel } from "@/components/booking-loading-panel";
 import { BookingProfitabilityPanel } from "@/components/booking-profitability-panel";
 import { PhotographyProductionPanel } from "./photography-production-shared";
 import { EmployeeSelect } from "@/components/employee-select";
+import { BookingTransportPlanEditor } from "@/components/booking-transport-plan-editor";
+import { TransportReceiptDialog, type TransportReceiptReference } from "@/components/transport-receipt-dialog";
+import type { TransportPlanView } from "@/lib/booking-transport-plan";
 const BookingPreparationDetail=lazy(()=>import("./preparation").then(module=>({default:module.PreparationDetail})));
 import { employeeMatchesSearch } from "@/lib/employee-identity";
 import {
@@ -422,6 +425,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
   const [tab, setTab] = useState("overview");
   const [confirm, setConfirm] = useState<{ kind: "booking" | "warehouse"; stage: string; label: string } | null>(null);
   const [labelOpen, setLabelOpen] = useState(false);
+  const [transportReceipt, setTransportReceipt] = useState<TransportReceiptReference|null>(null);
   const printReceipt = useBookingThermalReceiptPrint();
   const preparation = usePreparationListPrint(base, booking);
 
@@ -439,7 +443,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
   const overview = useQuery<OverviewData>({ queryKey: [...key, "overview"], queryFn: () => adminFetch(`${base}/overview`) });
   const readinessQuery = useQuery<ReadinessDisplay>({ queryKey: [...key,"readiness"], queryFn: () => adminFetch(`${base}/readiness`), refetchInterval:30_000 });
-  const transportation = useQuery<{ transportation: Partial<TransportValue> | null; dispatchVehicle?: DispatchVehicle | null }>({ queryKey: [...key, "transportation"], queryFn: () => adminFetch(`${base}/transportation`) });
+  const transportation = useQuery<{ transportation: Partial<TransportValue> | null; transportPlan:TransportPlanView; dispatchVehicle?: DispatchVehicle | null }>({ queryKey: [...key, "transportation"], queryFn: () => adminFetch(`${base}/transportation`) });
   // Kosha bookings save transport on the kosha booking itself (its total and the
   // vehicle accounts read it there); service orders through the booking endpoint.
   const setTransportation = useMutation({
@@ -564,6 +568,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
               <DropdownMenuLabel className="ajn-op-menu-label">الطابعة الحرارية</DropdownMenuLabel>
               <DropdownMenuItem onSelect={() => setLabelOpen(true)}><Tag /> طباعة ملصق</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => printReceipt(thermalReceiptData)}><Receipt /> وصل حراري 80mm</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setTransportReceipt({source:booking.source,id:booking.id})}><Truck /> طباعة وصل نقل 80mm</DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel className="ajn-op-menu-label">قائمة التجهيز</DropdownMenuLabel>
               <DropdownMenuItem onSelect={() => void preparation.printFor(null)}><ClipboardCheck /> كل الأقسام</DropdownMenuItem>
@@ -578,6 +583,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
       </div>
     </header>
     <BookingThermalPrintAction booking={booking} open={labelOpen} onOpenChange={setLabelOpen} hideTrigger />
+    <TransportReceiptDialog reference={transportReceipt} onClose={() => setTransportReceipt(null)} />
 
     <BookingFinancialCards booking={booking} onFinance={() => changeTab("finance")} />
 
@@ -592,7 +598,8 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     <section className="ajn-op-quickbar"><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button className="ajn-op-add-item"><Plus /> إضافة عنصر <ChevronDown /></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="ajn-op-add-menu"><DropdownMenuItem onSelect={() => changeTab("products")}><span className="is-store"><ShoppingBag /></span><span><b>إضافة منتج من المتجر</b><small>اختر المنتجات والمتغيرات واحجز الكمية من المخزون.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("assets")}><span className="is-asset"><PackageCheck /></span><span><b>إضافة أصل من الأصول</b><small>اربط المعدات وتحقق من التوفر وحالة الأصل.</small></span><ChevronLeft /></DropdownMenuItem><DropdownMenuItem onSelect={() => { window.requestAnimationFrame(() => document.getElementById("ajn-transport-card")?.scrollIntoView({ behavior: "smooth", block: "center" })); }}><span className="is-asset"><Truck /></span><span><b>إضافة خدمة نقل</b><small>حدّد النقل بواسطة AJN أو من مسؤولية الزبون لهذا الحجز.</small></span><ChevronLeft /></DropdownMenuItem></DropdownMenuContent></DropdownMenu><div className="ajn-op-quick-groups">{nextBooking || nextWarehouse ? <div className="ajn-op-quick-group" role="group" aria-label="الخطوة التالية"><small>الخطوة التالية</small>{nextBooking && <Button variant="outline" onClick={() => setConfirm({ kind: "booking", stage: nextBooking[0], label: nextBooking[1] })}><Check /> {nextBooking[1]}</Button>}{nextWarehouse && <Button variant="outline" onClick={() => setConfirm({ kind: "warehouse", stage: nextWarehouse[0], label: nextWarehouse[1] })}><QrCode /> {nextWarehouse[1]}</Button>}</div> : null}<div className="ajn-op-quick-group" role="group" aria-label="اختصارات"><small>اختصارات</small><Button variant="ghost" onClick={() => changeTab("tasks")}><ListChecks /> إنشاء مهمة</Button><Button variant="ghost" onClick={() => changeTab("documents")}><FileText /> رفع مستند</Button></div></div></section>
 
-    <TransportationCard value={{ mode: transportationMode as TransportValue["mode"], fee: transportationFee, vehicleId: transportation.data?.transportation?.vehicleId ?? null, driverId: transportation.data?.transportation?.driverId ?? null, note: transportation.data?.transportation?.note ?? null, inTotal: transportation.data?.transportation?.inTotal === true }} dispatchVehicle={transportation.data?.dispatchVehicle ?? null} printInfo={{ bookingNumber: booking.number, customerName: booking.customerName, phone: booking.phone, eventDate: booking.eventDate, eventTime: booking.eventTime, location: booking.hall }} busy={setTransportation.isPending} onSave={(next) => setTransportation.mutate(next)} />
+    {transportation.data?.transportPlan?.legacy === false ? null : <TransportationCard value={{ mode: transportationMode as TransportValue["mode"], fee: transportationFee, vehicleId: transportation.data?.transportation?.vehicleId ?? null, driverId: transportation.data?.transportation?.driverId ?? null, note: transportation.data?.transportation?.note ?? null, inTotal: transportation.data?.transportation?.inTotal === true }} dispatchVehicle={transportation.data?.dispatchVehicle ?? null} printInfo={{ bookingNumber: booking.number, customerName: booking.customerName, phone: booking.phone, eventDate: booking.eventDate, eventTime: booking.eventTime, location: booking.hall }} busy={setTransportation.isPending} onSave={(next) => setTransportation.mutate(next)} />}
+    <BookingTransportPlanEditor reference={{source:booking.source,id:booking.id}} onPrint={setTransportReceipt} sectionId={transportation.data?.transportPlan?.legacy === false ? "ajn-transport-card" : undefined} />
 
     <GroupAttendeesCard attendees={attendees.data?.attendees ?? []} adding={addAttendee.isPending} removingId={removeAttendee.isPending ? (removeAttendee.variables as string) : null} onAdd={(payload) => addAttendee.mutate(payload)} onRemove={(id) => removeAttendee.mutate(id)} onCollect={(id, collected) => collectAttendee.mutate({ id, collected })} onPrint={printAttendeeReceipt} onPrintSheet={printAttendeesSheet} onPostCollected={() => postCollected.mutate()} posting={postCollected.isPending} />
 
@@ -727,7 +734,7 @@ function TransportationCard({ value, dispatchVehicle, printInfo, busy, onSave }:
   return (
     <section id="ajn-transport-card" className="rounded-2xl border border-border/40 bg-card p-4" dir="rtl">
       <div className="mb-1 flex items-center gap-2"><Truck className="h-4 w-4 text-primary" /><h2 className="text-sm font-bold text-foreground">خدمة النقل</h2></div>
-      <p className="mb-3 text-xs text-muted-foreground">النقل بواسطة AJN يُضاف إلى مبلغ الحجز، ويُحسب في حساب السيارة بنسبة المدفوع من الحجز.</p>
+      <p className="mb-3 text-xs text-muted-foreground">النقل بواسطة AJN يُضاف إلى مبلغ الحجز، ويُحسب كاملاً في حساب السيارة.</p>
       {legacyNote ? <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-800" role="status">هذه الأجرة مسجّلة للعلم فقط ولم تُضف إلى مبلغ الحجز ولا إلى أي سيارة. اختر السيارة واحفظ لتُضاف مرة واحدة.</p> : null}
       <div className="grid gap-2 sm:grid-cols-2">
         <Button variant="ghost" type="button" onClick={() => change(() => { setM("ajn"); if (!vehicleId && dispatchVehicle) setVehicleId(String(dispatchVehicle.id)); })} className={btn(m === "ajn")}>النقل بواسطة AJN</Button>

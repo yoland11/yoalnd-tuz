@@ -48,6 +48,8 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { TransportReceiptDialog, type TransportReceiptReference } from "@/components/transport-receipt-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { BookingBulkToolbar } from "@/components/booking-bulk-toolbar";
@@ -1059,6 +1061,7 @@ function groupAttendeeCount(booking: UnifiedBooking): number {
 }
 
 function BookingPreview({ booking, penalty, onDelete, deleting = false,selected,onSelect }: { booking: UnifiedBooking; penalty?: { remaining: number; pendingReview: number; count: number }; onDelete: (booking: UnifiedBooking) => void; deleting?: boolean;selected?:boolean;onSelect?:(checked:boolean)=>void }) {
+  const [transportReceipt, setTransportReceipt] = useState<TransportReceiptReference|null>(null);
   const readiness = getReadiness(booking);
   const transport = transportationSummary(booking);
   const attendees = groupAttendeeCount(booking);
@@ -1070,6 +1073,7 @@ function BookingPreview({ booking, penalty, onDelete, deleting = false,selected,
   const pdfHref = `/admin/invoice/${booking.id}?type=${booking.source === "kosha" ? "kosha" : "booking"}&pdf=1`;
   return (
     <article className="ajn-booking-preview">
+      <TransportReceiptDialog reference={transportReceipt} onClose={() => setTransportReceipt(null)} />
       <div className="flex items-start justify-between gap-3">
         <div><small>{booking.number}</small><h3>{booking.customerName}</h3><p>{booking.eventDate || "الموعد غير محدد"} {booking.eventTime && `· ${booking.eventTime}`}</p></div>
         <div className="flex items-center gap-3"><StatusBadge status={booking.status} />{onSelect?<Checkbox aria-label={`تحديد الحجز ${booking.number}`} checked={selected??false} onCheckedChange={value=>onSelect(value===true)}/>:null}</div>
@@ -1096,6 +1100,7 @@ function BookingPreview({ booking, penalty, onDelete, deleting = false,selected,
             <Link href={pdfHref} target="_blank" rel="noopener noreferrer" aria-label={`حفظ PDF للحجز ${booking.number || booking.customerName}`}><FileDown className="h-3.5 w-3.5" /> حفظ PDF</Link>
           </Button>
           <BookingThermalPrintAction booking={booking} />
+          {booking.source === "service" || booking.source === "kosha" ? <DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button size="sm" variant="outline" aria-label={`إجراءات النقل للحجز ${booking.number}`}><MoreHorizontal className="size-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuGroup><DropdownMenuItem onSelect={() => setTransportReceipt({source:booking.source as "service"|"kosha",id:booking.id})}><Printer className="size-4"/>طباعة وصل نقل 80mm</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent></DropdownMenu> : null}
           <BookingThermalReceiptAction
             data={{
               bookingNumber: booking.number,

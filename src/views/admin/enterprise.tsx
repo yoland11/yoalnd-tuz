@@ -8,6 +8,8 @@ import {
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
+import { TransportReceiptAction } from "@/components/transport-receipt-dialog";
+const transportMoney=(value:number|null)=>value==null?"غير موزّع":formatCurrency(value);
 import {
   AlertTriangle,
   BarChart3,
@@ -237,9 +239,9 @@ type Intelligence = {
 type VehicleFinancials = {
   vehicle: { id: number; name: string; plateNumber: string; status: string };
   summary: {
-    transportationRevenue: number;
+    transportationRevenue: number|null;
     vehicleExpenses: number;
-    netProfit: number;
+    netProfit: number|null;
     tripCount: number;
     categories: Record<string, number>;
   };
@@ -249,13 +251,14 @@ type VehicleFinancials = {
     bookingNo: string;
     customerName: string;
     eventDate?: string | null;
-    transportationFee: number;
-    executedTransportationRevenue: number;
+    transportationFee: number|null;
+    executedTransportationRevenue: number|null;
     paymentStatus?: string | null;
-    executionStatus: "executed" | "pending";
+    executionStatus: "executed" | "pending" | "unallocated";
     driverName?: string | null;
+    operations?: Array<{id:string;sequence:number;destination:string|null;driverName:string|null}>;
     tripExpense: number;
-    tripProfit: number;
+    tripProfit: number|null;
   }>;
   expenses: Array<{
     id: number;
@@ -1815,14 +1818,14 @@ function VehicleProfitabilityTab({ active }: { active: boolean }) {
 
       {!vehicleId ? <Empty message="اختر سيارة لعرض حسابها المالي." /> : financials.isLoading ? <LoadingGrid /> : data ? <>
         <div className="grid gap-3 md:grid-cols-3">
-          <Metric icon={Route} label="إجمالي أجور النقل المسجلة" value={formatCurrency(data.summary.transportationRevenue)} />
-          <Metric icon={Wrench} label="مصاريف السيارة المنفذة" value={formatCurrency(data.summary.vehicleExpenses)} warning={data.summary.vehicleExpenses > data.summary.transportationRevenue} />
-          <Metric icon={BarChart3} label="صافي ربح السيارة" value={formatCurrency(data.summary.netProfit)} warning={data.summary.netProfit < 0} />
+          <Metric icon={Route} label="إجمالي أجور النقل المسجلة" value={transportMoney(data.summary.transportationRevenue)} />
+          <Metric icon={Wrench} label="مصاريف السيارة المنفذة" value={formatCurrency(data.summary.vehicleExpenses)} warning={data.summary.transportationRevenue != null && data.summary.vehicleExpenses > data.summary.transportationRevenue} />
+          <Metric icon={BarChart3} label="صافي ربح السيارة" value={transportMoney(data.summary.netProfit)} warning={data.summary.netProfit != null && data.summary.netProfit < 0} />
         </div>
         <div className="grid gap-4 xl:grid-cols-5">
           <Panel className="xl:col-span-3 overflow-x-auto">
-            <SectionTitle icon={Route} title="سجل أجور النقل" description={`${data.summary.tripCount} رحلة نقل مسجلة ضمن الفترة المحددة.`} />
-            <table className="w-full min-w-[850px] text-right text-sm"><thead className="border-b border-border/30 text-xs text-muted-foreground"><tr><th className="p-2">الحجز</th><th className="p-2">الزبون</th><th className="p-2">تاريخ المناسبة</th><th className="p-2">أجرة النقل</th><th className="p-2">مصروف الرحلة</th><th className="p-2">ربح النقل</th><th className="p-2">السائق</th></tr></thead><tbody>{data.trips.length ? data.trips.map((trip) => <tr key={`${trip.source ?? "kosha"}-${trip.bookingId}`} className="border-b border-border/15 last:border-0"><td className="p-2"><Link href={`/admin/bookings/${trip.source ?? "kosha"}/${trip.bookingId}`} className="font-medium text-primary hover:underline">{trip.bookingNo}</Link></td><td className="p-2">{trip.customerName}</td><td className="p-2 tabular-nums">{trip.eventDate?.slice(0, 10) || "—"}</td><td className="p-2 font-medium tabular-nums">{formatCurrency(trip.transportationFee)}</td><td className="p-2 tabular-nums text-rose-700">{formatCurrency(trip.tripExpense)}</td><td className="p-2 font-medium tabular-nums text-emerald-700">{formatCurrency(trip.tripProfit)}</td><td className="p-2">{trip.driverName || "—"}</td></tr>) : <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا توجد حجوزات نقل لهذه السيارة ضمن الفترة المحددة.</td></tr>}</tbody></table>
+            <SectionTitle icon={Route} title="سجل أجور النقل" description={`${data.summary.tripCount} رحلة نقل مسجلة ضمن الفترة المحددة. الأجرة الكلية المشتركة بين مركبات تبقى غير موزّعة.`} />
+            <table className="w-full min-w-[850px] text-right text-sm"><thead className="border-b border-border/30 text-xs text-muted-foreground"><tr><th className="p-2">الحجز</th><th className="p-2">الزبون</th><th className="p-2">تاريخ المناسبة</th><th className="p-2">أجرة النقل</th><th className="p-2">مصروف الرحلة</th><th className="p-2">ربح النقل</th><th className="p-2">السائق</th><th className="p-2">وصل النقل</th></tr></thead><tbody>{data.trips.length ? data.trips.map((trip) => <tr key={`${trip.source ?? "kosha"}-${trip.bookingId}`} className="border-b border-border/15 last:border-0"><td className="p-2"><Link href={`/admin/bookings/${trip.source ?? "kosha"}/${trip.bookingId}`} className="font-medium text-primary hover:underline">{trip.bookingNo}</Link></td><td className="p-2">{trip.customerName}</td><td className="p-2 tabular-nums">{trip.eventDate?.slice(0, 10) || "—"}</td><td className="p-2 font-medium tabular-nums">{transportMoney(trip.transportationFee)}</td><td className="p-2 tabular-nums text-rose-700">{formatCurrency(trip.tripExpense)}</td><td className="p-2 font-medium tabular-nums text-emerald-700">{transportMoney(trip.tripProfit)}</td><td className="p-2"><div className="flex flex-col gap-2">{trip.operations?.length ? trip.operations.map(operation=><TransportReceiptAction key={operation.id} reference={{source:trip.source??"kosha",id:trip.bookingId,tripId:operation.id}} label={`وصل رحلة ${operation.sequence}`}/>) : <TransportReceiptAction reference={{source:trip.source??"kosha",id:trip.bookingId}}/>}</div></td><td className="p-2">{trip.driverName || "—"}</td></tr>) : <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا توجد حجوزات نقل لهذه السيارة ضمن الفترة المحددة.</td></tr>}</tbody></table>
           </Panel>
           <Panel className="xl:col-span-2">
             <SectionTitle icon={BarChart3} title="توزيع مصاريف السيارة" description="لا تُعد أجور النقل ربحاً قبل طرح المصاريف المنفذة." />

@@ -1,12 +1,13 @@
 import { sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
-import { parseBookingResourceWindow,readBookingResourceWindow,resourceWindowCalendar } from "@/lib/booking-resource-window";
+import { parseBookingResourceWindow,readBookingResourceWindow,resourceWindowCalendar,bookingResourceSpan } from "@/lib/booking-resource-window";
+import { validateTransportPlan,transportResourceUses,type TransportResourceUse } from "@/lib/booking-transport-plan";
 import { dailyAssignedStaffIds } from "@/lib/booking-daily-operations";
 import { BookingResourceConflictError,resourceTimingProblem,findBookingPhysicalConflict,findBookingStaffConflict,findBookingVehicleConflict,findBookingCrewConflict,findBookingKoshaConflict,resourceRows,staffConflictGroups,photographyEventLinkIds,resolvePhotographyBookingId,KOSHA_RESOURCE_STATUSES,type ResourceExecutor,type TimedBookingRef } from "./booking-resource-availability";
 
 type Ref={source:"kosha"|"service";id:number};
 type Database=ResourceExecutor&{transaction<T>(run:(tx:ResourceExecutor)=>Promise<T>):Promise<T>};
-export type ResourceBooking=TimedBookingRef&{details:Record<string,any>;status:string;archivedAt?:unknown;assignedStaffId:number|null;staffIds:number[];vehicleId:number|null;driverId:number|null;crewId:number|null;koshaId:number|null;assets:any[];eventTime:string|null;eventEndTime?:string|null};
+export type ResourceBooking=TimedBookingRef&{details:Record<string,any>;status:string;archivedAt?:unknown;assignedStaffId:number|null;staffIds:number[];vehicleId:number|null;vehicleIds:number[];transportUses:TransportResourceUse[];driverId:number|null;crewId:number|null;koshaId:number|null;assets:any[];eventTime:string|null;eventEndTime?:string|null};
 export type ResourceWindowSaveOptions={eventDate?:unknown;expectedEventDate?:unknown;afterSave?:(tx:ResourceExecutor,next:ResourceBooking)=>Promise<void>};
 const id=(v:any)=>Number.isSafeInteger(Number(v))&&Number(v)>0?Number(v):null;
 const object=(v:any):Record<string,any>=>{if(v==null)return {};if(typeof v!=="object"||Array.isArray(v))throw new BookingResourceConflictError("بيانات موارد الحجز غير صالحة؛ راجع المسؤول",422);return v};
@@ -43,6 +44,8 @@ export async function readResourceBooking(tx:ResourceExecutor,ref:Ref,lock=false
   const transport=object(operations.transportation??details.transportation),mode=transport.mode??b.transportation_mode;
   const driverId=mode==="customer"?null:id(transport.driverId??details.transportationDriverId??b.transportation_driver_id);
   const vehicleId=id(dispatch[0]?.vehicle_id)??(mode==="customer"?null:id(transport.vehicleId??details.transportationVehicleId??b.transportation_vehicle_id));
+  const transportUses=operations.transportPlan==null?[]:transportResourceUses(validateTransportPlan(operations.transportPlan),bookingResourceSpan(operations,b.event_date??null));
+  const vehicleIds=[...new Set([vehicleId,...transportUses.map(t=>t.vehicleId)].filter((v):v is number=>v!==null))].sort((a,b)=>a-b);
   // Read original saved assignments even before a photography crew sync. Match
   // the aliases recognized by the conflict reader without changing their writer.
   const photographerIds=ref.source==="service"?[
@@ -52,11 +55,11 @@ export async function readResourceBooking(tx:ResourceExecutor,ref:Ref,lock=false
       .flatMap(entry=>[id(entry?.employeeId),id(entry?.staffId),id(entry?.id)]),
   ]:[];
   const executionIds=[...members.map(m=>id(m.staff_id)),id(details.assignedStaffId),...photographerIds].filter((v):v is number=>v!==null);
-  const staffIds=[...new Set([...dailyAssignedStaffIds({details,assignedStaffId:id(b.assigned_staff_id),executionStaffIds:executionIds}),...(driverId?[driverId]:[])])].sort((a,b)=>a-b);
+  const staffIds=[...new Set([...dailyAssignedStaffIds({details,assignedStaffId:id(b.assigned_staff_id),executionStaffIds:executionIds}),...(driverId?[driverId]:[]),...transportUses.map(t=>t.driverId).filter((v):v is number=>v!==null)])].sort((a,b)=>a-b);
   const assets=new Map<number,any>();
   for(const line of [...list(details.linkedAssets),...list(operations.assets)]){const productId=id(line?.productId);if(!productId)throw new BookingResourceConflictError("مرجع إحدى المعدات غير صالح",422);assets.set(productId,{...assets.get(productId),...line,productId})}
   if(staffIds.length>100||members.length>100||assets.size>100)throw new BookingResourceConflictError("موارد الحجز كثيرة؛ يلزم مراجعتها قبل الحفظ",422);
-  return {...ref,eventDate:b.event_date??null,eventTime:b.event_time??details.eventTime??details.eventStartTime??details.startTime??null,eventEndTime:details.eventEndTime??details.endTime??null,archivedAt:b.archived_at??null,details,operations,status:String(b.status??""),assignedStaffId:id(b.assigned_staff_id),staffIds,vehicleId,driverId,crewId:id(dispatch[0]?.crew_id),koshaId:id(b.kosha_id??details.koshaId),assets:[...assets.values()]};
+  return {...ref,eventDate:b.event_date??null,eventTime:b.event_time??details.eventTime??details.eventStartTime??details.startTime??null,eventEndTime:details.eventEndTime??details.endTime??null,archivedAt:b.archived_at??null,details,operations,status:String(b.status??""),assignedStaffId:id(b.assigned_staff_id),staffIds,vehicleId,vehicleIds,transportUses,driverId,crewId:id(dispatch[0]?.crew_id),koshaId:id(b.kosha_id??details.koshaId),assets:[...assets.values()]};
 }
 
 /** Replaces one operational leaf only, atomically with the original timeline.
@@ -81,7 +84,8 @@ export async function saveBookingResourceWindow(database:Database,ref:Ref,value:
     const fixed=resourceRows(await tx.execute(sql`SELECT id FROM employee_custody_reservations WHERE booking_type=${entity(ref)} AND booking_id=${ref.id} AND status IN ('reserved','checked_out') LIMIT 1`));
     if(fixed.length)throw new BookingResourceConflictError("حرّر حجز عهدة الموظفين قبل تعديل الفترة، ثم أعد حجزها بالمواعيد الجديدة",409);
     if(ref.source==="kosha"&&resourceRows(await tx.execute(sql`SELECT a.id FROM kosha_work_order_assets a JOIN kosha_work_orders w ON w.id=a.work_order_id WHERE w.booking_id=${ref.id} AND a.checked_out_at IS NOT NULL AND a.returned_at IS NULL LIMIT 1`)).length)throw new BookingResourceConflictError("توجد معدات مصروفة من أمر التنفيذ؛ أكمل إرجاعها قبل تغيير الفترة",409);
-    const next={...live,eventDate,eventTime,eventEndTime:calendarRequested?calendar.endTime:live.eventEndTime,operations:{...live.operations,resourceWindow:window}};
+    const next:ResourceBooking={...live,eventDate,eventTime,eventEndTime:calendarRequested?calendar.endTime:live.eventEndTime,operations:{...live.operations,resourceWindow:window}};
+    if(next.operations.transportPlan!=null)transportResourceUses(validateTransportPlan(next.operations.transportPlan),bookingResourceSpan(next.operations,next.eventDate));
     if(live.koshaId){await tx.execute(sql`SELECT id FROM koshas WHERE id=${live.koshaId} FOR UPDATE`);if(await findBookingKoshaConflict(next,live.koshaId,tx))throw new BookingResourceConflictError("الكوشة مشغولة خلال فترة التشغيل الجديدة",409)}
     if(live.staffIds.length){const staff=resourceRows(await tx.execute(sql`SELECT id,is_active FROM staff WHERE id IN (${sql.join(live.staffIds.map(id=>sql`${id}`),sql`, `)}) ORDER BY id FOR UPDATE`));if(live.staffIds.some(id=>!staff.some(row=>Number(row.id)===id&&row.is_active===true)))throw new BookingResourceConflictError("تغيّرت أهلية أحد الموظفين؛ اختر فريقاً نشطاً",422);if(await findBookingStaffConflict(next,live.staffIds,tx))throw new BookingResourceConflictError("أحد أفراد الفريق أو السائق مشغول أو مواعيده غير مكتملة خلال الفترة الجديدة",409)}
     await lockBookingDispatchResources(tx,next);
@@ -107,7 +111,7 @@ export const resourceWindowView=(b:ResourceBooking)=>({resourceWindow:readBookin
 
 const terminal=(value:string)=>["cancelled","canceled","deleted","completed","delivered","closed"].includes(value.toLowerCase());
 const allocatesKosha=(value:ResourceBooking)=>!!value.koshaId&&(KOSHA_RESOURCE_STATUSES.some(status=>status===value.status.toLowerCase())||["preparing","ready","assets_out","event_active"].includes(String(value.operations.bookingStage??"")));
-const resourceSnapshot=(value:ResourceBooking)=>({eventDate:value.eventDate,eventTime:value.eventTime,eventEndTime:value.eventEndTime??null,archivedAt:value.archivedAt??null,window:value.operations.resourceWindow??null,staffIds:value.staffIds,vehicleId:value.vehicleId,crewId:value.crewId,koshaId:allocatesKosha(value)?value.koshaId:null,assets:value.assets.map(asset=>Object.fromEntries(["productId","trackingMode","quantity","requiredQty","reservedQty","checkedOutQty","returnedGoodQty","returnedDamagedQty","missingQty","stage"].filter(key=>Object.hasOwn(asset,key)).map(key=>[key,asset[key]]))).sort((a,b)=>a.productId-b.productId)});
+const resourceSnapshot=(value:ResourceBooking)=>({eventDate:value.eventDate,eventTime:value.eventTime,eventEndTime:value.eventEndTime??null,archivedAt:value.archivedAt??null,window:value.operations.resourceWindow??null,staffIds:value.staffIds,vehicleId:value.vehicleId,vehicleIds:value.vehicleIds,transportUses:value.transportUses,crewId:value.crewId,koshaId:allocatesKosha(value)?value.koshaId:null,assets:value.assets.map(asset=>Object.fromEntries(["productId","trackingMode","quantity","requiredQty","reservedQty","checkedOutQty","returnedGoodQty","returnedDamagedQty","missingQty","stage"].filter(key=>Object.hasOwn(asset,key)).map(key=>[key,asset[key]]))).sort((a,b)=>a.productId-b.productId)});
 function sameOrReleased(before:ResourceBooking,next:ResourceBooking){
   const old=resourceSnapshot(before),candidate=resourceSnapshot(next);
   // Removing identities is not a new reservation. Keep every other occupancy
@@ -183,7 +187,7 @@ async function assertBookingResourceCandidate(tx:ResourceExecutor,next:ResourceB
 async function lockBookingVehicleIdentities(tx:ResourceExecutor,next:ResourceBooking){
   const transport=object(next.operations.transportation);
   const jsonVehicle=next.source==="service"&&transport.mode==="ajn"?id(transport.vehicleId):null;
-  const ids=[...new Set([next.vehicleId,jsonVehicle].filter((value):value is number=>value!==null))].sort((a,b)=>a-b);
+  const ids=[...new Set([next.vehicleId,...(next.vehicleIds??[]),jsonVehicle].filter((value):value is number=>value!==null))].sort((a,b)=>a-b);
   const result=new Map<number,Record<string,any>>();
   for(const vehicleId of ids){
     const rows=resourceRows(await tx.execute(sql`SELECT id,is_active,status FROM fleet_vehicles WHERE id=${vehicleId} FOR UPDATE /* vp_terminal_vehicle_barrier */`));
@@ -193,10 +197,11 @@ async function lockBookingVehicleIdentities(tx:ResourceExecutor,next:ResourceBoo
   return result;
 }
 async function lockBookingDispatchResources(tx:ResourceExecutor,next:ResourceBooking){
-  const vehicles=await lockBookingVehicleIdentities(tx,next);
-  for(const [kind,resourceId] of [["vehicle",next.vehicleId],["crew",next.crewId]] as const){
+  const locked=await lockBookingVehicleIdentities(tx,next);
+  const vehicles=next.vehicleIds??(next.vehicleId?[next.vehicleId]:[]);
+  for(const [kind,resourceId] of [...vehicles.map(id=>["vehicle",id] as const),["crew",next.crewId] as const]){
     if(!resourceId)continue;
-    const resource=kind==="vehicle"?vehicles.get(resourceId):resourceRows(await tx.execute(sql`SELECT id,is_active,status FROM crews WHERE id=${resourceId} FOR UPDATE`))[0];
+    const resource=kind==="vehicle"?locked.get(resourceId):resourceRows(await tx.execute(sql`SELECT id,is_active,status FROM crews WHERE id=${resourceId} FOR UPDATE`))[0];
     if(!resource||resource.is_active!==true||["maintenance","repair","retired","inactive",...(kind==="crew"?["unavailable"]:[])].includes(String(resource.status)))throw new BookingResourceConflictError("المركبة أو فريق التركيب غير متاح أو تغيّرت حالته",409);
     const outside=resourceRows(await tx.execute(sql`SELECT entity_type,entity_id FROM dispatch_assignments WHERE ${kind==="vehicle"?sql`vehicle_id`:sql`crew_id`}=${resourceId} AND status IN ('assigned','en_route','active') AND entity_type NOT IN ('kosha_booking','service_order') LIMIT 1`));
     if(outside.length||await(kind==="vehicle"?findBookingVehicleConflict(next,resourceId,tx):findBookingCrewConflict(next,resourceId,tx)))throw new BookingResourceConflictError("المركبة أو فريق التركيب مشغول أو مواعيده غير مكتملة",409);

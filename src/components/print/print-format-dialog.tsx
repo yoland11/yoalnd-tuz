@@ -79,10 +79,10 @@ const FORMAT_META: Record<
  */
 export function printHtmlDocument(
   html: string,
-  opts: { thermal?: boolean; title?: string } = {},
+  opts: { thermal?: boolean; title?: string; popup?: Window } = {},
 ): void {
   const features = opts.thermal ? "width=440,height=760" : "width=980,height=760";
-  const popup = window.open("", "_blank", features);
+  const popup = opts.popup ?? window.open("", "_blank", features);
   if (!popup) {
     throw new Error(
       "تعذر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مرة أخرى.",
