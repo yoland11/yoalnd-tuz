@@ -105,4 +105,48 @@ const advanceProposal={...proposal,command:{...proposal.command,rightId:3},origi
 const advanceDetail={...detail,sourceId:"3",sourceEvent:"advance_reimbursement",transactionType:"vp_partner_advance_repayment",entries:[{side:"debit",amount:"20.00",accountCode:"VP-ADVANCE"},{side:"credit",amount:"20.00",accountCode:"1000"}],audits:[{...audit,newValues:{...audit.newValues,sourceId:3,sourceSnapshot:advanceProposal,sourceDigest:digest(advanceProposal)}}]};
 const advanceReceipt=await provePayoutReceipt(3,advanceWorkspace,30,advanceDetail);assert.match(buildPartnershipPayoutHtml(advanceReceipt,identity,branding),/وصل استرداد سلفة الشريك/);
 await assert.rejects(()=>provePayoutReceipt(3,advanceWorkspace,30,{...advanceDetail,entries:detail.entries}),/قيد/);
+
+// Current source-only repayments are v2, including before any month closes and
+// after the economic partnership ends. Neither changes the original paid FIN.
+const sourceCommand={originMode:"approved_advance",rightId:3,amount:"20.00",transactionDate:"2026-10-01",paymentMethod:"cash",paymentSource:"MASTER",expectedVersion:7,idempotencyKey:"advance-receipt-v2",reason:"تسديد السلفة الأصلية"};
+const sourceProposal={formatVersion:2,vehicleId:3,partnershipId:2,actorId:1,command:sourceCommand,fingerprint:digest({vehicleId:3,actorId:1,command:sourceCommand}),key:`vp:advance_reimbursement:${digest({vehicleId:3,actorId:1,key:sourceCommand.idempotencyKey})}`,origin:{rightId:3,costFundingId:41,expenseId:42,originalFinancialId:43,agreementId:7,memberId:8,amount:"100.00",costDate:"2026-09-01",sourceDigest:"d".repeat(64),rightSnapshot:{}},coverage:[]};
+function sourceDetail(value:unknown=sourceProposal){return {...advanceDetail,audits:[{...audit,newValues:{...audit.newValues,sourceId:3,sourceSnapshot:value,sourceDigest:digest(value)}}]};}
+const sourceBefore=copy(advanceWorkspace),detailBefore=sourceDetail();
+assert.equal(sourceBefore.rights[2].closingId,null);
+const sourceReceipt=await provePayoutReceipt(3,advanceWorkspace,30,detailBefore);
+assert.equal(sourceReceipt.amount,"20.00");assert.equal(sourceReceipt.payeeName,"علي");assert.equal(sourceReceipt.transactionNo,"FIN-2026-000030");
+const sourceThermal=buildPartnershipPayoutHtml(sourceReceipt,identity,branding);
+assert.match(sourceThermal,/وصل استرداد سلفة الشريك/);assert.match(sourceThermal,/80mm/);assert.match(sourceThermal,/20.00/);
+assert.doesNotMatch(sourceThermal,/costFundingId|originalFinancialId|sourceDigest|approved_advance|rightSnapshot/);
+assert.deepEqual(advanceWorkspace,sourceBefore);assert.deepEqual(detailBefore,sourceDetail(),"receipt reads cannot mutate source payment evidence");
+// Late conversion evidence is appended separately; immutable v2 request
+// coverage remains empty and neither a current month nor ownership is needed.
+const mappedDetail=sourceDetail();mappedDetail.audits.push({action:"vehicle_partnership_advance_conversion_mapped",newValues:{} as typeof audit.newValues});
+assert.deepEqual(await provePayoutReceipt(3,advanceWorkspace,30,mappedDetail),sourceReceipt);
+const invalidSourceProposals:unknown[]=[
+ {...sourceProposal,formatVersion:3},
+ {...sourceProposal,command:{...sourceCommand,originMode:"monthly"}},
+ {...sourceProposal,command:{...sourceCommand,originMode:null}},
+ {...sourceProposal,command:{...sourceCommand,paymentSource:"OTHER"}},
+ {...sourceProposal,coverage:[{rightId:6,conversionAllocationId:91,amount:"20.00"}]},
+ {...sourceProposal,coverage:null},
+ {...sourceProposal,origin:{...sourceProposal.origin,rightId:1}},
+ {...sourceProposal,origin:{...sourceProposal.origin,memberId:9}},
+ {...sourceProposal,origin:{...sourceProposal.origin,amount:"99.00"}},
+ {...sourceProposal,origin:{...sourceProposal.origin,amount:"10.00"}},
+ {...sourceProposal,origin:{...sourceProposal.origin,costDate:"2026-10-02"}},
+ {...sourceProposal,origin:{...sourceProposal.origin,costFundingId:0}},
+ {...sourceProposal,origin:{...sourceProposal.origin,originalFinancialId:null}},
+ {...sourceProposal,origin:{...sourceProposal.origin,sourceDigest:"invalid"}},
+ {...sourceProposal,origin:{...sourceProposal.origin,rightSnapshot:{changed:true}}},
+];
+for(const invalidSource of invalidSourceProposals)await assert.rejects(()=>provePayoutReceipt(3,advanceWorkspace,30,sourceDetail(invalidSource)));
+const forgedSource=sourceDetail();forgedSource.audits[0].newValues.sourceDigest="f".repeat(64);await assert.rejects(()=>provePayoutReceipt(3,advanceWorkspace,30,forgedSource));
+for(const invalidDetail of [{approvalStatus:"pending"},{reversalTxnId:31},{reversedAt:"2026-10-02T00:00:00Z"},{entries:detail.entries}])await assert.rejects(()=>provePayoutReceipt(3,advanceWorkspace,30,{...sourceDetail(),...invalidDetail}));
+const wrongMember=copy(advanceWorkspace);wrongMember.rights[2].memberId=9;await assert.rejects(()=>provePayoutReceipt(3,wrongMember,30,sourceDetail()));
+// v2 is an advance-specific format, not blanket admission of new payout types.
+const v2Profit={...proposal,formatVersion:2,command:{...proposal.command,originMode:"approved_advance"},coverage:[]};
+await assert.rejects(()=>provePayoutReceipt(3,workspace,30,{...detail,audits:[{...audit,newValues:{...audit.newValues,sourceSnapshot:v2Profit,sourceDigest:digest(v2Profit)}}]}));
+const v2Driver={...driverProposal,formatVersion:2,command:{...driverProposal.command,originMode:"approved_advance"},coverage:[]};
+await assert.rejects(()=>provePayoutReceipt(3,driverWorkspace,30,{...driverDetail,audits:[{...audit,newValues:{...audit.newValues,sourceType:"vehicle_partnership_driver",sourceId:35,sourceSnapshot:v2Driver,sourceDigest:digest(v2Driver)}}]}));
 console.log("PASS vehicle partnership statements, frozen monthly reports and original 80mm payout proofs (no database writes)");

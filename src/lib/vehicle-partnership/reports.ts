@@ -128,12 +128,20 @@ export async function provePayoutReceipt(vehicleId: number, workspace: Partnersh
   const audits = list(detail.audits).map(object).filter(audit => audit.action === "vehicle_partnership_financial_requested");
   if (audits.length !== 1) fail("إثبات مصدر الصرف غير موجود أو مكرر");
   const audit = object(audits[0].newValues), proposal = object(audit.sourceSnapshot), command = object(proposal.command), origin = object(proposal.origin);
-  if (audit.vehicleId !== vehicleId || proposal.vehicleId !== vehicleId || audit.partnershipId !== proposal.partnershipId || audit.sourceType !== request.sourceType || String(audit.sourceId) !== request.sourceId || amount(audit.amount) !== paid || proposal.formatVersion !== 1 || await digest(proposal) !== audit.sourceDigest || amount(command.amount) !== paid || day(command.transactionDate) !== request.date || command.paymentMethod !== detail.paymentMethod) fail("بصمة مصدر الصرف أو هويته لا تطابق المركبة");
+  const sourceOnlyAdvance = proposal.formatVersion === 2 && request.sourceEvent === "advance_reimbursement" && rule.category === "advance";
+  if (audit.vehicleId !== vehicleId || proposal.vehicleId !== vehicleId || audit.partnershipId !== proposal.partnershipId || audit.sourceType !== request.sourceType || String(audit.sourceId) !== request.sourceId || amount(audit.amount) !== paid || proposal.formatVersion !== 1 && !sourceOnlyAdvance || await digest(proposal) !== audit.sourceDigest || amount(command.amount) !== paid || day(command.transactionDate) !== request.date || command.paymentMethod !== detail.paymentMethod) fail("بصمة مصدر الصرف أو هويته لا تطابق المركبة");
   id(proposal.partnershipId);
   let payeeName: string;
   if (rule.category) {
     const rightId = id(command.rightId), rights = workspace.rights.filter(right => right.id === rightId && right.category === rule.category);
     if (String(rightId) !== request.sourceId || rights.length !== 1 || origin.rightId !== rightId || origin.memberId !== rights[0].memberId || rights[0].status !== "approved") fail("استحقاق صاحب الصرف الأصلي لا يطابق الكشف");
+    if (sourceOnlyAdvance) {
+      // v2 proves the original approved advance independently of a current
+      // month/ownership. Later coverage is separate audit evidence; the
+      // original request and its empty coverage remain immutable.
+      if (command.originMode !== "approved_advance" || command.paymentSource !== "MASTER" || !["cash", "transfer", "pos"].includes(String(command.paymentMethod)) || list(proposal.coverage).length || rights[0].direction !== "credit" || amount(origin.amount) !== amount(rights[0].amount) || parseMoney(paid) > parseMoney(amount(origin.amount)) || request.date < day(origin.costDate) || typeof origin.sourceDigest !== "string" || !/^[a-f0-9]{64}$/.test(origin.sourceDigest) || canonicalPartnershipJson(object(origin.rightSnapshot)) !== "{}") fail("إثبات السلفة الأصلية لا يطابق وصل تسديدها");
+      for (const field of ["costFundingId", "expenseId", "originalFinancialId", "agreementId", "memberId"]) id(origin[field]);
+    }
     payeeName = rights[0].memberName?.trim() || "اسم الشريك غير متاح";
   } else {
     const entryId = id(command.entryId), entries = workspace.driverEntries.filter(entry => entry.entryId === entryId);
