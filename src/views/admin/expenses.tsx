@@ -9,6 +9,7 @@ import { EmptyState } from "./_layout";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { printWhenImagesReadyScript, thermalReceiptCss } from "./print-helpers";
+import { DateField } from "@/components/ui/date-field";
 
 type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; financialTransactionId?: number | null; createdByName: string; createdAt: string; costCategory?: string | null; koshaId?: number | null; bookingId?: number | null; constructionProjectId?: number | null; expenseType?: string | null; beneficiaryName?: string | null };
 type Category = { id: number; name: string; nameAr: string; isActive: number };
@@ -200,8 +201,8 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
       )}
 
       <div className="bg-card rounded-xl border border-border/30 p-4 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-7 gap-3">
-        <input aria-label="من تاريخ المصاريف" type="date" value={filters.from} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} className={inputCls} />
-        <input aria-label="إلى تاريخ المصاريف" type="date" value={filters.to} onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))} className={inputCls} />
+        <DateField aria-label="من تاريخ المصاريف" type="date" value={filters.from} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} className={inputCls} />
+        <DateField aria-label="إلى تاريخ المصاريف" type="date" value={filters.to} onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))} className={inputCls} />
         <Button variant="ghost" type="button" aria-label="مسح التاريخين وعرض جميع المصاريف" title="عرض جميع المصاريف" disabled={!filters.from && !filters.to} onClick={() => setFilters((f) => ({ ...f, from: "", to: "" }))} className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-border/40 px-2 text-xs text-muted-foreground hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-40"><X className="h-3.5 w-3.5" />عرض الكل</Button>
         <select value={filters.categoryId} onChange={(e) => setFilters((f) => ({ ...f, categoryId: e.target.value }))} className={inputCls}><option value="">كل التصنيفات</option>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.nameAr}</option>)}</select>
         <select value={filters.paymentMethod} onChange={(e) => setFilters((f) => ({ ...f, paymentMethod: e.target.value }))} className={inputCls}><option value="">كل طرق الدفع</option>{paymentMethods.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select>
@@ -277,7 +278,7 @@ function ExpenseFormPanel({ form, categories, koshas, saving, onChange, onSave, 
   return (
     <form onSubmit={(e) => { e.preventDefault(); onSave(); }} className="bg-card rounded-xl border border-border/30 p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
       <div className="flex items-center justify-between sm:col-span-2 lg:col-span-3"><h2 className="font-semibold text-foreground">{form.id ? "تعديل مصروف" : "مصروف جديد"}</h2><Button variant="ghost" type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></Button></div>
-      <Field label="التاريخ"><input type="date" value={form.date} onChange={(e) => onChange({ ...form, date: e.target.value })} className={inputCls} /></Field>
+      <Field label="التاريخ"><DateField type="date" value={form.date} onChange={(e) => onChange({ ...form, date: e.target.value })} className={inputCls} /></Field>
       <Field label="عنوان المصروف"><input value={form.name} onChange={(e) => onChange({ ...form, name: e.target.value })} className={inputCls} /></Field>
       <Field label="المبلغ"><input type="number" min="0" value={form.amount} onChange={(e) => onChange({ ...form, amount: e.target.value })} className={inputCls} /></Field>
       <div><Field label="التصنيف"><select value={form.categoryId} onChange={(e) => onChange({ ...form, categoryId: e.target.value })} className={inputCls}><option value="">اختر التصنيف</option>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.nameAr}</option>)}</select></Field><Button type="button" variant="ghost" size="sm" onClick={onManageCategories} className="mt-1 h-8 gap-1 px-2 text-xs text-primary"><Tags className="h-3.5 w-3.5" />إدارة التصنيفات</Button><span className="ms-1 text-[11px] text-muted-foreground">إضافة أو تعديل أو حذف</span></div>

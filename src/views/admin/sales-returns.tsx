@@ -17,6 +17,7 @@ import {
   INVENTORY_STATE_LABELS, RETURN_CONDITIONS, RETURN_REASONS, RETURN_STATUS_LABELS, allocateFifo, fromCents, fromMilli,
   returnAmountCents, returnConditionLabel, returnReasonLabel, toCents, toMilli, validateAllocation, type ReturnCondition, type ReturnableLine,
 } from "@/lib/sales-returns";
+import { DateField } from "@/components/ui/date-field";
 
 // ── Types (server DTOs) ──────────────────────────────────────────────────
 type PurchaseLine = { invoiceItemId: number; invoiceId: number; invoiceNo: string; invoiceDate: string; quantity: number; returned: number; reserved: number; available: number; unitPrice: number; netUnit: number; refundable: number; refundableRemaining: number; trackInventory: boolean };
@@ -183,8 +184,8 @@ function ReturnsList({ options }: { options?: Options }) {
           <div className="relative sm:col-span-2"><Search className="pointer-events-none absolute start-3 top-3 h-4 w-4 text-muted-foreground" /><input aria-label="بحث برقم المرتجع أو العميل" value={filters.q} onChange={set("q")} placeholder="رقم المرتجع، اسم العميل أو هاتفه" className={`${field} ps-9`} /></div>
           <input aria-label="رقم الفاتورة" value={filters.invoiceNo} onChange={set("invoiceNo")} placeholder="رقم الفاتورة" className={field} />
           <input aria-label="المنتج" value={filters.product} onChange={set("product")} placeholder="اسم المنتج" className={field} />
-          <Field label="من تاريخ"><input type="date" value={filters.from} onChange={set("from")} className={field} /></Field>
-          <Field label="إلى تاريخ"><input type="date" value={filters.to} onChange={set("to")} className={field} /></Field>
+          <Field label="من تاريخ"><DateField type="date" value={filters.from} onChange={set("from")} className={field} /></Field>
+          <Field label="إلى تاريخ"><DateField type="date" value={filters.to} onChange={set("to")} className={field} /></Field>
           <Field label="حالة المرتجع"><select value={filters.status} onChange={set("status")} className={field}><option value="">كل الحالات</option>{Object.entries(RETURN_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
           <Field label="حالة التسوية"><select value={filters.settlement} onChange={set("settlement")} className={field}><option value="">كل حالات التسوية</option>{Object.entries(SETTLEMENT_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
           <Field label="الموظف" className="sm:col-span-2 lg:col-span-1"><select value={filters.employeeId} onChange={set("employeeId")} className={field}><option value="">كل الموظفين</option>{(options?.staff ?? []).map((staff) => <option key={staff.id} value={staff.id}>{staff.name}</option>)}</select></Field>
@@ -270,8 +271,8 @@ function ReturnsReports() {
     <div className="space-y-4">
       <Card>
         <div className="flex flex-wrap items-end gap-3">
-          <Field label="من تاريخ"><input type="date" value={range.from} onChange={(event) => setRange((current) => ({ ...current, from: event.target.value }))} className={field} /></Field>
-          <Field label="إلى تاريخ"><input type="date" value={range.to} onChange={(event) => setRange((current) => ({ ...current, to: event.target.value }))} className={field} /></Field>
+          <Field label="من تاريخ"><DateField type="date" value={range.from} onChange={(event) => setRange((current) => ({ ...current, from: event.target.value }))} className={field} /></Field>
+          <Field label="إلى تاريخ"><DateField type="date" value={range.to} onChange={(event) => setRange((current) => ({ ...current, to: event.target.value }))} className={field} /></Field>
           <p className="max-w-prose pb-2 text-xs text-muted-foreground">تشمل التقارير المرتجعات المعتمدة والمكتملة فقط. المبالغ المستردة هي المدفوعة فعلياً.</p>
         </div>
       </Card>
@@ -768,7 +769,7 @@ function ReturnEditor({ returnId }: { returnId: number | null }) {
               <SectionTitle index={6} title="معلومات إضافية" />
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <Field label="سبب الإرجاع *"><select value={header.reasonCode} onChange={(event) => setHeader((current) => ({ ...current, reasonCode: event.target.value }))} className={field}><option value="">اختر السبب</option>{RETURN_REASONS.map((reason) => <option key={reason.code} value={reason.code}>{reason.label}</option>)}</select></Field>
-                <Field label="تاريخ الاستلام"><input type="date" value={header.returnDate} onChange={(event) => setHeader((current) => ({ ...current, returnDate: event.target.value }))} className={field} /></Field>
+                <Field label="تاريخ الاستلام"><DateField type="date" value={header.returnDate} onChange={(event) => setHeader((current) => ({ ...current, returnDate: event.target.value }))} className={field} /></Field>
                 <Field label="الموظف المسؤول"><select value={header.employeeId} onChange={(event) => setHeader((current) => ({ ...current, employeeId: event.target.value }))} className={field}><option value="">—</option>{(options.data?.staff ?? []).map((staff) => <option key={staff.id} value={staff.id}>{staff.name}</option>)}</select></Field>
                 <Field label="المخزن المستلم"><select value={header.warehouseId} onChange={(event) => setHeader((current) => ({ ...current, warehouseId: event.target.value }))} className={field}><option value="">المخزون الرئيسي</option>{(options.data?.warehouses ?? []).map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></Field>
                 <Field label="رابط مرفق أو صورة (اختياري)" className="lg:col-span-2"><input type="url" dir="ltr" value={header.attachmentUrl} onChange={(event) => setHeader((current) => ({ ...current, attachmentUrl: event.target.value }))} placeholder="https://" className={field} /></Field>

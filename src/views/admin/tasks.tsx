@@ -10,6 +10,7 @@ import { uploadImageWithVariants, uploadTaskFile } from "@/lib/large-image-uploa
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
 import { EmployeeAvatar } from "@/components/employee-avatar";
+import { DateField } from "@/components/ui/date-field";
 
 type Staff = { id: number; username: string; fullName: string; role: string; isActive: boolean; department?: string | null; jobTitle?: string | null; photoUrl?: string | null };
 type Task = {
@@ -267,10 +268,10 @@ export default function TasksPage() {
             </select>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <input type="datetime-local" value={form.startAt} onChange={(e) => setForm({ ...form, startAt: e.target.value })} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+            <DateField type="datetime-local" value={form.startAt} onChange={(e) => setForm({ ...form, startAt: e.target.value })} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
             <input type="number" min="1" value={form.estimatedMinutes} onChange={(e) => setForm({ ...form, estimatedMinutes: e.target.value })} placeholder="الوقت المقدر بالدقائق" className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
           </div>
-          <input
+          <DateField
             type="datetime-local"
             value={form.dueAt}
             onChange={(e) => setForm({ ...form, dueAt: e.target.value })}
@@ -318,7 +319,7 @@ export default function TasksPage() {
                 <option value="">كل الموظفين</option>
                 {(data?.staff ?? []).map((staff) => <option key={staff.id} value={staff.id}>{staff.fullName || staff.username}</option>)}
               </select>
-              <input type="date" value={filters.date} onChange={(e) => setFilters({ ...filters, date: e.target.value })} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+              <DateField type="date" value={filters.date} onChange={(e) => setFilters({ ...filters, date: e.target.value })} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
               <Button type="button" variant="outline" onClick={() => setFilters({ status: "", priority: "", staffId: "", date: "" })} className="gap-2">
                 <Filter className="w-4 h-4" /> تصفية
               </Button>
@@ -440,8 +441,8 @@ function TaskEditDialog({ taskId, staff, open, onOpenChange, onSaved }: { taskId
           <label className="space-y-1"><span className="text-xs font-bold">الموقع</span><input value={edit.location} onChange={(e) => setEdit({ ...edit, location: e.target.value })} className="min-h-11 w-full rounded-lg border bg-background px-3 text-sm" /></label>
           <label className="space-y-1"><span className="text-xs font-bold">الأولوية</span><select value={edit.priority} onChange={(e) => setEdit({ ...edit, priority: e.target.value })} className="min-h-11 w-full rounded-lg border bg-background px-3 text-sm">{Object.entries(PRIORITY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label className="space-y-1"><span className="text-xs font-bold">الحالة</span><select value={edit.status} disabled={Boolean(protectedStatus)} onChange={(e) => setEdit({ ...edit, status: e.target.value })} className="min-h-11 w-full rounded-lg border bg-background px-3 text-sm disabled:opacity-60">{protectedStatus ? <option value={edit.status}>{STATUS_LABELS[edit.status] ?? edit.status}</option> : [["new", "جديدة"], ["accepted", "تم استلام المهمة"], ["in_progress", "جاري العمل"], ["cancelled", "ملغية"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-          <label className="space-y-1"><span className="text-xs font-bold">تاريخ ووقت البدء</span><input type="datetime-local" value={edit.startAt} onChange={(e) => setEdit({ ...edit, startAt: e.target.value })} className="min-h-11 w-full rounded-lg border bg-background px-3 text-sm" /></label>
-          <label className="space-y-1"><span className="text-xs font-bold">الموعد النهائي</span><input type="datetime-local" value={edit.dueAt} onChange={(e) => setEdit({ ...edit, dueAt: e.target.value })} className="min-h-11 w-full rounded-lg border bg-background px-3 text-sm" /></label>
+          <label className="space-y-1"><span className="text-xs font-bold">تاريخ ووقت البدء</span><DateField type="datetime-local" value={edit.startAt} onChange={(e) => setEdit({ ...edit, startAt: e.target.value })} className="min-h-11 w-full rounded-lg border bg-background px-3 text-sm" /></label>
+          <label className="space-y-1"><span className="text-xs font-bold">الموعد النهائي</span><DateField type="datetime-local" value={edit.dueAt} onChange={(e) => setEdit({ ...edit, dueAt: e.target.value })} className="min-h-11 w-full rounded-lg border bg-background px-3 text-sm" /></label>
           <label className="space-y-1"><span className="text-xs font-bold">نوع الربط</span><input value={edit.relatedType} onChange={(e) => setEdit({ ...edit, relatedType: e.target.value })} className="min-h-11 w-full rounded-lg border bg-background px-3 text-sm" placeholder="booking" /></label>
           <label className="space-y-1"><span className="text-xs font-bold">رقم الحجز / الربط</span><input inputMode="numeric" value={edit.relatedId} onChange={(e) => setEdit({ ...edit, relatedId: e.target.value.replace(/\D/g, "") })} className="min-h-11 w-full rounded-lg border bg-background px-3 text-sm" /></label>
         </div>

@@ -11,6 +11,7 @@ import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings, normalizeAppearan
 import { THEME_PRESETS, matchPresetId, type ThemePreset } from "@/lib/theme-presets";
 import { type SeasonalTheme, normalizeSeasonalThemes, findActiveSeason } from "@/lib/seasonal-themes";
 import { cn } from "@/lib/utils";
+import { DateField } from "@/components/ui/date-field";
 
 type Settings = {
   siteName: string;
@@ -530,11 +531,11 @@ export default function SettingsPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">من تاريخ</label>
-                      <input type="date" value={season.start} onChange={(e) => patchSeason(season.id, { start: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                      <DateField type="date" value={season.start} onChange={(e) => patchSeason(season.id, { start: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">إلى تاريخ</label>
-                      <input type="date" value={season.end} onChange={(e) => patchSeason(season.id, { end: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                      <DateField type="date" value={season.end} onChange={(e) => patchSeason(season.id, { end: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">الثيم</label>

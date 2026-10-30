@@ -16,6 +16,7 @@ import { ReceiptPrintDialog, type ReceiptJob } from "@/components/graduation-rec
 import { printTailorSheet, type ReceiptFormat, type TailorSheetInput } from "@/lib/graduation-receipt-print";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { stickerDocument, stickerQr, stickerSize } from "@/lib/tailor-sticker";
+import { DateField } from "@/components/ui/date-field";
 
 /** All tailor data flows through the assignment-scoped /admin/tailoring API. */
 function tailorApi<T = any>(path: string, init?: RequestInit): Promise<T> {
@@ -673,7 +674,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
           <select value={altForm.type} onChange={(e) => setAltForm((f: any) => ({ ...f, type: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm">
             {ALTER_TYPES.map((a) => <option key={a.key} value={a.key}>{a.label}</option>)}
           </select>
-          <input type="date" value={altForm.expectedDate} onChange={(e) => setAltForm((f: any) => ({ ...f, expectedDate: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm" />
+          <DateField type="date" value={altForm.expectedDate} onChange={(e) => setAltForm((f: any) => ({ ...f, expectedDate: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm" />
           <input placeholder="المشكلة" value={altForm.problem} onChange={(e) => setAltForm((f: any) => ({ ...f, problem: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm" />
           <input placeholder="التعديل المطلوب" value={altForm.requiredChange} onChange={(e) => setAltForm((f: any) => ({ ...f, requiredChange: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm" />
         </div>

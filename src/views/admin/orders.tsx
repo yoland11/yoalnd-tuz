@@ -36,6 +36,7 @@ import {
   fieldsWithBookingPhotos,
   type BookingPhoto,
 } from "@/lib/booking-photos";
+import { DateField } from "@/components/ui/date-field";
 
 export type ServiceOrder = {
   id: number; trackingCode: string | null; serviceId: number; serviceName: string;
@@ -492,7 +493,7 @@ export default function OrdersPage() {
         >
           {STATUS_FILTERS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
         </select>
-        <input
+        <DateField
           type="date"
           value={dateFilter}
           onChange={e => setDateFilter(e.target.value)}
@@ -1764,7 +1765,7 @@ function Input({ label, value, onChange, type = "text" }: { label: string; value
   return (
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)}
+      <DateField type={type} value={value} onChange={e => onChange(e.target.value)}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
     </div>
   );

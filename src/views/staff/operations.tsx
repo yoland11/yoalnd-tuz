@@ -11,6 +11,7 @@ import {
   STAGE_LABEL, koshaOpsApi, money,
   type KoshaOpsBoard, type KoshaOpsReport, type OperationsPayload,
 } from "./lib";
+import { DateField } from "@/components/ui/date-field";
 
 function Spinner() {
   return <div className="p-6 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin text-primary" /></div>;
@@ -464,8 +465,8 @@ export function KoshaOpsReportsPage() {
     <div className="space-y-4 p-4">
       <h1 className="flex items-center gap-2 text-lg font-bold"><BarChart3 className="h-5 w-5 text-primary" /> التقارير</h1>
       <div className="grid grid-cols-2 gap-2">
-        <input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="rounded-lg border border-border bg-background px-3 py-2 text-sm" />
-        <input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+        <DateField type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+        <DateField type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="rounded-lg border border-border bg-background px-3 py-2 text-sm" />
       </div>
 
       {section("العمل اليومي", data.daily.length ? (

@@ -13,6 +13,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import { DateField } from "@/components/ui/date-field";
 
 type SaleContext = {
   asset: {
@@ -198,7 +199,7 @@ export function AssetSaleDialog({
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="text-sm">اسم المشتري *<input className={fieldClass} value={form.buyerName} onChange={(event) => setForm({ ...form, buyerName: event.target.value })} /></label>
                 <label className="text-sm">هاتف المشتري {form.paymentMethod === "partial" ? "* (مطلوب للذمة)" : "(اختياري)"}<input className={fieldClass} dir="ltr" value={form.buyerPhone} onChange={(event) => setForm({ ...form, buyerPhone: event.target.value })} /></label>
-                <label className="text-sm">تاريخ البيع *<input className={fieldClass} type="date" value={form.saleDate} onChange={(event) => setForm({ ...form, saleDate: event.target.value })} /></label>
+                <label className="text-sm">تاريخ البيع *<DateField className={fieldClass} type="date" value={form.saleDate} onChange={(event) => setForm({ ...form, saleDate: event.target.value })} /></label>
                 <label className="text-sm">سعر البيع *<input className={fieldClass} type="number" min="0.01" step="0.01" dir="ltr" value={form.salePrice} onChange={(event) => setForm({ ...form, salePrice: event.target.value })} /></label>
                 <label className="text-sm">طريقة الدفع *
                   <select className={fieldClass} value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value as FormState["paymentMethod"], financialAccountId: "" })}>

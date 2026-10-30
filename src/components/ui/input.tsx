@@ -1,9 +1,14 @@
 import * as React from "react"
 
+import { DateField, type DateFieldProps } from "@/components/ui/date-field"
+import { isDateInputKind } from "@/lib/arabic-date"
 import { cn } from "@/lib/utils"
 
-const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<"input">>(
-  ({ className, type, ...props }, ref) => {
+const Input = React.forwardRef<HTMLInputElement, DateFieldProps>(
+  ({ className, type, nativePicker, ...props }, ref) => {
+    if (isDateInputKind(type) && !nativePicker) {
+      return <DateField ref={ref} type={type} className={cn("h-10 w-full font-medium", className)} {...props} />
+    }
     return (
       <input
         type={type}

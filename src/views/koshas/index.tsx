@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { useT } from "@/lib/i18n";
+import { readLocale, useT } from "@/lib/i18n";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { processImageFile } from "@/lib/image-tools";
 
@@ -794,7 +794,7 @@ export default function KoshasPage() {
                       <CardContent className="space-y-3 p-4">
                         <h3 className="font-bold text-foreground">تفاصيل الحفلة</h3>
                         <div className="grid gap-3 sm:grid-cols-2">
-                          <WizardInput label="تاريخ الحفل"><Input type="date" value={form.eventDate} onChange={(e) => setForm((f) => ({ ...f, eventDate: e.target.value }))} /></WizardInput>
+                          <WizardInput label="تاريخ الحفل"><Input type="date" nativePicker={readLocale() !== "ar"} value={form.eventDate} onChange={(e) => setForm((f) => ({ ...f, eventDate: e.target.value }))} /></WizardInput>
                           <WizardInput label="وقت الحفل"><Input type="time" value={form.eventTime} onChange={(e) => setForm((f) => ({ ...f, eventTime: e.target.value }))} /></WizardInput>
                         </div>
                         <WizardInput label="نوع الحفل">

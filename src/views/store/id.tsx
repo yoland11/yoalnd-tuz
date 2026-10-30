@@ -9,13 +9,14 @@ import { Badge } from "@/components/ui/badge";
 import { CalendarDays, Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus, Heart, Loader2, Package } from "lucide-react";
 import { ColorDot } from "@/components/product-colors";
 import { useWishlist } from "@/lib/wishlist";
-import { useT } from "@/lib/i18n";
+import { readLocale, useT } from "@/lib/i18n";
 import { useContentLocalizer } from "@/lib/content-i18n";
 import { colorImage, colorKey, normalizeColors, type ProductColor } from "@/lib/colors";
 import { ModelViewerCard } from "@/components/interactive/model-viewer";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 import { logCustomerActivity } from "@/lib/customer-activity";
 import { formatCurrency, formatMoney } from "@/lib/money";
+import { DateField } from "@/components/ui/date-field";
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -390,11 +391,11 @@ export default function ProductDetail() {
                   </label>
                   <label className="block">
                     <span className="block text-xs text-muted-foreground mb-1">{t("تاريخ البداية")}</span>
-                    <input type="date" value={rentalStartDate} onChange={(e) => setRentalStartDate(e.target.value)} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                    <DateField type="date" nativePicker={readLocale() !== "ar"} value={rentalStartDate} onChange={(e) => setRentalStartDate(e.target.value)} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
                   </label>
                   <label className="block">
                     <span className="block text-xs text-muted-foreground mb-1">{t("تاريخ النهاية")}</span>
-                    <input type="date" value={rentalEndDate} onChange={(e) => setRentalEndDate(e.target.value)} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                    <DateField type="date" nativePicker={readLocale() !== "ar"} value={rentalEndDate} onChange={(e) => setRentalEndDate(e.target.value)} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
                   </label>
                 </div>
                 <label className="block">

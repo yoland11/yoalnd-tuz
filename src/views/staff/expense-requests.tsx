@@ -4,6 +4,7 @@ import { BusFront, Camera, CheckCircle2, Clock3, Loader2, RefreshCw, Send, Undo2
 import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
 import { processImageFile } from "@/lib/image-tools";
 import { money } from "./lib";
+import { DateField } from "@/components/ui/date-field";
 
 // Kosha staff can request general expenses or vehicle expenses. Both use the
 // central cash approval workflow; nothing is paid until a manager executes it.
@@ -257,7 +258,7 @@ export default function StaffExpenseRequests() {
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
             <span className="mb-1 block text-xs text-muted-foreground">التاريخ *</span>
-            <input type="date" value={form.date} onChange={(event) => set("date", event.target.value)} className={inputClass} />
+            <DateField type="date" value={form.date} onChange={(event) => set("date", event.target.value)} className={inputClass} />
           </label>
           <label className="block">
             <span className="mb-1 block text-xs text-muted-foreground">طريقة الدفع</span>

@@ -63,6 +63,7 @@ import {
   InvoiceRegisterSummaryCards,
   type InvoiceRegisterSummary,
 } from "./invoice-payment-status";
+import { DateField } from "@/components/ui/date-field";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -1222,7 +1223,7 @@ export default function PurchasesPage() {
               <label className="text-xs text-muted-foreground mb-1 block">
                 التاريخ
               </label>
-              <input
+              <DateField
                 type="date"
                 value={form.date}
                 onChange={(e) =>
@@ -1871,7 +1872,7 @@ function PurchaseInvoicePaymentDialog({
             <PaymentMetric title="المتبقي قبل الدفع" value={formatCurrency(summary.remainingAmount)} />
             <label className="grid min-w-0 gap-1 text-sm"><span>مبلغ الدفع *</span><input type="number" min="0" max={summary.remainingAmount} value={amount} onChange={(event) => setAmount(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2" /></label>
             <PaymentMetric title="المتبقي بعد الدفع" value={formatCurrency(remainingAfter)} emphasis />
-            <label className="grid min-w-0 gap-1 text-sm"><span>تاريخ الدفع *</span><input type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2" /></label>
+            <label className="grid min-w-0 gap-1 text-sm"><span>تاريخ الدفع *</span><DateField type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2" /></label>
             <label className="grid min-w-0 gap-1 text-sm"><span>طريقة الدفع *</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2">{PAYMENT_METHODS.filter((method) => method.value !== "credit").map((method) => <option key={method.value} value={method.value}>{method.label}</option>)}</select></label>
             <div className="grid min-w-0 gap-1 text-sm"><span>الصندوق / الحساب</span><div className="truncate rounded-lg border bg-muted px-3 py-2">الصندوق الرئيسي</div></div>
             <label className="grid min-w-0 gap-1 text-sm"><span>رقم المرجع</span><input value={referenceNo} onChange={(event) => setReferenceNo(event.target.value)} className="min-w-0 rounded-lg border bg-background px-3 py-2" /></label>
@@ -2002,7 +2003,7 @@ function PurchaseListView({
           <label className="text-xs text-muted-foreground mb-1 block">
             من تاريخ
           </label>
-          <input
+          <DateField
             type="date"
             value={from}
             onChange={(e) => {
@@ -2116,7 +2117,7 @@ function PurchaseListView({
           <label className="text-xs text-muted-foreground mb-1 block">
             إلى تاريخ
           </label>
-          <input
+          <DateField
             type="date"
             value={to}
             onChange={(e) => {

@@ -25,8 +25,8 @@ import {
   withDerivedServiceDetails,
 } from "@/lib/service-details";
 import { formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
-import { CalendarIcon, PhoneIcon, UserIcon } from "lucide-react";
-import { useT } from "@/lib/i18n";
+import { PhoneIcon, UserIcon } from "lucide-react";
+import { readLocale, useT } from "@/lib/i18n";
 import { useContentLocalizer } from "@/lib/content-i18n";
 
 const formSchema = z.object({
@@ -245,10 +245,7 @@ export default function ServiceRequest() {
                   <FormItem>
                     <FormLabel>{t("تاريخ الحجز")}</FormLabel>
                     <FormControl>
-                      <div className="relative">
-                        <CalendarIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
-                        <Input type="date" className="pr-10 bg-background" {...field} />
-                      </div>
+                      <Input type="date" className="bg-background" nativePicker={readLocale() !== "ar"} {...field} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

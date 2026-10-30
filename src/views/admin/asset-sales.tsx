@@ -19,6 +19,7 @@ import { downloadElementPdf } from "@/lib/pdf";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, apiErrorMessage, fetchAdminMe, formatCurrency, hasPerm } from "./_lib";
 import { assetSalesReportCss, printWhenImagesReadyScript } from "./print-helpers";
+import { DateField } from "@/components/ui/date-field";
 
 type SaleRow = {
   id: number;
@@ -180,8 +181,8 @@ export default function AssetSalesPage() {
       <section className="rounded-xl border border-border/35 bg-card p-4 shadow-sm">
         <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_150px_150px_180px_160px]">
           <label className="relative"><Search className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input className={`${inputClass} w-full pr-9`} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="بحث بالأصل أو الكود أو المشتري أو الفاتورة" /></label>
-          <input className={inputClass} type="date" value={from} onChange={(event) => setFrom(event.target.value)} aria-label="من تاريخ" />
-          <input className={inputClass} type="date" value={to} onChange={(event) => setTo(event.target.value)} aria-label="إلى تاريخ" />
+          <DateField className={inputClass} type="date" value={from} onChange={(event) => setFrom(event.target.value)} aria-label="من تاريخ" />
+          <DateField className={inputClass} type="date" value={to} onChange={(event) => setTo(event.target.value)} aria-label="إلى تاريخ" />
           <select className={inputClass} value={category} onChange={(event) => setCategory(event.target.value)}><option value="">كل الفئات</option>{query.data?.categories.map((value) => <option key={value} value={value}>{value}</option>)}</select>
           <select className={inputClass} value={paymentStatus} onChange={(event) => setPaymentStatus(event.target.value)}><option value="">كل حالات الدفع</option><option value="paid">مدفوع</option><option value="partial">دفع جزئي</option></select>
         </div>

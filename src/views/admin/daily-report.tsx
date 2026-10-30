@@ -7,6 +7,7 @@ import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, formatCurrency, formatMoney } from "./_lib";
 import { EmptyState } from "./_layout";
+import { DateField } from "@/components/ui/date-field";
 
 type DailyReportPayload = {
   date: string;
@@ -136,7 +137,7 @@ export default function DailyFinancialReportPage() {
       </div>
 
       <div className="bg-card rounded-xl border border-border/30 p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
-        <div><label className="block text-xs text-muted-foreground mb-1">التاريخ</label><input type="date" value={filters.date} onChange={(e) => setFilters((f) => ({ ...f, date: e.target.value }))} className={inputCls} /></div>
+        <div><label className="block text-xs text-muted-foreground mb-1">التاريخ</label><DateField type="date" value={filters.date} onChange={(e) => setFilters((f) => ({ ...f, date: e.target.value }))} className={inputCls} /></div>
         <div><label className="block text-xs text-muted-foreground mb-1">طريقة الدفع</label><select value={filters.paymentMethod} onChange={(e) => setFilters((f) => ({ ...f, paymentMethod: e.target.value }))} className={inputCls}>{paymentMethods.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select></div>
         <div><label className="block text-xs text-muted-foreground mb-1">الحالة</label><select value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className={inputCls}>{statuses.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select></div>
         <div><label className="block text-xs text-muted-foreground mb-1">الموظف</label><input value={filters.user} onChange={(e) => setFilters((f) => ({ ...f, user: e.target.value }))} className={inputCls} placeholder="اسم الموظف" /></div>

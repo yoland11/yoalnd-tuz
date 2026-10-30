@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone } from "@/lib/phone";
+import { DateField } from "@/components/ui/date-field";
 
 type ActivityRow = {
   id: number;
@@ -93,8 +94,8 @@ export default function CustomerActivityPage() {
             <option value="">كل الأنشطة</option>
             {Object.entries(ACTION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
-          <input type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
-          <input type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+          <DateField type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+          <DateField type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
         </div>
         <Button type="button" variant="outline" onClick={() => setFilters({ action: "", from: "", to: "", search: "" })} className="gap-2">
           <Filter className="w-4 h-4" /> إعادة التصفية

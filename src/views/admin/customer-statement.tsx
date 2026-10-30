@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { downloadElementPdf } from "@/lib/pdf";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import { DateField } from "@/components/ui/date-field";
 
 const VOUCHER_METHODS: Array<[string, string]> = [
   ["cash", "نقداً"],
@@ -187,8 +188,8 @@ export function CustomerStatement({
           <FileText className="h-4 w-4 text-primary" /> كشف حساب العميل
         </h4>
         <div className="flex items-center gap-2">
-          <label className="text-[10px] text-muted-foreground">من<input aria-label="من تاريخ كشف الحساب" type="date" value={dateFrom} max={dateTo || undefined} onChange={(event) => setDateFrom(event.target.value)} className="mr-1 rounded border bg-background px-1.5 py-1 text-xs text-foreground" /></label>
-          <label className="text-[10px] text-muted-foreground">إلى<input aria-label="إلى تاريخ كشف الحساب" type="date" value={dateTo} min={dateFrom || undefined} onChange={(event) => setDateTo(event.target.value)} className="mr-1 rounded border bg-background px-1.5 py-1 text-xs text-foreground" /></label>
+          <label className="text-[10px] text-muted-foreground">من<DateField aria-label="من تاريخ كشف الحساب" type="date" value={dateFrom} max={dateTo || undefined} onChange={(event) => setDateFrom(event.target.value)} className="mr-1 rounded border bg-background px-1.5 py-1 text-xs text-foreground" /></label>
+          <label className="text-[10px] text-muted-foreground">إلى<DateField aria-label="إلى تاريخ كشف الحساب" type="date" value={dateTo} min={dateFrom || undefined} onChange={(event) => setDateTo(event.target.value)} className="mr-1 rounded border bg-background px-1.5 py-1 text-xs text-foreground" /></label>
           <Button type="button" variant="outline" size="sm" disabled={!customerPhone} onClick={shareWhatsApp}><MessageCircle className="h-3.5 w-3.5" />واتساب</Button>
           <Button type="button" variant="outline" size="sm" onClick={() => openVoucher("receipt")}>
             <Wallet className="h-3.5 w-3.5" /> قبض / صرف

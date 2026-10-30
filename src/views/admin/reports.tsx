@@ -24,6 +24,7 @@ import { adminFetch, formatCurrency, formatMoney } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
 import { InvoicePaymentStatusBadge } from "./invoice-payment-status";
+import { DateField } from "@/components/ui/date-field";
 
 type ReportType =
   | "invoice-sales"
@@ -499,7 +500,7 @@ export default function ReportsPage() {
       <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3 items-end">
           <FilterField label="من تاريخ">
-            <input
+            <DateField
               type="date"
               value={filters.from}
               onChange={(event) => updateFilter("from", event.target.value)}
@@ -507,7 +508,7 @@ export default function ReportsPage() {
             />
           </FilterField>
           <FilterField label="إلى تاريخ">
-            <input
+            <DateField
               type="date"
               value={filters.to}
               onChange={(event) => updateFilter("to", event.target.value)}

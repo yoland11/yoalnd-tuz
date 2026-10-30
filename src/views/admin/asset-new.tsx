@@ -71,6 +71,7 @@ import {
 import { QuantityAvailability, type QuantitySummary } from "./quantity-asset-panel";
 import { QuantityManager } from "./quantity-manager";
 import { DEFAULT_QUANTITY_UNIT, TRACKING_MODE_LABELS, type TrackingMode } from "@/lib/quantity-assets";
+import { DateField } from "@/components/ui/date-field";
 
 const STATUSES: [string, string][] = [
   ["available", "متاح"],
@@ -1144,7 +1145,7 @@ export default function AssetNewPage() {
                 </datalist>
               </Field>
               <Field label="تاريخ الشراء">
-                <input type="date" className={inputCls} value={form.purchaseDate} onChange={(e) => set("purchaseDate", e.target.value)} />
+                <DateField type="date" className={inputCls} value={form.purchaseDate} onChange={(e) => set("purchaseDate", e.target.value)} />
               </Field>
               {quantityMode ? (
                 <Field label="تكلفة الاقتناء الإجمالية">
@@ -1167,10 +1168,10 @@ export default function AssetNewPage() {
                 <input type="number" className={inputCls} value={form.currentValue} onChange={(e) => set("currentValue", e.target.value)} />
               </Field>
               <Field label="انتهاء الضمان">
-                <input type="date" className={inputCls} value={form.warrantyUntil} onChange={(e) => set("warrantyUntil", e.target.value)} />
+                <DateField type="date" className={inputCls} value={form.warrantyUntil} onChange={(e) => set("warrantyUntil", e.target.value)} />
               </Field>
               <Field label="انتهاء التأمين">
-                <input type="date" className={inputCls} value={form.insuranceUntil} onChange={(e) => set("insuranceUntil", e.target.value)} />
+                <DateField type="date" className={inputCls} value={form.insuranceUntil} onChange={(e) => set("insuranceUntil", e.target.value)} />
               </Field>
             </Grid>
           </Section>

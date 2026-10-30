@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency, formatMoney, type AdminMe } from "./_lib";
 import { EmptyState } from "./_layout";
 import { CompanyLoansPanel } from "./loans";
+import { DateField } from "@/components/ui/date-field";
 
 const inputCls = "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50";
 
@@ -242,7 +243,7 @@ export function FinanceExpensesPage() {
       <h1 className="text-2xl font-bold text-foreground">إدارة المصاريف</h1>
 
       <form onSubmit={(e) => { e.preventDefault(); if (!form.amount) return; save.mutate(); }} className="bg-card rounded-xl border border-border/30 p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        <div><label className="block text-xs text-muted-foreground mb-1">التاريخ</label><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className={inputCls} /></div>
+        <div><label className="block text-xs text-muted-foreground mb-1">التاريخ</label><DateField type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className={inputCls} /></div>
         <div><label className="block text-xs text-muted-foreground mb-1">اسم المصروف</label><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} placeholder="مثال: إيجار شهر" /></div>
         <div><label className="block text-xs text-muted-foreground mb-1">المبلغ (د.ع)</label><input type="number" min="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className={inputCls} placeholder="0" /></div>
         <div><label className="block text-xs text-muted-foreground mb-1">التصنيف</label>
@@ -265,8 +266,8 @@ export function FinanceExpensesPage() {
 
       <div className="flex flex-wrap items-center gap-2 bg-card/60 border border-border/30 rounded-xl p-3">
         <Filter className="w-4 h-4 text-muted-foreground" />
-        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={`${inputCls} w-auto`} />
-        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={`${inputCls} w-auto`} />
+        <DateField type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={`${inputCls} w-auto`} />
+        <DateField type="date" value={to} onChange={(e) => setTo(e.target.value)} className={`${inputCls} w-auto`} />
         <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)} className={`${inputCls} w-auto`}>
           <option value="">كل التصنيفات</option>
           {(categories ?? []).map((cat) => <option key={cat.id} value={cat.id}>{cat.nameAr}</option>)}
@@ -357,8 +358,8 @@ export function FinanceReportsPage() {
         </select>
         {period === "custom" && (
           <>
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={`${inputCls} w-auto`} />
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={`${inputCls} w-auto`} />
+            <DateField type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={`${inputCls} w-auto`} />
+            <DateField type="date" value={to} onChange={(e) => setTo(e.target.value)} className={`${inputCls} w-auto`} />
           </>
         )}
         <span className="text-xs text-muted-foreground">{range.from} ← {range.to}</span>

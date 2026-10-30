@@ -77,6 +77,7 @@ import {
   salesCategories,
   salesCategoryLabel,
 } from "./sales-invoice-ui";
+import { DateField } from "@/components/ui/date-field";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -1021,7 +1022,7 @@ export default function SalesPage() {
             <div className="space-y-3">
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">التاريخ</label>
-              <input
+              <DateField
                 type="date" value={form.date}
                 onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
                 className={`w-full ${premiumSalesInputClass}`}
@@ -1534,12 +1535,12 @@ function InvoiceListView({
         </div>
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">من تاريخ</label>
-          <input type="date" value={from} onChange={e => { onFrom(e.target.value); onPage(1); }}
+          <DateField type="date" value={from} onChange={e => { onFrom(e.target.value); onPage(1); }}
             className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">إلى تاريخ</label>
-          <input type="date" value={to} onChange={e => { onTo(e.target.value); onPage(1); }}
+          <DateField type="date" value={to} onChange={e => { onTo(e.target.value); onPage(1); }}
             className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
         <div>
@@ -1939,8 +1940,8 @@ function CustomerAccountStatementTab({ invoice }: { invoice: SalesInvoice }) {
       <div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" disabled={invalidDateRange} onClick={printStatement}><Printer className="ml-1 h-4 w-4" />طباعة كشف الحساب</Button><Button variant="outline" size="sm" disabled={invalidDateRange} onClick={() => void exportPdf()}><Download className="ml-1 h-4 w-4" />تصدير PDF</Button><Button variant="outline" size="sm" onClick={shareWhatsApp}><MessageCircle className="ml-1 h-4 w-4" />مشاركة واتساب</Button></div>
     </div>
     <div className="filters grid gap-3 rounded-xl border border-border/30 bg-background/40 p-4 sm:grid-cols-2">
-      <label className="space-y-1.5 text-xs font-medium text-foreground">من تاريخ<input type="date" value={fromDate} max={toDate || undefined} onChange={(event) => setFromDate(event.target.value)} className="block w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /></label>
-      <label className="space-y-1.5 text-xs font-medium text-foreground">إلى تاريخ<input type="date" value={toDate} min={fromDate || undefined} onChange={(event) => setToDate(event.target.value)} className="block w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /></label>
+      <label className="space-y-1.5 text-xs font-medium text-foreground">من تاريخ<DateField type="date" value={fromDate} max={toDate || undefined} onChange={(event) => setFromDate(event.target.value)} className="block w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /></label>
+      <label className="space-y-1.5 text-xs font-medium text-foreground">إلى تاريخ<DateField type="date" value={toDate} min={fromDate || undefined} onChange={(event) => setToDate(event.target.value)} className="block w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /></label>
       <div className={`text-xs sm:col-span-2 ${invalidDateRange ? "text-destructive" : "text-muted-foreground"}`}>
         {invalidDateRange ? "يجب أن يكون تاريخ البداية قبل تاريخ النهاية." : fromDate || toDate ? `الفترة: من ${(fromDate || "بداية السجل").replaceAll("-", "/")} إلى ${(toDate || "نهاية السجل").replaceAll("-", "/")}` : "الفترة: كامل سجل الحساب"}
       </div>
@@ -2542,7 +2543,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                 <h3 className="font-semibold text-sm">بيانات العميل</h3>
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">التاريخ</label>
-                  <input
+                  <DateField
                     type="date"
                     value={draft.date}
                     onChange={(e) => updateDraft("date", e.target.value)}

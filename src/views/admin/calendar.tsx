@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CalendarDays, Clock, ExternalLink, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { DateField } from "@/components/ui/date-field";
 import { AjNApiError, adminFetch, apiErrorMessage } from "./_lib";
 import { EmptyState } from "./_layout";
 
@@ -159,7 +160,7 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
 
       <div className="bg-card rounded-xl border border-border/30 p-4">
         <div className="grid gap-3 md:grid-cols-5">
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value || todayIso())} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+          <DateField type="date" value={from} onChange={(e) => setFrom(e.target.value || todayIso())} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
           <select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
             <option value="">كل الخدمات</option>
             {(data?.services ?? []).map((service) => <option key={service.id} value={service.id}>{service.nameAr || service.name}</option>)}

@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import { DateField } from "@/components/ui/date-field";
 
 type CouponType = "percentage" | "fixed" | "free_shipping";
 type Coupon = {
@@ -165,7 +166,7 @@ export default function CouponsPage() {
               className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" dir="ltr" placeholder="بدون حد" />
           </Field>
           <Field label="تاريخ الانتهاء">
-            <input type="date" value={form.expiresAt} onChange={(e) => setForm((f) => ({ ...f, expiresAt: e.target.value }))}
+            <DateField type="date" value={form.expiresAt} onChange={(e) => setForm((f) => ({ ...f, expiresAt: e.target.value }))}
               className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
           </Field>
           <label className="flex items-center gap-2 text-sm pt-6">

@@ -7,6 +7,7 @@ import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import { DateField } from "@/components/ui/date-field";
 
 type PenaltyReportRow = {
   id: number;
@@ -157,8 +158,8 @@ export default function PenaltiesReportPage() {
       <div className="rounded-xl border border-border/40 bg-card p-3">
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           <label className="relative block"><Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && apply()} placeholder="بحث بالعميل/العنصر/الرقم" className="w-full rounded-lg border border-border/40 bg-background py-2 pr-10 pl-3 text-sm" /></label>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+          <DateField type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+          <DateField type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
           <select value={status} onChange={(e) => setStatus(e.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">كل الحالات</option>{Object.entries(STATUS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
           <select value={damageType} onChange={(e) => setDamageType(e.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">كل الأنواع</option>{Object.entries(DAMAGE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
         </div>

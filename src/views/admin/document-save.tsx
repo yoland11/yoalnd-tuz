@@ -9,6 +9,7 @@ import {
   type OcrLanguage,
 } from "@/lib/document-ocr";
 import type { Side } from "@/lib/a4-layout";
+import { DateField } from "@/components/ui/date-field";
 
 type SaveSource = { dataUrl: string; widthMm: number; heightMm: number };
 
@@ -38,7 +39,7 @@ function Field({
   return (
     <label className="block">
       <span className="block text-[11px] text-muted-foreground mb-1">{label}</span>
-      <input
+      <DateField
         type={type}
         dir={ltr ? "ltr" : undefined}
         value={value}

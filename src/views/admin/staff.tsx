@@ -18,6 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 import { EmployeeSessionsManager } from "@/components/session-devices";
 import { SalarySettingsTab } from "./salary-settings-tab";
+import { DateField } from "@/components/ui/date-field";
 
 type Staff = {
   id: number;
@@ -871,7 +872,7 @@ function Field({
       <label className="block text-xs text-muted-foreground mb-1">
         {label}
       </label>
-      <input
+      <DateField
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}

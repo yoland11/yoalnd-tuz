@@ -4,6 +4,7 @@ import { Link } from "wouter";
 import { ArrowUpRight, CalendarDays, FileText, Package, ShoppingBag, Users, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { adminFetch, formatCurrency } from "./_lib";
+import { DateField } from "@/components/ui/date-field";
 
 type Invoice = { id: number; invoiceNo: string; date: string; customerName: string; customerPhone?: string | null; total: number | string; paidAmount: number | string; remainingAmount: number | string; paymentStatus: string; status: string };
 type Register = { data: Invoice[]; total: number; topProducts?: Array<{ productName: string; quantity: number; revenue: number }>; summary: { totalInvoices: number; totalSales: string; collectedTotal: string; remainingTotal: string } };
@@ -47,8 +48,8 @@ export default function WholesalePage() {
     </aside>
 
     <section className="flex flex-wrap items-end gap-3 rounded-xl border bg-card p-4">
-      <label className="text-xs text-muted-foreground">من تاريخ<input type="date" value={from} max={to} onChange={(event) => setFrom(event.target.value)} className="mt-1 block rounded-lg border bg-background px-3 py-2 text-sm text-foreground" /></label>
-      <label className="text-xs text-muted-foreground">إلى تاريخ<input type="date" value={to} min={from} max={today} onChange={(event) => setTo(event.target.value)} className="mt-1 block rounded-lg border bg-background px-3 py-2 text-sm text-foreground" /></label>
+      <label className="text-xs text-muted-foreground">من تاريخ<DateField type="date" value={from} max={to} onChange={(event) => setFrom(event.target.value)} className="mt-1 block rounded-lg border bg-background px-3 py-2 text-sm text-foreground" /></label>
+      <label className="text-xs text-muted-foreground">إلى تاريخ<DateField type="date" value={to} min={from} max={today} onChange={(event) => setTo(event.target.value)} className="mt-1 block rounded-lg border bg-background px-3 py-2 text-sm text-foreground" /></label>
       <span className="mr-auto inline-flex items-center gap-1 text-xs text-muted-foreground"><CalendarDays className="h-4 w-4" />الأرقام التشغيلية للفترة المحددة</span>
     </section>
 

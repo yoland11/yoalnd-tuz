@@ -13,6 +13,7 @@ import { formatIraqiPhone } from "@/lib/phone";
 import { useProvinces } from "./delivery-provinces";
 import { printDeliveryLabel } from "./delivery-label";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { DateField } from "@/components/ui/date-field";
 
 type OrderRow = {
   id: number;
@@ -159,8 +160,8 @@ export default function DeliveryOrdersPage() {
             placeholder="شركة التوصيل"
             className={FILTER_CLS}
           />
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={FILTER_CLS} />
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={FILTER_CLS} />
+          <DateField type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={FILTER_CLS} />
+          <DateField type="date" value={to} onChange={(e) => setTo(e.target.value)} className={FILTER_CLS} />
           <label className="flex items-center gap-1.5 text-xs cursor-pointer px-2">
             <input type="checkbox" checked={codOnly} onChange={(e) => setCodOnly(e.target.checked)} className="accent-primary" />
             <span className="text-foreground">الدفع عند الاستلام فقط</span>
@@ -632,7 +633,7 @@ function CodSettlementForm({
             className={`${FIELD} ${tooMuch ? "border-status-danger" : ""}`} dir="ltr" />
         </FormField>
         <FormField label="تاريخ التسوية">
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={FIELD} />
+          <DateField type="date" value={date} onChange={(e) => setDate(e.target.value)} className={FIELD} />
         </FormField>
         <FormField label="رقم المرجع">
           <input value={ref} onChange={(e) => setRef(e.target.value)} className={FIELD} dir="ltr" />

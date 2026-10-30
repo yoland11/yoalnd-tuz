@@ -26,6 +26,7 @@ import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "./_layout";
 import { adminFetch, formatCurrency, formatMoney } from "./_lib";
+import { DateField } from "@/components/ui/date-field";
 
 type PageMode = "reports" | "reconciliation";
 type CashStatus = "balanced" | "surplus" | "shortage" | "not_reconciled";
@@ -307,10 +308,10 @@ function DailyCashPage({ mode }: { mode: PageMode }) {
         <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
             <FilterField label="من تاريخ">
-              <input type="date" value={filters.from} onChange={(event) => updateFilter("from", event.target.value)} className={inputCls} />
+              <DateField type="date" value={filters.from} onChange={(event) => updateFilter("from", event.target.value)} className={inputCls} />
             </FilterField>
             <FilterField label="إلى تاريخ">
-              <input type="date" value={filters.to} onChange={(event) => updateFilter("to", event.target.value)} className={inputCls} />
+              <DateField type="date" value={filters.to} onChange={(event) => updateFilter("to", event.target.value)} className={inputCls} />
             </FilterField>
             <FilterField label="بحث">
               <input value={filters.search} onChange={(event) => updateFilter("search", event.target.value)} placeholder="تاريخ، حالة، موظف، ملاحظات" className={inputCls} />
@@ -456,7 +457,7 @@ function ReportForm({
         <p className="text-xs text-muted-foreground">المبيعات والمصاريف تُحسب تلقائياً بعد الحفظ</p>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <FilterField label="التاريخ"><input type="date" value={draft.reportDate} onChange={(event) => onChange({ ...draft, reportDate: event.target.value })} className={inputCls} /></FilterField>
+        <FilterField label="التاريخ"><DateField type="date" value={draft.reportDate} onChange={(event) => onChange({ ...draft, reportDate: event.target.value })} className={inputCls} /></FilterField>
         <FilterField label="رصيد الافتتاح"><input type="number" min="0" value={draft.openingBalance} onChange={(event) => onChange({ ...draft, openingBalance: event.target.value })} className={inputCls} placeholder="0" /></FilterField>
       </div>
       <FilterField label="ملاحظات"><textarea value={draft.notes} onChange={(event) => onChange({ ...draft, notes: event.target.value })} className={`${inputCls} min-h-20`} /></FilterField>
@@ -486,7 +487,7 @@ function ReconciliationForm({
         <p className="text-xs text-muted-foreground">النظام يحسب الرصيد المتوقع والفرق تلقائياً</p>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <FilterField label="التاريخ"><input type="date" value={draft.reportDate} onChange={(event) => onChange({ ...draft, reportDate: event.target.value })} className={inputCls} /></FilterField>
+        <FilterField label="التاريخ"><DateField type="date" value={draft.reportDate} onChange={(event) => onChange({ ...draft, reportDate: event.target.value })} className={inputCls} /></FilterField>
         <FilterField label="رصيد الافتتاح"><input type="number" min="0" value={draft.openingBalance} onChange={(event) => onChange({ ...draft, openingBalance: event.target.value })} className={inputCls} placeholder="اختياري" /></FilterField>
         <FilterField label="النقد الفعلي في الصندوق"><input type="number" min="0" value={draft.actualCashInDrawer} onChange={(event) => onChange({ ...draft, actualCashInDrawer: event.target.value })} className={inputCls} placeholder="0" /></FilterField>
       </div>

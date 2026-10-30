@@ -33,6 +33,7 @@ import { useToast } from "@/hooks/use-toast";
 import { TOTAL_CHANGING_ADJUSTMENTS, quantityMovementLabel, type QuantityAdjustmentKind } from "@/lib/quantity-assets";
 import { adminFetch, apiErrorMessage, fetchAdminMe, formatCurrency, hasPerm } from "./_lib";
 import type { QuantitySummary } from "./quantity-asset-panel";
+import { DateField } from "@/components/ui/date-field";
 
 type StaffOption = { id: number; fullName?: string | null; username?: string | null };
 type Movement = {
@@ -622,8 +623,8 @@ export function QuantityManager({
             <DialogDescription>{assetName} · <span dir="ltr" className="font-mono">{assetCode}</span> — كل حركة إضافة وتخفيض وجرد وتلف وفقدان وإخراج وإرجاع لهذا الأصل.</DialogDescription>
           </DialogHeader>
           <div className="flex flex-wrap items-end gap-2">
-            <label className="text-xs font-semibold text-muted-foreground">من<input type="date" dir="ltr" className={`mt-1 block w-40 ${controlCls}`} value={history.from} onChange={(event) => setHistory({ ...history, from: event.target.value, page: 1 })} /></label>
-            <label className="text-xs font-semibold text-muted-foreground">إلى<input type="date" dir="ltr" className={`mt-1 block w-40 ${controlCls}`} value={history.to} onChange={(event) => setHistory({ ...history, to: event.target.value, page: 1 })} /></label>
+            <label className="text-xs font-semibold text-muted-foreground">من<DateField type="date" dir="ltr" className={`mt-1 block w-40 ${controlCls}`} value={history.from} onChange={(event) => setHistory({ ...history, from: event.target.value, page: 1 })} /></label>
+            <label className="text-xs font-semibold text-muted-foreground">إلى<DateField type="date" dir="ltr" className={`mt-1 block w-40 ${controlCls}`} value={history.to} onChange={(event) => setHistory({ ...history, to: event.target.value, page: 1 })} /></label>
             {movements.isFetching ? <Loader2 className="mb-3 h-4 w-4 animate-spin text-muted-foreground" /> : null}
           </div>
           {movements.isError ? (

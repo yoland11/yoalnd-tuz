@@ -14,6 +14,7 @@ import { openQrPrintWindow } from "./print-helpers";
 import { InvitationCard, ANIMATION_STYLES, SOCIAL_PLATFORMS, OPENING_STYLES, LIVE_OPENING_STYLES, resolveExperience, type InvitationData, type ExperienceSettings } from "../invite";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { usePublicSettings } from "@/lib/public-settings";
+import { DateField } from "@/components/ui/date-field";
 
 type Tpl = { name: string; category: string; bg: string; fg: string; font: string; anim: string; custom?: boolean };
 function lsGet<T>(key: string, fallback: T): T { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; } }
@@ -263,7 +264,7 @@ function InvitationEditor({ id }: { id: number }) {
               <Fld label="اسم العروس"><input value={form.brideName ?? ""} onChange={(e) => setField("brideName", e.target.value)} className={inp} /></Fld>
               <Fld label="اسم العريس"><input value={form.groomName ?? ""} onChange={(e) => setField("groomName", e.target.value)} className={inp} /></Fld>
               <Fld label="اسم المناسبة (اختياري)"><input value={form.eventName ?? ""} onChange={(e) => setField("eventName", e.target.value)} className={inp} /></Fld>
-              <Fld label="التاريخ"><input type="date" value={form.eventDate ?? ""} onChange={(e) => setField("eventDate", e.target.value)} className={inp} /></Fld>
+              <Fld label="التاريخ"><DateField type="date" value={form.eventDate ?? ""} onChange={(e) => setField("eventDate", e.target.value)} className={inp} /></Fld>
               <Fld label="الوقت"><input value={form.eventTime ?? ""} onChange={(e) => setField("eventTime", e.target.value)} placeholder="7:00 مساءً" className={inp} /></Fld>
               <Fld label="اسم القاعة"><input value={form.venueName ?? ""} onChange={(e) => setField("venueName", e.target.value)} className={inp} /></Fld>
               <Fld label="عنوان القاعة"><input value={form.venueAddress ?? ""} onChange={(e) => setField("venueAddress", e.target.value)} className={inp} /></Fld>

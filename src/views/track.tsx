@@ -24,8 +24,9 @@ import { EventCountdown } from "@/components/interactive/event-countdown";
 import { LocationMapCard } from "@/components/interactive/location-map-card";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 import { logCustomerActivity } from "@/lib/customer-activity";
-import { useT } from "@/lib/i18n";
+import { readLocale, useT } from "@/lib/i18n";
 import { formatCurrency, formatMoney } from "@/lib/money";
+import { DateField } from "@/components/ui/date-field";
 
 type Mode = "code" | "phone";
 
@@ -1431,8 +1432,9 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
         >
           <div>
             <label className="block text-xs text-muted-foreground mb-1">{t("الموعد الجديد المقترح")}</label>
-            <input
+            <DateField
               type="datetime-local"
+              nativePicker={readLocale() !== "ar"}
               value={requestedDate}
               onChange={(e) => setRequestedDate(e.target.value)}
               className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

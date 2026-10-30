@@ -22,6 +22,7 @@ import {
   printWhenImagesReadyScript,
   sheetReportCss,
 } from "./print-helpers";
+import { DateField } from "@/components/ui/date-field";
 
 type Tab = "receipts" | "payments" | "expenses" | "categories" | "statement" | "receivables" | "pnl";
 
@@ -217,7 +218,7 @@ function ReceiptsTab() {
               onClear={() => setEditing({ ...editing, customerId: null, accountType: null, accountId: null, accountNumber: null, accountBalance: 0, allocations: [] })}
             />
             <ReceiptAllocationPanel customerId={editing.customerId} accountType={editing.accountType} accountId={editing.accountId} receivedAmount={editing.amount} allocations={editing.allocations} saveRemainderAsCredit={editing.saveRemainderAsCredit} onChange={(next) => setEditing({ ...editing, ...next })} />
-            <Field label="التاريخ"><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
+            <Field label="التاريخ"><DateField type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
             <Field label="المبلغ (د.ع)"><input type="number" value={editing.amount} onChange={e => setEditing({ ...editing, amount: e.target.value })} className={inputCls} /></Field>
             <Field label="الواصل من"><input value={editing.payerName} onChange={e => setEditing({ ...editing, payerName: e.target.value })} className={inputCls} /></Field>
             <Field label="هاتف الزبون (لربط كشف الحساب)"><input value={editing.customerPhone} onChange={e => setEditing({ ...editing, customerId: null, accountType: null, accountId: null, accountNumber: null, accountBalance: 0, customerPhone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" /></Field>
@@ -324,7 +325,7 @@ function PaymentsTab() {
               onSelect={(customer) => setEditing({ ...editing, customerId: customer.id, payeeName: customer.name, customerPhone: formatIraqiPhoneInput(customer.phone) })}
               onClear={() => setEditing({ ...editing, customerId: null })}
             />
-            <Field label="التاريخ"><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
+            <Field label="التاريخ"><DateField type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
             <Field label="المبلغ (د.ع)"><input type="number" value={editing.amount} onChange={e => setEditing({ ...editing, amount: e.target.value })} className={inputCls} /></Field>
             <Field label="صُرف إلى"><input value={editing.payeeName} onChange={e => setEditing({ ...editing, payeeName: e.target.value })} className={inputCls} /></Field>
             <Field label="هاتف العميل"><input value={editing.customerPhone} onChange={e => setEditing({ ...editing, customerId: null, customerPhone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" /></Field>
@@ -416,7 +417,7 @@ function ExpensesTab() {
       {editing && (
         <Modal title="مصروف جديد" onClose={() => setEditing(null)}>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="التاريخ"><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
+            <Field label="التاريخ"><DateField type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
             <Field label="المبلغ (د.ع)"><input type="number" value={editing.amount} onChange={e => setEditing({ ...editing, amount: e.target.value })} className={inputCls} /></Field>
             <Field label="النوع" className="col-span-2">
               <select value={editing.categoryId} onChange={e => setEditing({ ...editing, categoryId: e.target.value })} className={inputCls}>
@@ -831,8 +832,8 @@ function StatementTab() {
 
       {selected && (
         <div className="filters grid gap-3 rounded-xl border border-border/30 bg-card/60 p-3 sm:grid-cols-2">
-          <Field label="من تاريخ"><input type="date" value={fromDate} max={toDate || undefined} onChange={(event) => setFromDate(event.target.value)} className={inputCls} /></Field>
-          <Field label="إلى تاريخ"><input type="date" value={toDate} min={fromDate || undefined} onChange={(event) => setToDate(event.target.value)} className={inputCls} /></Field>
+          <Field label="من تاريخ"><DateField type="date" value={fromDate} max={toDate || undefined} onChange={(event) => setFromDate(event.target.value)} className={inputCls} /></Field>
+          <Field label="إلى تاريخ"><DateField type="date" value={toDate} min={fromDate || undefined} onChange={(event) => setToDate(event.target.value)} className={inputCls} /></Field>
           <div className={`text-xs sm:col-span-2 ${invalidDateRange ? "text-destructive" : "text-muted-foreground"}`}>
             {invalidDateRange ? "يجب أن يكون تاريخ البداية قبل تاريخ النهاية." : fromDate || toDate ? `الفترة: من ${(fromDate || "بداية السجل").replaceAll("-", "/")} إلى ${(toDate || "نهاية السجل").replaceAll("-", "/")}` : "الفترة: كامل سجل الحساب"}
           </div>
@@ -1091,8 +1092,8 @@ function ReceivablesTab() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border/30 bg-card p-4">
         <Field label="نوع التقرير"><select value={type} onChange={(event) => setType(event.target.value as ReceivablesReportType)} className={inputCls}>{RECEIVABLE_REPORTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></Field>
-        <Field label="من تاريخ"><input type="date" value={from} onChange={(event) => setFrom(event.target.value)} className={inputCls} /></Field>
-        <Field label="إلى تاريخ"><input type="date" value={to} onChange={(event) => setTo(event.target.value)} className={inputCls} /></Field>
+        <Field label="من تاريخ"><DateField type="date" value={from} onChange={(event) => setFrom(event.target.value)} className={inputCls} /></Field>
+        <Field label="إلى تاريخ"><DateField type="date" value={to} onChange={(event) => setTo(event.target.value)} className={inputCls} /></Field>
         <Field label="بحث"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="اسم، هاتف، سند..." className={inputCls} /></Field>
         <div className="mr-auto flex flex-wrap gap-2">
           <Button variant="outline" onClick={printReport}><Printer className="ml-1 h-4 w-4" />طباعة</Button>
@@ -1147,8 +1148,8 @@ function PnLTab() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-3 items-end">
-        <Field label="من تاريخ"><input type="date" value={from} onChange={e => setFrom(e.target.value)} className={inputCls} /></Field>
-        <Field label="إلى تاريخ"><input type="date" value={to} onChange={e => setTo(e.target.value)} className={inputCls} /></Field>
+        <Field label="من تاريخ"><DateField type="date" value={from} onChange={e => setFrom(e.target.value)} className={inputCls} /></Field>
+        <Field label="إلى تاريخ"><DateField type="date" value={to} onChange={e => setTo(e.target.value)} className={inputCls} /></Field>
       </div>
 
       {isLoading ? <Skeletons /> : data && (

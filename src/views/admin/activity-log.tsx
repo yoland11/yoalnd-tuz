@@ -7,6 +7,7 @@ import { EmployeeAvatar } from "@/components/employee-avatar";
 import { EmployeeSelect } from "@/components/employee-select";
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
+import { DateField } from "@/components/ui/date-field";
 
 type ActivityLogRow = {
   id: number;
@@ -164,7 +165,7 @@ export default function ActivityLogPage() {
             من تاريخ
             <div className="relative mt-1">
               <CalendarDays className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
+              <DateField
                 type="date"
                 value={from}
                 onChange={(e) => { setFrom(e.target.value); setPage(1); }}
@@ -176,7 +177,7 @@ export default function ActivityLogPage() {
             إلى تاريخ
             <div className="relative mt-1">
               <CalendarDays className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
+              <DateField
                 type="date"
                 value={to}
                 onChange={(e) => { setTo(e.target.value); setPage(1); }}

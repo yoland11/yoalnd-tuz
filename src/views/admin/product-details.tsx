@@ -42,6 +42,7 @@ import { EmptyState } from "./_layout";
 import { QuantityAssetPanel } from "./quantity-asset-panel";
 import { CreateWorkOrderDialog } from "@/components/work-commands/create-order-dialog";
 import { useWorkMe } from "@/components/work-commands/shared";
+import { DateField } from "@/components/ui/date-field";
 
 type Channel = {
   quantity: number;
@@ -623,8 +624,8 @@ export default function ProductDetailsPage() {
         </div>
         {preset === "custom" ? (
           <div className="flex flex-wrap items-end gap-2 text-xs">
-            <label>من تاريخ<input type="date" value={custom.from} onChange={(event) => setCustom({ ...custom, from: event.target.value })} className="mt-1 block rounded-lg border border-border/40 bg-background px-2 py-1.5 text-sm" /></label>
-            <label>إلى تاريخ<input type="date" value={custom.to} onChange={(event) => setCustom({ ...custom, to: event.target.value })} className="mt-1 block rounded-lg border border-border/40 bg-background px-2 py-1.5 text-sm" /></label>
+            <label>من تاريخ<DateField type="date" value={custom.from} onChange={(event) => setCustom({ ...custom, from: event.target.value })} className="mt-1 block rounded-lg border border-border/40 bg-background px-2 py-1.5 text-sm" /></label>
+            <label>إلى تاريخ<DateField type="date" value={custom.to} onChange={(event) => setCustom({ ...custom, to: event.target.value })} className="mt-1 block rounded-lg border border-border/40 bg-background px-2 py-1.5 text-sm" /></label>
           </div>
         ) : null}
         <div className="mr-auto flex items-center gap-2 text-xs text-muted-foreground">

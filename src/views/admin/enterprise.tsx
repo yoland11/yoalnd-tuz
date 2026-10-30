@@ -80,6 +80,7 @@ import {
   labelHistoryStats,
   type LabelHistoryEntry,
 } from "./label-helpers";
+import { DateField } from "@/components/ui/date-field";
 
 type CommandCenter = {
   generatedAt: string;
@@ -1382,7 +1383,7 @@ function RepeatEventPanel({ command }: { command?: CommandCenter }) {
             </option>
           ))}
         </select>
-        <input
+        <DateField
           type="date"
           value={form.eventDate}
           onChange={(event) =>
@@ -2260,7 +2261,7 @@ function AssetDetailsPanel({ row }: { row: AssetRow }) {
             <label className="block text-xs text-muted-foreground">
               الضمان حتى
             </label>
-            <input {...bind("warrantyUntil")} type="date" className={field} />
+            <DateField {...bind("warrantyUntil")} type="date" className={field} />
             <input
               {...bind("insuranceCompany")}
               className={field}
@@ -2279,7 +2280,7 @@ function AssetDetailsPanel({ row }: { row: AssetRow }) {
             <label className="block text-xs text-muted-foreground">
               انتهاء التأمين
             </label>
-            <input {...bind("insuranceExpiry")} type="date" className={field} />
+            <DateField {...bind("insuranceExpiry")} type="date" className={field} />
           </div>
         </div>
 
@@ -2311,11 +2312,11 @@ function AssetDetailsPanel({ row }: { row: AssetRow }) {
             <label className="block text-xs text-muted-foreground">
               آخر شحن
             </label>
-            <input {...bind("lastCharge")} type="date" className={field} />
+            <DateField {...bind("lastCharge")} type="date" className={field} />
             <label className="block text-xs text-muted-foreground">
               الصيانة القادمة
             </label>
-            <input
+            <DateField
               {...bind("nextMaintenanceDate")}
               type="date"
               className={field}
@@ -5048,7 +5049,7 @@ function ClosingTab({ active }: { active: boolean }) {
     <div className="grid gap-4 xl:grid-cols-[340px_1fr]">
       <Panel>
         <SectionTitle icon={Clock3} title="تاريخ الإغلاق" />
-        <input
+        <DateField
           type="date"
           value={date}
           onChange={(event) => setDate(event.target.value)}

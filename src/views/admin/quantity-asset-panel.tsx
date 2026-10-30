@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Boxes, Loader2 } from "lucide-react";
 import { adminFetch, apiErrorMessage } from "./_lib";
 import { QuantityManager } from "./quantity-manager";
+import { DateField } from "@/components/ui/date-field";
 
 export type QuantityBookingLine = {
   source: string;
@@ -106,7 +107,7 @@ export function QuantityAvailability({ productId }: { productId: number }) {
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border/30 bg-background/50 p-3">
         <label className="text-xs text-muted-foreground">
           فحص التوفر بتاريخ
-          <input type="date" dir="ltr" value={day} onChange={(event) => setDay(event.target.value)} className="mt-1 block min-h-10 rounded-lg border border-border/40 bg-background px-3 text-sm text-foreground" />
+          <DateField type="date" dir="ltr" value={day} onChange={(event) => setDay(event.target.value)} className="mt-1 block min-h-10 rounded-lg border border-border/40 bg-background px-3 text-sm text-foreground" />
         </label>
         <p className="text-sm">
           المتاح {day ? `يوم ${day}` : "اليوم"}: <b className="text-primary">{numberText(data.available)} {unit}</b>
