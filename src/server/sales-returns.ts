@@ -187,17 +187,49 @@ export async function salesInvoiceReturnCreditsSql(invoiceId: unknown, executor:
 }
 
 // ── Customer + original invoice lines ─────────────────────────────────────
-type CustomerRow = { id: number; name: string; phone: string; code: string | null; customerType: string };
+// The generic walk-in customer («عميل نقدي») that POS invoices use when no
+// customer is chosen. Different buyers share it, so its returns stay inside
+// one invoice: no FIFO across buyers, no credit held on the shared account.
+const CASH_CUSTOMER_ID = sql`coalesce(
+  (SELECT cash.id FROM settings setting JOIN customers cash ON cash.id::text = setting.value->>'customerId'
+   WHERE setting.key = 'salesCashCustomer' AND cash.status = 'active' LIMIT 1),
+  (SELECT cash.id FROM customers cash WHERE cash.phone = '00000000000' AND cash.status = 'active' ORDER BY cash.id LIMIT 1)
+)`;
+async function cashCustomerId(executor: Executor): Promise<number | null> {
+  const [row] = rows(await executor.execute(sql`SELECT ${CASH_CUSTOMER_ID} AS id`));
+  return positiveId(row?.id);
+}
+
+type CustomerRow = { id: number; name: string; phone: string; code: string | null; customerType: string; isCashCustomer: boolean };
 async function readCustomer(executor: Executor, customerId: number, lock = false): Promise<CustomerRow> {
   const [row] = rows(
     await executor.execute(sql`
       SELECT c.id, coalesce(nullif(c.full_name, ''), nullif(c.name, ''), c.phone) AS name, c.phone, c.customer_type,
-             (SELECT a.customer_code FROM customer_accounts a WHERE a.customer_id = c.id LIMIT 1) AS code
+             (SELECT a.customer_code FROM customer_accounts a WHERE a.customer_id = c.id LIMIT 1) AS code,
+             c.id = ${CASH_CUSTOMER_ID} AS is_cash
       FROM customers c WHERE c.id = ${customerId} ${lock ? sql`FOR UPDATE OF c` : sql``}
     `),
   );
   if (!row) throw new SalesReturnError("العميل غير موجود", 404, "NOT_FOUND");
-  return { id: Number(row.id), name: String(row.name ?? ""), phone: String(row.phone ?? ""), code: row.code ?? null, customerType: String(row.customer_type ?? "retail") };
+  return { id: Number(row.id), name: String(row.name ?? ""), phone: String(row.phone ?? ""), code: row.code ?? null, customerType: String(row.customer_type ?? "retail"), isCashCustomer: row.is_cash === true };
+}
+
+/**
+ * Invoices a return may use: `null` (all of the customer's) for a real
+ * customer; for the walk-in customer the return's own invoice, or the one it
+ * was opened from.
+ */
+async function invoiceScope(executor: Executor, customer: CustomerRow, options: { returnId?: number | null; invoiceId?: number | null }): Promise<number[] | null> {
+  if (!customer.isCashCustomer) return null;
+  if (options.returnId) {
+    const used = rows(await executor.execute(sql`SELECT DISTINCT invoice_id FROM sales_return_items WHERE return_id = ${options.returnId} ORDER BY invoice_id`)).map((row) => Number(row.invoice_id));
+    if (used.length) return used;
+  }
+  if (!options.invoiceId)
+    throw new SalesReturnError("العميل النقدي يشترك فيه عدة مشترين؛ ابحث برقم الفاتورة أو اسم المشتري وافتح المرتجع منها", 422, "VALIDATION_ERROR");
+  const [invoice] = rows(await executor.execute(sql`SELECT id FROM sales_invoices WHERE id = ${options.invoiceId} AND customer_id = ${customer.id}`));
+  if (!invoice) throw new SalesReturnError("الفاتورة المحددة لا تخص هذا العميل", 409);
+  return [options.invoiceId];
 }
 
 type LineFacts = ReturnableLine & {
@@ -220,9 +252,9 @@ type LineFacts = ReturnableLine & {
  * Every returnable line of the customer's active invoices with what active
  * returns already took from it. `itemIds` narrows to locked lines.
  */
-async function readCustomerLines(executor: Executor, customerId: number, options: { excludeReturnId?: number | null; itemIds?: number[] } = {}): Promise<LineFacts[]> {
+async function readCustomerLines(executor: Executor, customerId: number, options: { excludeReturnId?: number | null; itemIds?: number[]; invoiceIds?: number[] | null } = {}): Promise<LineFacts[]> {
   const exclude = options.excludeReturnId ?? 0;
-  const narrow = options.itemIds ? sql`AND i.id IN (${idList(options.itemIds)})` : sql``;
+  const narrow = sql`${options.itemIds ? sql`AND i.id IN (${idList(options.itemIds)})` : sql``} ${options.invoiceIds ? sql`AND s.id IN (${idList(options.invoiceIds)})` : sql``}`;
   const result = rows(
     await executor.execute(sql`
       SELECT i.id AS invoice_item_id, i.invoice_id, s.invoice_no, s.date::text AS invoice_date,
@@ -331,26 +363,32 @@ function groupProducts(lines: LineFacts[]) {
   });
 }
 
-export async function readCustomerPurchases(database: SalesReturnDatabase, actor: SalesReturnActor, customerId: number, excludeReturnId?: number | null) {
+export async function readCustomerPurchases(database: SalesReturnDatabase, actor: SalesReturnActor, customerId: number, excludeReturnId?: number | null, invoiceId?: number | null) {
   await requireReady(database);
   if (!canReturn(actor, "sales_returns.create") && !canReturn(actor, "sales_returns.view"))
     throw new SalesReturnError("ليس لديك صلاحية عرض مشتريات العميل للمرتجعات", 403, "PERMISSION_DENIED");
   const customer = await readCustomer(database, customerId);
-  const [lines, totals] = await Promise.all([
-    readCustomerLines(database, customerId, { excludeReturnId }),
+  const scope = await invoiceScope(database, customer, { returnId: excludeReturnId, invoiceId });
+  const scoped = scope ? sql`AND s.id IN (${idList(scope)})` : sql``;
+  const [lines, totals, scopeInvoices] = await Promise.all([
+    readCustomerLines(database, customerId, { excludeReturnId, invoiceIds: scope }),
     database.execute(sql`
       SELECT coalesce(sum(s.total::numeric), 0)::text AS purchases,
              coalesce(sum(s.paid_amount::numeric), 0)::text AS payments,
              coalesce(sum(s.remaining_amount::numeric), 0)::text AS outstanding,
              (SELECT coalesce(sum(r.total_amount::numeric), 0) FROM sales_returns r
-              WHERE r.customer_id = ${customerId} AND r.status IN ('approved','completed'))::text AS approved_returns,
+              WHERE r.customer_id = ${customerId} AND r.status IN ('approved','completed')
+                ${scope ? sql`AND EXISTS (SELECT 1 FROM sales_return_items ri WHERE ri.return_id = r.id AND ri.invoice_id IN (${idList(scope)}))` : sql``})::text AS approved_returns,
              (SELECT coalesce(sum(cc.amount::numeric - coalesce((SELECT sum(ch.amount::numeric) FROM sales_return_settlements ch
                 WHERE ch.parent_settlement_id = cc.id AND ch.status = 'applied'), 0)), 0)
               FROM sales_return_settlements cc
               WHERE cc.customer_id = ${customerId} AND cc.kind = 'customer_credit' AND cc.status = 'applied')::text AS available_credit
       FROM sales_invoices s
-      WHERE s.customer_id = ${customerId} AND s.status = 'active' AND s.financially_reversed = false
+      WHERE s.customer_id = ${customerId} AND s.status = 'active' AND s.financially_reversed = false ${scoped}
     `),
+    scope
+      ? database.execute(sql`SELECT id, invoice_no, date::text AS date, customer_name, customer_phone FROM sales_invoices WHERE id IN (${idList(scope)}) ORDER BY id`)
+      : Promise.resolve({ rows: [] }),
   ]);
   const [summary] = rows(totals);
   return {
@@ -360,10 +398,94 @@ export async function readCustomerPurchases(database: SalesReturnDatabase, actor
       payments: num(summary?.payments),
       outstanding: num(summary?.outstanding),
       approvedReturns: num(summary?.approved_returns),
-      availableCredit: num(summary?.available_credit),
+      availableCredit: customer.isCashCustomer ? 0 : num(summary?.available_credit),
     },
+    // Walk-in returns are limited to these invoices; the buyer is named on them.
+    scopeInvoices: rows(scopeInvoices).map((row) => ({ id: Number(row.id), invoiceNo: String(row.invoice_no ?? ""), date: String(row.date ?? ""), buyerName: row.customer_name ? String(row.customer_name) : null, buyerPhone: row.customer_phone ? String(row.customer_phone) : null })),
     products: groupProducts(lines).filter((product) => product.purchased > 0),
     canOverrideAllocation: canReturn(actor, "sales_returns.allocation_override"),
+  };
+}
+
+// ── Customer search for the return editor ─────────────────────────────────
+/** Arabic-insensitive text: أ/إ/آ→ا, ى→ي, ة→ه, no tatweel, single spaces. */
+export const normalizeArabicSearch = (value: string) =>
+  value.toLowerCase().replace(/[أإآٱ]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه").replace(/ـ/g, "").replace(/\s+/g, " ").trim();
+const normalizedSql = (value: SQL) => sql`regexp_replace(translate(lower(coalesce(${value}, '')), 'أإآٱىةـ', 'اااايه'), '\\s+', ' ', 'g')`;
+const likePattern = (value: string) => `%${value.replace(/[\\%_]/g, "\\$&")}%`;
+
+/**
+ * Registered customers by name, phone, code or one of their invoice numbers /
+ * written buyer names, plus walk-in invoices (shared cash customer) and
+ * invoices never linked to a customer. Only the returns permission is needed.
+ */
+export async function searchReturnCustomers(database: SalesReturnDatabase, actor: SalesReturnActor, rawQuery: string | null) {
+  await requireReady(database);
+  if (!canReturn(actor, "sales_returns.create") && !canReturn(actor, "sales_returns.view"))
+    throw new SalesReturnError("ليس لديك صلاحية البحث عن عملاء المرتجعات", 403, "PERMISSION_DENIED");
+  const term = String(rawQuery ?? "").trim().slice(0, 80);
+  if (!term) return { customers: [], walkInInvoices: [], unlinkedInvoices: [] };
+  const name = likePattern(normalizeArabicSearch(term));
+  const invoiceNo = likePattern(term);
+  const digits = term.replace(/\D/g, "");
+  const phone = digits.length >= 3 ? likePattern(digits) : null;
+  const code = term.match(/^CUS-?0*(\d+)$/i);
+  const customerNo = code ? Number(code[1]) : /^\d{1,7}$/.test(term) ? Number(term) : 0;
+  const cashId = (await cashCustomerId(database)) ?? 0;
+  const invoiceMatch = (alias: string) => sql`(${sql.raw(alias)}.invoice_no ILIKE ${invoiceNo}
+    OR ${normalizedSql(sql.raw(`${alias}.customer_name`))} LIKE ${name}
+    OR (${phone}::text IS NOT NULL AND regexp_replace(coalesce(${sql.raw(alias)}.customer_phone, ''), '[^0-9]', '', 'g') LIKE ${phone}))`;
+  const returnable = (alias: string) => sql`${sql.raw(alias)}.status = 'active' AND ${sql.raw(alias)}.financially_reversed = false AND ${selfOwnedInvoice(sql.raw(`${alias}.id`))}`;
+  const [customers, invoices] = await Promise.all([
+    database.execute(sql`
+      SELECT c.id, coalesce(nullif(c.full_name, ''), nullif(c.name, ''), c.phone) AS name, c.phone, c.customer_type,
+        (SELECT a.customer_code FROM customer_accounts a WHERE a.customer_id = c.id LIMIT 1) AS code,
+        stats.invoices, stats.outstanding::text AS outstanding, stats.last_date,
+        (SELECT m.id FROM sales_invoices m WHERE m.customer_id = c.id AND ${returnable("m")} AND m.invoice_no ILIKE ${invoiceNo} ORDER BY m.date DESC, m.id DESC LIMIT 1) AS matched_invoice_id
+      FROM customers c
+      CROSS JOIN LATERAL (
+        SELECT count(*)::int AS invoices, coalesce(sum(s.remaining_amount::numeric), 0) AS outstanding, max(s.date)::text AS last_date
+        FROM sales_invoices s WHERE s.customer_id = c.id AND ${returnable("s")}
+      ) stats
+      WHERE c.status <> 'deleted' AND c.id <> ${cashId}
+        AND (${normalizedSql(sql`c.name`)} LIKE ${name} OR ${normalizedSql(sql`c.full_name`)} LIKE ${name} OR ${normalizedSql(sql`c.business_name`)} LIKE ${name}
+          OR (${phone}::text IS NOT NULL AND regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g') LIKE ${phone})
+          OR c.id = ${customerNo}
+          OR EXISTS (SELECT 1 FROM sales_invoices m WHERE m.customer_id = c.id AND ${returnable("m")} AND ${invoiceMatch("m")}))
+      ORDER BY stats.invoices DESC, c.id DESC
+      LIMIT 15
+    `),
+    database.execute(sql`
+      SELECT s.id, s.invoice_no, s.date::text AS date, s.customer_name, s.customer_phone, s.total::text AS total, s.customer_id
+      FROM sales_invoices s
+      WHERE (s.customer_id IS NULL OR s.customer_id = ${cashId}) AND ${returnable("s")} AND ${invoiceMatch("s")}
+      ORDER BY s.date DESC, s.id DESC
+      LIMIT 20
+    `),
+  ]);
+  const invoiceRows = rows(invoices).map((row) => ({
+    id: Number(row.id),
+    invoiceNo: String(row.invoice_no ?? `SI-${row.id}`),
+    date: String(row.date ?? ""),
+    buyerName: row.customer_name ? String(row.customer_name) : null,
+    buyerPhone: row.customer_phone ? String(row.customer_phone) : null,
+    total: num(row.total),
+    customerId: positiveId(row.customer_id),
+  }));
+  return {
+    customers: rows(customers).map((row) => ({
+      id: Number(row.id),
+      name: String(row.name ?? ""),
+      phone: String(row.phone ?? ""),
+      code: row.code ? String(row.code) : `CUS-${String(row.id).padStart(6, "0")}`,
+      customerType: String(row.customer_type ?? "retail"),
+      invoices: Number(row.invoices ?? 0),
+      outstanding: num(row.outstanding),
+      lastInvoiceDate: row.last_date ? String(row.last_date) : null,
+      matchedInvoiceId: positiveId(row.matched_invoice_id),
+    })),
+    walkInInvoices: invoiceRows.filter((row) => row.customerId != null),
+    unlinkedInvoices: invoiceRows.filter((row) => row.customerId == null),
   };
 }
 
@@ -382,7 +504,7 @@ type BuiltLine = {
 };
 
 /** Lock the involved original lines, then allocate and price against fresh facts. */
-async function buildReturnLines(tx: Transaction, actor: SalesReturnActor, customerId: number, items: ReturnItemInput[], excludeReturnId: number | null, lock: boolean, allocationsAuthorized = false): Promise<BuiltLine[]> {
+async function buildReturnLines(tx: Transaction, actor: SalesReturnActor, customerId: number, items: ReturnItemInput[], excludeReturnId: number | null, lock: boolean, allocationsAuthorized = false, scope: number[] | null = null): Promise<BuiltLine[]> {
   if (!items.length) throw new SalesReturnError("أضف منتجاً واحداً على الأقل للمرتجع", 422, "VALIDATION_ERROR");
   const keys = new Set<string>();
   for (const item of items) {
@@ -391,12 +513,12 @@ async function buildReturnLines(tx: Transaction, actor: SalesReturnActor, custom
     if (!RETURN_CONDITIONS.some((condition) => condition.code === item.condition))
       throw new SalesReturnError("حالة المنتج المرتجع غير صالحة", 422, "VALIDATION_ERROR");
   }
-  const candidates = await readCustomerLines(tx, customerId, { excludeReturnId });
+  const candidates = await readCustomerLines(tx, customerId, { excludeReturnId, invoiceIds: scope });
   const involved = candidates.filter((line) => keys.has(line.productKey)).map((line) => line.invoiceItemId).sort((a, b) => a - b);
   if (!involved.length) throw new SalesReturnError("المنتجات المحددة غير موجودة في فواتير هذا العميل", 409);
   // Same lock order for every writer: original invoice lines by ascending id.
   if (lock) await tx.execute(sql`SELECT id FROM sales_invoice_items WHERE id IN (${idList(involved)}) ORDER BY id FOR UPDATE`);
-  const fresh = lock ? await readCustomerLines(tx, customerId, { excludeReturnId, itemIds: involved }) : candidates.filter((line) => involved.includes(line.invoiceItemId));
+  const fresh = lock ? await readCustomerLines(tx, customerId, { excludeReturnId, itemIds: involved, invoiceIds: scope }) : candidates.filter((line) => involved.includes(line.invoiceItemId));
   const built: BuiltLine[] = [];
   for (const item of items) {
     const lines = fresh.filter((line) => line.productKey === item.productKey);
@@ -477,6 +599,8 @@ export type SaveReturnInput = {
   submit: boolean;
   expectedVersion?: number | null;
   idempotencyKey: string;
+  /** The invoice the return was opened from; required for the walk-in customer. */
+  invoiceId?: number | null;
 };
 
 function normalizeHeader(input: SaveReturnInput) {
@@ -518,7 +642,7 @@ export async function saveSalesReturn(database: SalesReturnDatabase, actor: Sale
       }
     }
     // Customer first, then the return row, then original lines (a fixed lock order).
-    await readCustomer(tx, input.customerId, true);
+    const customer = await readCustomer(tx, input.customerId, true);
     let current: any = null;
     if (returnId) {
       current = await lockReturn(tx, returnId);
@@ -528,7 +652,8 @@ export async function saveSalesReturn(database: SalesReturnDatabase, actor: Sale
         throw new SalesReturnError("تغيّر المرتجع من مستخدم آخر؛ حدّث الصفحة قبل الحفظ", 409, "STALE_DATA");
     }
     const employeeName = (await staffName(tx, header.employeeId)) ?? "";
-    const built = await buildReturnLines(tx, actor, input.customerId, input.items, returnId, input.submit);
+    const scope = await invoiceScope(tx, customer, { returnId, invoiceId: input.invoiceId });
+    const built = await buildReturnLines(tx, actor, input.customerId, input.items, returnId, input.submit, false, scope);
     const status = input.submit ? "pending_approval" : "draft";
     let id = returnId;
     if (!id) {
@@ -570,8 +695,8 @@ export async function submitSalesReturn(database: SalesReturnDatabase, actor: Sa
     const current = await lockReturn(tx, returnId);
     if (current.status === "pending_approval") return { id: returnId, replayed: true };
     if (current.status !== "draft") throw new SalesReturnError("يمكن إرسال المسودات فقط للموافقة", 409);
-    await readCustomer(tx, Number(current.customer_id), true);
-    const built = await buildReturnLines(tx, actor, Number(current.customer_id), await storedItemInputs(tx, returnId), returnId, true, true);
+    const customer = await readCustomer(tx, Number(current.customer_id), true);
+    const built = await buildReturnLines(tx, actor, Number(current.customer_id), await storedItemInputs(tx, returnId), returnId, true, true, await invoiceScope(tx, customer, { returnId }));
     const totals = await writeReturnItems(tx, returnId, built);
     await tx.execute(sql`
       UPDATE sales_returns SET status = 'pending_approval', total_quantity = ${String(totals.totalQuantity)}, total_amount = ${String(totals.totalAmount)},
@@ -605,10 +730,10 @@ export async function approveSalesReturn(database: SalesReturnDatabase, actor: S
     const current = await lockReturn(tx, returnId);
     if (current.status === "approved" || current.status === "completed") return { id: returnId, replayed: true };
     if (current.status !== "pending_approval") throw new SalesReturnError("يمكن اعتماد المرتجعات المرسلة للموافقة فقط", 409);
-    await readCustomer(tx, Number(current.customer_id), true);
+    const customer = await readCustomer(tx, Number(current.customer_id), true);
     // Original lines may have changed since submission (invoice cancelled or
     // another return approved): re-validate against fresh, locked facts.
-    const built = await buildReturnLines(tx, actor, Number(current.customer_id), await storedItemInputs(tx, returnId), returnId, true, true);
+    const built = await buildReturnLines(tx, actor, Number(current.customer_id), await storedItemInputs(tx, returnId), returnId, true, true, await invoiceScope(tx, customer, { returnId }));
     const totals = await writeReturnItems(tx, returnId, built);
     if (toCents(totals.totalAmount) !== toCents(current.total_amount))
       await addEvent(tx, returnId, "amount_recalculated", actor, null, { previous: num(current.total_amount), next: totals.totalAmount });
@@ -822,16 +947,21 @@ export async function settleSalesReturn(database: SalesReturnDatabase, actor: Sa
       if (cause instanceof SalesReturnRuleError) throw new SalesReturnError(cause.message, cause.status, cause.status === 422 ? "VALIDATION_ERROR" : "CONFLICT");
       throw cause;
     }
+    // A credit on the shared walk-in account could be spent by another buyer.
+    if (customer.isCashCustomer && plan.customerCreditCents > 0)
+      throw new SalesReturnError("لا يمكن حفظ رصيد دائن على العميل النقدي؛ اخصم من الفاتورة نفسها أو اطلب استرداد المبلغ", 409);
     const written: { kind: string; amount: number; invoiceId?: number }[] = [];
     if (plan.invoiceCreditCents > 0) {
       // The return's own source invoices first (oldest first), then the
       // customer's other open invoices — never another customer's invoice.
+      // The walk-in customer's other invoices belong to other buyers.
       const open = rows(await tx.execute(sql`
         SELECT s.id, s.date::text AS date,
           EXISTS (SELECT 1 FROM sales_return_items ri WHERE ri.return_id = ${returnId} AND ri.invoice_id = s.id) AS is_source
         FROM sales_invoices s
         WHERE s.customer_id = ${customerId} AND s.status = 'active' AND s.financially_reversed = false AND s.remaining_amount::numeric > 0
           AND ${selfOwnedInvoice(sql`s.id`)}
+          ${customer.isCashCustomer ? sql`AND EXISTS (SELECT 1 FROM sales_return_items ri WHERE ri.return_id = ${returnId} AND ri.invoice_id = s.id)` : sql``}
         ORDER BY s.id FOR UPDATE
       `));
       const fresh = [];

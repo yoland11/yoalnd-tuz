@@ -11,7 +11,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { SmartCustomerSearch } from "./smart-customer-search";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { useSalesReturnPrint, settlementLine } from "@/components/sales-return-print";
 import {
@@ -22,7 +21,10 @@ import {
 // ── Types (server DTOs) ──────────────────────────────────────────────────
 type PurchaseLine = { invoiceItemId: number; invoiceId: number; invoiceNo: string; invoiceDate: string; quantity: number; returned: number; reserved: number; available: number; unitPrice: number; netUnit: number; refundable: number; refundableRemaining: number; trackInventory: boolean };
 type PurchaseProduct = { key: string; productId: number | null; productName: string; unit: string | null; image: string | null; barcode: string | null; purchased: number; returned: number; reserved: number; available: number; lines: PurchaseLine[] };
-type Purchases = { customer: { id: number; name: string; phone: string; code: string | null; customerType: string; purchases: number; payments: number; outstanding: number; approvedReturns: number; availableCredit: number }; products: PurchaseProduct[]; canOverrideAllocation: boolean };
+type Purchases = { customer: { id: number; name: string; phone: string; code: string | null; customerType: string; isCashCustomer: boolean; purchases: number; payments: number; outstanding: number; approvedReturns: number; availableCredit: number }; scopeInvoices: { id: number; invoiceNo: string; date: string; buyerName: string | null; buyerPhone: string | null }[]; products: PurchaseProduct[]; canOverrideAllocation: boolean };
+type SearchCustomer = { id: number; name: string; phone: string; code: string; customerType: string; invoices: number; outstanding: number; lastInvoiceDate: string | null; matchedInvoiceId: number | null };
+type SearchInvoice = { id: number; invoiceNo: string; date: string; buyerName: string | null; buyerPhone: string | null; total: number; customerId: number | null };
+type CustomerSearchResult = { customers: SearchCustomer[]; walkInInvoices: SearchInvoice[]; unlinkedInvoices: SearchInvoice[] };
 type Options = { warehouses: { id: number; name: string }[]; staff: { id: number; name: string }[]; permissions: Record<string, boolean> };
 type ListRow = { id: number; returnNo: string; reversalNo: string | null; customerId: number; customerName: string; customerPhone: string; returnDate: string; productCount: number; invoiceCount: number; totalQuantity: number; totalAmount: number; settlementKinds: string[]; status: string; received: boolean; pendingInventory: number; settlementStatus: string; employeeName: string };
 type ListResponse = { rows: ListRow[]; total: number; truncated: boolean; page: number; pageSize: number; summary: { totalReturns: number; pending: number; completed: number; value: number; refundsPaid: number; openCredit: number } };
@@ -30,7 +32,7 @@ type DetailItem = { id: number; invoiceId: number; invoiceNo: string; invoiceDat
 type DetailSettlement = { id: number; kind: string; invoiceId: number | null; invoiceNo: string | null; parentSettlementId: number | null; amount: number; used: number; status: string; isExchange: boolean; paymentMethod: string | null; financialTransactionId: number | null; transactionNo: string | null; transactionStatus: string | null; note: string | null; createdByName: string; createdAt: string | null; reversedAt: string | null; reversalReason: string | null };
 type Detail = {
   return: { id: number; returnNo: string; status: string; returnDate: string; warehouseId: number | null; warehouseName: string | null; reasonCode: string; notes: string | null; attachmentUrl: string | null; employeeId: number | null; employeeName: string; totalQuantity: number; totalAmount: number; settled: number; unsettled: number; settlementStatus: string; settlementPlan: Record<string, unknown>; version: number; createdByName: string; createdAt: string | null; submittedAt: string | null; receivedAt: string | null; receivedByName: string | null; approvedAt: string | null; approvedByName: string | null; approvalNote: string | null; rejectedAt: string | null; rejectionReason: string | null; cancelledAt: string | null; cancellationReason: string | null; inventoryCompletedAt: string | null; completedAt: string | null; reversedAt: string | null; reversedByName: string | null; reversalReason: string | null; reversalNo: string | null };
-  customer: { id: number; name: string; phone: string; code: string | null };
+  customer: { id: number; name: string; phone: string; code: string | null; isCashCustomer?: boolean };
   items: DetailItem[];
   settlements: DetailSettlement[];
   events: { id: number; event: string; actorName: string; note: string | null; metadata: Record<string, unknown>; createdAt: string | null }[];
@@ -340,6 +342,97 @@ function previewProduct(product: PurchaseProduct, selection: Selection | undefin
   }
 }
 
+// ── Customer search: returns permission only, Arabic-insensitive ──────────
+function useDebounced<T>(value: T, delay = 250) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+const resultRow = "flex w-full min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-xl border border-border/40 bg-background px-3 py-2.5 text-right transition-[border-color,background-color,transform] duration-150 ease-out hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.99]";
+function ResultGroup({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-2" aria-label={title}>
+      <div><p className="text-xs font-semibold text-foreground">{title}</p>{hint ? <p className="text-[11px] text-muted-foreground">{hint}</p> : null}</div>
+      {children}
+    </section>
+  );
+}
+
+function ReturnCustomerSearch({ onPick }: { onPick: (customerId: number, invoiceId: number | null) => void }) {
+  const [term, setTerm] = useState("");
+  const query = useDebounced(term.trim());
+  const result = useQuery<CustomerSearchResult>({
+    queryKey: ["admin", "sales-returns", "customer-search", query],
+    queryFn: () => adminFetch(`/admin/sales-returns/customers?q=${encodeURIComponent(query)}`),
+    enabled: query.length > 0,
+    staleTime: 15_000,
+  });
+  const data = result.data;
+  const empty = data && !data.customers.length && !data.walkInInvoices.length && !data.unlinkedInvoices.length;
+  return (
+    <div className="space-y-3">
+      <div className="relative">
+        <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input autoFocus value={term} onChange={(event) => setTerm(event.target.value)} aria-label="بحث عن عميل المرتجع" placeholder="اسم العميل أو هاتفه، رقم الفاتورة، أو اسم المشتري على الفاتورة" className="h-11 pr-9 pl-9" />
+        {result.isFetching ? <Loader2 className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" /> : null}
+      </div>
+      {!query ? null : result.isError ? <ErrorState error={result.error} onRetry={() => void result.refetch()} title="تعذر البحث عن العميل" /> : !data ? <Skeleton className="h-16 rounded-xl" /> : empty ? (
+        <div className="rounded-xl border border-dashed border-border/60 p-4 text-center">
+          <p className="text-sm font-semibold text-foreground">لا يوجد عميل أو فاتورة تطابق «{query}»</p>
+          <p className="mt-1 text-xs text-muted-foreground">جرّب رقم الفاتورة أو رقم الهاتف؛ المرتجع يحتاج فاتورة مبيعات فعّالة.</p>
+        </div>
+      ) : (
+        <div className="max-h-[440px] space-y-4 overflow-y-auto overscroll-contain">
+          {data.customers.length ? (
+            <ResultGroup title="العملاء">
+              {data.customers.map((row) => (
+                <button key={row.id} type="button" className={resultRow} onClick={() => onPick(row.id, row.matchedInvoiceId)}>
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-2"><span className="truncate font-bold text-foreground">{row.name}</span>{row.matchedInvoiceId ? <Pill>فاتورة مطابقة</Pill> : null}</span>
+                    <span className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+                      <span className="tabular-nums">{row.code}</span>
+                      <bdi dir="ltr" className="tabular-nums">{row.phone}</bdi>
+                      <span>{row.invoices ? `${row.invoices} فاتورة قابلة للإرجاع` : "لا توجد فواتير قابلة للإرجاع"}</span>
+                      {row.lastInvoiceDate ? <span className="tabular-nums">آخر فاتورة {row.lastInvoiceDate}</span> : null}
+                    </span>
+                  </span>
+                  <span className="text-left"><Money value={row.outstanding} className={`text-sm font-bold ${row.outstanding > 0 ? "text-destructive" : "text-foreground"}`} /><span className="block text-[11px] text-muted-foreground">المتبقي عليه</span></span>
+                </button>
+              ))}
+            </ResultGroup>
+          ) : null}
+          {data.walkInInvoices.length ? (
+            <ResultGroup title="فواتير العميل النقدي" hint="يُفتح المرتجع على الفاتورة نفسها فقط، لأن العميل النقدي يشترك فيه أكثر من مشترٍ.">
+              {data.walkInInvoices.map((invoice) => (
+                <button key={invoice.id} type="button" className={resultRow} onClick={() => onPick(invoice.customerId!, invoice.id)}>
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-2"><span className="font-bold tabular-nums text-foreground">{invoice.invoiceNo}</span><span className="truncate text-sm text-foreground">{invoice.buyerName || "بدون اسم مشترٍ"}</span></span>
+                    <span className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-muted-foreground"><span className="tabular-nums">{invoice.date}</span>{invoice.buyerPhone ? <bdi dir="ltr" className="tabular-nums">{invoice.buyerPhone}</bdi> : null}</span>
+                  </span>
+                  <span className="text-left"><Money value={invoice.total} className="text-sm font-bold" /><span className="block text-[11px] text-muted-foreground">إجمالي الفاتورة</span></span>
+                </button>
+              ))}
+            </ResultGroup>
+          ) : null}
+          {data.unlinkedInvoices.length ? (
+            <ResultGroup title="فواتير غير مربوطة بعميل" hint="لا يمكن إرجاعها قبل ربطها: من سجل الفواتير اضغط «ربط الفواتير القديمة بالعملاء» ثم ابحث مجدداً.">
+              {data.unlinkedInvoices.map((invoice) => (
+                <div key={invoice.id} className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-xl border border-dashed border-border/60 px-3 py-2.5 text-muted-foreground">
+                  <span className="min-w-0"><span className="flex flex-wrap items-center gap-2"><span className="font-semibold tabular-nums text-foreground">{invoice.invoiceNo}</span><span className="truncate text-sm">{invoice.buyerName || "بدون اسم"}</span><Pill tone="warn">غير مربوطة</Pill></span><span className="mt-0.5 block text-xs tabular-nums">{invoice.date}</span></span>
+                  <Money value={invoice.total} className="text-sm" />
+                </div>
+              ))}
+            </ResultGroup>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReturnEditor({ returnId }: { returnId: number | null }) {
   const search = useSearch();
   const params = new URLSearchParams(search);
@@ -349,10 +442,16 @@ function ReturnEditor({ returnId }: { returnId: number | null }) {
   const options = useOptions();
   const existing = useQuery<Detail>({ queryKey: ["admin", "sales-returns", "detail", returnId], queryFn: () => adminFetch(`/admin/sales-returns/${returnId}`), enabled: returnId != null });
   const [customerId, setCustomerId] = useState<number | null>(() => Number(params.get("customerId")) || null);
-  const sourceInvoiceId = Number(params.get("invoiceId")) || null;
+  const [sourceInvoiceId, setSourceInvoiceId] = useState<number | null>(() => Number(params.get("invoiceId")) || null);
   const purchases = useQuery<Purchases>({
-    queryKey: ["admin", "sales-returns", "purchases", customerId, returnId],
-    queryFn: () => adminFetch(`/admin/sales-returns/customers/${customerId}/purchases${returnId ? `?excludeReturnId=${returnId}` : ""}`),
+    queryKey: ["admin", "sales-returns", "purchases", customerId, returnId, sourceInvoiceId],
+    queryFn: () => {
+      const query = new URLSearchParams();
+      if (returnId) query.set("excludeReturnId", String(returnId));
+      if (sourceInvoiceId) query.set("invoiceId", String(sourceInvoiceId));
+      const suffix = query.toString();
+      return adminFetch(`/admin/sales-returns/customers/${customerId}/purchases${suffix ? `?${suffix}` : ""}`);
+    },
     enabled: customerId != null,
   });
   const [selections, setSelections] = useState<Record<string, Selection>>({});
@@ -383,6 +482,10 @@ function ReturnEditor({ returnId }: { returnId: number | null }) {
     }
     setSelections(next);
   }, [existing.data]);
+
+  useEffect(() => {
+    if (purchases.data?.customer.isCashCustomer && (plan === "credit" || plan === "exchange")) setPlan("debt");
+  }, [purchases.data, plan]);
 
   // Drop a saved manual split when it equals FIFO (no override permission needed).
   useEffect(() => {
@@ -449,6 +552,7 @@ function ReturnEditor({ returnId }: { returnId: number | null }) {
         submit,
         expectedVersion: existing.data?.return.version ?? null,
         idempotencyKey: idempotencyKey.current,
+        invoiceId: sourceInvoiceId,
         items: chosen.map((product) => {
           const selection = selections[product.key];
           return {
@@ -473,6 +577,7 @@ function ReturnEditor({ returnId }: { returnId: number | null }) {
   if (returnId && existing.data && existing.data.return.status !== "draft") return <Shell><Card><p className="text-sm">يمكن تعديل المرتجع وهو مسودة فقط.</p><Button asChild variant="outline" className="mt-3"><Link href={`/admin/sales-returns/${returnId}`}>عرض المرتجع</Link></Button></Card></Shell>;
   const customer = purchases.data?.customer;
   const outstanding = customer?.outstanding ?? 0;
+  const planOptions = customer?.isCashCustomer ? PLAN_OPTIONS.filter((option) => option.value === "debt" || option.value === "refund") : PLAN_OPTIONS;
   return (
     <Shell>
       <nav className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" aria-label="مسار التنقل">
@@ -484,8 +589,8 @@ function ReturnEditor({ returnId }: { returnId: number | null }) {
       {customerId == null ? (
         <Card>
           <SectionTitle index={1} title="اختيار العميل" />
-          <p className="mb-3 text-sm text-muted-foreground">ابحث عن العميل؛ تظهر بعدها كل منتجاته من فواتيره القابلة للإرجاع.</p>
-          <SmartCustomerSearch autoFocus onSelect={(selected) => { setCustomerId(selected.id); setSelections({}); }} />
+          <p className="mb-3 text-sm text-muted-foreground">ابحث عن العميل أو الفاتورة؛ تظهر بعدها منتجاته من فواتيره القابلة للإرجاع.</p>
+          <ReturnCustomerSearch onPick={(pickedCustomer, pickedInvoice) => { setCustomerId(pickedCustomer); setSourceInvoiceId(pickedInvoice); setSelections({}); }} />
         </Card>
       ) : purchases.isError ? <ErrorState error={purchases.error} onRetry={() => void purchases.refetch()} title="تعذر تحميل مشتريات العميل" /> : !customer ? <Card><Skeleton className="h-24" /></Card> : (
         <Card>
@@ -496,7 +601,7 @@ function ReturnEditor({ returnId }: { returnId: number | null }) {
                 <p className="truncate text-xl font-bold">{customer.name}</p>
                 <p className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-muted-foreground"><span className="tabular-nums">{customer.code ?? `#${customer.id}`}</span><span dir="ltr" className="tabular-nums">{customer.phone}</span><span>{customer.customerType === "wholesale" ? "عميل جملة" : "عميل مفرد"}</span></p>
               </div>
-              {!returnId ? <Button variant="ghost" size="sm" onClick={() => { setCustomerId(null); setSelections({}); }}>تغيير العميل</Button> : null}
+              {!returnId ? <Button variant="ghost" size="sm" onClick={() => { setCustomerId(null); setSourceInvoiceId(null); setSelections({}); }}>تغيير العميل</Button> : null}
             </div>
             <div className="grid w-full grid-cols-2 gap-2 md:grid-cols-4 xl:w-auto xl:max-w-3xl xl:flex-1">
               <Stat label="إجمالي المشتريات" value={formatCurrency(customer.purchases)} />
@@ -505,7 +610,11 @@ function ReturnEditor({ returnId }: { returnId: number | null }) {
               <Stat label="الرصيد الحالي" value={formatCurrency(customer.outstanding)} tone="text-primary" />
             </div>
           </div>
-          {sourceInvoiceId ? <p className="mt-3 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">فُتح من فاتورة محددة: منتجاتها تظهر أولاً، ويمكن إضافة منتجات من فواتير أخرى لنفس العميل.</p> : null}
+          {customer.isCashCustomer ? (
+            <p className="mt-3 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              عميل نقدي: المرتجع من {purchases.data!.scopeInvoices.map((invoice) => `${invoice.invoiceNo}${invoice.buyerName ? ` (${invoice.buyerName})` : ""}`).join("، ")} فقط، ولا يُحفظ له رصيد دائن.
+            </p>
+          ) : sourceInvoiceId ? <p className="mt-3 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">فُتح من فاتورة محددة: منتجاتها تظهر أولاً، ويمكن إضافة منتجات من فواتير أخرى لنفس العميل.</p> : null}
         </Card>
       )}
 
@@ -641,16 +750,16 @@ function ReturnEditor({ returnId }: { returnId: number | null }) {
             <Card>
               <SectionTitle index={5} title="التسوية المالية المقترحة" />
               <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="طريقة التسوية">
-                {PLAN_OPTIONS.map((option) => (
+                {planOptions.map((option) => (
                   <button key={option.value} type="button" role="radio" aria-checked={plan === option.value} onClick={() => setPlan(option.value)}
                     className={`rounded-xl border p-3 text-start transition-colors ${plan === option.value ? "border-primary bg-primary/5" : "border-border/40 hover:border-primary/40"}`}>
                     <span className="flex items-center gap-2 text-sm font-semibold"><span className={`h-4 w-4 shrink-0 rounded-full border-2 ${plan === option.value ? "border-[5px] border-primary" : "border-muted-foreground/50"}`} />{option.label}</span>
-                    <span className="mt-1 block text-xs text-muted-foreground">{option.hint}</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">{customer?.isCashCustomer && option.value === "debt" ? "يُخصم من متبقي هذه الفاتورة نفسها فقط." : option.hint}</span>
                   </button>
                 ))}
               </div>
               {plan === "refund" ? <Field label="طريقة الاسترجاع" className="mt-3 max-w-xs"><select value={refundMethod} onChange={(event) => setRefundMethod(event.target.value as "cash" | "transfer" | "card")} className={field}><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="card">بطاقة</option></select></Field> : null}
-              {plan === "debt" && totalCents > toCents(outstanding) ? <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">مديونية العميل المفتوحة {formatCurrency(outstanding)} أقل من قيمة المرتجع؛ الباقي يُقترح كرصيد دائن عند التسوية.</p> : null}
+              {plan === "debt" && totalCents > toCents(outstanding) ? <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">{customer?.isCashCustomer ? `متبقي الفاتورة ${formatCurrency(outstanding)} أقل من قيمة المرتجع؛ الباقي يُسترجع نقداً عند التسوية.` : `مديونية العميل المفتوحة ${formatCurrency(outstanding)} أقل من قيمة المرتجع؛ الباقي يُقترح كرصيد دائن عند التسوية.`}</p> : null}
               <p className="mt-3 text-xs text-muted-foreground">هذا اقتراح يُحفظ مع المرتجع. التنفيذ الفعلي يكون بعد الاعتماد، ويمكن تقسيمه على أكثر من طريقة.</p>
             </Card>
 
@@ -874,17 +983,23 @@ const ACTION_DONE: Record<string, string> = { submit: "أُرسل المرتجع
 function SettlementPanel({ detail, summary, summaryError, onDone }: { detail: Detail; summary?: CustomerSummary; summaryError: unknown; onDone: () => void }) {
   const { toast } = useToast();
   const { return: ret, settlements, permissions, customer } = detail;
-  const outstanding = (summary?.openInvoices ?? []).reduce((sum, invoice) => sum + invoice.remaining, 0);
+  // The walk-in customer's other open invoices belong to other buyers.
+  const cash = customer.isCashCustomer === true;
+  const sourceInvoices = new Set(detail.items.map((item) => item.invoiceId));
+  const outstanding = (summary?.openInvoices ?? []).filter((invoice) => !cash || sourceInvoices.has(invoice.id)).reduce((sum, invoice) => sum + invoice.remaining, 0);
   const preferred = String(ret.settlementPlan?.preferred ?? "debt");
   const suggestion = useMemo(() => {
     const unsettled = toCents(ret.unsettled);
     if (preferred === "debt") {
       const debt = Math.min(unsettled, toCents(outstanding));
-      return { invoiceCredit: fromCents(debt), customerCredit: fromCents(unsettled - debt), refund: 0, exchange: false };
+      return cash
+        ? { invoiceCredit: fromCents(debt), customerCredit: 0, refund: fromCents(unsettled - debt), exchange: false }
+        : { invoiceCredit: fromCents(debt), customerCredit: fromCents(unsettled - debt), refund: 0, exchange: false };
     }
+    if (cash) return { invoiceCredit: 0, customerCredit: 0, refund: fromCents(unsettled), exchange: false };
     if (preferred === "refund") return { invoiceCredit: 0, customerCredit: 0, refund: fromCents(unsettled), exchange: false };
     return { invoiceCredit: 0, customerCredit: fromCents(unsettled), refund: 0, exchange: preferred === "exchange" };
-  }, [ret.unsettled, outstanding, preferred]);
+  }, [ret.unsettled, outstanding, preferred, cash]);
   const [form, setForm] = useState({ invoiceCredit: "", customerCredit: "", refund: "", refundMethod: String(ret.settlementPlan?.refundMethod ?? "cash"), exchange: false, note: "" });
   const [open, setOpen] = useState(false);
   const key = useRef(newKey());
@@ -916,13 +1031,13 @@ function SettlementPanel({ detail, summary, summaryError, onDone }: { detail: De
       {summaryError ? <ErrorState error={summaryError} title="تعذر تحميل حساب العميل" /> : null}
       {open ? (
         <div className="mb-4 space-y-3 rounded-xl border border-primary/30 bg-primary/[0.03] p-3">
-          <p className="text-xs text-muted-foreground">غير المسوّى <Money value={ret.unsettled} className="font-semibold text-foreground" /> · مديونية العميل المفتوحة <Money value={outstanding} className="font-semibold text-foreground" />. يمكن التقسيم على أكثر من طريقة؛ المجموع لا يتجاوز غير المسوّى.</p>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="خصم من المديونية"><input inputMode="decimal" value={form.invoiceCredit} onChange={(event) => setForm((current) => ({ ...current, invoiceCredit: event.target.value.replace(/[^0-9.]/g, "") }))} className={`${field} tabular-nums`} /></Field>
-            <Field label={form.exchange ? "رصيد للاستبدال" : "رصيد دائن"}><input inputMode="decimal" value={form.customerCredit} onChange={(event) => setForm((current) => ({ ...current, customerCredit: event.target.value.replace(/[^0-9.]/g, "") }))} className={`${field} tabular-nums`} /></Field>
+          <p className="text-xs text-muted-foreground">غير المسوّى <Money value={ret.unsettled} className="font-semibold text-foreground" /> · {cash ? "متبقي الفاتورة" : "مديونية العميل المفتوحة"} <Money value={outstanding} className="font-semibold text-foreground" />. يمكن التقسيم على أكثر من طريقة؛ المجموع لا يتجاوز غير المسوّى.{cash ? " العميل النقدي لا يُحفظ له رصيد دائن." : ""}</p>
+          <div className={`grid gap-3 ${cash ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+            <Field label={cash ? "خصم من متبقي الفاتورة" : "خصم من المديونية"}><input inputMode="decimal" value={form.invoiceCredit} onChange={(event) => setForm((current) => ({ ...current, invoiceCredit: event.target.value.replace(/[^0-9.]/g, "") }))} className={`${field} tabular-nums`} /></Field>
+            {cash ? null : <Field label={form.exchange ? "رصيد للاستبدال" : "رصيد دائن"}><input inputMode="decimal" value={form.customerCredit} onChange={(event) => setForm((current) => ({ ...current, customerCredit: event.target.value.replace(/[^0-9.]/g, "") }))} className={`${field} tabular-nums`} /></Field>}
             <Field label="استرجاع مبلغ"><div className="flex gap-2"><input inputMode="decimal" value={form.refund} onChange={(event) => setForm((current) => ({ ...current, refund: event.target.value.replace(/[^0-9.]/g, "") }))} className={`${field} tabular-nums`} /><select aria-label="طريقة الاسترجاع" value={form.refundMethod} onChange={(event) => setForm((current) => ({ ...current, refundMethod: event.target.value }))} className={`${field} w-28`}><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="card">بطاقة</option></select></div></Field>
           </div>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.exchange} onChange={(event) => setForm((current) => ({ ...current, exchange: event.target.checked }))} className="h-4 w-4 accent-[hsl(var(--primary))]" /> الرصيد مخصص لاستبدال منتج (يُستخدم على فاتورة المنتج البديل)</label>
+          {cash ? null : <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.exchange} onChange={(event) => setForm((current) => ({ ...current, exchange: event.target.checked }))} className="h-4 w-4 accent-[hsl(var(--primary))]" /> الرصيد مخصص لاستبدال منتج (يُستخدم على فاتورة المنتج البديل)</label>}
           <Field label="ملاحظة"><Input value={form.note} onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} /></Field>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className={`text-sm font-semibold ${totalCents > toCents(ret.unsettled) ? "text-destructive" : ""}`}>المجموع <Money value={fromCents(totalCents)} /> من <Money value={ret.unsettled} /></span>

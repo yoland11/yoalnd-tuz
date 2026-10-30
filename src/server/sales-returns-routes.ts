@@ -7,6 +7,7 @@ import {
   cancelSalesReturn,
   listSalesReturns,
   readCustomerPurchases,
+  searchReturnCustomers,
   readCustomerReturnsSummary,
   readSalesReturn,
   readSalesReturnOptions,
@@ -48,6 +49,7 @@ const saveSchema = z.object({
   submit: z.boolean().default(false),
   expectedVersion: z.coerce.number().int().positive().nullish(),
   idempotencyKey: key,
+  invoiceId: z.coerce.number().int().positive().nullish(),
   items: z.array(z.object({
     productKey: z.string().trim().min(3).max(200),
     quantity,
@@ -120,10 +122,14 @@ export async function handleSalesReturnsRequest(db: SalesReturnDatabase, actor: 
     if (method !== "GET") throw methodNotAllowed();
     return { status: 200, data: await readSalesReturnReports(db, actor, { from: request.query.get("from"), to: request.query.get("to") }) };
   }
+  if (first === "customers" && !second) {
+    if (method !== "GET") throw methodNotAllowed();
+    return { status: 200, data: await searchReturnCustomers(db, actor, request.query.get("q")) };
+  }
   if (first === "customers" && second && !fourth) {
     if (method !== "GET") throw methodNotAllowed();
     const customerId = id(second);
-    if (third === "purchases") return { status: 200, data: await readCustomerPurchases(db, actor, customerId, Number(request.query.get("excludeReturnId")) || null) };
+    if (third === "purchases") return { status: 200, data: await readCustomerPurchases(db, actor, customerId, Number(request.query.get("excludeReturnId")) || null, Number(request.query.get("invoiceId")) || null) };
     if (third === "summary") return { status: 200, data: await readCustomerReturnsSummary(db, actor, customerId) };
     throw new SalesReturnError("المسار غير موجود", 404, "NOT_FOUND");
   }

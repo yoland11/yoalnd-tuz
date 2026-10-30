@@ -263,5 +263,48 @@ await returns.settleSalesReturn(db as any, adminActor, r4.id, { invoiceCredit: 0
 await rejects(() => returns.applyCustomerCredit(db as any, adminActor, { customerId: cid, invoiceId: gradInv.id, amount: 1000, idempotencyKey: key() }), /طلب تخرج أو بحث/, "credit on a graduation mirror invoice");
 assert.ok(!(await returns.readCustomerReturnsSummary(db as any, adminActor, cid)).openInvoices.some((row) => row.id === gradInv.id), "mirror invoice is not offered for credit use");
 
-console.log(`PASS sales returns integration (${run}): FIFO across invoices, original pricing with discount share, reservations, concurrency, approvals, inventory by condition, debt/credit/refund settlement, statement, guarded reversal, credit-aware views, module-owned invoices excluded`);
+// 19. Customer search needs only the returns permission and ignores Arabic spelling variants.
+const library = await one(sql`INSERT INTO customers (phone, name, full_name) VALUES (${`07${(Date.now() + 13).toString().slice(-9)}`}, ${`${run} مكتبة أنوار الهدى`}, ${`${run} مكتبة أنوار الهدى`}) RETURNING id`);
+const variant = await returns.searchReturnCustomers(db as any, clerkActor, `${run} مكتبه انوار`);
+assert.deepEqual(variant.customers.map((row) => row.id), [n(library.id)], "ة/ه and أ/ا variants still match");
+const invoiceHit = await returns.searchReturnCustomers(db as any, clerkActor, `${run}-INV-130`);
+assert.equal(invoiceHit.customers.find((row) => row.id === cid)?.matchedInvoiceId, inv130.id, "an invoice number finds its customer");
+await rejects(() => returns.searchReturnCustomers(db as any, { id: n(clerk.id), name: "بلا صلاحية", role: "staff", permissions: [] }, "فهود"), /صلاحية/, "search without the returns permission");
+const unlinked = await one(sql`
+  INSERT INTO sales_invoices (invoice_no, date, customer_id, customer_name, subtotal, discount_amount, tax_amount, total, paid_amount, remaining_amount, payment_method, payment_status, status)
+  VALUES (${`${run}-OLD-1`}, '2023-12-01', NULL, ${`${run} زبون قديم`}, '1000', '0', '0', '1000', '0', '1000', 'credit', 'unpaid', 'active') RETURNING id`);
+const oldSearch = await returns.searchReturnCustomers(db as any, clerkActor, `${run}-OLD`);
+assert.deepEqual(oldSearch.unlinkedInvoices.map((row) => row.id), [n(unlinked.id)], "an invoice without a customer is reported, not hidden");
+
+// 20. Walk-in (shared cash customer) returns stay inside the one invoice.
+const cashRow = await one(sql`SELECT coalesce(
+  (SELECT c.id FROM settings st JOIN customers c ON c.id::text = st.value->>'customerId' WHERE st.key = 'salesCashCustomer' AND c.status = 'active' LIMIT 1),
+  (SELECT id FROM customers WHERE phone = '00000000000' AND status = 'active' ORDER BY id LIMIT 1)) AS id`);
+const cashId = cashRow?.id ? n(cashRow.id) : n((await one(sql`INSERT INTO customers (phone, name, full_name, status) VALUES ('00000000000', 'عميل نقدي', 'عميل نقدي', 'active') RETURNING id`)).id);
+const walkA = await invoice("WALK-A", "2024-06-01", cashId, [{ productId: n(fan.id), name: "مهفة ريش", qty: 10, price: 2500 }]);
+const walkB = await invoice("WALK-B", "2024-06-02", cashId, [{ productId: n(fan.id), name: "مهفة ريش", qty: 10, price: 2500 }], { paid: 25000 });
+await db.execute(sql`UPDATE sales_invoices SET customer_name = ${`${run} زينب`} WHERE id = ${walkA.id}`);
+await db.execute(sql`UPDATE sales_invoices SET customer_name = ${`${run} حسين`} WHERE id = ${walkB.id}`);
+const walkSearch = await returns.searchReturnCustomers(db as any, clerkActor, `${run} زينب`);
+assert.deepEqual(walkSearch.walkInInvoices.map((row) => row.id), [walkA.id], "the buyer name on a walk-in invoice finds it");
+assert.equal(walkSearch.walkInInvoices[0].customerId, cashId);
+assert.ok(!walkSearch.customers.some((row) => row.id === cashId), "the shared cash customer is never offered as one customer");
+await rejects(() => returns.readCustomerPurchases(db as any, adminActor, cashId), /العميل النقدي/, "walk-in purchases need an invoice");
+const walkPurchases = await returns.readCustomerPurchases(db as any, adminActor, cashId, null, walkB.id);
+assert.equal(walkPurchases.customer.isCashCustomer, true);
+assert.equal(walkPurchases.customer.availableCredit, 0);
+assert.equal(walkPurchases.scopeInvoices[0].buyerName, `${run} حسين`);
+assert.deepEqual(walkPurchases.products.find((p) => p.key === fanKey)!.lines.map((line) => line.invoiceId), [walkB.id], "only the chosen walk-in invoice");
+await rejects(() => returns.saveSalesReturn(db as any, adminActor, { customerId: cashId, reasonCode: "excess_quantity", items: [{ productKey: fanKey, quantity: 1, condition: "good" }], submit: false, idempotencyKey: key() } as any, null), /العميل النقدي/, "walk-in save needs the invoice");
+const walkReturn = await returns.saveSalesReturn(db as any, adminActor, { customerId: cashId, reasonCode: "excess_quantity", items: [{ productKey: fanKey, quantity: 4, condition: "good" }], submit: true, idempotencyKey: key(), invoiceId: walkB.id } as any, null);
+assert.deepEqual((await detail(walkReturn.id)).items.map((item) => item.invoiceId), [walkB.id], "FIFO never crosses to the older invoice of another buyer");
+await returns.approveSalesReturn(db as any, adminActor, walkReturn.id, null);
+assert.deepEqual((await detail(walkReturn.id)).items.map((item) => item.invoiceId), [walkB.id], "re-validation on approval keeps the scope");
+await rejects(() => returns.settleSalesReturn(db as any, adminActor, walkReturn.id, { invoiceCredit: 0, customerCredit: 10000, refund: 0, idempotencyKey: key() }), /رصيد دائن على العميل النقدي/, "no credit held on the walk-in account");
+await rejects(() => returns.settleSalesReturn(db as any, adminActor, walkReturn.id, { invoiceCredit: 10000, customerCredit: 0, refund: 0, idempotencyKey: key() }), /أكبر من مديونية/, "another buyer's open invoice never absorbs the deduction");
+assert.equal(n((await one(sql`SELECT remaining_amount FROM sales_invoices WHERE id = ${walkA.id}`)).remaining_amount), 25000);
+await returns.settleSalesReturn(db as any, adminActor, walkReturn.id, { invoiceCredit: 0, customerCredit: 0, refund: 10000, refundMethod: "cash", idempotencyKey: key() });
+assert.equal((await detail(walkReturn.id)).settlements.find((row) => row.kind === "refund")?.transactionStatus, "pending", "walk-in refund waits for approval");
+
+console.log(`PASS sales returns integration (${run}): FIFO across invoices, original pricing with discount share, reservations, concurrency, approvals, inventory by condition, debt/credit/refund settlement, statement, guarded reversal, credit-aware views, module-owned invoices excluded, returns customer search, walk-in invoice scope`);
 process.exit(0);

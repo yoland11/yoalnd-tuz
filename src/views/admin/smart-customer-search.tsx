@@ -29,19 +29,21 @@ export function SmartCustomerSearch({ onSelect, autoFocus }: { onSelect: (c: Sma
   const [q, setQ] = useState("");
   const [results, setResults] = useState<SmartCustomer[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const term = q.trim();
     if (timer.current) clearTimeout(timer.current);
-    if (term.length < 1) { setResults(null); setLoading(false); return; }
+    if (term.length < 1) { setResults(null); setFailure(null); setLoading(false); return; }
     setLoading(true);
     timer.current = setTimeout(() => {
       let alive = true;
       adminFetch<{ results: SmartCustomer[] }>(`/admin/customers/smart-search?q=${encodeURIComponent(term)}`)
-        .then((r) => { if (alive) setResults(r.results); })
-        .catch(() => { if (alive) setResults([]); })
+        .then((r) => { if (alive) { setResults(r.results); setFailure(null); } })
+        // A failed search (permission, network) is not "no customer found".
+        .catch((error) => { if (alive) { setResults(null); setFailure(apiErrorMessage(error)); } })
         .finally(() => { if (alive) setLoading(false); });
       return () => { alive = false; };
     }, 250);
@@ -61,6 +63,8 @@ export function SmartCustomerSearch({ onSelect, autoFocus }: { onSelect: (c: Sma
           className="w-full rounded-lg border border-border/40 bg-background py-2.5 pr-10 pl-9 text-sm outline-none focus:border-primary/60"
         />
       </div>
+
+      {failure ? <p role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">تعذر البحث عن العملاء: {failure}</p> : null}
 
       {results !== null && (
         <div className="max-h-[420px] space-y-2 overflow-y-auto">
