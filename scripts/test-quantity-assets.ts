@@ -138,7 +138,7 @@ function createDatabase() {
       { source: "kosha_booking", id: 128, day: NEXT_DAY, status: "confirmed", customer: "حجز 128", details: { bookingOperations: { assets: [] } } },
     ] as Booking[],
     movements: [] as any[],
-    warehouseStock: new Map<string, number>(),
+    warehouseRows: [] as any[],
     timeline: [] as any[],
     reservations: [] as any[],
     custodyIssued: 0,
@@ -152,6 +152,21 @@ function createDatabase() {
     const p = built.params as any[];
     state.log.push(q);
     if (q.includes("information_schema.tables")) return rows([{ ready: state.ready }]);
+    // One warehouse: every unit is the main warehouse's, so no warehouse_stock row is ever written.
+    if (q === "select id from warehouses order by id asc limit 1") return rows([{ id: 1 }]);
+    if (q.startsWith("select w.id, w.name, w.code, w.location")) return rows([{ id: 1, name: "المخزن الرئيسي", is_active: 1 }]);
+    if (q.startsWith("select id, name, is_active from warehouses where id")) return rows(Number(p[0]) === 1 ? [{ id: 1, name: "المخزن الرئيسي", is_active: 1 }] : []);
+    if (q.startsWith("select p.id, p.stock, q.quantity_checked_out")) {
+      const ids = new Set(p.map(Number));
+      return rows([...state.products.values()].filter((row: any) => ids.has(Number(row.id))).map((row: any) => ({ id: row.id, stock: row.stock, ...(state.quantity.get(Number(row.id)) ?? {}) })));
+    }
+    if (q.startsWith("select * from warehouse_stock where product_id in")) return rows(state.warehouseRows);
+    if (q.startsWith("select coalesce(sum(quantity::numeric), 0) as in_warehouse")) return rows([{ in_warehouse: 0, checked_out: 0, damaged: 0, maintenance: 0, missing: 0 }]);
+    if (q.includes("from stock_reservations") && q.includes("coalesce(warehouse_id,")) {
+      const productId = Number(p[0]);
+      const exclude = p.length > 3 ? { source: p[3], id: Number(p[4]) } : null;
+      return rows([{ quantity: state.reservations.filter((row: any) => row.product_id === productId && row.status === "reserved" && !(exclude && row.source_type === exclude.source && row.source_id === exclude.id)).reduce((sum: number, row: any) => sum + Number(row.quantity), 0) }]);
+    }
     if (q.startsWith("select product_id, unit_of_measure, quantity_checked_out") && q.includes("product_id in")) {
       const ids = new Set(p.map(Number));
       return rows([...state.quantity.values()].filter((r) => r.tracking_mode === "quantity" && ids.has(r.product_id)));
@@ -248,11 +263,7 @@ function createDatabase() {
       product.stock += Number(p[0]);
       return rows([{ stock: product.stock }]);
     }
-    if (q.startsWith("insert into warehouse_stock")) {
-      const key = `${p[0]}:${p[1]}`;
-      state.warehouseStock.set(key, Math.max(0, (state.warehouseStock.get(key) ?? 0) + Number(p[3])));
-      return rows([]);
-    }
+    if (q.startsWith("insert into warehouse_stock")) throw new Error("the main warehouse has no balance row");
     if (q.startsWith("update asset_quantity_profiles set quantity_checked_out")) {
       const row = state.quantity.get(Number(p[4]));
       Object.assign(row, { quantity_checked_out: p[0], quantity_damaged: p[1], quantity_maintenance: p[2], quantity_missing: p[3] });
@@ -478,7 +489,7 @@ async function run() {
   assert.equal(checkoutRow.related_id, 125);
   assert.equal(checkoutRow.warehouse_id, 1);
   assert.equal(checkoutRow.metadata.vehicle, "بيك أب 1");
-  assert.equal(db.state.warehouseStock.get("1:369"), 0, "warehouse mirror is clamped and adjusted, never negative");
+  assert.equal(db.state.warehouseRows.length, 0, "main-warehouse units stay in products.stock; no balance row is written");
   summary = await quantityAssetSummary(db as any, 369, EVENT_DAY);
   assert.equal(summary?.checkedOut, 20);
   assert.equal(summary?.reserved, 30, "booking 125's 20 are out, not also reserved");

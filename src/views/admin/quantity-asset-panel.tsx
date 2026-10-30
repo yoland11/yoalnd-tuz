@@ -25,6 +25,7 @@ export type QuantityBookingLine = {
 };
 
 export type QuantitySummary = {
+  warehouses?: Array<{ warehouseId: number; name: string; code: string | null; isMain: boolean; isActive: boolean; inWarehouse: number; checkedOut: number; damaged: number; maintenance: number; missing: number; total: number; reserved: number; available: number }>;
   productId: number;
   trackingMode: "quantity";
   unit: string;

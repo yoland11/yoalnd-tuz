@@ -82,6 +82,8 @@
     "test:booking-transport-receipts": "node ./scripts/test-booking-transport-receipts.mjs",
     "test:work-commands": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-work-commands.ts && node ./scripts/test-work-commands-wiring.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-work-commands-ui.tsx",
     "test:asset-list": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-asset-list-thumbnails.tsx",
+    "test:warehouses": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-warehouse-stock.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-warehouse-integration.ts",
+    "audit:warehouses": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/audit-warehouses-readonly.ts",
     "test:quantity-assets": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-quantity-assets.ts && node ./scripts/test-quantity-assets-wiring.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-quantity-assets-ui.tsx",
     "test:custody-safety": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-individual-custody.ts && node ./scripts/test-individual-custody-routes.cjs && node ./scripts/test-linked-custody-routes.mjs && node ./scripts/test-fixed-custody-transaction.cjs && node ./scripts/test-custody-read-identity.cjs && node ./scripts/test-custody-client-identity.cjs",
     "test:asset-status-safety": "node ./scripts/test-asset-status-action.cjs && node ./scripts/test-asset-status-action-client.cjs",

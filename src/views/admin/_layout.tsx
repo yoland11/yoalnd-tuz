@@ -671,6 +671,13 @@ export const NAV: NavItem[] = [
     perm: "accounting",
   },
   {
+    href: "/admin/warehouses",
+    label: "إدارة المخازن",
+    icon: Boxes,
+    perm: "warehouses_view",
+    anyPerm: ["warehouses_view", "warehouses_manage", "warehouse_stock_manage", "warehouse_transfer", "warehouse_reports", "products"],
+  },
+  {
     href: "/admin/warehouse-transfers",
     label: "تحويل المخازن",
     icon: Boxes,
@@ -969,6 +976,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/penalties-report"),
       navItem("/admin/barcodes"),
       navItem("/admin/print-labels"),
+      navItem("/admin/warehouses"),
       navItem("/admin/warehouse-transfers"),
       navItem("/admin/assets/new"),
       navItem("/admin/asset-gate"),

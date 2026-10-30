@@ -1,6 +1,10 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { loadDailyOperations } from "./booking-daily-operations";
 import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
+import { applyWarehouseDeltas, createWarehouse, listWarehouses, mainWarehouseId, requireActiveWarehouse, rowsOf as warehouseRows, shelfCompany, updateWarehouse, warehouseBreakdowns, WarehouseError } from "./warehouses";
+import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTransfer, sourceCommitment } from "./warehouse-transfers";
+import { approveWarehouseCount, createWarehouseCount, listWarehouseCounts, rejectWarehouseCount, warehouseCountDetail } from "./warehouse-counts";
+import { warehouseDiscrepancies, warehouseMovementRows, warehouseStockRows, warehouseTotals, warehouseTransferRows } from "./warehouse-reports";
 import { SalesReturnError, salesInvoiceReturnCredits, salesInvoiceReturnCreditsSql, salesReturnsForInvoice } from "./sales-returns";
 import { handleSalesReturnsRequest } from "./sales-returns-routes";
 import { centralBookingDepartments, koshaBookingDepartments, serviceOrderDepartments } from "./booking-departments";
@@ -865,6 +869,12 @@ export const ALL_PERMISSIONS = [
   "booking_return_confirm",
   "asset_damage_record",
   "asset_damage_approve",
+  "warehouses_view",
+  "warehouses_manage",
+  "warehouse_stock_manage",
+  "warehouse_transfer",
+  "warehouse_adjust_approve",
+  "warehouse_reports",
   "asset.sell",
   "asset.view_sales",
   "asset.print_sales",
@@ -3957,27 +3967,28 @@ async function executeApprovedApprovalRequest(
     const transferId =
       row.entityId ?? optionalPositiveId((row.newValues as any)?.transferId);
     if (!transferId) return { executed: false, reason: "missing_transfer" };
-    const transfer = await db.query.warehouseTransfersTable.findFirst({
-      where: eq(warehouseTransfersTable.id, transferId),
-    });
-    if (!transfer) return { executed: false, reason: "transfer_not_found" };
-    const approved =
-      transfer.status === "approved"
-        ? transfer
-        : (
-            await db
-              .update(warehouseTransfersTable)
-              .set({
-                status: "approved",
-                reviewedBy: actor?.id ?? null,
-                reviewedByName: actor?.name ?? "النظام",
-                reviewedAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(eq(warehouseTransfersTable.id, transfer.id))
-              .returning()
-          )[0];
-    return executeWarehouseTransfer(approved, actor);
+    try {
+      const result = await db.transaction((tx) =>
+        approveWarehouseTransfer(tx as any, transferId, { id: actor?.id ?? null, name: actor?.name ?? "النظام" }),
+      );
+      return { executed: result.executed, reason: result.reason };
+    } catch (cause) {
+      if (cause instanceof WarehouseError) return { executed: false, reason: cause.message };
+      throw cause;
+    }
+  }
+  if (row.type === "warehouse_count" || row.entityType === "warehouse_count") {
+    const countId = row.entityId ?? optionalPositiveId((row.newValues as any)?.countId);
+    if (!countId) return { executed: false, reason: "missing_count" };
+    try {
+      const result = await db.transaction((tx) =>
+        approveWarehouseCount(tx as any, countId, { id: actor?.id ?? null, name: actor?.name ?? "النظام" }),
+      );
+      return { executed: result.executed, reason: result.reason };
+    } catch (cause) {
+      if (cause instanceof WarehouseError) return { executed: false, reason: cause.message };
+      throw cause;
+    }
   }
   if (row.type === "cancel_kosha_booking") {
     const id = row.entityId;
@@ -8008,92 +8019,6 @@ async function setProductStock(
   const delta = nextStock - previousStock;
   if (delta !== 0) await recordStockMovement(resolved, delta, meta);
   return resolved.stockProduct.id;
-}
-
-async function adjustWarehouseStock(
-  productId: number,
-  warehouseId: number | null | undefined,
-  delta: number,
-) {
-  if (!warehouseId || !productId || !Number.isFinite(delta) || delta === 0)
-    return null;
-  await ensureAdminExtensionsTables();
-  const resolved = await getStockOwnerProduct(productId);
-  const stockProductId = resolved?.stockProduct?.id ?? productId;
-  const [existing] = await db
-    .select()
-    .from(warehouseStockTable)
-    .where(
-      and(
-        eq(warehouseStockTable.productId, stockProductId),
-        eq(warehouseStockTable.warehouseId, warehouseId),
-      ),
-    )
-    .limit(1);
-  if (existing) {
-    const next = Math.max(0, Number(existing.quantity ?? 0) + delta);
-    const [row] = await db
-      .update(warehouseStockTable)
-      .set({ quantity: String(next), updatedAt: new Date() })
-      .where(eq(warehouseStockTable.id, existing.id))
-      .returning();
-    return row;
-  }
-  const [row] = await db
-    .insert(warehouseStockTable)
-    .values({
-      warehouseId,
-      productId: stockProductId,
-      quantity: String(Math.max(0, delta)),
-    })
-    .returning();
-  return row;
-}
-
-async function executeWarehouseTransfer(
-  row: typeof warehouseTransfersTable.$inferSelect,
-  actor: ErpActor | null,
-) {
-  if (row.status === "approved") {
-    const productId = Number(row.productId ?? 0);
-    const quantity = Number(row.quantity ?? 0);
-    if (!productId || quantity <= 0)
-      return { executed: false, reason: "missing_product_or_quantity" };
-    const marker = await db.query.stockMovementsTable.findFirst({
-      where: and(
-        eq(stockMovementsTable.relatedType, "warehouse_transfer"),
-        eq(stockMovementsTable.relatedId, row.id),
-        eq(stockMovementsTable.reason, "warehouse_transfer_executed"),
-      ),
-    });
-    if (marker) return { executed: false, reason: "already_executed" };
-    const resolved = await getStockOwnerProduct(productId);
-    if (!resolved) return { executed: false, reason: "product_not_found" };
-    await adjustWarehouseStock(productId, row.fromWarehouseId, -quantity);
-    await adjustWarehouseStock(productId, row.toWarehouseId, quantity);
-    await recordStockMovement(resolved, 0, {
-      reason: "warehouse_transfer_executed",
-      relatedType: "warehouse_transfer",
-      relatedId: row.id,
-      createdBy: actor?.id ?? null,
-      createdByName: actor?.name ?? "النظام",
-    });
-    await addEntityTimeline({
-      entityType: "warehouse_transfer",
-      entityId: row.id,
-      type: "warehouse_transfer_executed",
-      title: "تم تنفيذ التحويل المخزني",
-      body: `${row.productName} × ${quantity}`,
-      actor,
-      metadata: {
-        fromWarehouseId: row.fromWarehouseId,
-        toWarehouseId: row.toWarehouseId,
-        productId,
-      },
-    });
-    return { executed: true };
-  }
-  return { executed: false, reason: "not_approved" };
 }
 
 function normalizeSharedStockLinkedIds(
@@ -12906,10 +12831,38 @@ async function getProductStockSummary(product: any, options: { excludeSource?: S
   };
 }
 
+/** A line that names a warehouse must fit what that warehouse has left, before any hold is written. */
+async function assertBookingLinesFitWarehouses(items: Array<{ productId: number; quantity: number; warehouseId?: number | null }>, sourceType: string, sourceId: number) {
+  const mainId = await mainWarehouseId(db as any);
+  const needed = new Map<string, { productId: number; warehouseId: number; quantity: number }>();
+  for (const item of items) {
+    const warehouseId = item.warehouseId ?? mainId;
+    const owner = (await getStockOwnerProduct(item.productId))?.stockProduct?.id ?? item.productId;
+    const key = `${owner}:${warehouseId}`;
+    const current = needed.get(key) ?? { productId: owner, warehouseId, quantity: 0 };
+    current.quantity += Number(item.quantity) || 0;
+    needed.set(key, current);
+  }
+  for (const line of needed.values()) {
+    const warehouse = await requireActiveWarehouse(db as any, line.warehouseId);
+    if (line.warehouseId === mainId) continue;
+    const breakdown = (await warehouseBreakdowns(db as any, [line.productId])).get(line.productId);
+    const shelf = breakdown?.shares.find((share) => share.warehouseId === line.warehouseId)?.inWarehouse ?? 0;
+    const others = warehouseRows(await db.execute(sql`
+      select coalesce(sum(quantity), 0) as quantity from stock_reservations
+      where product_id = ${line.productId} and status = 'reserved' and warehouse_id = ${line.warehouseId} and not (source_type = ${sourceType} and source_id = ${sourceId})
+    `))[0];
+    const available = shelf - Number(others?.quantity ?? 0);
+    if (line.quantity > available)
+      throw new WarehouseError(`الكمية غير متوفرة في «${warehouse.name}». المتاح ${Math.max(0, available)}، والمطلوب ${line.quantity}.`, 409, { warehouseId: line.warehouseId, available: Math.max(0, available), requested: line.quantity });
+  }
+}
+
 type ReservationItem = {
   productId: number;
   variantId?: number | null;
   quantity: number;
+  warehouseId?: number | null;
 };
 
 // Reserve stock for a source (booking/order): replaces that source's active reservations.
@@ -12933,10 +12886,10 @@ async function reserveStockForSource(
     if (!productId || qty <= 0) continue;
     await db.execute(sql`
       insert into stock_reservations
-        (product_id, variant_id, quantity, source_type, source_id, source_label, status, created_by, created_by_name)
+        (product_id, variant_id, quantity, source_type, source_id, source_label, status, created_by, created_by_name, warehouse_id)
       values
         (${productId}, ${it.variantId ?? null}, ${qty}, ${sourceType}, ${sourceId}, ${sourceLabel},
-         'reserved', ${who.id}, ${who.name})
+         'reserved', ${who.id}, ${who.name}, ${it.warehouseId ?? null})
     `);
   }
 }
@@ -12979,6 +12932,18 @@ async function adjustVariantStock(
   }
 }
 
+/** A hold taken from another warehouse moves that warehouse's balance with the company stock. */
+async function moveReservationShelf(productId: number, warehouseId: unknown, delta: number) {
+  const id = Number(warehouseId) || 0;
+  if (!id || !delta) return;
+  await db.transaction(async (tx) => {
+    const owner = (await getStockOwnerProduct(productId))?.stockProduct?.id ?? productId;
+    await tx.execute(sql`select id from products where id = ${owner} for update`);
+    const breakdown = (await warehouseBreakdowns(tx as any, [owner])).get(owner);
+    if (breakdown) await applyWarehouseDeltas(tx as any, { productId: owner, company: { ...breakdown.company, inWarehouse: breakdown.company.inWarehouse + delta }, deltas: [{ warehouseId: id, inWarehouse: delta }] });
+  });
+}
+
 // Convert a source's reservations into real inventory deduction (checkout/preparation).
 async function consumeReservations(
   sourceType: string,
@@ -12994,6 +12959,7 @@ async function consumeReservations(
   for (const r of rows) {
     const qty = Number(r.quantity) || 0;
     if (qty <= 0) continue;
+    await moveReservationShelf(Number(r.product_id), r.warehouse_id, -qty);
     if (r.variant_id != null) {
       await adjustVariantStock(Number(r.variant_id), -qty, {
         reason: `reservation_consumed:${sourceType}`,
@@ -13034,6 +13000,7 @@ async function releaseReservations(
     const qty = Number(r.quantity) || 0;
     if (r.status === "consumed" && qty > 0) {
       // Restore actual inventory that was deducted at checkout.
+      await moveReservationShelf(Number(r.product_id), r.warehouse_id, qty);
       if (r.variant_id != null) {
         await adjustVariantStock(Number(r.variant_id), qty, {
           reason: `reservation_restored:${sourceType}`,
@@ -19891,6 +19858,9 @@ function formatWarehouseTransfer(row: any) {
     requestedByName: row.requestedByName ?? row.requested_by_name ?? "",
     reviewedByName: row.reviewedByName ?? row.reviewed_by_name ?? "",
     notes: row.notes ?? "",
+    responsibleStaffId: row.responsibleStaffId ?? row.responsible_staff_id ?? null,
+    transferDate: row.transferDate ?? row.transfer_date ?? null,
+    executedAt: iso(row.executedAt ?? row.executed_at),
     reviewedAt: iso(row.reviewedAt ?? row.reviewed_at),
     createdAt: iso(row.createdAt ?? row.created_at),
     updatedAt: iso(row.updatedAt ?? row.updated_at),
@@ -23268,22 +23238,16 @@ async function enterpriseDispatchSuggestions(
       };
     })
     .sort((a, b) => b.score - a.score);
-  const warehouseCandidates = await Promise.all(
-    warehouses.map(async (warehouse) => {
-      const [stock] = await db
-        .select({
-          quantity: sql<number>`coalesce(sum(${warehouseStockTable.quantity}::numeric),0)::float`,
-        })
-        .from(warehouseStockTable)
-        .where(eq(warehouseStockTable.warehouseId, warehouse.id));
-      return {
-        id: warehouse.id,
-        name: warehouse.name,
-        availableQuantity: enterpriseNumber(stock?.quantity),
-        score: Math.min(100, 40 + enterpriseNumber(stock?.quantity)),
-      };
-    }),
-  );
+  const warehouseShelves = new Map((await warehouseTotals(db as any)).warehouses.map((row) => [row.id, row.shelf]));
+  const warehouseCandidates = warehouses.map((warehouse) => {
+    const quantity = warehouseShelves.get(warehouse.id) ?? 0;
+    return {
+      id: warehouse.id,
+      name: warehouse.name,
+      availableQuantity: enterpriseNumber(quantity),
+      score: Math.min(100, 40 + enterpriseNumber(quantity)),
+    };
+  });
   warehouseCandidates.sort((a, b) => b.score - a.score);
   const suggestion = {
     crew: crewCandidates[0] ?? null,
@@ -24887,23 +24851,21 @@ async function handleEnterpriseAdmin(
           "تم حفظ الجواز الرقمي للقطعة",
           { passportId: row.id, shelfCode: row.shelfCode },
         );
-        // Warehouse registration — mirror the asset quantity into warehouse_stock
-        // when it first gets a home warehouse or moves between warehouses. Reuses the
-        // existing adjustWarehouseStock helper (no new table / endpoint).
-        try {
-          const nextWarehouse = values.warehouseId ?? null;
-          const prevWarehouse = prevPassport?.warehouseId ?? null;
-          if (nextWarehouse && nextWarehouse !== prevWarehouse) {
-            const qty = Math.max(
-              1,
-              Math.floor(Number(product.stock ?? 1)) || 1,
-            );
-            if (prevWarehouse)
-              await adjustWarehouseStock(productId, prevWarehouse, -qty);
-            await adjustWarehouseStock(productId, nextWarehouse, qty);
-          }
-        } catch {
-          /* warehouse_stock is a convenience mirror — never block the passport save */
+        // Choosing or changing the asset's home warehouse moves the units on its shelf there.
+        const nextWarehouse = values.warehouseId ?? null;
+        if (nextWarehouse && nextWarehouse !== (prevPassport?.warehouseId ?? null)) {
+          await db.transaction(async (tx) => {
+            await tx.execute(sql`select id from products where id = ${productId} for update`);
+            const previous = prevPassport?.warehouseId ?? (await mainWarehouseId(tx as any));
+            const breakdown = (await warehouseBreakdowns(tx as any, [productId])).get(productId);
+            const moving = breakdown?.shares.find((row) => row.warehouseId === previous)?.inWarehouse ?? 0;
+            if (breakdown && moving > 0)
+              await applyWarehouseDeltas(tx as any, {
+                productId,
+                company: breakdown.company,
+                deltas: [{ warehouseId: previous, inWarehouse: -moving }, { warehouseId: nextWarehouse, inWarehouse: moving }],
+              });
+          });
         }
         // Integration — reflect maintenance changes on the asset timeline.
         const newMaint = Number(values.maintenanceCost);
@@ -31287,6 +31249,7 @@ const BookingAssetActionSchema = z.object({
   damagedQuantity: z.coerce.number().int().min(0).max(100000).optional(),
   missingQuantity: z.coerce.number().int().min(0).max(100000).optional(),
   warehouseId: z.coerce.number().int().positive().optional(),
+  allocations: z.array(z.object({ warehouseId: z.coerce.number().int().positive(), quantity: z.coerce.number().int().min(0).max(100000) })).max(20).optional(),
   vehicle: z.string().trim().max(120).optional(),
   note: z.string().trim().max(1000).optional(),
   confirmation: z.literal(true),
@@ -33310,6 +33273,7 @@ async function handleBookingOperations(
       const parsed = BookingProductLinesSchema.safeParse(await body(req));
       if (!parsed.success)
         return validationError("booking-operations.products", parsed);
+      await assertBookingLinesFitWarehouses(parsed.data.items, reference.entityType, reference.id);
       const availability = await checkAvailability(parsed.data.items, {
         ignoreSourceType: reference.entityType,
         ignoreSourceId: reference.id,
@@ -35401,6 +35365,107 @@ async function handlePreparation(
     completed: cards.reduce((sum, card) => sum + card.rollup.completed, 0),
   };
   return json({ cards, summary });
+}
+
+// إدارة المخازن — warehouses, their balances, counts and reports on the original stock tables.
+async function handleWarehouses(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "warehouses") return null;
+  const resource = parts[2];
+  const method = req.method;
+  // The list and one item's split are also needed by whoever prepares a booking.
+  const auth = await requireAnyPermission(req, [
+    "warehouses_view", "warehouses_manage", "warehouse_stock_manage", "warehouse_transfer", "warehouse_reports", "products",
+    ...(method === "GET" && (resource === "list" || resource === "product") ? (["bookings", "orders", "koshas", "booking_operations_view", "booking_products_manage"] as Permission[]) : []),
+  ]);
+  if (isResponse(auth)) return auth;
+  const manager = ["admin", "manager", "main_admin", "super_admin", "main_manager"].includes(String(auth.role ?? "").toLowerCase());
+  const may = (permission: Permission) => manager || hasPermission(auth, permission);
+  const who = { id: auth.id, name: auth.fullName || auth.username };
+  const params = req.nextUrl.searchParams;
+  const warehouseId = optionalPositiveId(params.get("warehouseId"));
+  const noStore = (data: unknown) => { const response = json(data); response.headers.set("Cache-Control", "private, no-store"); return response; };
+
+  if (!resource) {
+    if (method === "GET") {
+      const totals = await warehouseTotals(db as any);
+      return noStore({ ...totals, capabilities: { canManage: may("warehouses_manage"), canAdjust: manager || hasPermission(auth, "warehouse_stock_manage"), canTransfer: may("warehouse_transfer") || hasPermission(auth, "products"), canApprove: may("warehouse_adjust_approve"), canReport: may("warehouse_reports") || hasPermission(auth, "warehouses_view") } });
+    }
+    if (method === "POST") {
+      if (!may("warehouses_manage")) return error("ليس لديك صلاحية إضافة مخزن", 403);
+      const raw = await body(req);
+      const id = await db.transaction((tx) => createWarehouse(tx as any, raw ?? {}, who));
+      void logAdminActivity(req, "warehouse_created", "warehouse", id, {});
+      revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+      return json({ id }, 201);
+    }
+    return error("الطريقة غير مدعومة", 405);
+  }
+  if (resource === "list" && method === "GET") return noStore({ data: await listWarehouses(db as any) });
+  if (resource === "stock" && method === "GET")
+    return noStore(await warehouseStockRows(db as any, { warehouseId, search: params.get("search"), kind: params.get("kind"), focus: params.get("focus"), page: params.get("page"), pageSize: params.get("pageSize") }));
+  if (resource === "movements" && method === "GET")
+    return noStore(await warehouseMovementRows(db as any, { warehouseId, productId: optionalPositiveId(params.get("productId")), from: params.get("from"), to: params.get("to"), page: params.get("page"), pageSize: params.get("pageSize") }));
+  if (resource === "transfers" && method === "GET")
+    return noStore({ data: await warehouseTransferRows(db as any, { warehouseId, from: params.get("from"), to: params.get("to"), limit: 2000 }) });
+  if (resource === "discrepancies" && method === "GET")
+    return noStore(await warehouseDiscrepancies(db as any, warehouseId));
+  if (resource === "product" && method === "GET") {
+    const productId = optionalPositiveId(parts[3]);
+    if (!productId) return error("معرّف المادة غير صحيح", 400);
+    const breakdown = (await warehouseBreakdowns(db as any, [productId])).get(productId);
+    if (!breakdown) return error("المادة غير موجودة", 404);
+    const shares = await Promise.all(breakdown.shares.map(async (share) => {
+      const usable = share.inWarehouse + share.checkedOut;
+      const committed = await sourceCommitment(db as any, productId, share.warehouseId, usable);
+      return { ...share, committed, transferable: Math.max(0, Math.min(share.inWarehouse, usable - committed)) };
+    }));
+    return noStore({ productId, company: breakdown.company, overdrawn: breakdown.overdrawn, shares });
+  }
+  if (resource === "counts") {
+    const id = optionalPositiveId(parts[3]);
+    if (method === "GET" && !parts[3]) return noStore({ data: await listWarehouseCounts(db as any, warehouseId) });
+    if (method === "GET" && id) return noStore(await warehouseCountDetail(db as any, id));
+    if (method === "POST" && !parts[3]) {
+      if (!manager && !hasPermission(auth, "warehouse_stock_manage") && !hasPermission(auth, "products")) return error("ليس لديك صلاحية تسجيل جرد", 403);
+      const raw = await body(req);
+      const detail = await db.transaction((tx) => createWarehouseCount(tx as any, raw ?? {}, who));
+      if (detail.status === "pending" && !detail.replayed)
+        await createApprovalRequest({
+          type: "warehouse_count",
+          title: `جرد مخزن ${detail.countNo} · ${detail.warehouseName}`,
+          entityType: "warehouse_count",
+          entityId: detail.id,
+          newValues: { countId: detail.id, warehouseId: detail.warehouseId, differences: detail.lines.filter((line) => line.difference !== 0).length },
+          actor: erpActorFromAdmin(auth),
+        });
+      void logAdminActivity(req, "warehouse_count_recorded", "warehouse_count", detail.id, { status: detail.status });
+      return json(detail, detail.replayed ? 200 : 201);
+    }
+    if (method === "PATCH" && id) {
+      if (!may("warehouse_adjust_approve")) return error("اعتماد الجرد متاح لمن يملك صلاحية اعتماد التسويات", 403);
+      const raw = await body(req);
+      if (String(raw?.status ?? "") === "approved") {
+        const result = await db.transaction((tx) => approveWarehouseCount(tx as any, id, who));
+        void logAdminActivity(req, "warehouse_count_approved", "warehouse_count", id, { executed: result.executed });
+      } else {
+        await db.transaction((tx) => rejectWarehouseCount(tx as any, id, who));
+        void logAdminActivity(req, "warehouse_count_rejected", "warehouse_count", id, {});
+      }
+      revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+      return noStore(await warehouseCountDetail(db as any, id));
+    }
+    return error("الطريقة غير مدعومة", 405);
+  }
+  const id = optionalPositiveId(resource);
+  if (id && method === "PATCH") {
+    if (!may("warehouses_manage")) return error("ليس لديك صلاحية تعديل المخازن", 403);
+    const raw = await body(req);
+    await db.transaction((tx) => updateWarehouse(tx as any, id, raw ?? {}));
+    void logAdminActivity(req, "warehouse_updated", "warehouse", id, {});
+    revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+    return json({ id });
+  }
+  return error("المسار غير موجود", 404);
 }
 
 async function handleCentralBookingCenter(
@@ -37500,26 +37565,9 @@ async function handleProductLookup(
     limit: 60,
   });
   const productIds = products.map((product) => product.id);
-  const stockRows = productIds.length
-    ? await db
-      .select({
-        productId: warehouseStockTable.productId,
-        warehouse: warehousesTable.name,
-        quantity: warehouseStockTable.quantity,
-      })
-      .from(warehouseStockTable)
-      .innerJoin(
-        warehousesTable,
-        eq(warehouseStockTable.warehouseId, warehousesTable.id),
-      )
-      .where(inArray(warehouseStockTable.productId, productIds))
-    : [];
   const locations = new Map<number, Array<{ warehouse: string; quantity: number }>>();
-  for (const row of stockRows) {
-    const list = locations.get(row.productId) ?? [];
-    list.push({ warehouse: row.warehouse, quantity: Number(row.quantity ?? 0) });
-    locations.set(row.productId, list);
-  }
+  for (const [productId, breakdown] of await warehouseBreakdowns(db as any, productIds))
+    locations.set(productId, breakdown.shares.filter((share) => share.inWarehouse > 0).map((share) => ({ warehouse: share.name, quantity: share.inWarehouse })));
   const canViewCost = auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "accounting");
   return json({
     data: products.map((product) => ({
@@ -39562,6 +39610,8 @@ async function handleAdmin(
   const penaltiesReport = await handlePenaltiesReport(req, parts, section);
   if (penaltiesReport) return penaltiesReport;
 
+  const warehouseCenter = await handleWarehouses(req, parts, section);
+  if (warehouseCenter) return warehouseCenter;
   const preparationCenter = await handlePreparation(req, parts, section);
   if (preparationCenter) return preparationCenter;
 
@@ -42529,118 +42579,52 @@ async function handleAdmin(
   }
 
   if (section === "warehouse-transfers") {
-    const auth = await requirePermission(req, "products");
+    const auth = await requireAnyPermission(req, ["products", "warehouse_transfer", "warehouses_view"]);
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
+    const transferActor = { id: auth.id, name: auth.fullName || auth.username };
     if (method === "GET") {
-      const [rows, warehouses, warehouseStock] = await Promise.all([
-        db.query.warehouseTransfersTable.findMany({
-          orderBy: [desc(warehouseTransfersTable.createdAt)],
-          limit: 200,
-        }),
-        db.query.warehousesTable.findMany({
-          orderBy: [asc(warehousesTable.id)],
-        }),
-        db.query.warehouseStockTable.findMany({
-          orderBy: [desc(warehouseStockTable.updatedAt)],
-          limit: 500,
-        }),
+      const params = req.nextUrl.searchParams;
+      const [rows, warehouses] = await Promise.all([
+        warehouseTransferRows(db as any, { warehouseId: optionalPositiveId(params.get("warehouseId")), from: params.get("from"), to: params.get("to") }),
+        listWarehouses(db as any),
       ]);
-      return json({
-        data: rows.map(formatWarehouseTransfer),
-        warehouses,
-        warehouseStock: warehouseStock.map((row) => ({
-          ...row,
-          quantity: Number(row.quantity),
-          createdAt: iso(row.createdAt),
-          updatedAt: iso(row.updatedAt),
-        })),
-      });
+      return json({ data: rows, warehouses });
     }
     if (method === "POST") {
+      if (!hasPermission(auth, "products") && !hasPermission(auth, "warehouse_transfer"))
+        return error("ليس لديك صلاحية طلب تحويل مخزني", 403);
       const b = await body(req);
-      const productId = optionalPositiveId(b?.productId);
-      const product = productId
-        ? await db.query.productsTable.findFirst({
-            where: eq(productsTable.id, productId),
-          })
-        : null;
-      const qty = Math.max(
-        1,
-        Number.parseInt(String(b?.quantity ?? "1"), 10) || 1,
-      );
-      const [draft] = await db
-        .insert(warehouseTransfersTable)
-        .values({
-          transferNo: `WTR-TMP-${randomUUID()}`,
-          productId,
-          productName: textFallback(
-            product?.nameAr,
-            product?.name,
-            b?.productName,
-            "مادة",
-          ),
-          fromWarehouseId: optionalPositiveId(b?.fromWarehouseId),
-          toWarehouseId: optionalPositiveId(b?.toWarehouseId),
-          quantity: qty,
-          requestedBy: auth.id,
-          requestedByName: auth.fullName || auth.username,
-          notes: nullableText(b?.notes),
-        })
-        .returning();
-      const transferNo = `WTR-${String(draft.id).padStart(6, "0")}`;
-      const [row] = await db
-        .update(warehouseTransfersTable)
-        .set({ transferNo })
-        .where(eq(warehouseTransfersTable.id, draft.id))
-        .returning();
-      await createApprovalRequest({
-        type: "warehouse_transfer",
-        title: `تحويل مخزني ${transferNo}`,
-        entityType: "warehouse_transfer",
-        entityId: row.id,
-        newValues: { productId, qty },
-        actor: erpActorFromAdmin(auth),
-      });
-      return json(formatWarehouseTransfer(row), 201);
+      const { row, replayed } = await db.transaction((tx) => createWarehouseTransfer(tx as any, b ?? {}, transferActor));
+      if (!replayed)
+        await createApprovalRequest({
+          type: "warehouse_transfer",
+          title: `تحويل مخزني ${row.transfer_no}`,
+          entityType: "warehouse_transfer",
+          entityId: Number(row.id),
+          newValues: { productId: row.product_id, qty: row.quantity, fromWarehouseId: row.from_warehouse_id, toWarehouseId: row.to_warehouse_id },
+          actor: erpActorFromAdmin(auth),
+        });
+      return json(formatWarehouseTransfer(row), replayed ? 200 : 201);
     }
     if (method === "PATCH" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
-      if (!(auth.role === "admin" || auth.role === "manager"))
+      if (!(auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "warehouse_adjust_approve")))
         return error("اعتماد التحويل متاح للمدير فقط", 403);
       const b = await body(req);
-      const next =
-        String(b?.status ?? "").toLowerCase() === "approved"
-          ? "approved"
-          : "rejected";
-      const [row] = await db
-        .update(warehouseTransfersTable)
-        .set({
-          status: next,
-          reviewedBy: auth.id,
-          reviewedByName: auth.fullName || auth.username,
-          reviewedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(warehouseTransfersTable.id, id))
-        .returning();
-      if (!row) return error("التحويل غير موجود", 404);
-      const execution =
-        next === "approved"
-          ? await executeWarehouseTransfer(row, erpActorFromAdmin(auth))
-          : null;
-      void logAdminActivity(
-        req,
-        next === "approved"
-          ? "warehouse_transfer_approved"
-          : "warehouse_transfer_rejected",
-        "warehouse_transfer",
-        row.id,
-        { transferNo: row.transferNo, execution },
-      );
-      return json({ ...formatWarehouseTransfer(row), execution });
+      const approving = String(b?.status ?? "").toLowerCase() === "approved";
+      if (approving) {
+        const { executed, row } = await db.transaction((tx) => approveWarehouseTransfer(tx as any, id, transferActor));
+        void logAdminActivity(req, "warehouse_transfer_approved", "warehouse_transfer", id, { executed });
+        revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+        return json({ ...formatWarehouseTransfer(row), execution: { executed } });
+      }
+      const row = await db.transaction((tx) => rejectWarehouseTransfer(tx as any, id, transferActor));
+      void logAdminActivity(req, "warehouse_transfer_rejected", "warehouse_transfer", id, {});
+      return json({ ...formatWarehouseTransfer(row), execution: null });
     }
+    return error("الطريقة غير مدعومة", 405);
   }
 
   if (section === "report-templates") {
@@ -43533,6 +43517,7 @@ async function handleAdmin(
             to: params.get("to"),
             page: Number(params.get("page")) || 1,
             pageSize: Number(params.get("pageSize")) || 50,
+            warehouseId: optionalPositiveId(params.get("warehouseId")),
           }),
         );
       }
@@ -43581,6 +43566,7 @@ async function handleAdmin(
             responsibleStaffId: z.coerce.number().int().positive().nullable().optional(),
             photos: z.array(z.string().trim().max(4000)).max(10).optional(),
             additionalToReturn: z.boolean().optional(),
+            warehouseId: z.coerce.number().int().positive().nullable().optional(),
             requestId: z.string().trim().min(8).max(80),
           })
           .safeParse(await body(req));
@@ -43608,6 +43594,7 @@ async function handleAdmin(
               responsibleStaffId: input.responsibleStaffId ?? null,
               photos: input.photos ?? [],
               additionalToReturn: input.additionalToReturn === true,
+              warehouseId: input.warehouseId ?? null,
               requestId: input.requestId,
               actor: quantityActor,
             }),
@@ -43788,6 +43775,8 @@ async function handleAdmin(
       // One QR for the master record of a quantity asset: the scan returns the
       // quantity picture so staff enter a quantity instead of scanning each unit.
       const quantity = await quantityAssetSummary(db, productId);
+      const scanBreakdown = (await warehouseBreakdowns(db as any, [productId])).get(productId);
+      const scanMovement = (await warehouseMovementRows(db as any, { productId, pageSize: 1 })).data[0] ?? null;
       const scanWarehouse = passport?.warehouseId
         ? await db.query.warehousesTable.findFirst({
             where: eq(warehousesTable.id, passport.warehouseId),
@@ -43810,7 +43799,9 @@ async function handleAdmin(
           (publicMediaList("product", product, product.images) ?? [])[0] ??
           passport?.imageUrl ??
           null,
-        warehouseName: scanWarehouse?.name ?? null,
+        warehouseName: scanWarehouse?.name ?? scanBreakdown?.shares.find((share) => share.isMain)?.name ?? null,
+        warehouses: (scanBreakdown?.shares ?? []).filter((share) => share.total > 0 || share.isMain).map((share) => ({ warehouseId: share.warehouseId, name: share.name, isMain: share.isMain, inWarehouse: share.inWarehouse, damaged: share.damaged, maintenance: share.maintenance, checkedOut: share.checkedOut, total: share.total })),
+        lastMovement: scanMovement ? { reason: scanMovement.reason, quantity: scanMovement.quantity, warehouseName: scanMovement.warehouseName, toWarehouseName: scanMovement.toWarehouseName, actorName: scanMovement.actorName, createdAt: scanMovement.createdAt } : null,
         quantity: quantity
           ? {
               unit: quantity.unit,
@@ -43839,24 +43830,33 @@ async function handleAdmin(
       const productId = optionalPositiveId(
         req.nextUrl.searchParams.get("productId"),
       );
+      const movementWarehouseId = optionalPositiveId(req.nextUrl.searchParams.get("warehouseId"));
+      const movementMainId = await mainWarehouseId(db as any);
+      const movementWarehouses = new Map((await listWarehouses(db as any)).map((row) => [row.id, row.name]));
       const timelineFilters: any[] = [
         eq(entityTimelineTable.entityType, "asset"),
       ];
       if (productId)
         timelineFilters.push(eq(entityTimelineTable.entityId, productId));
       const [timeline, stockRows] = await Promise.all([
-        db.query.entityTimelineTable.findMany({
+        // Timeline notes carry no warehouse, so a warehouse filter shows stock movements only.
+        movementWarehouseId ? Promise.resolve([] as (typeof entityTimelineTable.$inferSelect)[]) : db.query.entityTimelineTable.findMany({
           where: and(...timelineFilters),
           orderBy: [desc(entityTimelineTable.createdAt)],
           limit: 500,
         }),
         db.query.stockMovementsTable.findMany({
-          where: productId
-            ? or(
-                eq(stockMovementsTable.productId, productId),
-                eq(stockMovementsTable.stockSourceProductId, productId),
-              )
-            : undefined,
+          where: and(
+            productId
+              ? or(
+                  eq(stockMovementsTable.productId, productId),
+                  eq(stockMovementsTable.stockSourceProductId, productId),
+                )
+              : undefined,
+            movementWarehouseId
+              ? sql`(coalesce(${stockMovementsTable.warehouseId}, ${movementMainId}) = ${movementWarehouseId} or ${stockMovementsTable.toWarehouseId} = ${movementWarehouseId})`
+              : undefined,
+          ),
           orderBy: [desc(stockMovementsTable.createdAt)],
           limit: 500,
         }),
@@ -43910,7 +43910,11 @@ async function handleAdmin(
             type: "stock_movement",
             title: quantityMovementLabel(row.reason) ?? row.reason,
             body: null,
+            // A transfer leaves the company total alone, so its size lives in the metadata.
             quantityChange: Number(row.quantityChange),
+            quantity: row.reason === "warehouse_transfer_executed" ? Number((row.metadata as any)?.quantity ?? 0) : Number(row.quantityChange),
+            warehouseName: movementWarehouses.get(row.warehouseId ?? movementMainId) ?? null,
+            toWarehouseName: row.toWarehouseId ? (movementWarehouses.get(row.toWarehouseId) ?? null) : null,
             actorName: row.createdByName,
             relatedType: row.relatedType,
             relatedId: row.relatedId,
@@ -44883,6 +44887,7 @@ async function handleAdmin(
       db,
       products.map((product) => ({ id: product.id, stock: product.stock, minStock: product.minStock })),
     );
+    const assetShares = await warehouseBreakdowns(db as any, products.map((product) => product.id));
     const allRows = products.map((product) => {
       const profile = profileByProduct.get(product.id);
       const removedProfile = removedProfileByProduct.get(product.id);
@@ -44924,7 +44929,9 @@ async function handleAdmin(
             ? "available"
             : rawStatus;
       const warehouseId = passport?.warehouseId ?? null;
-      const warehouseName = warehouseId ? (warehouseById.get(warehouseId) ?? null) : null;
+      // Every warehouse actually holding units, so the warehouse filter finds a split asset too.
+      const heldIn = (assetShares.get(product.id)?.shares ?? []).filter((share) => share.total > 0).map((share) => share.name);
+      const warehouseName = heldIn.length ? heldIn.join("، ") : warehouseId ? (warehouseById.get(warehouseId) ?? null) : null;
       const responsibleNames = uniqueText([
         passport?.lastStaffId
           ? staffById.get(passport.lastStaffId)?.fullName || staffById.get(passport.lastStaffId)?.username
@@ -45085,7 +45092,7 @@ async function handleAdmin(
         brands: uniqueText(allRows.map((row) => row.brand)).sort((a, b) => a.localeCompare(b, "ar")),
         models: uniqueText(allRows.map((row) => row.model)).sort((a, b) => a.localeCompare(b, "ar")),
         employees: uniqueText(allRows.flatMap((row) => row.responsibleNames)).sort((a, b) => a.localeCompare(b, "ar")),
-        warehouses: uniqueText(allRows.map((row) => row.warehouseName)).sort((a, b) => a.localeCompare(b, "ar")),
+        warehouses: uniqueText(warehouseRows.map((row) => row.name)).sort((a, b) => a.localeCompare(b, "ar")),
         locations: uniqueText(allRows.map((row) => row.storageLocation)).sort((a, b) => a.localeCompare(b, "ar")),
       },
     });
@@ -71371,6 +71378,7 @@ const expenseMutationSchema = z.object({
   supplierId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional(),
   beneficiaryName: z.string().trim().max(200).nullish(),
   responsibleEmployeeId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional(),
+  warehouseId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional(),
 });
 
 async function validateExpenseKoshaReferences(input: {
@@ -71380,6 +71388,7 @@ async function validateExpenseKoshaReferences(input: {
   constructionProjectId?: number | null;
   supplierId?: number | null;
   responsibleEmployeeId?: number | null;
+  warehouseId?: number | null;
 }): Promise<NextResponse | null> {
   let bookingKoshaId: number | null = null;
   if (input.koshaId != null) {
@@ -71474,6 +71483,7 @@ async function createExpenseWithFinancialRequest(
       supplierId: b.supplierId ?? null,
       beneficiaryName: b.beneficiaryName ?? null,
       responsibleEmployeeId: b.responsibleEmployeeId ?? null,
+      warehouseId: b.warehouseId ?? null,
       paymentMethod: normMethod(b?.paymentMethod),
       receiptImage,
       notes: options.notesPrefix
@@ -73098,6 +73108,8 @@ async function handleAccounting(
           b.responsibleEmployeeId !== undefined
             ? b.responsibleEmployeeId
             : existingExpense.responsibleEmployeeId,
+        warehouseId:
+          b.warehouseId !== undefined ? b.warehouseId : existingExpense.warehouseId,
       });
       if (classificationError) return classificationError;
       const update: any = { updatedAt: new Date() };
@@ -76251,6 +76263,11 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       const requestId = makeRequestId(req.headers.get("x-request-id"));
       console.warn("AJN graduation operation rejected", {requestId, path:req.nextUrl.pathname, status:err.status});
       return error(err.message, err.status, {code:"CONFLICT", requestId, retryable:false});
+    }
+    if(err instanceof WarehouseError){
+      const requestId=makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN warehouse operation rejected",{requestId,path:req.nextUrl.pathname,status:err.status});
+      return error(err.message,err.status,{requestId,code:err.status===403?"PERMISSION_DENIED":err.status===409?"CONFLICT":"VALIDATION_ERROR",retryable:false,...(err.extra??{})});
     }
     if(err instanceof TransportPlanError){
       const requestId=makeRequestId(req.headers.get("x-request-id"));

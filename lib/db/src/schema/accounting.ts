@@ -88,6 +88,7 @@ export const expensesTable = pgTable("expenses", {
   supplierId: integer("supplier_id").references(() => suppliersTable.id, { onDelete: "set null" }),
   beneficiaryName: text("beneficiary_name"),
   responsibleEmployeeId: integer("responsible_employee_id").references(() => staffTable.id, { onDelete: "set null" }),
+  warehouseId: integer("warehouse_id"),
   categoryName: text("category_name").notNull().default(""),
   paymentMethod: varchar("payment_method", { length: 20 }).notNull().default("cash"),
   receiptImage: text("receipt_image"),

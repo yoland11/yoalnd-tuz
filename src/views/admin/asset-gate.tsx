@@ -20,6 +20,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./_layout";
+import { quantityMovementLabel } from "@/lib/quantity-assets";
+import { WAREHOUSE_MOVEMENT_LABELS } from "@/lib/warehouse-stock";
+import { Link } from "wouter";
 import { adminFetch, apiErrorMessage, compressImageFile } from "./_lib";
 import { QuantityBookingAssetDialog, type QuantityBookingTarget } from "./quantity-booking-asset-dialog";
 
@@ -49,6 +52,8 @@ type ScanResult = {
   trackingMode?: "individual" | "quantity";
   imageUrl?: string | null;
   warehouseName?: string | null;
+  warehouses?: Array<{ warehouseId: number; name: string; isMain: boolean; inWarehouse: number; damaged: number; maintenance: number; checkedOut: number; total: number }>;
+  lastMovement?: { reason: string; quantity: number; warehouseName: string | null; toWarehouseName: string | null; actorName: string; createdAt: string } | null;
   quantity?: {
     unit: string;
     total: number;
@@ -66,6 +71,29 @@ type CustodyRow = { id: number; productId: number; staffId: number; status: stri
 type StaffRow = { id: number; fullName?: string; username?: string };
 
 const BLOCKED_CHECKOUT = new Set(["maintenance", "lost", "retired", "locked", "sold", "disposed"]);
+
+/** Where the scanned asset is now, its last movement, and a shortcut to move it. */
+function ScanWarehouses({ scan }: { scan: ScanResult }) {
+  const rows = scan.warehouses ?? [];
+  return (
+    <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/60 p-2.5 text-xs">
+      {rows.length ? (
+        <ul className="space-y-1">
+          {rows.map((row) => (
+            <li key={row.warehouseId} className="flex items-center justify-between gap-2">
+              <span className="font-medium">{row.name}</span>
+              <span className="tabular-nums text-muted-foreground">موجود {row.inWarehouse}{row.checkedOut ? ` · خارج ${row.checkedOut}` : ""}{row.damaged ? ` · تالف ${row.damaged}` : ""}{row.maintenance ? ` · صيانة ${row.maintenance}` : ""}</span>
+            </li>
+          ))}
+        </ul>
+      ) : <p className="text-muted-foreground">لا توجد كمية مسجلة في المخازن.</p>}
+      {scan.lastMovement ? (
+        <p className="text-muted-foreground">آخر حركة: {quantityMovementLabel(scan.lastMovement.reason) ?? WAREHOUSE_MOVEMENT_LABELS[scan.lastMovement.reason] ?? scan.lastMovement.reason} · {scan.lastMovement.quantity}{scan.lastMovement.toWarehouseName ? ` · إلى ${scan.lastMovement.toWarehouseName}` : ""} · {new Date(scan.lastMovement.createdAt).toLocaleDateString("ar-IQ-u-nu-latn", { timeZone: "Asia/Baghdad" })}</p>
+      ) : null}
+      <Link href="/admin/warehouse-transfers" className="inline-flex min-h-9 items-center font-semibold text-primary underline underline-offset-2">تحويل هذا الأصل لمخزن ثاني</Link>
+    </div>
+  );
+}
 
 export default function AssetGatePage() {
   const [mode, setMode] = useState<GateMode>("checkout");
@@ -623,6 +651,7 @@ export default function AssetGatePage() {
                   </div>
                 ))}
               </div>
+              <ScanWarehouses scan={quantityScan.scan} />
               {quantityScan.scan.quantity?.relatedBookings.length ? (
                 <div className="text-xs text-muted-foreground">
                   الحجوزات المرتبطة:{" "}
@@ -740,6 +769,7 @@ export default function AssetGatePage() {
             <div className="rounded-xl border border-border/30 bg-background/50 p-3 space-y-1">
               <p className="font-semibold text-foreground">{pending.name}</p>
               <p className="text-xs font-mono text-muted-foreground" dir="ltr">{pending.assetCode}</p>
+              <div className="mt-2"><ScanWarehouses scan={pending} /></div>
               <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground pt-1">
                 <span>الحالة: <b className="text-foreground">{pending.status}</b></span>
                 <span>الموقع: <b className="text-foreground">{pending.location ?? "المخزن"}</b></span>

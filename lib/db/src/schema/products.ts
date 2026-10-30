@@ -227,6 +227,7 @@ export const stockMovementsTable = pgTable("stock_movements", {
   salesInvoiceItemId: integer("sales_invoice_item_id"),
   invoiceNumber: varchar("invoice_number", { length: 40 }),
   warehouseId: integer("warehouse_id"),
+  toWarehouseId: integer("to_warehouse_id"),
   movementType: varchar("movement_type", { length: 60 }),
   reversedMovementId: integer("reversed_movement_id"),
   reversalReason: text("reversal_reason"),

@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage } from "./_lib";
+import { WarehouseSelect, useWarehouseOptions } from "@/components/warehouse-select";
+import { useQuery } from "@tanstack/react-query";
 
 /** Quantity fields returned by the booking assets API for a quantity-based asset. */
 export type QuantityBookingTarget = {
@@ -76,12 +78,27 @@ export function QuantityBookingAssetDialog({
   const defaultMode: Mode = initialMode ?? (outstanding > 0 ? "return" : reserved > checkedOut ? "checkout" : "reserve");
   const [mode, setMode] = useState<Mode>(defaultMode);
   const [requestId, setRequestId] = useState(newRequestId);
+  const [warehouse, setWarehouse] = useState("");
+  const [allocation, setAllocation] = useState<Record<number, string>>({});
+  const warehouseOptions = useWarehouseOptions(Boolean(target));
+  const activeWarehouses = (warehouseOptions.data?.data ?? []).filter((row) => row.isActive);
+  const severalWarehouses = activeWarehouses.length > 1;
+  const split = useQuery<{ shares: Array<{ warehouseId: number; name: string; inWarehouse: number; transferable: number }> }>({
+    queryKey: ["admin", "warehouses", "product", target?.productId],
+    queryFn: () => adminFetch(`/admin/warehouses/product/${target?.productId}`),
+    enabled: Boolean(target?.productId) && severalWarehouses,
+  });
+  const shelfByWarehouse = Object.fromEntries((split.data?.shares ?? []).map((share) => [share.warehouseId, share.inWarehouse]));
+  const allocationTotal = Object.values(allocation).reduce((sum, value) => sum + Math.max(0, Math.floor(Number(value) || 0)), 0);
+  const allocationUsed = allocationTotal > 0;
   const [form, setForm] = useState({ quantity: "", good: "", damaged: "", missing: "", description: "", estimatedCost: "", managerApproval: false, vehicle: "", note: "" });
 
   useEffect(() => {
     if (!target) return;
     setMode(defaultMode);
     setRequestId(newRequestId());
+    setWarehouse("");
+    setAllocation({});
     setForm({
       quantity: String(
         defaultMode === "reserve"
@@ -146,13 +163,22 @@ export function QuantityBookingAssetDialog({
         estimatedCost: Number(form.estimatedCost || 0),
         managerApproval: form.managerApproval,
         photoUrls: [],
+        warehouseId: warehouse ? Number(warehouse) : undefined,
       });
       return;
     }
     if (quantity <= 0) { toast({ title: "أدخل كمية صحيحة", variant: "destructive" }); return; }
+    if (mode === "reserve" && allocationUsed && allocationTotal !== quantity) {
+      toast({ title: "وزّع الكمية كاملة على المخازن", description: `المطلوب ${quantity}، والموزّع ${allocationTotal}`, variant: "destructive" });
+      return;
+    }
     action.mutate({
       mode,
       quantity,
+      warehouseId: mode === "checkout" && warehouse ? Number(warehouse) : undefined,
+      allocations: mode === "reserve" && allocationUsed
+        ? Object.entries(allocation).map(([id, value]) => ({ warehouseId: Number(id), quantity: Math.max(0, Math.floor(Number(value) || 0)) })).filter((part) => part.quantity > 0)
+        : undefined,
       vehicle: mode === "checkout" ? form.vehicle.trim() || undefined : undefined,
       note: mode === "checkout" ? form.note.trim() || undefined : undefined,
     });
@@ -218,6 +244,8 @@ export function QuantityBookingAssetDialog({
                     <input type="number" min={0} inputMode="numeric" value={form.missing} onChange={(event) => setForm({ ...form, missing: event.target.value })} className={inputClass} />
                   </label>
                 </div>
+                {severalWarehouses ? <WarehouseSelect allowAll label="مخزن الاستلام" value={warehouse} onChange={setWarehouse} shares={shelfByWarehouse} /> : null}
+                {severalWarehouses && !warehouse ? <p className="text-xs text-muted-foreground">بدون اختيار: تعود الكمية للمخزن اللي خرجت منه.</p> : null}
                 <p className={`text-xs ${returnTotal > outstanding ? "text-red-600" : "text-muted-foreground"}`}>
                   المجموع {n(returnTotal)} من {n(outstanding)} · سيبقى خارجاً {n(Math.max(0, outstanding - returnTotal))} {unit}
                 </p>
@@ -250,6 +278,23 @@ export function QuantityBookingAssetDialog({
                       ? `لا يتجاوز المحجوز (${n(reserved)} ${unit}).`
                       : `يُخصم من المستودع${target.inWarehouse != null ? ` (فيه الآن ${n(target.inWarehouse)} ${unit})` : ""}؛ ما يتجاوز المحجوز يُحجز تلقائياً إن توفر.`}
                 </p>
+                {mode === "reserve" && severalWarehouses ? (
+                  <fieldset className="space-y-1.5 rounded-lg border border-border/40 p-2.5">
+                    <legend className="px-1 text-xs font-semibold">من أي مخزن؟</legend>
+                    {split.isError ? <p role="alert" className="text-xs text-destructive">{apiErrorMessage(split.error)}</p> : null}
+                    {activeWarehouses.map((row) => (
+                      <label key={row.id} className="flex items-center justify-between gap-2 text-xs">
+                        <span className="min-w-0 truncate">{row.name} <span className="tabular-nums text-muted-foreground">(فيه {n(shelfByWarehouse[row.id] ?? 0)})</span></span>
+                        <input type="number" min={0} inputMode="numeric" aria-label={`الكمية من ${row.name}`} value={allocation[row.id] ?? ""} onChange={(event) => setAllocation({ ...allocation, [row.id]: event.target.value })} className="h-9 w-20 rounded-lg border border-border/40 bg-background px-2 text-sm" />
+                      </label>
+                    ))}
+                    <p className={`text-xs ${allocationUsed && allocationTotal !== Math.floor(Number(form.quantity) || 0) ? "text-red-600" : "text-muted-foreground"}`}>
+                      {allocationUsed ? `الموزّع ${n(allocationTotal)} من ${n(Math.floor(Number(form.quantity) || 0))}` : "بدون توزيع: يبقى توزيع هذا الحجز كما هو، والحجز الجديد يكون من المخزن الرئيسي."}
+                    </p>
+                  </fieldset>
+                ) : null}
+                {mode === "checkout" && severalWarehouses ? <WarehouseSelect allowAll label="مخزن الخروج" value={warehouse} onChange={setWarehouse} shares={shelfByWarehouse} /> : null}
+                {mode === "checkout" && severalWarehouses && !warehouse ? <p className="text-xs text-muted-foreground">بدون اختيار: تخرج الكمية من المخازن المحجوزة لهذا الحجز.</p> : null}
                 {mode === "checkout" ? (
                   <div className="grid grid-cols-2 gap-2">
                     <label className="block text-xs">المركبة (اختياري)

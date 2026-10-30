@@ -11,14 +11,15 @@ import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { printWhenImagesReadyScript, thermalReceiptCss } from "./print-helpers";
 import { DateField } from "@/components/ui/date-field";
+import { useWarehouseOptions } from "@/components/warehouse-select";
 
-type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; financialTransactionId?: number | null; createdByName: string; createdAt: string; costCategory?: string | null; koshaId?: number | null; bookingId?: number | null; constructionProjectId?: number | null; expenseType?: string | null; beneficiaryName?: string | null };
+type Expense = { warehouseId?: number | null; id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; financialTransactionId?: number | null; createdByName: string; createdAt: string; costCategory?: string | null; koshaId?: number | null; bookingId?: number | null; constructionProjectId?: number | null; expenseType?: string | null; beneficiaryName?: string | null };
 type Category = { id: number; name: string; nameAr: string; isActive: number };
-type ExpenseForm = { id?: number; date: string; name: string; categoryId: string; amount: string; paymentMethod: string; notes: string; receiptImage: string; costCategory: string; koshaId: string; bookingId: string; constructionProjectId: string; expenseType: string; beneficiaryName: string };
+type ExpenseForm = { id?: number; date: string; name: string; categoryId: string; amount: string; paymentMethod: string; notes: string; receiptImage: string; costCategory: string; koshaId: string; bookingId: string; constructionProjectId: string; expenseType: string; beneficiaryName: string; warehouseId: string };
 
 const inputCls = "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50";
 const today = () => new Date().toISOString().slice(0, 10);
-const blankForm = (): ExpenseForm => ({ date: today(), name: "", categoryId: "", amount: "", paymentMethod: "cash", notes: "", receiptImage: "", costCategory: "", koshaId: "", bookingId: "", constructionProjectId: "", expenseType: "", beneficiaryName: "" });
+const blankForm = (): ExpenseForm => ({ date: today(), name: "", categoryId: "", amount: "", paymentMethod: "cash", notes: "", receiptImage: "", costCategory: "", koshaId: "", bookingId: "", constructionProjectId: "", expenseType: "", beneficiaryName: "", warehouseId: "" });
 const costCategories = [{ value: "investment", label: "استثمار الكوشة" }, { value: "operating", label: "تشغيل الكوشة" }, { value: "booking", label: "تكلفة حجز" }];
 const paymentMethods = [
   { value: "cash", label: "نقد" },
@@ -59,7 +60,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
 
   const save = useMutation({
     mutationFn: async (payload: ExpenseForm) => {
-      const body = { ...payload, categoryId: Number(payload.categoryId), amount: Number(payload.amount), koshaId: payload.koshaId ? Number(payload.koshaId) : null, bookingId: payload.bookingId ? Number(payload.bookingId) : null, constructionProjectId: payload.constructionProjectId ? Number(payload.constructionProjectId) : null, costCategory: payload.costCategory || null, expenseType: payload.expenseType || null };
+      const body = { ...payload, warehouseId: payload.warehouseId ? Number(payload.warehouseId) : null, categoryId: Number(payload.categoryId), amount: Number(payload.amount), koshaId: payload.koshaId ? Number(payload.koshaId) : null, bookingId: payload.bookingId ? Number(payload.bookingId) : null, constructionProjectId: payload.constructionProjectId ? Number(payload.constructionProjectId) : null, costCategory: payload.costCategory || null, expenseType: payload.expenseType || null };
       const path = payload.id ? `/admin/expenses/${payload.id}` : "/admin/expenses";
       return adminFetch(path, { method: payload.id ? "PATCH" : "POST", body: JSON.stringify(body) });
     },
@@ -257,7 +258,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
                             <Button variant="ghost" onClick={() => decideExpense(expense, "reject")} disabled={approveExpense.isPending || rejectExpense.isPending} className="rounded px-2 py-1 text-xs font-bold text-status-danger hover:bg-status-danger/10 disabled:opacity-50">رفض</Button>
                           </> : null}
                           {(expense.approvalStatus ?? "executed") !== "executed" ? <>
-                            <Button variant="ghost" onClick={() => setForm({ ...blankForm(), id: expense.id, date: expense.date, name: expense.name ?? "", categoryId: expense.categoryId ? String(expense.categoryId) : "", amount: String(expense.amount ?? ""), paymentMethod: expense.paymentMethod ?? "cash", notes: expense.notes ?? "", receiptImage: expense.receiptImage ?? "", costCategory: expense.costCategory ?? "", koshaId: expense.koshaId ? String(expense.koshaId) : "", bookingId: expense.bookingId ? String(expense.bookingId) : "", constructionProjectId: expense.constructionProjectId ? String(expense.constructionProjectId) : "", expenseType: expense.expenseType ?? "", beneficiaryName: expense.beneficiaryName ?? "" })} className="p-1.5 rounded text-primary hover:bg-primary/10"><Pencil className="w-4 h-4" /></Button>
+                            <Button variant="ghost" onClick={() => setForm({ ...blankForm(), id: expense.id, date: expense.date, name: expense.name ?? "", categoryId: expense.categoryId ? String(expense.categoryId) : "", amount: String(expense.amount ?? ""), paymentMethod: expense.paymentMethod ?? "cash", notes: expense.notes ?? "", receiptImage: expense.receiptImage ?? "", costCategory: expense.costCategory ?? "", koshaId: expense.koshaId ? String(expense.koshaId) : "", bookingId: expense.bookingId ? String(expense.bookingId) : "", constructionProjectId: expense.constructionProjectId ? String(expense.constructionProjectId) : "", expenseType: expense.expenseType ?? "", beneficiaryName: expense.beneficiaryName ?? "", warehouseId: expense.warehouseId ? String(expense.warehouseId) : "" })} className="p-1.5 rounded text-primary hover:bg-primary/10"><Pencil className="w-4 h-4" /></Button>
                             <Button variant="ghost" onClick={() => confirm("حذف المصروف؟") && remove.mutate(expense.id)} className="p-1.5 rounded text-status-danger hover:bg-status-danger/10"><Trash2 className="w-4 h-4" /></Button>
                           </> : <span className="text-xs text-muted-foreground">محفوظ</span>}
                           <DropdownMenu dir="rtl">
@@ -291,6 +292,7 @@ function ApprovalBadge({ status = "executed" }: { status?: string }) {
 }
 
 function ExpenseFormPanel({ form, categories, koshas, saving, onChange, onSave, onClose, onManageCategories }: { form: ExpenseForm; categories: Category[]; koshas: Array<{ id: number; name: string; financialCode?: string }>; saving: boolean; onChange: (form: ExpenseForm) => void; onSave: () => void; onClose: () => void; onManageCategories: () => void }) {
+  const warehouseOptions = useWarehouseOptions();
   async function onReceipt(file: File) {
     onChange({ ...form, receiptImage: await fileToDataUrl(file) });
   }
@@ -308,6 +310,7 @@ function ExpenseFormPanel({ form, categories, koshas, saving, onChange, onSave, 
       {form.costCategory === "investment" ? <Field label="رقم أمر الإنشاء (اختياري)"><input type="number" min="1" value={form.constructionProjectId} onChange={(e) => onChange({ ...form, constructionProjectId: e.target.value })} className={inputCls} placeholder="معرف أمر الإنشاء" /></Field> : null}
       {form.costCategory ? <Field label="نوع المصروف"><select value={form.expenseType} onChange={(e) => onChange({ ...form, expenseType: e.target.value })} className={inputCls}><option value="">اختر النوع</option>{[["maintenance","صيانة"],["repair","إصلاح"],["labor","أجور"],["transportation","نقل"],["installation","تنصيب"],["cleaning","تنظيف"],["painting","صبغ"],["electrical","كهرباء"],["storage","خزن"],["replacement","استبدال"],["fuel","وقود"],["other","أخرى"]].map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></Field> : null}
       {form.costCategory ? <Field label="المستفيد / المورد"><input value={form.beneficiaryName} onChange={(e) => onChange({ ...form, beneficiaryName: e.target.value })} className={inputCls} /></Field> : null}
+      {warehouseOptions.isError ? null : (warehouseOptions.data?.data.length ?? 0) > 1 ? <Field label="المخزن (اختياري)"><select value={form.warehouseId} onChange={(e) => onChange({ ...form, warehouseId: e.target.value })} className={inputCls}><option value="">غير مرتبط بمخزن</option>{warehouseOptions.data?.data.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></Field> : null}
       <Field label="صورة الإيصال"><input type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && void onReceipt(e.target.files[0])} className="text-xs text-muted-foreground file:ml-2 file:rounded file:border-0 file:bg-primary/10 file:text-primary file:px-2 file:py-1" /></Field>
       <div className="lg:col-span-2"><Field label="ملاحظات"><input value={form.notes} onChange={(e) => onChange({ ...form, notes: e.target.value })} className={inputCls} /></Field></div>
       <div className="flex items-end"><Button type="submit" disabled={saving} className="w-full gap-1.5"><Plus className="w-4 h-4" /> {saving ? "جاري الحفظ..." : "حفظ المصروف"}</Button></div>

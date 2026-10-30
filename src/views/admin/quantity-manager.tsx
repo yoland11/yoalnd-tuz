@@ -34,6 +34,7 @@ import { TOTAL_CHANGING_ADJUSTMENTS, quantityMovementLabel, type QuantityAdjustm
 import { adminFetch, apiErrorMessage, fetchAdminMe, formatCurrency, hasPerm } from "./_lib";
 import type { QuantitySummary } from "./quantity-asset-panel";
 import { DateField } from "@/components/ui/date-field";
+import { WarehouseSelect, useWarehouseOptions } from "@/components/warehouse-select";
 
 type StaffOption = { id: number; fullName?: string | null; username?: string | null };
 type Movement = {
@@ -250,12 +251,11 @@ export function QuantityManager({
     enabled: historyOpen,
     placeholderData: (previous) => previous,
   });
-  const warehouses = useQuery<{ warehouses: Array<{ id: number; name: string }> }>({
-    queryKey: ["admin", "warehouses-list"],
-    queryFn: () => adminFetch("/admin/warehouse-transfers"),
-    enabled: transferOpen,
-    staleTime: 5 * 60 * 1000,
-  });
+  const warehouseOptions = useWarehouseOptions();
+  const warehouses = (warehouseOptions.data?.data ?? []).filter((row) => row.isActive);
+  const [actionWarehouse, setActionWarehouse] = useState("");
+  const shareOf = (id: string) => summary.data?.warehouses?.find((row) => String(row.warehouseId) === id);
+  const actionShare = shareOf(actionWarehouse) ?? summary.data?.warehouses?.find((row) => row.isMain);
   const staffQuery = useQuery<StaffOption[]>({
     queryKey: ["admin", "staff"],
     queryFn: () => adminFetch("/admin/staff"),
@@ -337,7 +337,7 @@ export function QuantityManager({
   function open(kind: QuantityAdjustmentKind) {
     setForm({
       ...blankForm(),
-      countedQuantity: kind === "count" ? String(data?.inWarehouse ?? "") : "",
+      countedQuantity: kind === "count" ? String(actionShare?.inWarehouse ?? data?.inWarehouse ?? "") : "",
       unitCost: kind === "add" ? String(data?.unitCost ?? "") : "",
       reason: kind === "count" ? "جرد دوري" : "",
     });
@@ -388,6 +388,7 @@ export function QuantityManager({
       responsibleStaffId: Number(form.responsibleStaffId) || null,
       photos: form.photos.map((photo) => photo.url),
       additionalToReturn: form.additional,
+      warehouseId: actionShare?.warehouseId ?? null,
       relatedType: booking?.relatedType ?? invoice?.relatedType ?? null,
       relatedId: booking?.relatedId ?? invoice?.relatedId ?? null,
       requestId: dialog.requestId,
@@ -468,6 +469,35 @@ export function QuantityManager({
       </div>
 
       {/* One dialog per action, laid out for what that action needs. */}
+      {warehouses.length > 1 && data.warehouses?.length ? (
+        <section aria-label="توزيع الكمية على المخازن" className="space-y-2 rounded-xl border border-border/40 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-sm font-bold">توزيع الكمية على المخازن</h4>
+            <WarehouseSelect label="المخزن المتأثر" value={actionWarehouse || String(actionShare?.warehouseId ?? "")} onChange={setActionWarehouse} className="min-w-56" />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[520px] text-right text-xs">
+              <thead className="text-muted-foreground"><tr>{["المخزن", "كمية المخزن", "محجوز", "خارج", "تالف", "صيانة", "مفقود"].map((label) => <th key={label} className="p-1.5 font-semibold">{label}</th>)}</tr></thead>
+              <tbody className="divide-y divide-border/30">
+                {data.warehouses.map((row) => (
+                  <tr key={row.warehouseId} className={row.warehouseId === actionShare?.warehouseId ? "bg-primary/5" : ""}>
+                    <td className="p-1.5 font-medium">{row.name}</td>
+                    <td className="p-1.5 font-semibold tabular-nums">{numberText(row.inWarehouse)}</td>
+                    <td className="p-1.5 tabular-nums">{numberText(row.reserved)}</td>
+                    <td className="p-1.5 tabular-nums">{numberText(row.checkedOut)}</td>
+                    <td className="p-1.5 tabular-nums">{numberText(row.damaged)}</td>
+                    <td className="p-1.5 tabular-nums">{numberText(row.maintenance)}</td>
+                    <td className="p-1.5 tabular-nums">{numberText(row.missing)}</td>
+                  </tr>
+                ))}
+                <tr className="font-bold"><td className="p-1.5">إجمالي الشركة</td><td className="p-1.5 tabular-nums">{numberText(data.inWarehouse)}</td><td className="p-1.5 tabular-nums">{numberText(data.reserved)}</td><td className="p-1.5 tabular-nums">{numberText(data.checkedOut)}</td><td className="p-1.5 tabular-nums">{numberText(data.damaged)}</td><td className="p-1.5 tabular-nums">{numberText(data.maintenance)}</td><td className="p-1.5 tabular-nums">{numberText(data.missing)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-muted-foreground">الإضافة والتخفيض والتلف والفقدان والجرد تنطبق على المخزن المتأثر المختار.</p>
+        </section>
+      ) : null}
+
       <Dialog open={Boolean(dialog)} onOpenChange={(next) => !next && !adjust.isPending && setDialog(null)}>
         <DialogContent dir="rtl" className="w-[min(calc(100%-2rem),40rem)]">
           {kind && Action ? (
@@ -491,7 +521,7 @@ export function QuantityManager({
               <div className="grid gap-3 sm:grid-cols-2">
                 {kind === "count" ? (
                   <>
-                    <Field label="الرصيد المسجل في المستودع"><input className={fieldCls} readOnly value={`${numberText(data.inWarehouse)} ${unit}`} /></Field>
+                    <Field label={`الرصيد المسجل في ${actionShare?.name ?? "المستودع"}`}><input className={fieldCls} readOnly value={`${numberText((actionShare?.inWarehouse ?? data.inWarehouse))} ${unit}`} /></Field>
                     <Field label="العدد الفعلي *"><input type="number" min={0} inputMode="numeric" className={fieldCls} value={form.countedQuantity} onChange={(event) => set({ countedQuantity: event.target.value })} /></Field>
                     <div className="sm:col-span-2">
                       <p className={`rounded-lg px-3 py-2 text-sm font-bold ${difference === 0 ? "bg-muted text-muted-foreground" : difference > 0 ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-red-500/10 text-red-700 dark:text-red-300"}`}>
@@ -697,16 +727,16 @@ export function QuantityManager({
             <Field label="من مستودع">
               <select className={fieldCls} value={transfer.fromWarehouseId} onChange={(event) => setTransfer({ ...transfer, fromWarehouseId: event.target.value })}>
                 <option value="">اختر</option>
-                {(warehouses.data?.warehouses ?? []).map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+                {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name} · {shareOf(String(warehouse.id))?.inWarehouse ?? 0}</option>)}
               </select>
             </Field>
             <Field label="إلى مستودع">
               <select className={fieldCls} value={transfer.toWarehouseId} onChange={(event) => setTransfer({ ...transfer, toWarehouseId: event.target.value })}>
                 <option value="">اختر</option>
-                {(warehouses.data?.warehouses ?? []).map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+                {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name} · {shareOf(String(warehouse.id))?.inWarehouse ?? 0}</option>)}
               </select>
             </Field>
-            <Field label={`الكمية (${unit})`}><input type="number" min={1} max={data.inWarehouse} className={fieldCls} value={transfer.quantity} onChange={(event) => setTransfer({ ...transfer, quantity: event.target.value })} /></Field>
+            <Field label={`الكمية (${unit})`}><input type="number" min={1} max={shareOf(transfer.fromWarehouseId)?.inWarehouse ?? data.inWarehouse} className={fieldCls} value={transfer.quantity} onChange={(event) => setTransfer({ ...transfer, quantity: event.target.value })} /></Field>
             <Field label="ملاحظات"><input className={fieldCls} value={transfer.notes} onChange={(event) => setTransfer({ ...transfer, notes: event.target.value })} /></Field>
           </div>
           <DialogFooter className="gap-2 sm:justify-start">

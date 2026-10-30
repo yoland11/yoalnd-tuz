@@ -3,6 +3,8 @@ import { sql, type SQL } from "drizzle-orm";
 import { quantityPeriodAvailability, type PeriodCommitment } from "@/lib/quantity-asset-period";
 import { readBookingResourceWindow,bookingResourceOccupancy } from "@/lib/booking-resource-window";
 import { resourceOccupancyTimestamps, type ResourceOccupancy } from "@/lib/booking-resource-conflicts";
+import { consumeOutstanding, lineAllocations, lineForWarehouse, rebalanceAllocations, type LineAllocations, type WarehouseDelta } from "@/lib/warehouse-stock";
+import { applyWarehouseDeltas, mainWarehouseId, requireActiveWarehouse, warehouseBreakdowns, type ProductBreakdown } from "./warehouses";
 import {
   CLOSED_LINE_STAGES,
   DEFAULT_QUANTITY_UNIT,
@@ -239,9 +241,12 @@ export async function quantityCommitmentRows(executor: Executor, productIds: num
 }
 
 /** Product-level stock holds from the store-product reservation system (not date-aware). */
-async function otherStockHolds(executor: Executor, productId: number, exclude?: { source: string; bookingId: number } | null) {
+async function otherStockHolds(executor: Executor, productId: number, exclude?: { source: string; bookingId: number } | null, warehouse?: { id: number; mainId: number } | null) {
+  const inWarehouse = warehouse ? sql`and coalesce(warehouse_id, ${warehouse.mainId}) = ${warehouse.id}` : sql``;
   const result = await executor.execute(
-    exclude
+    warehouse
+      ? sql`select coalesce(sum(quantity), 0) as quantity from stock_reservations where product_id = ${productId} and status = 'reserved' ${inWarehouse} ${exclude ? sql`and not (source_type = ${exclude.source} and source_id = ${exclude.bookingId})` : sql``}`
+      : exclude
       ? sql`select coalesce(sum(quantity), 0) as quantity from stock_reservations where product_id = ${productId} and status = 'reserved' and not (source_type = ${exclude.source} and source_id = ${exclude.bookingId})`
       : sql`select coalesce(sum(quantity), 0) as quantity from stock_reservations where product_id = ${productId} and status = 'reserved'`,
   );
@@ -281,15 +286,24 @@ export function peakCommitment(rows: (CommitmentRow & {interval?:ResourceOccupan
   return peak;
 }
 
+/** The same commitments as one warehouse sees them; a line saved before warehouses is the main warehouse's. */
+export function scopeCommitments(rows: QuantityCommitmentRow[], warehouseId: number, mainId: number): QuantityCommitmentRow[] {
+  return rows.flatMap((row) => {
+    const line = lineForWarehouse(row.line, warehouseId, mainId);
+    return line ? [{ ...row, line }] : [];
+  });
+}
+
 export async function quantityAvailability(
   executor: Executor,
-  input: { productId: number; day: string | null; exclude?: { source: string; bookingId: number } | null; buckets: QuantityBuckets; interval?:ResourceOccupancy|null },
+  input: { productId: number; day: string | null; exclude?: { source: string; bookingId: number } | null; buckets: QuantityBuckets; interval?:ResourceOccupancy|null; warehouse?: { id: number; mainId: number } | null },
 ) {
   const [rowsMap, holds] = await Promise.all([
     quantityCommitmentRows(executor, [input.productId]),
-    otherStockHolds(executor, input.productId, input.exclude),
+    otherStockHolds(executor, input.productId, input.exclude, input.warehouse),
   ]);
-  const rows = rowsMap.get(input.productId) ?? [];
+  const companyRows = rowsMap.get(input.productId) ?? [];
+  const rows = input.warehouse ? scopeCommitments(companyRows, input.warehouse.id, input.warehouse.mainId) : companyRows;
   if (input.interval !== undefined) {
     const source=input.exclude?.source === "kosha_booking" ? "kosha" : input.exclude?.source === "service_order" ? "service" : null;
     if(!source || !input.exclude)throw new QuantityAssetError("يلزم تحديد الحجز الأصلي لفحص فترة المعدات",422);
@@ -350,17 +364,6 @@ async function changeWarehouseStock(executor: Executor, productId: number, delta
     throw new QuantityAssetError("رصيد المستودع لا يكفي لتنفيذ الحركة", 409);
 }
 
-/** warehouse_stock is the existing per-warehouse mirror of the asset's home warehouse. */
-async function mirrorWarehouseStock(executor: Executor, warehouseId: number | null, productId: number, delta: number) {
-  if (!warehouseId || delta === 0) return;
-  await executor.execute(sql`
-    insert into warehouse_stock (warehouse_id, product_id, quantity, updated_at)
-    values (${warehouseId}, ${productId}, ${Math.max(0, delta)}, now())
-    on conflict (warehouse_id, product_id) do update
-    set quantity = greatest(0, warehouse_stock.quantity::numeric + ${delta}), updated_at = now()
-  `);
-}
-
 async function writeBuckets(executor: Executor, productId: number, buckets: QuantityBuckets) {
   await executor.execute(sql`
     update asset_quantity_profiles
@@ -397,6 +400,7 @@ export type QuantityBookingInput = {
   damagedQuantity?: number;
   missingQuantity?: number;
   warehouseId?: number;
+  allocations?: Array<{ warehouseId: number; quantity: number }>;
   vehicle?: string;
   note?: string;
   usageHours?: number;
@@ -492,7 +496,36 @@ export async function executeQuantityBookingAction(
   let movement: { reason: string; metadata: Record<string, unknown> } | null = null;
   const extraMovements: Array<{ reason: string; key: string; metadata: Record<string, unknown> }> = [];
   const next: QuantityLine = { ...line };
-  const warehouseId = action.warehouseId ?? locked.warehouseId;
+  const mainId = await mainWarehouseId(executor);
+  const homeId = locked.warehouseId ?? mainId;
+  if (action.warehouseId && action.mode !== "unlink") await requireActiveWarehouse(executor, action.warehouseId);
+  for (const part of action.allocations ?? []) await requireActiveWarehouse(executor, part.warehouseId);
+  let allocations: LineAllocations = currentRaw ? lineAllocations(currentRaw, homeId) : {};
+  const deltas: WarehouseDelta[] = [];
+  const shelves = (await warehouseBreakdowns(executor, [action.productId])).get(action.productId) as ProductBreakdown;
+  // The warehouse the movement is recorded against; a split keeps every slice in its metadata.
+  let warehouseId: number = action.warehouseId ?? homeId;
+
+  /** Every warehouse this line draws on must cover its own share, on top of the company check. */
+  const warehouseAvailabilityFor = async () => {
+    for (const [key, allocation] of Object.entries(allocations)) {
+      if (allocation.reserved <= 0 && allocation.checkedOut <= 0) continue;
+      const id = Number(key);
+      const share = shelves.shares.find((row) => row.warehouseId === id);
+      if (!share) throw new QuantityAssetError("المخزن المحدد غير موجود", 404);
+      const hold = ownHold(normalizeQuantityLine({ trackingMode: "quantity", stage: "reserved", quantity: allocation.reserved, reservedQty: allocation.reserved, checkedOutQty: allocation.checkedOut, returnedGoodQty: allocation.returned }), bookingStatus);
+      const { availability } = await quantityAvailability(executor, {
+        productId: action.productId,
+        day,
+        exclude: bookingRef,
+        buckets: normalizeBuckets(share),
+        interval,
+        warehouse: { id, mainId },
+      });
+      if (hold > availability.available)
+        throw new QuantityAssetError(`الكمية غير متوفرة في «${share.name}» لهذا الموعد.\nالمتاح ${availability.available} ${unit}، والمطلوب ${hold} ${unit}.`, 409, { available: availability.available, requested: hold, unit, warehouseId: id });
+    }
+  };
 
   const availabilityFor = async (holdNeeded: number) => {
     const { availability } = await quantityAvailability(executor, {
@@ -526,6 +559,26 @@ export async function executeQuantityBookingAction(
       next.preparedQty = Math.min(next.preparedQty, quantity);
       next.stage = quantityLineStage(next);
       await availabilityFor(ownHold(next, bookingStatus));
+      if (action.allocations?.length) {
+        if (action.allocations.reduce((sum, part) => sum + whole(part.quantity), 0) !== quantity)
+          throw new QuantityAssetError("مجموع كميات المخازن يجب أن يساوي الكمية المحجوزة", 422);
+        const chosen: LineAllocations = {};
+        for (const part of action.allocations) {
+          const before = allocations[String(part.warehouseId)];
+          chosen[String(part.warehouseId)] = { reserved: whole(part.quantity), checkedOut: before?.checkedOut ?? 0, returned: before?.returned ?? 0 };
+        }
+        for (const [key, value] of Object.entries(allocations)) {
+          if (chosen[key]) continue;
+          if (value.checkedOut > 0) chosen[key] = { ...value, reserved: value.checkedOut };
+        }
+        allocations = chosen;
+        const blocked = Object.values(allocations).reduce((sum, value) => sum + value.reserved, 0);
+        if (blocked !== quantity) throw new QuantityAssetError("لا يمكن أن تقل كمية مخزن عن الكمية الخارجة منه", 409);
+      } else {
+        allocations = rebalanceAllocations(action.warehouseId ? { ...allocations } : allocations, quantity, action.warehouseId ?? (Number(Object.keys(allocations)[0]) || homeId));
+      }
+      warehouseId = action.warehouseId ?? (Number(Object.keys(allocations)[0]) || homeId);
+      await warehouseAvailabilityFor();
       break;
     }
     case "pick": {
@@ -537,6 +590,7 @@ export async function executeQuantityBookingAction(
         );
       next.preparedQty = Math.max(quantity, line.checkedOutQty);
       if (interval !== undefined) await availabilityFor(ownHold(next, bookingStatus));
+      if (interval !== undefined) await warehouseAvailabilityFor();
       break;
     }
     case "checkout": {
@@ -559,6 +613,24 @@ export async function executeQuantityBookingAction(
       stockDelta = -quantity;
       buckets.inWarehouse -= quantity;
       buckets.checkedOut += quantity;
+      // Units leave the chosen warehouse, or follow the line's reservations in order.
+      let left = quantity;
+      const slices: Array<[number, number]> = [];
+      if (!action.warehouseId)
+        for (const [key, allocation] of Object.entries(allocations)) {
+          const take = Math.min(left, Math.max(0, allocation.reserved - allocation.checkedOut));
+          if (take > 0) { slices.push([Number(key), take]); left -= take; }
+        }
+      if (left > 0) slices.push([action.warehouseId ?? (Number(Object.keys(allocations)[0]) || homeId), left]);
+      for (const [id, take] of slices) {
+        const key = String(id);
+        allocations[key] = { ...(allocations[key] ?? { reserved: 0, checkedOut: 0, returned: 0 }) };
+        allocations[key].checkedOut += take;
+        deltas.push({ warehouseId: id, inWarehouse: -take, checkedOut: take });
+      }
+      warehouseId = slices[0][0];
+      allocations = rebalanceAllocations(allocations, next.reservedQty, warehouseId);
+      await warehouseAvailabilityFor();
       movement = {
         reason: "quantity_asset_checkout",
         metadata: {
@@ -569,6 +641,7 @@ export async function executeQuantityBookingAction(
           vehicle: action.vehicle ?? null,
           note: action.note ?? null,
           scannedCode: action.scannedCode ?? null,
+          warehouseSlices: slices.map(([id, take]) => ({ warehouseId: id, quantity: take })),
         },
       };
       break;
@@ -598,6 +671,26 @@ export async function executeQuantityBookingAction(
       buckets.inWarehouse += checked.good;
       buckets.damaged += checked.damaged;
       buckets.missing += checked.missing;
+      // Units come off the warehouses they left from. Good and damaged units land in the chosen
+      // destination, or go back where they came from. Missing units stay on their source's record.
+      if (!Object.keys(allocations).length) allocations = { [String(homeId)]: { reserved: 0, checkedOut: 0, returned: 0 } };
+      const sources = consumeOutstanding(allocations, checked.total);
+      let good = checked.good;
+      let damagedLeft = checked.damaged;
+      for (const source of sources) {
+        const key = String(source.warehouseId);
+        allocations[key] = { ...(allocations[key] ?? { reserved: 0, checkedOut: 0, returned: 0 }) };
+        allocations[key].returned += source.quantity;
+        const backGood = Math.min(good, source.quantity);
+        good -= backGood;
+        const backDamaged = Math.min(damagedLeft, source.quantity - backGood);
+        damagedLeft -= backDamaged;
+        const backMissing = source.quantity - backGood - backDamaged;
+        deltas.push({ warehouseId: source.warehouseId, checkedOut: -source.quantity, missing: backMissing });
+        const target = action.warehouseId ?? source.warehouseId;
+        deltas.push({ warehouseId: target, inWarehouse: backGood, damaged: backDamaged });
+      }
+      warehouseId = action.warehouseId ?? sources[0]?.warehouseId ?? homeId;
       const details = {
         bookingType: reference.entityType,
         bookingId: reference.id,
@@ -641,6 +734,7 @@ export async function executeQuantityBookingAction(
     returnedDamagedQty: next.returnedDamagedQty,
     missingQty: next.missingQty,
     stage: action.mode === "inspect" ? "completed" : quantityLineStage(next),
+    ...(Object.keys(allocations).length ? { warehouseAllocations: allocations, warehouseId: Number(Object.keys(allocations)[0]) } : {}),
     updatedAt: now,
     ...(action.mode === "reserve" ? { reservedAt: now } : {}),
     ...(action.mode === "pick" ? { pickedAt: now, scannedCode: action.scannedCode ?? null } : {}),
@@ -660,7 +754,7 @@ export async function executeQuantityBookingAction(
   if (stockDelta !== 0) await changeWarehouseStock(executor, action.productId, stockDelta);
   if (movement) {
     await writeBuckets(executor, action.productId, buckets);
-    await mirrorWarehouseStock(executor, warehouseId, action.productId, stockDelta);
+    await applyWarehouseDeltas(executor, { productId: action.productId, company: buckets, deltas });
     await insertMovement(executor, {
       productId: action.productId,
       quantityChange: stockDelta,
@@ -745,6 +839,8 @@ export async function adjustQuantityAsset(
     photos?: string[];
     /** Damage/loss found after the booking's return was already recorded. */
     additionalToReturn?: boolean;
+    /** The warehouse this action happens in; defaults to the asset's home warehouse. */
+    warehouseId?: number | null;
     requestId: string;
     actor: Actor;
   },
@@ -762,16 +858,37 @@ export async function adjustQuantityAsset(
   const today = baghdadDay();
   const peak = peakCommitment(rowsMap.get(input.productId) ?? [], locked.buckets, today, holds);
   const guards = await adjustmentGuards(executor, input);
+  const mainId = await mainWarehouseId(executor);
+  const warehouseId = input.warehouseId ?? locked.warehouseId ?? mainId;
+  await requireActiveWarehouse(executor, warehouseId);
+  const shelves = (await warehouseBreakdowns(executor, [input.productId])).get(input.productId) as ProductBreakdown;
+  const share = shelves.shares.find((row) => row.warehouseId === warehouseId);
+  if (!share) throw new QuantityAssetError("المخزن المحدد غير موجود", 404);
+  const shareBuckets = normalizeBuckets(share);
+  const holdsHere = await otherStockHolds(executor, input.productId, null, { id: warehouseId, mainId });
+  // The action must fit inside this warehouse first, using the shared rules at its own scale.
+  const scoped = planQuantityAdjustment({
+    buckets: shareBuckets,
+    kind: input.kind,
+    quantity: input.quantity,
+    countedQuantity: input.countedQuantity,
+    writeOffFrom: input.writeOffFrom,
+    peakCommitment: peakCommitment(scopeCommitments(rowsMap.get(input.productId) ?? [], warehouseId, mainId), shareBuckets, today, holdsHere),
+    unit: locked.profile.unit,
+  });
+  if (!scoped.ok) throw new QuantityAssetError(`${share.name}: ${scoped.message}`, scoped.status);
   const plan = planQuantityAdjustment({
     buckets: locked.buckets,
     kind: input.kind,
     quantity: input.quantity,
-    countedQuantity: input.countedQuantity,
+    // A count is of this warehouse's shelf, so the company figure moves by the same difference.
+    countedQuantity: input.kind === "count" ? locked.buckets.inWarehouse + (Math.floor(Number(input.countedQuantity)) - shareBuckets.inWarehouse) : input.countedQuantity,
     writeOffFrom: input.writeOffFrom,
     peakCommitment: peak,
     unit: locked.profile.unit,
   });
   if (!plan.ok) throw new QuantityAssetError(plan.message, plan.status);
+  const shareDelta = (key: keyof QuantityBuckets) => plan.after[key] - plan.before[key];
   const unitCost = input.unitCost != null && Number(input.unitCost) >= 0 ? Number(input.unitCost) : locked.product.costPrice;
   const valuationBefore = locked.assetProfile
     ? { purchasePrice: locked.assetProfile.purchasePrice, currentValue: locked.assetProfile.currentValue }
@@ -783,7 +900,11 @@ export async function adjustQuantityAsset(
 
   await changeWarehouseStock(executor, input.productId, plan.stockDelta);
   await writeBuckets(executor, input.productId, plan.after);
-  await mirrorWarehouseStock(executor, locked.warehouseId, input.productId, plan.stockDelta);
+  await applyWarehouseDeltas(executor, {
+    productId: input.productId,
+    company: plan.after,
+    deltas: [{ warehouseId, inWarehouse: shareDelta("inWarehouse"), checkedOut: shareDelta("checkedOut"), damaged: shareDelta("damaged"), maintenance: shareDelta("maintenance"), missing: shareDelta("missing") }],
+  });
   if (valuationBefore && valuationAfter && (valuationAfter.purchasePrice !== valuationBefore.purchasePrice || valuationAfter.currentValue !== valuationBefore.currentValue))
     await executor.execute(sql`
       update asset_profiles set purchase_price = ${String(valuationAfter.purchasePrice)}, current_value = ${String(valuationAfter.currentValue)}, updated_at = now()
@@ -819,7 +940,7 @@ export async function adjustQuantityAsset(
     reason: `quantity_asset_${input.kind}`,
     relatedType: input.relatedType || "asset",
     relatedId: input.relatedId || input.productId,
-    warehouseId: locked.warehouseId,
+    warehouseId,
     idempotencyKey: key,
     metadata,
     actor: input.actor,
@@ -1113,11 +1234,20 @@ export async function quantityAssetSummary(executor: Executor, productId: number
       select w.id, w.name from asset_passports ap join warehouses w on w.id = ap.warehouse_id where ap.product_id = ${productId} limit 1
     `),
   )[0];
+  const mainId = await mainWarehouseId(executor);
+  const shelves = (await warehouseBreakdowns(executor, [productId])).get(productId) as ProductBreakdown;
   return {
     productId,
     trackingMode: "quantity" as const,
     unit: profile.unit,
     warehouse: warehouse ? { id: Number(warehouse.id), name: String(warehouse.name) } : null,
+    warehouses: shelves.shares.map((share) => {
+      const scoped = scopeCommitments(rows, share.warehouseId, mainId);
+      const reserved = scoped.reduce((sum, row) => (row.day && row.day < today ? sum : sum + lineReservedNotOut(normalizeQuantityLine(row.line), row.status)), 0);
+      const here = availabilityForDay({ buckets: normalizeBuckets(share), rows: scoped, targetDay: target, today });
+      return { warehouseId: share.warehouseId, name: share.name, code: share.code, isMain: share.isMain, isActive: share.isActive, inWarehouse: share.inWarehouse, checkedOut: share.checkedOut, damaged: share.damaged, maintenance: share.maintenance, missing: share.missing, total: share.total, reserved, available: here.available };
+    }),
+    overdrawn: shelves.overdrawn,
     total,
     inWarehouse: buckets.inWarehouse,
     checkedOut: buckets.checkedOut,
@@ -1143,7 +1273,7 @@ export async function quantityAssetSummary(executor: Executor, productId: number
 export async function quantityMovements(
   executor: Executor,
   productId: number,
-  options: { from?: string | null; to?: string | null; page?: number; pageSize?: number } = {},
+  options: { from?: string | null; to?: string | null; page?: number; pageSize?: number; warehouseId?: number | null } = {},
 ) {
   const day = (value: unknown) => (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null);
   const from = day(options.from);
@@ -1154,12 +1284,13 @@ export async function quantityMovements(
     coalesce(m.stock_source_product_id, m.product_id) = ${productId}
     ${from ? sql`and (m.created_at + interval '3 hours')::date >= ${from}::date` : sql``}
     ${to ? sql`and (m.created_at + interval '3 hours')::date <= ${to}::date` : sql``}
+    ${options.warehouseId ? sql`and (coalesce(m.warehouse_id, ${await mainWarehouseId(executor)}) = ${options.warehouseId} or m.to_warehouse_id = ${options.warehouseId})` : sql``}
   `;
   const [result, counted] = await Promise.all([
     executor.execute(sql`
       select m.id, m.quantity_change, m.reason, m.movement_type, m.related_type, m.related_id, m.warehouse_id, w.name as warehouse_name,
-             m.metadata, m.created_by_name, m.created_at
-      from stock_movements m left join warehouses w on w.id = m.warehouse_id
+             m.to_warehouse_id, tw.name as to_warehouse_name, m.metadata, m.created_by_name, m.created_at
+      from stock_movements m left join warehouses w on w.id = m.warehouse_id left join warehouses tw on tw.id = m.to_warehouse_id
       where ${where}
       order by m.created_at desc, m.id desc
       limit ${pageSize} offset ${(page - 1) * pageSize}
@@ -1176,6 +1307,8 @@ export async function quantityMovements(
     relatedId: row.related_id == null ? null : Number(row.related_id),
     warehouseId: row.warehouse_id == null ? null : Number(row.warehouse_id),
     warehouseName: row.warehouse_name ?? null,
+    toWarehouseId: row.to_warehouse_id == null ? null : Number(row.to_warehouse_id),
+    toWarehouseName: row.to_warehouse_name ?? null,
     metadata: row.metadata ?? {},
     actorName: row.created_by_name ?? "",
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at ?? ""),

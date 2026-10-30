@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, pgTable, serial, text, integer, timestamp, varchar, jsonb, numeric, uniqueIndex, boolean } from "drizzle-orm/pg-core";
+import { check, date, index, pgTable, serial, text, integer, timestamp, varchar, jsonb, numeric, uniqueIndex, boolean } from "drizzle-orm/pg-core";
 import { productsTable } from "./products";
 import { staffTable } from "./staff";
 import { customersTable } from "./customers";
@@ -176,14 +176,29 @@ export const warehousesTable = pgTable("warehouses", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   isActive: integer("is_active").notNull().default(1),
+  code: varchar("code", { length: 30 }),
+  location: text("location"),
+  managerId: integer("manager_id").references(() => staffTable.id, { onDelete: "set null" }),
+  phone: varchar("phone", { length: 40 }),
+  notes: text("notes"),
+  createdBy: integer("created_by").references(() => staffTable.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+/**
+ * What each NON-main warehouse holds. products.stock stays the company total and the main
+ * warehouse (lowest id) owns the remainder, so a main-warehouse row here is never a balance.
+ */
 export const warehouseStockTable = pgTable("warehouse_stock", {
   id: serial("id").primaryKey(),
   warehouseId: integer("warehouse_id").notNull().references(() => warehousesTable.id),
   productId: integer("product_id").notNull(),
   quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull().default("0"),
+  quantityCheckedOut: integer("quantity_checked_out").notNull().default(0),
+  quantityDamaged: integer("quantity_damaged").notNull().default(0),
+  quantityMaintenance: integer("quantity_maintenance").notNull().default(0),
+  quantityMissing: integer("quantity_missing").notNull().default(0),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => ({
@@ -206,9 +221,39 @@ export const warehouseTransfersTable = pgTable("warehouse_transfers", {
   reviewedBy: integer("reviewed_by").references(() => staffTable.id),
   reviewedByName: text("reviewed_by_name").notNull().default(""),
   notes: text("notes"),
+  responsibleStaffId: integer("responsible_staff_id").references(() => staffTable.id, { onDelete: "set null" }),
+  transferDate: date("transfer_date"),
+  idempotencyKey: varchar("idempotency_key", { length: 120 }),
+  executedAt: timestamp("executed_at"),
   reviewedAt: timestamp("reviewed_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const warehouseCountsTable = pgTable("warehouse_counts", {
+  id: serial("id").primaryKey(),
+  countNo: varchar("count_no", { length: 40 }),
+  warehouseId: integer("warehouse_id").notNull().references(() => warehousesTable.id, { onDelete: "restrict" }),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  notes: text("notes"),
+  requestToken: varchar("request_token", { length: 120 }).notNull(),
+  requestedBy: integer("requested_by").references(() => staffTable.id, { onDelete: "set null" }),
+  requestedByName: text("requested_by_name").notNull().default(""),
+  reviewedBy: integer("reviewed_by").references(() => staffTable.id, { onDelete: "set null" }),
+  reviewedByName: text("reviewed_by_name").notNull().default(""),
+  reviewedAt: timestamp("reviewed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const warehouseCountLinesTable = pgTable("warehouse_count_lines", {
+  id: serial("id").primaryKey(),
+  countId: integer("count_id").notNull().references(() => warehouseCountsTable.id, { onDelete: "restrict" }),
+  productId: integer("product_id").notNull().references(() => productsTable.id, { onDelete: "restrict" }),
+  productName: text("product_name").notNull().default(""),
+  expectedQuantity: numeric("expected_quantity", { precision: 12, scale: 3 }).notNull(),
+  countedQuantity: numeric("counted_quantity", { precision: 12, scale: 3 }).notNull(),
+  difference: numeric("difference", { precision: 12, scale: 3 }).notNull(),
 });
 
 export const assetProfilesTable = pgTable("asset_profiles", {

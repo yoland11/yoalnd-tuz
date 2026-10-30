@@ -51,6 +51,7 @@ const steps = [
   ["Kosha preparation booking cards", "pnpm", ["run", "test:preparation-cards"]],
   ["Kosha equipment and decimal inventory", "pnpm", ["run", "test:kosha-equipment"]],
   ["Quantity-based assets", "pnpm", ["run", "test:quantity-assets"]],
+  ["Multi-warehouse balances and transfers", "pnpm", ["run", "test:warehouses"]],
   ["Equipment custody transactions and ownership", "pnpm", ["run", "test:custody-safety"]],
   ["Shared asset status and repair retry safety", "pnpm", ["run", "test:asset-status-safety"]],
   ["Asset list thumbnails", "pnpm", ["run", "test:asset-list"]],

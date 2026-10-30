@@ -25,6 +25,12 @@ export const ALL_PERMISSIONS = [
   "booking_return_confirm",
   "asset_damage_record",
   "asset_damage_approve",
+  "warehouses_view",
+  "warehouses_manage",
+  "warehouse_stock_manage",
+  "warehouse_transfer",
+  "warehouse_adjust_approve",
+  "warehouse_reports",
   "asset.sell",
   "asset.view_sales",
   "asset.print_sales",
@@ -352,6 +358,12 @@ export const ALL_PERMISSIONS = [
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
+  warehouses_view: "عرض المخازن",
+  warehouses_manage: "إضافة وتعديل المخازن",
+  warehouse_stock_manage: "إدارة كميات المخازن",
+  warehouse_transfer: "طلب تحويل بين المخازن",
+  warehouse_adjust_approve: "اعتماد التحويلات وتسويات الجرد",
+  warehouse_reports: "تقارير المخازن",
   "koshat_tasks.view": "عرض مهام الكوشات",
   "koshat_tasks.assign": "إسناد مهام الكوشات",
   "koshat_tasks.reassign": "إعادة إسناد مهام الكوشات",

@@ -99,7 +99,10 @@ function database(options: { product?: Record<string, unknown>; variants?: any[]
     if (q.includes("from asset_quantity_profiles")) return rows([]);
     if (q.startsWith("SELECT COUNT(*)::int AS count FROM product_variants")) return rows([{ count: options.variants?.length ?? 0 }]);
     if (q.startsWith("SELECT COALESCE(SUM(quantity::numeric), 0)::float AS quantity FROM stock_reservations WHERE product_id")) return rows([{ quantity: 5 }]);
-    if (q.includes("FROM warehouse_stock ws JOIN warehouses w")) return rows([{ id: 1, name: "المخزن الرئيسي", quantity: 80 }]);
+    if (q === "select id from warehouses order by id asc limit 1") return rows([{ id: 1 }]);
+    if (q.startsWith("select w.id, w.name, w.code, w.location")) return rows([{ id: 1, name: "المخزن الرئيسي", is_active: 1 }]);
+    if (q.startsWith("select p.id, p.stock, q.quantity_checked_out")) return rows([{ id: built.params[0], stock: 80 }]);
+    if (q.startsWith("select * from warehouse_stock where product_id in")) return rows([]);
     if (q.includes("reason ~* '(damage|loss)'")) return rows([{ quantity: 2 }]);
     if (q.includes("reason = 'manual_stock_adjustment'")) return rows([{ count: 1 }]);
     if (q.includes("FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id WHERE sii.product_id = $1 AND si.date >= $2") && q.includes("GROUP BY 1, 2"))

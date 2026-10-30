@@ -1,3 +1,4 @@
+import { warehouseBreakdowns } from "./warehouses";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import {
@@ -717,10 +718,7 @@ export async function productInsights(
   const [variantCountRow, reservedRow, warehouses, damagedRow, adjustmentsRow, quantityProfiles] = await Promise.all([
     executor.execute(sql`SELECT COUNT(*)::int AS count FROM product_variants WHERE product_id = ${productId}`),
     executor.execute(sql`SELECT COALESCE(SUM(quantity::numeric), 0)::float AS quantity FROM stock_reservations WHERE product_id = ${stockOwnerId} AND status = 'reserved'`),
-    executor.execute(sql`
-      SELECT w.id, w.name, ws.quantity::float AS quantity FROM warehouse_stock ws JOIN warehouses w ON w.id = ws.warehouse_id
-      WHERE ws.product_id = ${stockOwnerId} AND ws.quantity::numeric <> 0 ORDER BY ws.quantity::numeric DESC
-    `),
+    warehouseBreakdowns(executor as any, [stockOwnerId]).then((map) => ({ rows: (map.get(stockOwnerId)?.shares ?? []).filter((share) => share.inWarehouse !== 0).sort((a, b) => b.inWarehouse - a.inWarehouse).map((share) => ({ id: share.warehouseId, name: share.name, quantity: share.inWarehouse })) })),
     executor.execute(sql`
       SELECT COALESCE(SUM(-quantity_change::numeric) FILTER (WHERE quantity_change::numeric < 0), 0)::float AS quantity
       FROM stock_movements WHERE (product_id = ${productId} OR stock_source_product_id = ${productId})

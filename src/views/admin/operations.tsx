@@ -56,6 +56,11 @@ import {
 import { AssetSaleDialog } from "./asset-sale-dialog";
 import { LiveScanner } from "../staff/live-scanner";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
+import { Input } from "@/components/ui/input";
+import { EmployeeSelect } from "@/components/employee-select";
+import { WarehouseSelect } from "@/components/warehouse-select";
+import type { EmployeeIdentity } from "@/lib/employee-identity";
+import { printWarehouseReport } from "./warehouse-print";
 
 type FinancialApprovalRow = {
   id: number;
@@ -115,10 +120,13 @@ type WarehouseTransfer = {
   status: string;
   requestedByName: string;
   reviewedByName: string;
+  fromWarehouseName: string | null;
+  toWarehouseName: string | null;
+  responsibleName: string | null;
+  transferDate: string | null;
+  notes: string;
   createdAt: string | null;
 };
-
-type Warehouse = { id: number; name: string; isActive: number };
 
 type AssetRow = {
   productId: number;
@@ -218,6 +226,9 @@ type AssetMovementRow = {
   title: string;
   body?: string | null;
   quantityChange?: number | null;
+  quantity?: number | null;
+  warehouseName?: string | null;
+  toWarehouseName?: string | null;
   actorName?: string | null;
   relatedType?: string | null;
   relatedId?: number | null;
@@ -661,68 +672,133 @@ function AnalyticsList({ title, rows, amount = false }: { title: string; rows: a
   );
 }
 
+function printTransferDocument(row: WarehouseTransfer, format: "a4" | "80mm") {
+  void printWarehouseReport({
+    title: `تحويل مخزني ${row.transferNo}`,
+    subtitle: row.transferDate ?? formatDate(row.createdAt),
+    filename: `${row.transferNo}.pdf`,
+    rows: [row],
+    columns: [
+      { key: "name", header: "المادة", width: 24, value: (item: WarehouseTransfer) => item.productName },
+      { key: "quantity", header: "الكمية", number: true, value: (item: WarehouseTransfer) => item.quantity },
+      { key: "from", header: "من", value: (item: WarehouseTransfer) => item.fromWarehouseName ?? "—" },
+      { key: "to", header: "إلى", value: (item: WarehouseTransfer) => item.toWarehouseName ?? "—" },
+      { key: "responsible", header: "المسؤول", value: (item: WarehouseTransfer) => item.responsibleName ?? "—" },
+      { key: "status", header: "الحالة", value: (item: WarehouseTransfer) => STATUS_LABELS[item.status] ?? item.status },
+      { key: "notes", header: "ملاحظات", value: (item: WarehouseTransfer) => item.notes || "—" },
+    ],
+    footer: "التحويل لا يغيّر إجمالي الشركة ولا ينشئ بيعاً أو شراءً أو حركة نقدية.",
+  }, format);
+}
+
 export function WarehouseTransfersPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const [form, setForm] = useState({ productName: "", productId: "", fromWarehouseId: "", toWarehouseId: "", quantity: "1", notes: "" });
-  const { data, isLoading } = useQuery<{ data: WarehouseTransfer[]; warehouses: Warehouse[] }>({
+  const blank = () => ({ fromWarehouseId: "", toWarehouseId: "", productId: "", productName: "", quantity: "1", responsibleStaffId: "", transferDate: new Date().toISOString().slice(0, 10), notes: "", requestToken: crypto.randomUUID() });
+  const [form, setForm] = useState(blank);
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search.trim());
+  const { data, isLoading, isError, error, refetch } = useQuery<{ data: WarehouseTransfer[] }>({
     queryKey: ["admin", "warehouse-transfers"],
     queryFn: () => adminFetch("/admin/warehouse-transfers"),
     staleTime: 30_000,
   });
+  const staff = useQuery<EmployeeIdentity[]>({ queryKey: ["admin", "staff", "warehouse-transfers"], queryFn: () => adminFetch("/admin/staff"), staleTime: 60_000 });
+  const items = useQuery<{ data: Array<{ productId: number; name: string; assetCode: string | null; barcode: string | null; inWarehouse: number; available: number; unit: string }> }>({
+    queryKey: ["admin", "warehouses", "stock", "transfer", form.fromWarehouseId, deferredSearch],
+    queryFn: () => adminFetch(`/admin/warehouses/stock?warehouseId=${form.fromWarehouseId}&pageSize=8${deferredSearch ? `&search=${encodeURIComponent(deferredSearch)}` : ""}`),
+    enabled: Boolean(form.fromWarehouseId) && !form.productId,
+  });
+  const split = useQuery<{ shares: Array<{ warehouseId: number; inWarehouse: number; transferable: number; committed: number }> }>({
+    queryKey: ["admin", "warehouses", "product", form.productId],
+    queryFn: () => adminFetch(`/admin/warehouses/product/${form.productId}`),
+    enabled: Boolean(form.productId),
+  });
+  const source = split.data?.shares.find((share) => String(share.warehouseId) === form.fromWarehouseId);
+  const quantity = Number(form.quantity) || 0;
+  const problem = !form.fromWarehouseId || !form.toWarehouseId ? "اختر المخزن المصدر والمستلم"
+    : form.fromWarehouseId === form.toWarehouseId ? "المخزن المصدر والمستلم يجب أن يكونا مختلفين"
+    : !form.productId ? "اختر المادة"
+    : quantity <= 0 ? "أدخل الكمية"
+    : source && quantity > source.transferable ? `المتاح للتحويل ${source.transferable} فقط${source.committed ? ` (${source.committed} محجوزة)` : ""}` : "";
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: ["admin", "warehouse-transfers"] });
+    void qc.invalidateQueries({ queryKey: ["admin", "warehouses"] });
+    void qc.invalidateQueries({ queryKey: ["admin", "approvals"] });
+  };
   const save = useMutation({
-    mutationFn: () => adminFetch("/admin/warehouse-transfers", { method: "POST", body: JSON.stringify(form) }),
+    mutationFn: () => adminFetch("/admin/warehouse-transfers", { method: "POST", body: JSON.stringify({ ...form, productId: Number(form.productId), fromWarehouseId: Number(form.fromWarehouseId), toWarehouseId: Number(form.toWarehouseId), quantity, responsibleStaffId: Number(form.responsibleStaffId) || null }) }),
     onSuccess: () => {
-      toast({ title: "تم إرسال التحويل للموافقة" });
-      setForm({ productName: "", productId: "", fromWarehouseId: "", toWarehouseId: "", quantity: "1", notes: "" });
-      qc.invalidateQueries({ queryKey: ["admin", "warehouse-transfers"] });
-      qc.invalidateQueries({ queryKey: ["admin", "approvals"] });
+      toast({ title: "تم إرسال التحويل للموافقة", description: "لا تتحرك الكمية قبل الاعتماد." });
+      setForm(blank());
+      setSearch("");
+      invalidate();
     },
     onError: (err) => toast({ title: "تعذر حفظ التحويل", description: apiErrorMessage(err), variant: "destructive" }),
   });
   const review = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) => adminFetch(`/admin/warehouse-transfers/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "warehouse-transfers"] }),
+    onSuccess: (_, { status }) => {
+      toast({ title: status === "approved" ? "تم تنفيذ التحويل" : "تم رفض التحويل" });
+      invalidate();
+    },
+    onError: (err) => toast({ title: "تعذر تنفيذ التحويل", description: apiErrorMessage(err), variant: "destructive" }),
   });
-  const warehouses = data?.warehouses ?? [];
+  const control = "w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm";
   return (
     <div className="space-y-4" dir="rtl">
-      <PageHeader icon={Boxes} title="تحويل المخازن" description="طلب تحويل المواد بين المخازن مع موافقة المدير قبل التنفيذ." />
+      <PageHeader icon={Boxes} title="تحويل المخازن" description="تحويل المواد بين المخازن بعد موافقة المدير. إجمالي الشركة لا يتغيّر." action={<Button asChild variant="outline"><Link href="/admin/warehouses">إدارة المخازن</Link></Button>} />
       <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
         <Card>
-          <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-            <input value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value.replace(/\D/g, "") })} placeholder="رقم المنتج إن وجد" className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
-            <input value={form.productName} onChange={(e) => setForm({ ...form, productName: e.target.value })} placeholder="اسم المادة" className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
-            <select value={form.fromWarehouseId} onChange={(e) => setForm({ ...form, fromWarehouseId: e.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
-              <option value="">من مخزن</option>
-              {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-            </select>
-            <select value={form.toWarehouseId} onChange={(e) => setForm({ ...form, toWarehouseId: e.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
-              <option value="">إلى مخزن</option>
-              {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-            </select>
-            <input value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value.replace(/\D/g, "") || "1" })} placeholder="الكمية" className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
-            <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="ملاحظات" rows={3} className="w-full resize-none rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
-            <Button className="w-full">حفظ التحويل</Button>
+          <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); if (!problem) save.mutate(); }}>
+            <WarehouseSelect label="من" placeholder="المخزن المصدر" value={form.fromWarehouseId} onChange={(value) => { setForm({ ...form, fromWarehouseId: value, productId: "", productName: "" }); setSearch(""); }} />
+            <WarehouseSelect label="إلى" placeholder="المخزن المستلم" value={form.toWarehouseId} onChange={(value) => setForm({ ...form, toWarehouseId: value })} />
+            {form.productId ? (
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-background p-2.5 text-sm">
+                <span className="min-w-0"><b className="block truncate">{form.productName}</b>{split.isError ? <span role="alert" className="text-xs text-destructive">{apiErrorMessage(split.error)}</span> : source ? <span className="text-xs text-muted-foreground">في المخزن {source.inWarehouse} · متاح للتحويل {source.transferable}</span> : null}</span>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setForm({ ...form, productId: "", productName: "" })}>تغيير</Button>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <input aria-label="ابحث عن المادة" disabled={!form.fromWarehouseId} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={form.fromWarehouseId ? "ابحث عن المادة بالاسم أو الباركود" : "اختر المخزن المصدر أولاً"} className={control} />
+                {items.isError ? <p role="alert" className="text-xs text-destructive">{apiErrorMessage(items.error)}</p> : null}
+                {form.fromWarehouseId && items.data ? (items.data.data.length ? (
+                  <ul className="max-h-52 divide-y divide-border/30 overflow-y-auto rounded-lg border border-border/40">{items.data.data.map((item) => (
+                    <li key={item.productId}><button type="button" className="flex min-h-11 w-full items-center justify-between gap-2 px-2.5 py-1.5 text-right text-sm hover:bg-muted/50" onClick={() => setForm({ ...form, productId: String(item.productId), productName: item.name })}><span className="min-w-0 truncate">{item.name}</span><span className="shrink-0 text-xs tabular-nums text-muted-foreground">{item.inWarehouse} {item.unit}</span></button></li>
+                  ))}</ul>
+                ) : <p className="text-xs text-muted-foreground">لا توجد مواد مطابقة في هذا المخزن.</p>) : null}
+              </div>
+            )}
+            <label className="block text-xs font-medium">الكمية<input inputMode="numeric" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value.replace(/\D/g, "") })} className={`${control} mt-1`} /></label>
+            <div className="text-xs font-medium">الموظف المسؤول<div className="mt-1">{staff.isError ? <p role="alert" className="text-destructive">{apiErrorMessage(staff.error)}</p> : <EmployeeSelect employees={staff.data ?? []} value={form.responsibleStaffId} onValueChange={(value) => setForm({ ...form, responsibleStaffId: value })} emptyLabel="بدون تحديد" placeholder="اختر الموظف" />}</div></div>
+            <label className="block text-xs font-medium">تاريخ التحويل<Input type="date" className="mt-1" value={form.transferDate} onChange={(event) => setForm({ ...form, transferDate: event.target.value })} /></label>
+            <textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="ملاحظات" rows={2} className={`${control} resize-none`} />
+            {problem && form.fromWarehouseId ? <p className="text-xs text-muted-foreground">{problem}</p> : null}
+            <Button className="w-full" disabled={Boolean(problem) || save.isPending}>حفظ التحويل</Button>
           </form>
         </Card>
-        {isLoading ? <LoadingRows /> : !data?.data.length ? <EmptyState message="لا توجد تحويلات" /> : (
+        {isLoading ? <LoadingRows /> : isError ? (
+          <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">{apiErrorMessage(error)} <Button type="button" variant="outline" size="sm" onClick={() => void refetch()}>إعادة المحاولة</Button></div>
+        ) : !data?.data.length ? <EmptyState message="لا توجد تحويلات" /> : (
           <div className="space-y-2">
             {data.data.map((row) => (
               <Card key={row.id}>
-                <div className="flex items-center justify-between gap-3">
-                  <div>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
                     <p className="font-semibold text-foreground">{row.transferNo} · {row.productName}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">الكمية {row.quantity} · {row.requestedByName || "النظام"} · {formatDate(row.createdAt)}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{row.quantity} · {row.fromWarehouseName ?? "—"} ← {row.toWarehouseName ?? "—"}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{row.responsibleName ? `المسؤول ${row.responsibleName} · ` : ""}{row.requestedByName || "النظام"} · {row.transferDate ?? formatDate(row.createdAt)}</p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className={`rounded-full px-2.5 py-1 text-xs ${statusClass(row.status)}`}>{STATUS_LABELS[row.status] ?? row.status}</span>
                     {row.status === "pending" && (
                       <>
-                        <Button size="sm" onClick={() => review.mutate({ id: row.id, status: "approved" })}>اعتماد</Button>
-                        <Button size="sm" variant="outline" onClick={() => review.mutate({ id: row.id, status: "rejected" })}>رفض</Button>
+                        <Button size="sm" disabled={review.isPending} onClick={() => review.mutate({ id: row.id, status: "approved" })}>اعتماد</Button>
+                        <Button size="sm" variant="outline" disabled={review.isPending} onClick={() => review.mutate({ id: row.id, status: "rejected" })}>رفض</Button>
                       </>
                     )}
+                    <Button size="sm" variant="outline" onClick={() => printTransferDocument(row, "a4")}><Printer className="h-3.5 w-3.5" />A4</Button>
+                    <Button size="sm" variant="outline" onClick={() => printTransferDocument(row, "80mm")}><Printer className="h-3.5 w-3.5" />80mm</Button>
                   </div>
                 </div>
               </Card>
@@ -1558,13 +1634,16 @@ function escapeMovementPrint(value: unknown) {
 
 function exportMovementCsv(rows: AssetMovementRow[]) {
   const data = [
-    ["التاريخ", "الأصل", "الحركة", "التفاصيل", "الكمية", "المستخدم"],
+    ["التاريخ", "الأصل", "الحركة", "التفاصيل", "الكمية", "من مخزن", "إلى مخزن", "الحجز", "المستخدم"],
     ...rows.map((row) => [
       formatDate(row.createdAt),
       row.productName,
       MOVEMENT_LABELS[row.type] ?? row.title,
       row.body ?? "",
-      row.quantityChange ?? "",
+      row.quantity ?? row.quantityChange ?? "",
+      row.warehouseName ?? "",
+      row.toWarehouseName ?? "",
+      (row.relatedType === "kosha_booking" || row.relatedType === "service_order") && row.relatedId ? `#${row.relatedId}` : "",
       row.actorName ?? "النظام",
     ]),
   ];
@@ -1588,9 +1667,9 @@ function exportMovementCsv(rows: AssetMovementRow[]) {
 function printMovementReport(rows: AssetMovementRow[]) {
   const popup = window.open("", "_blank", "width=1000,height=800");
   if (!popup) throw new Error("تعذّر فتح نافذة الطباعة");
-  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>تقرير حركة الأصول</title><style>@page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}h1{font-size:22px;margin:0}.meta{font-size:12px;margin:6px 0 16px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #000;padding:6px;text-align:right}th{background:#eee}button{margin-bottom:12px}@media print{button{display:none}}</style></head><body><button onclick="window.print()">طباعة / حفظ PDF</button><h1>تقرير حركة الأصول والمخزن</h1><div class="meta">مجموعة علي جان نهاد · ${escapeMovementPrint(new Date().toLocaleString("ar-IQ-u-nu-latn"))}</div><table><thead><tr><th>التاريخ</th><th>الأصل</th><th>الحركة</th><th>التفاصيل</th><th>الكمية</th><th>المستخدم</th></tr></thead><tbody>${rows
+  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>تقرير حركة الأصول</title><style>@page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}h1{font-size:22px;margin:0}.meta{font-size:12px;margin:6px 0 16px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #000;padding:6px;text-align:right}th{background:#eee}button{margin-bottom:12px}@media print{button{display:none}}</style></head><body><button onclick="window.print()">طباعة / حفظ PDF</button><h1>تقرير حركة الأصول والمخزن</h1><div class="meta">مجموعة علي جان نهاد · ${escapeMovementPrint(new Date().toLocaleString("ar-IQ-u-nu-latn"))}</div><table><thead><tr><th>التاريخ</th><th>الأصل</th><th>الحركة</th><th>التفاصيل</th><th>الكمية</th><th>من مخزن</th><th>إلى مخزن</th><th>الحجز</th><th>المستخدم</th></tr></thead><tbody>${rows
     .map(
-      (row) => `<tr><td>${escapeMovementPrint(formatDate(row.createdAt))}</td><td>${escapeMovementPrint(row.productName)}</td><td>${escapeMovementPrint(MOVEMENT_LABELS[row.type] ?? row.title)}</td><td>${escapeMovementPrint(row.body || "—")}</td><td>${escapeMovementPrint(row.quantityChange ?? "—")}</td><td>${escapeMovementPrint(row.actorName || "النظام")}</td></tr>`,
+      (row) => `<tr><td>${escapeMovementPrint(formatDate(row.createdAt))}</td><td>${escapeMovementPrint(row.productName)}</td><td>${escapeMovementPrint(MOVEMENT_LABELS[row.type] ?? row.title)}</td><td>${escapeMovementPrint(row.body || "—")}</td><td>${escapeMovementPrint(row.quantity ?? row.quantityChange ?? "—")}</td><td>${escapeMovementPrint(row.warehouseName ?? "—")}</td><td>${escapeMovementPrint(row.toWarehouseName ?? "—")}</td><td>${escapeMovementPrint((row.relatedType === "kosha_booking" || row.relatedType === "service_order") && row.relatedId ? `#${row.relatedId}` : "—")}</td><td>${escapeMovementPrint(row.actorName || "النظام")}</td></tr>`,
     )
     .join("")}</tbody></table></body></html>`);
   popup.document.close();
@@ -1610,6 +1689,7 @@ export function AssetMovementsPage() {
   const [cost, setCost] = useState("");
   const [photoCategory, setPhotoCategory] = useState("current");
   const [saleTarget, setSaleTarget] = useState<number | null>(null);
+  const [movementWarehouse, setMovementWarehouse] = useState("");
   const meQuery = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
 
   const assetsQuery = useQuery<{ data: MovementAsset[] }>({
@@ -1623,11 +1703,13 @@ export function AssetMovementsPage() {
     staleTime: 60_000,
   });
   const movementsQuery = useQuery<{ data: AssetMovementRow[] }>({
-    queryKey: ["admin", "asset-movements", selectedId],
-    queryFn: () =>
-      adminFetch(
-        `/admin/assets/movements${selectedId ? `?productId=${selectedId}` : ""}`,
-      ),
+    queryKey: ["admin", "asset-movements", selectedId, movementWarehouse],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (selectedId) params.set("productId", String(selectedId));
+      if (movementWarehouse) params.set("warehouseId", movementWarehouse);
+      return adminFetch(`/admin/assets/movements?${params}`);
+    },
     staleTime: 10_000,
   });
   const advisorQuery = useQuery<{ checklist: string[] }>({
@@ -2089,17 +2171,18 @@ export function AssetMovementsPage() {
             <h2 className="flex items-center gap-2 font-semibold text-foreground"><History className="h-4 w-4 text-primary" /> سجل الحركات</h2>
             <p className="mt-1 text-xs text-muted-foreground">{selected ? `الحركات الخاصة بـ ${selected.productName}` : "آخر حركات جميع الأصول"}</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <WarehouseSelect allowAll includeInactive value={movementWarehouse} onChange={setMovementWarehouse} className="min-w-52" />
             <Button variant="outline" size="sm" className="gap-1" disabled={!movementRows.length} onClick={() => printMovementReport(movementRows)}><Printer className="h-4 w-4" /> PDF / طباعة</Button>
             <Button variant="outline" size="sm" className="gap-1" disabled={!movementRows.length} onClick={() => exportMovementCsv(movementRows)}><Download className="h-4 w-4" /> Excel / CSV</Button>
           </div>
         </div>
         {movementsQuery.isLoading ? <LoadingRows /> : !movementRows.length ? <EmptyState message="لا توجد حركات مسجلة" /> : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-sm">
-              <thead className="bg-background/50 text-muted-foreground"><tr><th className="p-3 text-right">التاريخ</th><th className="p-3 text-right">الأصل</th><th className="p-3 text-right">الحركة</th><th className="p-3 text-right">التفاصيل</th><th className="p-3 text-right">الكمية</th><th className="p-3 text-right">المستخدم</th></tr></thead>
+            <table className="w-full min-w-[1000px] text-sm">
+              <thead className="bg-background/50 text-muted-foreground"><tr><th className="p-3 text-right">التاريخ</th><th className="p-3 text-right">الأصل</th><th className="p-3 text-right">الحركة</th><th className="p-3 text-right">التفاصيل</th><th className="p-3 text-right">الكمية</th><th className="p-3 text-right">من مخزن</th><th className="p-3 text-right">إلى مخزن</th><th className="p-3 text-right">الحجز</th><th className="p-3 text-right">المستخدم</th></tr></thead>
               <tbody className="divide-y divide-border/20">
-                {movementRows.map((row) => <tr key={row.id} className="hover:bg-background/30"><td className="p-3 text-xs text-muted-foreground">{formatDate(row.createdAt)}</td><td className="p-3 font-medium text-foreground">{row.productName}</td><td className="p-3">{MOVEMENT_LABELS[row.type] ?? row.title}</td><td className="max-w-xs truncate p-3 text-muted-foreground">{row.body || row.title}</td><td className="p-3">{row.quantityChange == null ? "—" : row.quantityChange > 0 ? `+${row.quantityChange}` : row.quantityChange}</td><td className="p-3 text-muted-foreground">{row.actorName || "النظام"}</td></tr>)}
+                {movementRows.map((row) => <tr key={row.id} className="hover:bg-background/30"><td className="p-3 text-xs text-muted-foreground">{formatDate(row.createdAt)}</td><td className="p-3 font-medium text-foreground">{row.productName}</td><td className="p-3">{MOVEMENT_LABELS[row.type] ?? row.title}</td><td className="max-w-xs truncate p-3 text-muted-foreground">{row.body || row.title}</td><td className="p-3">{row.quantityChange == null ? "—" : (row.quantity ?? row.quantityChange ?? 0) > 0 ? `+${(row.quantity ?? row.quantityChange ?? 0)}` : (row.quantity ?? row.quantityChange ?? 0)}</td><td className="p-3 text-xs">{row.warehouseName ?? "—"}</td><td className="p-3 text-xs">{row.toWarehouseName ?? "—"}</td><td className="p-3 text-xs">{(row.relatedType === "kosha_booking" || row.relatedType === "service_order") && row.relatedId ? `#${row.relatedId}` : "—"}</td><td className="p-3 text-muted-foreground">{row.actorName || "النظام"}</td></tr>)}
               </tbody>
             </table>
           </div>

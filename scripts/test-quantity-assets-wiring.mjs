@@ -108,7 +108,7 @@ assert.doesNotMatch(manager, /<button\b/, "shadcn Button only");
 // Server: one stock movement per action, guarded against double counting.
 for (const field of ["notes: z.string().trim().max(2000)", "responsibleStaffId: z.coerce.number()", "photos: z.array(z.string().trim().max(4000)).max(10)", "additionalToReturn: z.boolean()"])
   assert.ok(api.includes(field), `adjust schema ${field}`);
-assert.match(quantityServer, /const guards = await adjustmentGuards\(executor, input\);\s*const plan = planQuantityAdjustment/, "guards run under the asset lock before any write");
+assert.match(quantityServer, /const guards = await adjustmentGuards\(executor, input\);[\s\S]{0,1800}?const plan = planQuantityAdjustment/, "guards run under the asset lock before any write");
 assert.match(quantityServer, /reason like 'purchase_invoice%'/);
 assert.match(quantityServer, /metadata->>'action' = \$\{action\}/);
 assert.match(api, /quantityMovements\(db, productId, \{\s*from: params\.get\("from"\),/);
