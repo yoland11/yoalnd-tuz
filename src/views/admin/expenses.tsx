@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileSpreadsheet, FileText, Pencil, Plus, Printer, Search, Tags, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { fileToDataUrl, adminFetch, formatCurrency, getCachedAdminMe } from "./_lib";
@@ -166,6 +167,14 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
     win.document.close();
     win.focus();
   }
+  function printExpense(expense: Expense, format: ExpenseVoucherFormat) {
+    void recordReportAudit("report_printed", `سند مصروف #${expense.id}`, format);
+    const win = window.open("", "_blank", format === "a4" ? "width=920,height=760" : "width=420,height=760");
+    if (!win) { toast({ title: "اسمح بالنوافذ المنبثقة للطباعة", variant: "destructive" }); return; }
+    win.document.write(buildExpenseVoucherHtml(expense, format, logoSrc(settings), settings?.site_name || "مجموعة علي جان نهاد"));
+    win.document.close();
+    win.focus();
+  }
   function exportExcel() {
     downloadCsv(`expenses-${filters.from || "all"}-${filters.to || "all"}.csv`, ["التاريخ", "العنوان", "التصنيف", "طريقة الدفع", "المبلغ", "بواسطة", "ملاحظات"], expenses.map((e) => [e.date, e.name, e.categoryName, paymentLabel(e.paymentMethod), e.amount, e.createdByName, e.notes ?? ""]));
   }
@@ -242,7 +251,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
                       <td className="px-3 py-2.5">{expense.receiptImage ? <a href={expense.receiptImage} target="_blank" rel="noreferrer" className="text-primary underline text-xs">عرض</a> : "—"}</td>
                       <td className="px-3 py-2.5 text-muted-foreground text-xs">{expense.createdByName || "—"}</td>
                       <td className="px-3 py-2.5">
-                        <div className="flex gap-1">
+                        <div className="flex items-center gap-1">
                           {canApproveExpenses && expense.approvalStatus === "pending" && expense.financialTransactionId ? <>
                             <Button variant="ghost" onClick={() => decideExpense(expense, "approve")} disabled={approveExpense.isPending || rejectExpense.isPending} className="rounded px-2 py-1 text-xs font-bold text-status-success hover:bg-status-success/10 disabled:opacity-50">اعتماد</Button>
                             <Button variant="ghost" onClick={() => decideExpense(expense, "reject")} disabled={approveExpense.isPending || rejectExpense.isPending} className="rounded px-2 py-1 text-xs font-bold text-status-danger hover:bg-status-danger/10 disabled:opacity-50">رفض</Button>
@@ -251,6 +260,16 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
                             <Button variant="ghost" onClick={() => setForm({ ...blankForm(), id: expense.id, date: expense.date, name: expense.name ?? "", categoryId: expense.categoryId ? String(expense.categoryId) : "", amount: String(expense.amount ?? ""), paymentMethod: expense.paymentMethod ?? "cash", notes: expense.notes ?? "", receiptImage: expense.receiptImage ?? "", costCategory: expense.costCategory ?? "", koshaId: expense.koshaId ? String(expense.koshaId) : "", bookingId: expense.bookingId ? String(expense.bookingId) : "", constructionProjectId: expense.constructionProjectId ? String(expense.constructionProjectId) : "", expenseType: expense.expenseType ?? "", beneficiaryName: expense.beneficiaryName ?? "" })} className="p-1.5 rounded text-primary hover:bg-primary/10"><Pencil className="w-4 h-4" /></Button>
                             <Button variant="ghost" onClick={() => confirm("حذف المصروف؟") && remove.mutate(expense.id)} className="p-1.5 rounded text-status-danger hover:bg-status-danger/10"><Trash2 className="w-4 h-4" /></Button>
                           </> : <span className="text-xs text-muted-foreground">محفوظ</span>}
+                          <DropdownMenu dir="rtl">
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm" aria-label={`طباعة مصروف ${expense.name || expense.id}`} className="h-8 gap-1 px-2 text-xs"><Printer className="h-3.5 w-3.5" /> طباعة</Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onSelect={() => printExpense(expense, "a4")}>طباعة A4</DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => printExpense(expense, "80mm")}>طباعة 80mm</DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => printExpense(expense, "58mm")}>طباعة 58mm</DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </td>
                     </tr>
@@ -382,6 +401,49 @@ function buildExpensesReceiptHtml(size: "58mm" | "80mm", expenses: Expense[], fi
     <table class="items"><thead><tr><th class="name">المصروف</th><th>المبلغ</th></tr></thead><tbody>${rows || `<tr><td class="name" colspan="2">لا توجد مصاريف ضمن الفلاتر الحالية</td></tr>`}</tbody></table>
     <div class="grand"><span>الإجمالي المعتمد</span><span class="num">${escapeHtml(formatCurrency(total))}</span></div>
     ${excluded ? `<div class="center" style="font-size:.88em">لا يشمل الإجمالي ${excluded.toLocaleString("en-US")} مصروفاً غير معتمد</div>` : ""}
+    <div class="thanks">نظام AJN</div>
+  </div>${printWhenImagesReadyScript()}</body></html>`;
+}
+type ExpenseVoucherFormat = "a4" | "58mm" | "80mm";
+/** One expense on paper. Only an executed expense reads as money paid out. */
+export function buildExpenseVoucherHtml(expense: Pick<Expense, "id" | "date" | "name" | "amount" | "categoryName" | "paymentMethod" | "notes" | "approvalStatus" | "createdByName" | "beneficiaryName">, format: ExpenseVoucherFormat, logo: string, company: string) {
+  const status = expense.approvalStatus ?? "executed";
+  const statusLabel = EXPENSE_STATUS_LABELS[status] ?? status;
+  const printedAt = new Date().toLocaleString("ar-IQ-u-nu-latn");
+  const facts = ([
+    ["رقم المصروف", `#${expense.id}`],
+    ["التاريخ", expense.date],
+    ["العنوان", expense.name],
+    ["التصنيف", expense.categoryName],
+    ["طريقة الدفع", paymentLabel(expense.paymentMethod)],
+    ["المستفيد", expense.beneficiaryName],
+    ["الحالة", statusLabel],
+    ["بواسطة", expense.createdByName],
+    ["ملاحظات", expense.notes],
+  ] as [string, string | null | undefined][]).filter(([, value]) => value);
+  const notice = status === "executed" ? "" : `${statusLabel}: هذا السند لا يثبت صرف المبلغ`;
+  if (format === "a4") {
+    return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>سند مصروف #${expense.id}</title><style>@page{size:A4;margin:14mm}*{color:#000!important;box-shadow:none!important;box-sizing:border-box}body{font-family:Arial,sans-serif;background:#fff;margin:0}.head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:14px}img{width:64px;height:50px;object-fit:contain}h1{font-size:20px;margin:0}.meta{font-size:11px;text-align:left}.company{font-size:13px;font-weight:700}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #000;padding:7px 9px;text-align:right;vertical-align:top}th{width:28%;font-weight:700;background:#f3f3f3}.amount{display:flex;justify-content:space-between;align-items:center;border:2px solid #000;padding:10px 12px;margin:14px 0;font-size:18px;font-weight:800}.notice{border:2px dashed #000;padding:8px 12px;margin-bottom:14px;font-weight:800;text-align:center}.signs{display:flex;gap:24px;margin-top:48px}.signs div{flex:1;border-top:1px solid #000;padding-top:6px;text-align:center;font-size:12px}</style></head><body>
+      <div class="head"><div>${logo ? `<img src="${escapeHtml(logo)}" alt="">` : ""}<div class="company">${escapeHtml(company)}</div><h1>سند مصروف</h1></div><div class="meta">تاريخ الطباعة<br>${escapeHtml(printedAt)}</div></div>
+      ${notice ? `<div class="notice">${escapeHtml(notice)}</div>` : ""}
+      <table><tbody>${facts.map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>
+      <div class="amount"><span>المبلغ</span><span>${escapeHtml(formatCurrency(expense.amount))}</span></div>
+      <div class="signs"><div>المستلم</div><div>المحاسب</div><div>المدير</div></div>
+      ${printWhenImagesReadyScript()}</body></html>`;
+  }
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>سند مصروف #${expense.id} ${format}</title><style>${thermalReceiptCss(format)}
+    .kv .v { max-width: 65%; overflow-wrap: anywhere; }
+    .grand .num { white-space: nowrap; }
+    .notice { border: 1.5px dashed #000; padding: 3px 4px; margin: 4px 0; font-weight: 900; text-align: center; }
+    .sign { margin-top: 26px; border-top: 1.5px solid #000; padding-top: 3px; text-align: center; font-weight: 700; }
+  </style></head><body><div class="receipt">
+    <div class="r-head">${logo ? `<img class="r-logo" src="${escapeHtml(logo)}" alt="">` : ""}<div class="r-company">${escapeHtml(company)}</div><div class="r-sub">سند مصروف</div></div>
+    <hr class="rule">
+    ${notice ? `<div class="notice">${escapeHtml(notice)}</div>` : ""}
+    ${facts.map(([label, value]) => `<div class="kv"><span>${escapeHtml(label)}</span><span class="v">${escapeHtml(value)}</span></div>`).join("")}
+    <div class="kv"><span>تاريخ الطباعة</span><span class="v num">${escapeHtml(printedAt)}</span></div>
+    <div class="grand"><span>المبلغ</span><span class="num">${escapeHtml(formatCurrency(expense.amount))}</span></div>
+    <div class="sign">توقيع المستلم</div>
     <div class="thanks">نظام AJN</div>
   </div>${printWhenImagesReadyScript()}</body></html>`;
 }
