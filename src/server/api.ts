@@ -3,6 +3,8 @@ import { loadDailyOperations } from "./booking-daily-operations";
 import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
 import { applyWarehouseDeltas, createWarehouse, listWarehouses, mainWarehouseId, requireActiveWarehouse, rowsOf as warehouseRows, shelfCompany, updateWarehouse, warehouseBreakdowns, WarehouseError } from "./warehouses";
 import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTransfer, sourceCommitment } from "./warehouse-transfers";
+import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence } from "./attendance";
+import { QR_ROTATION_SECONDS, baghdadDate, addDays as attendanceAddDays } from "@/lib/attendance-rules";
 import { approveWarehouseCount, createWarehouseCount, listWarehouseCounts, rejectWarehouseCount, warehouseCountDetail } from "./warehouse-counts";
 import { warehouseDiscrepancies, warehouseMovementRows, warehouseStockRows, warehouseTotals, warehouseTransferRows } from "./warehouse-reports";
 import { SalesReturnError, salesInvoiceReturnCredits, salesInvoiceReturnCreditsSql, salesReturnsForInvoice } from "./sales-returns";
@@ -869,6 +871,11 @@ export const ALL_PERMISSIONS = [
   "booking_return_confirm",
   "asset_damage_record",
   "asset_damage_approve",
+  "attendance_view",
+  "attendance_manage",
+  "attendance_approve",
+  "attendance_location_view",
+  "attendance_reports",
   "warehouses_view",
   "warehouses_manage",
   "warehouse_stock_manage",
@@ -47006,12 +47013,164 @@ async function handleAdmin(
     const attendanceActor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
     const attendanceRows = <T = any>(value: any): T[] => (value?.rows ?? value ?? []) as T[];
     const getPolicy = async () => normalizeAttendancePolicy((await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, "attendancePolicy") }))?.value);
+    const attendanceManager = canManageAll || hasPermission(auth, "attendance_manage");
+    const attendanceApprover = canManageAll || hasPermission(auth, "attendance_approve");
+    const attendanceViewer = attendanceManager || attendanceApprover || hasPermission(auth, "attendance_view") || hasPermission(auth, "attendance_reports");
+    const attendanceWho = { id: auth.id, name: auth.fullName || auth.username };
+    const attendanceParams = req.nextUrl.searchParams;
+    const attendanceResource = parts[2] ?? "";
+    const noStoreJson = (data: unknown) => { const response = json(data); response.headers.set("Cache-Control", "private, no-store"); return response; };
+    if (attendanceResource === "me" && method === "GET") {
+      const today = await attendanceToday(db as any, auth.id);
+      const [mine, corrections] = await Promise.all([attendanceRecords(db as any, { staffId: auth.id, from: attendanceAddDays(baghdadDate(), -6), to: baghdadDate(), pageSize: 20 }), listCorrections(db as any, { staffId: auth.id })]);
+      return noStoreJson({ ...today, recent: mine.data, corrections: corrections.slice(0, 10) });
+    }
+    if (attendanceResource === "punch" && method === "POST") {
+      const limit = await consumeRateLimit({ action: "attendance-punch", keyParts: [String(auth.id)], limit: 20, windowMs: 60_000 });
+      if (!limit.allowed) return rateLimitError(limit);
+      const payload = await body(req);
+      const action = payload?.action === "check_out" ? "check_out" : "check_in";
+      const result = await db.transaction((tx) => recordAttendance(tx as any, auth.id, { action, qrCode: payload?.qrCode, gps: payload?.gps, shiftId: payload?.shiftId }));
+      void logAdminActivity(req, action === "check_in" ? "attendance_checkin" : "attendance_checkout", "attendance", result.recordId, { method: result.method });
+      if (result.status === "late") void createNotificationOnce({ audienceType: "admin", type: "attendance_abnormal", title: "حضور متأخر", body: `${attendanceWho.name} سجل حضوراً متأخراً`, entityType: "attendance", entityId: result.recordId } as any);
+      return json({ ...result, today: await attendanceToday(db as any, auth.id) }, action === "check_in" ? 201 : 200);
+    }
+    if (attendanceResource === "corrections") {
+      const correctionId = optionalPositiveId(parts[3]);
+      if (method === "POST" && !parts[3]) {
+        const payload = await body(req);
+        const created = await db.transaction((tx) => createCorrection(tx as any, auth.id, payload ?? {}));
+        void createNotification({ audienceType: "admin", type: "attendance_correction", title: "طلب تصحيح حضور", body: attendanceWho.name, entityType: "attendance", entityId: created.id } as any);
+        return json(created, 201);
+      }
+      if (method === "GET" && !parts[3]) {
+        if (!attendanceApprover && !attendanceViewer) return noStoreJson({ data: await listCorrections(db as any, { staffId: auth.id }) });
+        return noStoreJson({ data: await listCorrections(db as any, { status: attendanceParams.get("status"), staffId: optionalPositiveId(attendanceParams.get("staffId")) }) });
+      }
+      if (method === "GET" && correctionId && parts[4] === "attachment") {
+        const rows = await listCorrections(db as any, { staffId: attendanceApprover ? undefined : auth.id, includeAttachment: true });
+        const row = rows.find((entry) => entry.id === correctionId);
+        return row ? noStoreJson({ attachment: row.attachment ?? null }) : error("الطلب غير موجود", 404);
+      }
+      if (method === "PATCH" && correctionId) {
+        if (!attendanceApprover) return error("مراجعة طلبات التصحيح متاحة للمدير فقط", 403);
+        const payload = await body(req);
+        const approve = payload?.status === "approved";
+        const reviewed = await db.transaction((tx) => reviewCorrection(tx as any, correctionId, { approve, note: payload?.note }, attendanceWho));
+        void logAdminActivity(req, approve ? "attendance_correction_approved" : "attendance_correction_rejected", "attendance", correctionId, { staffId: reviewed.staffId, workDate: reviewed.workDate });
+        void createNotification({ audienceType: "staff", staffId: reviewed.staffId, type: "attendance_correction", title: approve ? "تمت الموافقة على طلب التصحيح" : "رُفض طلب التصحيح", body: reviewed.workDate, entityType: "attendance", entityId: correctionId } as any);
+        // A finalized run is only reported here; it is adjusted through the existing supplement workflow.
+        const recalculation = approve ? await recalculatePayrollDraftsForAttendance(reviewed.staffId, reviewed.workDate, attendanceActor) : { recalculated: [], protectedRuns: [] };
+        if (recalculation.protectedRuns.length) void createNotification({ audienceType: "admin", type: "payroll_attendance_correction", title: "تصحيح حضور يخص دورة رواتب منتهية", body: recalculation.protectedRuns.map((run: any) => run.runNo).join("، "), entityType: "attendance", entityId: correctionId } as any);
+        return json({ ...reviewed, protectedRuns: recalculation.protectedRuns });
+      }
+      return error("الطلب غير مدعوم", 405);
+    }
+    if (attendanceResource === "kiosks" || attendanceResource === "locations" || attendanceResource === "shifts" || attendanceResource === "settings" || attendanceResource === "dashboard" || attendanceResource === "records" || attendanceResource === "report" || attendanceResource === "options") {
+      if (!attendanceViewer) return error("ليس لديك صلاحية عرض الحضور", 403);
+      const writeRefused = method !== "GET" && !attendanceManager;
+      if (attendanceResource === "options" && method === "GET") {
+        const [locations, staffRows] = await Promise.all([listLocations(db as any), db.execute(sql`select id, full_name, username, department, job_title, photo_url from staff where is_active = true order by coalesce(nullif(full_name, ''), username)`)]);
+        return noStoreJson({ locations, staff: attendanceRows<any>(staffRows).map((row) => ({ id: Number(row.id), fullName: row.full_name || row.username, username: row.username, department: row.department ?? null, jobTitle: row.job_title ?? null, photoUrl: row.photo_url ?? null })), capabilities: { canManage: attendanceManager, canApprove: attendanceApprover, canManagePolicy: canManageAll, canViewLocation: canManageAll || hasPermission(auth, "attendance_location_view") }, policy: await getPolicy() });
+      }
+      if (attendanceResource === "dashboard" && method === "GET") {
+        void sweepLocationEvidence(db as any, (await getPolicy()).locationRetentionDays).catch((cause) => console.error("attendance evidence sweep failed", cause));
+        return noStoreJson(await attendanceDashboard(db as any, { date: attendanceParams.get("date"), search: attendanceParams.get("search"), department: attendanceParams.get("department"), locationId: optionalPositiveId(attendanceParams.get("locationId")), status: attendanceParams.get("status"), method: attendanceParams.get("method"), staffId: optionalPositiveId(attendanceParams.get("staffId")) }));
+      }
+      if (attendanceResource === "records") {
+        if (method === "GET") return noStoreJson(await attendanceRecords(db as any, { from: attendanceParams.get("from"), to: attendanceParams.get("to"), staffId: optionalPositiveId(attendanceParams.get("staffId")), locationId: optionalPositiveId(attendanceParams.get("locationId")), method: attendanceParams.get("method"), page: attendanceParams.get("page"), pageSize: attendanceParams.get("pageSize"), includeLocation: canManageAll || hasPermission(auth, "attendance_location_view") }));
+        const recordId = optionalPositiveId(parts[3]);
+        if (method === "POST" && recordId && parts[4] === "overtime") {
+          if (!attendanceApprover) return error("اعتماد الإضافي متاح للمدير فقط", 403);
+          const payload = await body(req);
+          const saved = await db.transaction((tx) => approveOvertime(tx as any, recordId, payload?.minutes, attendanceWho));
+          const recalculation = await recalculatePayrollDraftsForAttendance(saved.staffId, saved.workDate, attendanceActor);
+          void logAdminActivity(req, "attendance_overtime_approved", "attendance", recordId, { minutes: payload?.minutes });
+          return json({ ...saved, protectedRuns: recalculation.protectedRuns });
+        }
+        return error("الطلب غير مدعوم", 405);
+      }
+      if (attendanceResource === "report" && method === "GET")
+        return noStoreJson(await attendanceReport(db as any, { from: String(attendanceParams.get("from") ?? ""), to: String(attendanceParams.get("to") ?? ""), staffId: optionalPositiveId(attendanceParams.get("staffId")), department: attendanceParams.get("department"), locationId: optionalPositiveId(attendanceParams.get("locationId")) }));
+      if (writeRefused) return error("هذا الإجراء متاح لمدير الحضور فقط", 403);
+      if (attendanceResource === "locations") {
+        if (method === "GET") return noStoreJson({ data: await listLocations(db as any) });
+        const locationId = optionalPositiveId(parts[3]);
+        const payload = await body(req);
+        const id = await db.transaction((tx) => saveLocation(tx as any, method === "PATCH" ? locationId : null, payload ?? {}, attendanceWho));
+        void logAdminActivity(req, "attendance_location_saved", "attendance_location", id, {});
+        return json({ id }, method === "POST" ? 201 : 200);
+      }
+      if (attendanceResource === "settings") {
+        const targetId = optionalPositiveId(parts[3]);
+        if (!targetId) return error("معرّف الموظف غير صحيح", 400);
+        if (method === "GET") return noStoreJson(await readEmployeeSettings(db as any, targetId));
+        const payload = await body(req);
+        const saved = await db.transaction((tx) => saveEmployeeSettings(tx as any, targetId, payload ?? {}, attendanceWho));
+        void logAdminActivity(req, "attendance_settings_updated", "staff", targetId, { enabled: saved.enabled, requiredMethod: saved.requiredMethod });
+        return json(saved);
+      }
+      if (attendanceResource === "shifts") {
+        const shiftId = optionalPositiveId(parts[3]);
+        if (method === "GET") {
+          const today = baghdadDate();
+          return noStoreJson({ data: await shiftsBetween(db as any, { limit: 2000, from: attendanceParams.get("from") || today, to: attendanceParams.get("to") || attendanceAddDays(today, 30), staffIds: optionalPositiveId(attendanceParams.get("staffId")) ? [optionalPositiveId(attendanceParams.get("staffId")) as number] : undefined, bookingSource: attendanceParams.get("bookingSource"), bookingId: optionalPositiveId(attendanceParams.get("bookingId")) }) });
+        }
+        if (method === "POST" && parts[3] === "from-booking") {
+          const payload = await body(req);
+          const bookingSource = String(payload?.bookingSource ?? "");
+          const reference = await loadBookingOperationsReference(bookingSource, Number(payload?.bookingId));
+          if (!reference) return error("الحجز غير موجود", 404);
+          const assignment = bookingAssignedStaff(reference.details);
+          const assigned = new Set([...assignment.ids, ...(reference.source === "kosha" && Number(reference.row.assignedStaffId) > 0 ? [Number(reference.row.assignedStaffId)] : [])]);
+          if (!assigned.has(Number(payload?.staffId))) return error("عيّن الموظف على الحجز أولاً؛ الوردية لا تنشئ تعييناً جديداً", 409);
+          const created = await db.transaction((tx) => createBookingShift(tx as any, payload, attendanceWho));
+          void logAdminActivity(req, "attendance_booking_shift_created", reference.entityType, reference.id, { shiftId: created.id, staffId: payload?.staffId });
+          return json(created, 201);
+        }
+        if (method === "POST" && shiftId && parts[4] === "approve-pay") {
+          if (!attendanceApprover) return error("اعتماد أجر المناسبة متاح للمدير فقط", 403);
+          const result = await db.transaction((tx) => approveEventCompensation(tx as any, shiftId, attendanceWho));
+          void logAdminActivity(req, "attendance_event_pay_approved", "attendance_shift", shiftId, result);
+          return json(result);
+        }
+        if (method === "POST" && !parts[3]) {
+          const payload = await body(req);
+          const result = await db.transaction((tx) => createShifts(tx as any, payload ?? {}, attendanceWho));
+          void logAdminActivity(req, "attendance_shifts_created", "staff", Number(payload?.staffId) || undefined, { count: result.created.length });
+          return json(result, 201);
+        }
+        if (method === "DELETE" && shiftId) {
+          await db.transaction((tx) => cancelShift(tx as any, shiftId));
+          void logAdminActivity(req, "attendance_shift_cancelled", "attendance_shift", shiftId, {});
+          return json({ ok: true });
+        }
+        return error("الطلب غير مدعوم", 405);
+      }
+      if (attendanceResource === "kiosks") {
+        if (method === "GET") return noStoreJson({ data: await listKiosks(db as any) });
+        if (method === "POST") {
+          const payload = await body(req);
+          const created = await db.transaction((tx) => createKiosk(tx as any, payload ?? {}, attendanceWho));
+          void logAdminActivity(req, "attendance_kiosk_created", "attendance_kiosk", created.id, {});
+          return json(created, 201);
+        }
+        const kioskId = optionalPositiveId(parts[3]);
+        if (method === "DELETE" && kioskId) {
+          await revokeKiosk(db as any, kioskId);
+          void logAdminActivity(req, "attendance_kiosk_revoked", "attendance_kiosk", kioskId, {});
+          return json({ ok: true });
+        }
+      }
+      return error("الطلب غير مدعوم", 405);
+    }
     if (parts[2] === "policy") {
       if (!canManageAll) return error("إدارة سياسة الحضور متاحة للمدير فقط", 403);
       if (method === "GET") return json(await getPolicy());
       if (method === "PATCH" || method === "PUT") {
         const previous = await getPolicy();
-        const saved = normalizeAttendancePolicy(await body(req));
+        // A partial save, such as the attendance settings tab, must not reset the other rules.
+        const saved = normalizeAttendancePolicy({ ...previous, ...(await body(req)) });
         await db.insert(settingsTable).values({ key: "attendancePolicy", value: saved as any, updatedAt: new Date() }).onConflictDoUpdate({ target: settingsTable.key, set: { value: saved as any, updatedAt: new Date() } });
         void logAdminActivity(req, "attendance_policy_updated", "settings", undefined, { oldValues: previous, newValues: saved });
         return json(saved);
@@ -47089,6 +47248,8 @@ async function handleAdmin(
         void createNotification({ audienceType: "staff", staffId, type: "attendance_correction", title: "تم اعتماد الإجازة", body: `${from} إلى ${to} · ${reason}`, entityType: "attendance", entityId: created[0]?.id ?? null, href: "/admin/attendance" });
         return json({ records: created.map((row) => formatAttendance(row)), recalculation }, 201);
       }
+      if ((await readEmployeeSettings(db as any, auth.id)).enabled)
+        return error("سجّل من «دوامي اليوم» في بوابة الموظف؛ حسابك يتطلب التحقق", 409);
       if (action === "check-out") {
         const row = await db.transaction(async (tx) => {
           await tx.execute(sql`select pg_advisory_xact_lock(${auth.id})`);
@@ -50001,7 +50162,7 @@ async function handleAdmin(
           return error("ليس لديك صلاحية تعديل إعدادات الراتب", 403);
         const b = await body(req);
         const money = (v: unknown) => String(Math.max(0, Number(v) || 0));
-        const salaryType = ["monthly", "weekly", "daily", "hourly"].includes(
+        const salaryType = ["monthly", "weekly", "daily", "hourly", "per_event"].includes(
           String(b?.salaryType),
         )
           ? String(b.salaryType)
@@ -50273,7 +50434,7 @@ async function handleAdmin(
               String(payload?.jobTitle ?? "")
                 .trim()
                 .slice(0, 100) || null,
-            salaryType: ["monthly", "weekly", "daily", "hourly"].includes(
+            salaryType: ["monthly", "weekly", "daily", "hourly", "per_event"].includes(
               String(payload?.salaryType),
             )
               ? String(payload.salaryType)
@@ -50435,7 +50596,7 @@ async function handleAdmin(
             .slice(0, 100) || null;
       if (
         b?.salaryType !== undefined &&
-        ["monthly", "weekly", "daily", "hourly"].includes(String(b.salaryType))
+        ["monthly", "weekly", "daily", "hourly", "per_event"].includes(String(b.salaryType))
       )
         update.salaryType = String(b.salaryType);
       if (b?.currency !== undefined)
@@ -75982,6 +76143,16 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     if (!root && req.method === "GET") return json({ status: "ok" });
     if (req.method === "GET" && root === "healthz")
       return json({ status: "ok" });
+    if (req.method === "GET" && root === "attendance-kiosk" && parts[1]) {
+      const limit = await consumeRateLimit({ action: "attendance-kiosk", keyParts: [ip(req)], limit: 120, windowMs: 60_000 });
+      if (!limit.allowed) return rateLimitError(limit);
+      const display = await kioskDisplay(db as any, String(parts[1]));
+      const { default: QRCode } = await import("qrcode");
+      const link = `${req.nextUrl.origin}/staff?attendanceQr=${encodeURIComponent(display.code)}`;
+      const response = json({ name: display.name, locationName: display.locationName, rotatesAt: display.rotatesAt, serverTime: display.serverTime, rotationSeconds: QR_ROTATION_SECONDS, qrDataUrl: await QRCode.toDataURL(link, { width: 640, margin: 1, errorCorrectionLevel: "M" }) });
+      response.headers.set("Cache-Control", "no-store");
+      return response;
+    }
     if (
       root === "cron" &&
       parts[1] === "smart-notifications" &&
@@ -76263,6 +76434,11 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       const requestId = makeRequestId(req.headers.get("x-request-id"));
       console.warn("AJN graduation operation rejected", {requestId, path:req.nextUrl.pathname, status:err.status});
       return error(err.message, err.status, {code:"CONFLICT", requestId, retryable:false});
+    }
+    if(err instanceof AttendanceError){
+      const requestId=makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN attendance operation rejected",{requestId,path:req.nextUrl.pathname,status:err.status,code:err.code});
+      return error(err.message,err.status,{requestId,code:err.status===403?"PERMISSION_DENIED":err.status===404?"NOT_FOUND":err.status===409?"CONFLICT":"VALIDATION_ERROR",retryable:false});
     }
     if(err instanceof WarehouseError){
       const requestId=makeRequestId(req.headers.get("x-request-id"));

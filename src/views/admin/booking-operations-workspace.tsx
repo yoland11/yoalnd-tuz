@@ -7,6 +7,7 @@ import { KoshaEquipmentImport } from "./kosha-equipment-import";
 import { BookingResourceWindowPanel } from "./booking-resource-window-panel";
 import { BookingConflictReportPanel } from "./booking-conflict-report-panel";
 import { useWarehouseOptions } from "@/components/warehouse-select";
+import { BookingAttendancePanel } from "@/components/booking-attendance-panel";
 import { QuantityBookingAssetDialog, type QuantityBookingTarget } from "./quantity-booking-asset-dialog";
 import { BookingReadinessPanel, BookingReadinessStatus, type ReadinessDisplay } from "@/components/booking-readiness-panel";
 import { BookingLoadingPanel } from "@/components/booking-loading-panel";
@@ -64,6 +65,7 @@ import {
   UserRound,
   Users,
   Warehouse,
+  CalendarClock,
   Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -271,6 +273,7 @@ const TAB_LABELS: Array<[string, string, typeof Boxes]> = [
   ["finance", "الملخص المالي", CircleDollarSign],
   ["profitability", "ربحية الحجز", CircleDollarSign],
   ["tasks", "المهام", ListChecks],
+  ["attendance", "الحضور", CalendarClock],
   ["documents", "المستندات", FileText],
   ["group-photos", "لقطات جماعية", Camera],
   ["activity", "النشاط والتايملاين", History],
@@ -616,6 +619,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
       <TabsContent value="inventory"><InventoryTab base={base} queryKey={key} /></TabsContent>
       <TabsContent value="finance"><FinanceTab base={base} queryKey={key} booking={booking} invoiceUrl={invoiceUrl} paymentUrl={paymentUrl} /></TabsContent>
       <TabsContent value="profitability"><BookingProfitabilityPanel endpoint={`${base}/profitability`} queryKey={key}/></TabsContent>
+      <TabsContent value="attendance"><BookingAttendancePanel source={booking.source} bookingId={booking.id} base={base} eventDate={booking.eventDate ?? null} /></TabsContent>
       <TabsContent value="tasks"><TasksTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       <TabsContent value="documents"><DocumentsTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       {booking.source === "service" ? <TabsContent value="group-photos"><BookingGroupPhotos bookingId={booking.id} /></TabsContent> : null}

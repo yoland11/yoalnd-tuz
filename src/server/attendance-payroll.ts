@@ -1,3 +1,5 @@
+import { baghdadMoment, nonOverlappingSessions, shiftAdherence, toMs } from "../lib/attendance-rules";
+
 export const ATTENDANCE_STATUSES = [
   "present",
   "out",
@@ -22,6 +24,10 @@ export type AttendancePolicy = {
   holidayOvertimeMultiplier: number;
   paidLeaveCountsAsPresent: boolean;
   holidays: string[];
+  /** Off by default: overtime keeps counting as it did until a manager turns approval on. */
+  overtimeRequiresApproval: boolean;
+  checkInEarlyMinutes: number;
+  locationRetentionDays: number;
 };
 
 export const DEFAULT_ATTENDANCE_POLICY: AttendancePolicy = {
@@ -39,6 +45,9 @@ export const DEFAULT_ATTENDANCE_POLICY: AttendancePolicy = {
   holidayOvertimeMultiplier: 2,
   paidLeaveCountsAsPresent: true,
   holidays: [],
+  overtimeRequiresApproval: false,
+  checkInEarlyMinutes: 120,
+  locationRetentionDays: 90,
 };
 
 export type AttendancePayrollRecord = {
@@ -47,7 +56,10 @@ export type AttendancePayrollRecord = {
   status: string;
   checkInAt: string | Date | null;
   checkOutAt: string | Date | null;
+  overtimeApprovedMinutes?: number | null;
 };
+
+export type AttendancePayrollShift = { date: string; startMs: number; endMs: number; graceMinutes: number };
 
 export type AttendancePayrollInput = {
   periodStart: string;
@@ -65,6 +77,12 @@ export type AttendancePayrollInput = {
   absenceDeductionRate?: number;
   policy?: Partial<AttendancePolicy>;
   records: AttendancePayrollRecord[];
+  /** Shift rows replace the weekly pattern on their dates. `shifts_only` expects nobody on other dates. */
+  scheduleMode?: "fixed" | "shifts_only";
+  shifts?: AttendancePayrollShift[];
+  graceMinutes?: number;
+  /** Days from this date on are not over yet, so an empty day there is not an absence. */
+  asOfDate?: string;
 };
 
 export type AttendancePayrollResult = {
@@ -171,6 +189,9 @@ export function normalizeAttendancePolicy(value: unknown): AttendancePolicy {
     holidayOvertimeMultiplier: Math.min(10, Math.max(0, finite(input.holidayOvertimeMultiplier, DEFAULT_ATTENDANCE_POLICY.holidayOvertimeMultiplier))),
     paidLeaveCountsAsPresent: input.paidLeaveCountsAsPresent !== false,
     holidays: Array.isArray(input.holidays) ? [...new Set(input.holidays.map(String).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].slice(0, 366) : [],
+    overtimeRequiresApproval: input.overtimeRequiresApproval === true,
+    checkInEarlyMinutes: Math.min(720, Math.max(0, Math.round(finite(input.checkInEarlyMinutes, DEFAULT_ATTENDANCE_POLICY.checkInEarlyMinutes)))),
+    locationRetentionDays: Math.min(3650, Math.max(1, Math.round(finite(input.locationRetentionDays, DEFAULT_ATTENDANCE_POLICY.locationRetentionDays)))),
   };
 }
 
@@ -188,16 +209,29 @@ export function calculateAttendancePayroll(input: AttendancePayrollInput): Atten
   const startMinute = policyTime(input.shiftStart, policy.workStart);
   const endMinute = policyTime(input.shiftEnd, policy.workEnd);
   const expectedDailyHours = Math.max(0.01, finite(input.dailyWorkingHours, Math.max(1, (endMinute - startMinute) / 60)));
+  const shiftsByDate = new Map<string, AttendancePayrollShift[]>();
+  for (const shift of input.shifts ?? []) shiftsByDate.set(shift.date, [...(shiftsByDate.get(shift.date) ?? []), shift]);
+  const shiftsOnly = input.scheduleMode === "shifts_only";
+  const overnight = !shiftsOnly && endMinute <= startMinute;
+  const grace = input.graceMinutes ?? policy.lateGraceMinutes;
   const scheduledDates = dateRange(input.periodStart, input.periodEnd).filter((date) => {
+    if (shiftsByDate.has(date)) return true;
+    if (shiftsOnly) return false;
     const day = new Date(`${date}T00:00:00Z`);
     return !daysOff.has(DAY_KEYS[day.getUTCDay()]) && !holidays.has(date);
   });
+  // Overlapping sessions are clipped, so one worked minute is never counted twice.
+  const countable = input.records.flatMap((record) => {
+    const startMs = toMs(record.checkInAt), endMs = toMs(record.checkOutAt);
+    return ["present", "out", "late"].includes(record.status) && startMs != null && endMs != null && endMs >= startMs ? [{ record, startMs, endMs }] : [];
+  });
+  const clippedMs = new Map(nonOverlappingSessions(countable).map((row) => [row.record, (row.effectiveEndMs as number) - row.effectiveStartMs]));
   const scheduledSet = new Set(scheduledDates);
   const daily: AttendancePayrollResult["daily"] = [];
 
   for (const date of dateRange(input.periodStart, input.periodEnd)) {
     const records = grouped.get(date) ?? [];
-    const isHoliday = holidays.has(date);
+    const isHoliday = holidays.has(date) && !shiftsByDate.has(date);
     const isWeekend = !isHoliday && !scheduledSet.has(date);
     const kind = isHoliday ? "holiday" : isWeekend ? "weekend" : "workday";
     const paidLeave = records.some((record) => record.status === "paid_leave");
@@ -206,18 +240,27 @@ export function calculateAttendancePayroll(input: AttendancePayrollInput): Atten
     const sessions = records.filter((record) => ["present", "out", "late"].includes(record.status));
     const validSessions = sessions.filter((record) => record.checkInAt && record.checkOutAt && new Date(record.checkOutAt).getTime() >= new Date(record.checkInAt).getTime());
     const invalidTimeOrder = sessions.filter((record) => record.checkInAt && record.checkOutAt && new Date(record.checkOutAt).getTime() < new Date(record.checkInAt).getTime()).length;
-    const workedHours = round(validSessions.reduce((sum, record) => sum + (new Date(record.checkOutAt!).getTime() - new Date(record.checkInAt!).getTime()) / 3_600_000, 0));
+    const workedHours = round(validSessions.reduce((sum, record) => sum + (clippedMs.get(record) ?? 0) / 3_600_000, 0));
     const firstCheckIn = sessions.map((record) => minutesSinceMidnight(record.checkInAt)).filter((value): value is number => value != null).sort((a, b) => a - b)[0];
     const lastCheckOut = sessions.map((record) => minutesSinceMidnight(record.checkOutAt)).filter((value): value is number => value != null).sort((a, b) => b - a)[0];
-    const lateMinutes = kind === "workday" && firstCheckIn != null ? Math.max(0, firstCheckIn - startMinute - policy.lateGraceMinutes) : 0;
-    const earlyLeaveMinutes = kind === "workday" && lastCheckOut != null ? Math.max(0, endMinute - lastCheckOut - policy.earlyLeaveGraceMinutes) : 0;
-    const overtimeHours = round(kind === "workday" ? Math.max(0, workedHours - expectedDailyHours) : workedHours);
-    const missingCheckIn = kind === "workday" && !paidLeave && !unpaidLeave && (explicitAbsent || sessions.length === 0);
+    const dayShifts = shiftsByDate.get(date) ?? [];
+    const absoluteSessions = sessions.flatMap((record) => { const startMs = toMs(record.checkInAt); return startMs == null ? [] : [{ startMs, endMs: toMs(record.checkOutAt) }]; });
+    const measuredShifts = dayShifts.length ? dayShifts : overnight && kind === "workday" ? [{ date, startMs: baghdadMoment(date, `${String(Math.floor(startMinute / 60)).padStart(2, "0")}:${String(startMinute % 60).padStart(2, "0")}`).getTime(), endMs: baghdadMoment(date, `${String(Math.floor(endMinute / 60)).padStart(2, "0")}:${String(endMinute % 60).padStart(2, "0")}`).getTime() + 86_400_000, graceMinutes: grace }] : [];
+    const measured = measuredShifts.map((shift) => shiftAdherence(shift, absoluteSessions, policy.earlyLeaveGraceMinutes));
+    const lateMinutes = measuredShifts.length ? measured.reduce((sum, row) => sum + row.lateMinutes, 0) : kind === "workday" && firstCheckIn != null ? Math.max(0, firstCheckIn - startMinute - grace) : 0;
+    const earlyLeaveMinutes = measuredShifts.length ? measured.reduce((sum, row) => sum + row.earlyMinutes, 0) : kind === "workday" && lastCheckOut != null ? Math.max(0, endMinute - lastCheckOut - policy.earlyLeaveGraceMinutes) : 0;
+    const expectedHours = dayShifts.length ? dayShifts.reduce((sum, shift) => sum + (shift.endMs - shift.startMs) / 3_600_000, 0) : expectedDailyHours;
+    const computedOvertime = kind === "workday" ? Math.max(0, workedHours - expectedHours) : workedHours;
+    const approvedOvertime = sessions.reduce((sum, record) => sum + Number(record.overtimeApprovedMinutes ?? 0), 0) / 60;
+    const overtimeHours = round(policy.overtimeRequiresApproval ? Math.min(computedOvertime, approvedOvertime) : computedOvertime);
+    // A day still in progress or ahead is not an absence yet.
+    const notOverYet = Boolean(input.asOfDate && date >= input.asOfDate && !sessions.length && !paidLeave && !unpaidLeave && !explicitAbsent);
+    const missingCheckIn = kind === "workday" && !notOverYet && !paidLeave && !unpaidLeave && (explicitAbsent || sessions.length === 0);
     const missingCheckOut = sessions.some((record) => !!record.checkInAt && !record.checkOutAt);
     daily.push({
       date,
       kind,
-      status: paidLeave ? "paid_leave" : unpaidLeave ? "unpaid_leave" : sessions.length ? "present" : explicitAbsent ? "absent" : "none",
+      status: paidLeave ? "paid_leave" : unpaidLeave ? "unpaid_leave" : sessions.length ? "present" : explicitAbsent ? "absent" : notOverYet ? "upcoming" : "none",
       workedHours,
       lateMinutes,
       earlyLeaveMinutes,

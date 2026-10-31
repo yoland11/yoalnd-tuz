@@ -8,6 +8,8 @@ import { applyPayrollAdvanceDeductions, ensureEmployeeAdvanceTables, getEmployee
 import { approveAndExecuteFinancialTransaction, createFinancialTransaction, ensureMasterCashBoxTables, isMainFinancialAdministrator, reverseFinancialTransaction, type FinancialActor } from "@/server/master-cash-box";
 import { PAYROLL_PERIOD_TYPES, resolvePayrollPeriod, type PayrollPeriodType } from "@/server/payroll-periods";
 import { canEditPayroll } from "@/server/payroll-lifecycle";
+import { payrollScheduleInputs } from "@/server/attendance";
+import { baghdadDate } from "@/lib/attendance-rules";
 import { calculateAttendancePayroll, normalizeAttendancePolicy } from "@/server/attendance-payroll";
 
 export type HrActor = FinancialActor;
@@ -15,7 +17,7 @@ const rows = <T = any>(value: any): T[] => (value?.rows ?? []) as T[];
 const num = (value: unknown) => Number.isFinite(Number(value)) ? Math.round((Number(value) + Number.EPSILON) * 100) / 100 : 0;
 const periodNow = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit" }).format(new Date()).slice(0, 7);
 const validPeriod = (period: string) => /^\d{4}-\d{2}$/.test(period);
-const BONUS_TYPES = ["performance", "attendance", "perfect_attendance", "overtime", "sales_commission", "profit_commission", "kosha_completion", "photography_session", "editing", "delivery", "collection", "graduation_order", "production", "customer_satisfaction", "employee_of_month", "manual", "other"] as const;
+const BONUS_TYPES = ["event_compensation", "performance", "attendance", "perfect_attendance", "overtime", "sales_commission", "profit_commission", "kosha_completion", "photography_session", "editing", "delivery", "collection", "graduation_order", "production", "customer_satisfaction", "employee_of_month", "manual", "other"] as const;
 const BONUS_STATUSES = ["draft", "pending_approval", "approved", "rejected", "applied_to_payroll", "paid", "cancelled", "pending"] as const;
 const bonusPayloadSchema = z.object({
   staffId: z.coerce.number().int().positive({ message: "الموظف مطلوب" }),
@@ -315,7 +317,7 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
   const effectiveBaseMovements = new Map<number, any>(
     rows<any>(baseMovementResult).map((movement) => [Number(movement.staff_id), movement]),
   );
-  const incomplete = staff.map((s) => ({ staff: s, missing: [num(s.base_salary) <= 0 ? "الراتب الأساسي" : null, !["monthly", "weekly", "daily", "hourly"].includes(String(s.salary_type ?? "")) ? "نوع الراتب" : null, !["main_cash_box", "bank", "cash", "transfer", "card"].includes(String(s.payment_method ?? "")) ? "طريقة الدفع" : null, String(s.salary_status ?? "") !== "active" ? "حالة الرواتب النشطة" : null, !s.salary_settings_approval ? "إعدادات الراتب" : null, s.salary_settings_approval === "pending" ? "اعتماد إعدادات الراتب" : null].filter(Boolean) })).filter((entry) => entry.missing.length);
+  const incomplete = staff.map((s) => ({ staff: s, missing: [num(s.base_salary) <= 0 && String(s.salary_type) !== "per_event" ? "الراتب الأساسي" : null, !["monthly", "weekly", "daily", "hourly", "per_event"].includes(String(s.salary_type ?? "")) ? "نوع الراتب" : null, !["main_cash_box", "bank", "cash", "transfer", "card"].includes(String(s.payment_method ?? "")) ? "طريقة الدفع" : null, String(s.salary_status ?? "") !== "active" ? "حالة الرواتب النشطة" : null, !s.salary_settings_approval ? "إعدادات الراتب" : null, s.salary_settings_approval === "pending" ? "اعتماد إعدادات الراتب" : null].filter(Boolean) })).filter((entry) => entry.missing.length);
   if (incomplete.length) {
     const error: any = new Error("Salary settings are incomplete for this employee.");
     error.code = "SALARY_SETTINGS_INCOMPLETE";
@@ -331,12 +333,14 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
     for (const line of existingLines) existingLineState.set(Number(line.staff_id), line);
   }
   const [attendanceResult, eventResult, policyResult] = await Promise.all([
-    db.execute(sql`select id,staff_id,status,check_in_at,check_out_at from attendance_records where check_in_at >= ${dates.start} and check_in_at < (${dates.end}::date + interval '1 day') order by staff_id,check_in_at,id`),
+    db.execute(sql`select id,staff_id,status,check_in_at,check_out_at,overtime_approved_minutes from attendance_records where check_in_at >= ${dates.start} and check_in_at < (${dates.end}::date + interval '1 day') order by staff_id,check_in_at,id`),
     // An approved bonus is only eligible for the picker.  It must not affect a
     // payroll line until an authorised user explicitly selects it for that line.
     db.execute(sql`select staff_id, kind, coalesce(sum(amount::numeric),0)::float as amount from hr_incentive_events where period=${dates.period} and status='applied_to_payroll' and ${selectedIncentiveLines} group by staff_id,kind`),
     db.execute(sql`select value from settings where key='attendancePolicy' limit 1`),
   ]);
+  const attendanceSchedules = await payrollScheduleInputs(db as any, staff.map((employee) => Number(employee.id)), dates.start, dates.end);
+  const asOfDate = baghdadDate();
   const attendance = new Map<number, any[]>();
   for (const record of rows<any>(attendanceResult)) attendance.set(Number(record.staff_id), [...(attendance.get(Number(record.staff_id)) ?? []), record]);
   const attendancePolicy = normalizeAttendancePolicy(rows<any>(policyResult)[0]?.value);
@@ -346,8 +350,9 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
   for (const employee of staff) {
     const effectiveBaseMovement = effectiveBaseMovements.get(Number(employee.id));
     const effectiveBaseSalary = effectiveBaseMovement ? num(effectiveBaseMovement.amount) : num(employee.base_salary);
-    const attendanceEnabled = employee.enable_attendance_integration !== false;
-    const overtimeEnabled = employee.enable_overtime !== false;
+    const attendanceSchedule = attendanceSchedules.get(Number(employee.id));
+    const attendanceEnabled = (attendanceSchedule?.payrollIntegration ?? employee.enable_attendance_integration) !== false;
+    const overtimeEnabled = (attendanceSchedule?.overtimeEligible ?? employee.enable_overtime) !== false;
     const attendanceRecords = attendance.get(Number(employee.id)) ?? [];
     const attendanceMetrics = calculateAttendancePayroll({
       periodStart: dates.start,
@@ -355,16 +360,20 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
       baseSalary: effectiveBaseSalary,
       dailyWorkingHours: num(employee.daily_working_hours),
       workingDaysPerWeek: num(employee.working_days_per_week),
-      weeklyDaysOff: Array.isArray(employee.weekly_days_off) ? employee.weekly_days_off : undefined,
-      shiftStart: employee.shift_start,
-      shiftEnd: employee.shift_end,
+      weeklyDaysOff: attendanceSchedule?.weeklyDaysOff ?? (Array.isArray(employee.weekly_days_off) ? employee.weekly_days_off : undefined),
+      shiftStart: attendanceSchedule?.shiftStart ?? employee.shift_start,
+      shiftEnd: attendanceSchedule?.shiftEnd ?? employee.shift_end,
+      scheduleMode: attendanceSchedule?.scheduleMode,
+      shifts: attendanceSchedule?.shifts,
+      graceMinutes: attendanceSchedule?.graceMinutes,
+      asOfDate,
       overtimeRate: num(employee.overtime_rate) || num(employee.hourly_rate),
       weekendHourRate: num(employee.weekend_hour_rate) || undefined,
       holidayHourRate: num(employee.holiday_hour_rate) || undefined,
       lateDeductionRate: num(employee.setting_late_deduction),
       absenceDeductionRate: num(employee.setting_absence_deduction),
       policy: attendancePolicy,
-      records: attendanceRecords.map((record) => ({ id: Number(record.id), staffId: Number(record.staff_id), status: String(record.status), checkInAt: record.check_in_at, checkOutAt: record.check_out_at })),
+      records: attendanceRecords.map((record) => ({ id: Number(record.id), staffId: Number(record.staff_id), status: String(record.status), checkInAt: record.check_in_at, checkOutAt: record.check_out_at, overtimeApprovedMinutes: record.overtime_approved_minutes == null ? null : Number(record.overtime_approved_minutes) })),
     });
     const scheduled = attendanceMetrics.scheduledWorkingDays;
     const attendanceDays = attendanceEnabled ? attendanceMetrics.presentDays : scheduled;
@@ -377,8 +386,10 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
     const overtimeScale = rawOvertimeHours > 0 ? overtimeHours / rawOvertimeHours : 0;
     const type = String(employee.salary_type ?? "monthly"); const configuredBase = effectiveBaseSalary;
     const monthEnd = new Date(`${dates.period}-01T00:00:00Z`); monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1, 0); const fullMonthDays = scheduledDays(`${dates.period}-01`, monthEnd.toISOString().slice(0, 10), num(employee.working_days_per_week)) || 1; const recurringScale = dates.periodType === "monthly" && dates.start === `${dates.period}-01` && dates.end === monthEnd.toISOString().slice(0, 10) ? 1 : Math.min(1, scheduled / fullMonthDays);
-    const payableDays = attendanceDays + (attendancePolicy.paidLeaveCountsAsPresent ? paidLeaveDays : 0);
-    const base = type === "weekly" ? configuredBase * (dates.calendarDays / 7) : type === "daily" ? configuredBase * payableDays : type === "hourly" ? (num(employee.hourly_rate) || configuredBase) * hours : configuredBase * recurringScale;
+    // On the verified flow, a day with no check-out is not paid as a full shift until a correction closes it.
+    const unverifiedDays = attendanceEnabled && attendanceSchedule?.enabled ? Math.min(attendanceMetrics.missingCheckOut, attendanceDays) : 0;
+    const payableDays = attendanceDays - unverifiedDays + (attendancePolicy.paidLeaveCountsAsPresent ? paidLeaveDays : 0);
+    const base = type === "per_event" ? 0 : type === "weekly" ? configuredBase * (dates.calendarDays / 7) : type === "daily" ? configuredBase * payableDays : type === "hourly" ? (num(employee.hourly_rate) || configuredBase) * hours : configuredBase * recurringScale;
     const absenceDeduction = type === "monthly" && attendanceEnabled ? attendanceMetrics.absenceDeduction * recurringScale : 0;
     const unpaidLeaveDeduction = type === "monthly" && attendanceEnabled ? attendanceMetrics.unpaidLeaveDeduction * recurringScale : 0;
     const lateDeduction = attendanceEnabled ? attendanceMetrics.lateDeduction * recurringScale : 0;

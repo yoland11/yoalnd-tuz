@@ -372,6 +372,10 @@ export const attendanceRecordsTable = pgTable("attendance_records", {
   status: varchar("status", { length: 20 }).notNull().default("present"),
   notes: text("notes"),
   editedBy: integer("edited_by").references(() => staffTable.id),
+  shiftId: integer("shift_id"),
+  locationId: integer("location_id"),
+  method: varchar("method", { length: 20 }),
+  overtimeApprovedMinutes: integer("overtime_approved_minutes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

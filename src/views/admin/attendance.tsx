@@ -6,9 +6,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Skeleton } from "@/components/ui/skeleton";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch } from "./_lib";
+import { adminFetch, apiErrorMessage } from "./_lib";
 import { EmptyState } from "./_layout";
 import { DateField } from "@/components/ui/date-field";
+import { AttendanceCenter } from "./attendance-center";
 
 type Staff = { id: number; username: string; fullName: string };
 type Attendance = {
@@ -43,6 +44,17 @@ function formatDate(value: string | null) {
 }
 
 export default function AttendancePage() {
+  const access = useQuery<unknown>({ queryKey: ["admin", "attendance", "options"], queryFn: () => adminFetch("/admin/attendance/options"), retry: false, staleTime: 60_000 });
+  if (access.isPending) return <div className="space-y-2">{[1, 2, 3].map((item) => <Skeleton key={item} className="h-16 rounded-xl" />)}</div>;
+  // A 403 means this employee has no attendance role: they keep their own records and payslips.
+  if (access.isError) {
+    if ((access.error as { status?: number }).status === 403) return <AttendanceRecordsView />;
+    return <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">{apiErrorMessage(access.error, "تعذّر تحميل الحضور")} <Button type="button" variant="outline" size="sm" className="ms-2" onClick={() => void access.refetch()}>إعادة المحاولة</Button></div>;
+  }
+  return <AttendanceCenter policyEditor={<AttendanceRecordsView embedded />} />;
+}
+
+function AttendanceRecordsView({ embedded = false }: { embedded?: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [filters, setFilters] = useState({ staffId: "", from: todayIso(), to: todayIso() });
@@ -66,7 +78,7 @@ export default function AttendancePage() {
     staleTime: 20_000,
   });
   const payrollQuery = useQuery<OwnPayroll[]>({ queryKey: ["employee", "payroll", "self"], queryFn: () => adminFetch("/admin/hr/payroll/self"), staleTime: 30_000 });
-  useEffect(() => { if (data?.policy && !policyForm) setPolicyForm(data.policy); }, [data?.policy, policyForm]);
+  useEffect(() => { if (data?.policy && (!policyForm || !showPolicy)) setPolicyForm(data.policy); }, [data?.policy, policyForm, showPolicy]);
 
   const checkIn = useMutation({
     mutationFn: () => adminFetch("/admin/attendance/check-in", { method: "POST" }),
@@ -105,18 +117,20 @@ export default function AttendancePage() {
     <div className="space-y-4" dir="rtl">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">الحضور والانصراف</h1>
-          <p className="text-sm text-muted-foreground mt-1">تسجيل حضور الموظفين واحتساب الساعات اليومية والشهرية.</p>
+          {embedded ? <h3 className="font-bold">سياسة الحضور والإجازات</h3> : <h1 className="text-2xl font-bold text-foreground">الحضور والانصراف</h1>}
+          <p className="text-sm text-muted-foreground mt-1">{embedded ? "قواعد الخصم والسماح للشركة، واعتماد الإجازات." : "تسجيل حضور الموظفين واحتساب الساعات اليومية والشهرية."}</p>
         </div>
         <div className="flex items-center gap-2">
           {data?.canManageAll && <Button type="button" variant="outline" onClick={() => setShowPolicy((value) => !value)} className="gap-2"><Settings2 className="w-4 h-4" /> السياسة</Button>}
           {data?.canManageAll && <Button type="button" variant="outline" onClick={() => setShowLeave((value) => !value)} className="gap-2"><CalendarPlus className="w-4 h-4" /> اعتماد إجازة</Button>}
+          {embedded ? null : <>
           <Button type="button" onClick={() => checkIn.mutate()} disabled={checkIn.isPending} className="gap-2">
             <LogIn className="w-4 h-4" /> حضور
           </Button>
           <Button type="button" variant="outline" onClick={() => checkOut.mutate()} disabled={checkOut.isPending} className="gap-2">
             <LogOut className="w-4 h-4" /> انصراف
           </Button>
+          </>}
         </div>
       </div>
 
@@ -124,6 +138,7 @@ export default function AttendancePage() {
 
       {showLeave && data?.canManageAll && <section className="rounded-xl border border-border/40 bg-card p-4"><h2 className="font-semibold">اعتماد إجازة موظف</h2><p className="mt-1 text-xs text-muted-foreground">يُسجّل القرار في الحضور والتدقيق ويعيد احتساب مسودات الرواتب المتأثرة.</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><label className="text-xs text-muted-foreground">الموظف<select value={leave.staffId} onChange={(event) => setLeave({ ...leave, staffId: event.target.value })} className="mt-1 h-10 w-full rounded-lg border bg-background px-3 text-sm"><option value="">اختر الموظف</option>{data.staff.map((staff) => <option key={staff.id} value={staff.id}>{staff.fullName || staff.username}</option>)}</select></label><PolicyInput label="من" type="date" value={leave.from} onChange={(value) => setLeave({ ...leave, from: value })} /><PolicyInput label="إلى" type="date" value={leave.to} onChange={(value) => setLeave({ ...leave, to: value })} /><PolicySelect label="نوع الإجازة" value={leave.leaveType} onChange={(value) => setLeave({ ...leave, leaveType: value })} options={[["paid","مدفوعة"],["unpaid","غير مدفوعة"]]} /><label className="text-xs text-muted-foreground sm:col-span-2 lg:col-span-5">سبب الاعتماد<textarea value={leave.reason} onChange={(event) => setLeave({ ...leave, reason: event.target.value })} className="mt-1 min-h-20 w-full rounded-lg border bg-background p-3 text-sm" /></label></div><div className="mt-3 flex justify-end"><Button disabled={approveLeave.isPending || !leave.staffId || leave.reason.trim().length < 3} onClick={() => approveLeave.mutate()}>{approveLeave.isPending ? "جارٍ الاعتماد…" : "اعتماد الإجازة"}</Button></div></section>}
 
+      {embedded ? null : <>
       <div className="grid gap-3 md:grid-cols-3">
         <div className="bg-card rounded-xl border border-border/30 p-4">
           <p className="text-xs text-muted-foreground flex items-center gap-2"><UserCheck className="w-4 h-4 text-primary" /> الحاضرون الآن</p>
@@ -191,6 +206,7 @@ export default function AttendancePage() {
       <section className="rounded-xl border border-border/40 bg-card p-4" aria-labelledby="my-payroll-title"><div className="flex items-center gap-2"><Banknote className="h-5 w-5 text-primary" /><div><h2 id="my-payroll-title" className="font-semibold">ملخص رواتبي</h2><p className="text-xs text-muted-foreground">عرض للموظف الحالي فقط؛ الدفع والاعتماد غير متاحين من هنا.</p></div></div>{payrollQuery.isLoading ? <Skeleton className="mt-4 h-20 rounded-xl" /> : payrollQuery.data?.length ? <div className="mt-4 space-y-2">{payrollQuery.data.map((payroll) => <div key={payroll.id} className="flex flex-col gap-3 rounded-lg border border-border/40 p-3 sm:flex-row sm:items-center sm:justify-between"><div><b>{new Date(`${payroll.period}-01T00:00:00Z`).toLocaleDateString("ar-IQ-u-nu-latn", { month: "long", year: "numeric", timeZone: "UTC" })}</b><p className="mt-1 text-xs text-muted-foreground">{payroll.runNo} · {payroll.status}</p></div><div className="flex items-center justify-between gap-3 sm:justify-end"><b className="tabular-nums">{Number(payroll.line.netSalary || 0).toLocaleString("en-US")} د.ع</b><Button size="sm" variant="outline" onClick={() => setSelectedPayroll(payroll)}><Eye className="ms-2 h-4 w-4" />تفاصيل احتساب الراتب</Button></div></div>)}</div> : <p className="mt-4 text-sm text-muted-foreground">لا توجد رواتب مسجلة لك حتى الآن.</p>}</section>
 
       <PayrollDetails payroll={selectedPayroll} onClose={() => setSelectedPayroll(null)} />
+      </>}
     </div>
   );
 }

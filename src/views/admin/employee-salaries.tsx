@@ -558,6 +558,7 @@ function EmployeeSalariesPageInner() {
       <div className="lg:col-span-2"><Filter value={payrollStatus} onValue={(v) => { setPayrollStatus(v); syncFilters({ payrollStatus: v }); }} placeholder="حالة دورة الرواتب" items={Object.entries(payrollLabels)} /></div>
     </CardContent></Card>
 
+    <AttendancePayrollSummary rows={filtered} />
     <Card className="overflow-hidden"><div className="overflow-x-auto"><table className="w-full min-w-[820px] text-sm"><thead className="bg-muted/60 text-xs"><tr>{["الموظف", "الفترة", "الأساسي", "الصافي", "المدفوع", "المتبقي", "الحالة", "الإجراءات"].map((h) => <th key={h} className="whitespace-nowrap px-3 py-2.5 text-start font-semibold">{h}</th>)}</tr></thead><tbody className="divide-y">
       {runsQuery.isLoading && <tr><td colSpan={8} className="p-12 text-center text-muted-foreground"><Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin" />جارٍ تحميل سجلات الرواتب…</td></tr>}
       {runsQuery.isError && <tr><td colSpan={8} className="p-12 text-center text-destructive">تعذر تحميل الرواتب. حاول تحديث الصفحة.</td></tr>}
@@ -627,6 +628,21 @@ class SalariesPageBoundary extends Component<{ children: ReactNode }, { error: E
     }
     return this.props.children;
   }
+}
+
+/** Figures calculated when the run was built. Nothing here applies a deduction or moves money. */
+function AttendancePayrollSummary({ rows }: { rows: SalaryRow[] }) {
+  const [open, setOpen] = useState(false);
+  const deductions = (row: SalaryRow) => n(row.absenceDeduction) + n(row.lateDeduction) + n(row.earlyLeaveDeduction) + n(row.unpaidLeaveDeduction);
+  return <Card>
+    <CardHeader className="pb-3"><div className="flex flex-wrap items-center justify-between gap-2"><CardTitle className="text-base">ملخص الحضور والانصراف</CardTitle><Button type="button" variant="outline" size="sm" aria-expanded={open} onClick={() => setOpen((value) => !value)}>{open ? "إخفاء" : `عرض (${rows.length})`}</Button></div></CardHeader>
+    {open ? <CardContent className="space-y-2">
+      <p className="text-xs text-muted-foreground">الخصومات مقترحة من سياسة الحضور وتصبح نهائية باعتماد دورة الرواتب؛ الدفع يتم من مسار الرواتب الحالي فقط.</p>
+      {rows.length ? <div className="overflow-x-auto rounded-xl border"><table className="w-full min-w-[1040px] text-right text-sm"><thead className="bg-muted/40 text-xs text-muted-foreground"><tr>{["الموظف", "الراتب الأساسي", "أيام الدوام", "الحضور", "غياب بلا عذر", "إجازة معتمدة", "الساعات", "تأخير (د)", "انصراف مبكر (د)", "إضافي (س)", "خصم مقترح", "إضافات", "الصافي"].map((label) => <th key={label} className="whitespace-nowrap p-2.5 font-semibold">{label}</th>)}</tr></thead>
+        <tbody className="divide-y">{rows.map((row) => <tr key={row.id}><td className="p-2.5 font-medium">{row.employeeName}<span className="block text-[11px] text-muted-foreground">{row.period}</span></td><td className="p-2.5 tabular-nums">{money.format(row.baseSalary)}</td><td className="p-2.5 tabular-nums">{row.scheduledWorkingDays}</td><td className="p-2.5 tabular-nums">{row.attendanceDays}</td><td className="p-2.5 tabular-nums">{row.absenceDays}</td><td className="p-2.5 tabular-nums">{n(row.paidLeaveDays)}</td><td className="p-2.5 tabular-nums">{n(row.totalWorkingHours)}</td><td className="p-2.5 tabular-nums">{n(row.totalLateMinutes)}</td><td className="p-2.5 tabular-nums">{n(row.earlyLeaveMinutes)}</td><td className="p-2.5 tabular-nums">{n(row.overtimeHours)}</td><td className="p-2.5 tabular-nums">{money.format(deductions(row))}</td><td className="p-2.5 tabular-nums">{money.format(n(row.bonusAmount) + n(row.overtimeAmount))}</td><td className="p-2.5 font-semibold tabular-nums">{money.format(row.netSalary)}</td></tr>)}</tbody>
+      </table></div> : <EmptyBlock text="لا توجد رواتب تطابق التصفية." />}
+    </CardContent> : null}
+  </Card>;
 }
 
 export default function EmployeeSalariesPage() {

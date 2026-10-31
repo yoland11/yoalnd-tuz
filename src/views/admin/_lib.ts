@@ -25,6 +25,11 @@ export const ALL_PERMISSIONS = [
   "booking_return_confirm",
   "asset_damage_record",
   "asset_damage_approve",
+  "attendance_view",
+  "attendance_manage",
+  "attendance_approve",
+  "attendance_location_view",
+  "attendance_reports",
   "warehouses_view",
   "warehouses_manage",
   "warehouse_stock_manage",
@@ -358,6 +363,11 @@ export const ALL_PERMISSIONS = [
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
+  attendance_view: "عرض لوحة الحضور",
+  attendance_manage: "إدارة الحضور والورديات والمواقع",
+  attendance_approve: "اعتماد تصحيحات الحضور والإضافي",
+  attendance_location_view: "عرض مواقع تسجيل الموظفين",
+  attendance_reports: "تقارير الحضور",
   warehouses_view: "عرض المخازن",
   warehouses_manage: "إضافة وتعديل المخازن",
   warehouse_stock_manage: "إدارة كميات المخازن",

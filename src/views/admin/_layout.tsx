@@ -609,6 +609,7 @@ export const NAV: NavItem[] = [
     label: "الحضور والانصراف",
     icon: UserCheck,
     perm: "tasks",
+    anyPerm: ["tasks", "attendance_view", "attendance_manage", "attendance_approve", "attendance_reports"],
   },
   {
     href: "/admin/approvals",

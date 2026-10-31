@@ -29,6 +29,7 @@ const Invoice = lazy(() => import("@/views/admin/invoice"));
 // Kosha Staff Portal — lazy, separate restricted app (field crew)
 const StaffPortal = lazy(() => import("@/views/staff/index"));
 const UnifiedStaffPortal = lazy(() => import("@/views/staff/unified-portal"));
+const AttendanceKioskPage = lazy(() => import("@/views/attendance-kiosk"));
 const PhotographyStaffPortal = lazy(
   () => import("@/views/staff/photography/index"),
 );
@@ -233,6 +234,12 @@ function Router() {
       <Route path="/bride">
         <Suspense fallback={<AdminSpinner />}>
           <BrideDashboard />
+        </Suspense>
+      </Route>
+
+      <Route path="/attendance-kiosk/:token">
+        <Suspense fallback={<AdminSpinner />}>
+          <AttendanceKioskPage />
         </Suspense>
       </Route>
 

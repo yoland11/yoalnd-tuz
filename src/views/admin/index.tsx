@@ -990,7 +990,7 @@ export default function Admin() {
           </Route>
           <Route path="/admin/attendance">
             {() => (
-              <Guard me={me} perm="tasks">
+              <Guard me={me} anyPerm={["tasks", "attendance_view", "attendance_manage", "attendance_approve", "attendance_reports"]}>
                 <AttendancePage />
               </Guard>
             )}
