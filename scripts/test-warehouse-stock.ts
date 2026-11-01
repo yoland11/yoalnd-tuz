@@ -1,5 +1,6 @@
 /** Pure warehouse rules: the main warehouse owns the remainder and totals can never double. */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { assertDeltasMatchCompany, consumeOutstanding, lineAllocations, lineForWarehouse, planWarehouseTransfer, rebalanceAllocations, warehouseBreakdown } from "../src/lib/warehouse-stock";
 
 const warehouses = [{ id: 1, name: "المخزن الرئيسي" }, { id: 2, name: "المخزن الثاني" }];
@@ -64,5 +65,15 @@ const balanced = rebalanceAllocations({ 1: { reserved: 30, checkedOut: 0, return
 assert.equal(balanced[1].reserved + balanced[2].reserved, 30);
 assert.equal(balanced[2].reserved, 20);
 assert.equal(balanced[1].reserved, 10);
+
+// The approvals queue cannot close a request whose transfer or count did not run.
+const api = readFileSync("src/server/api.ts", "utf8");
+const executorStart = api.indexOf("async function executeApprovedApprovalRequest");
+const executorBody = api.slice(executorStart, api.indexOf("\nasync function", executorStart + 10));
+assert.ok(executorStart > 0 && !/approveWarehouse(Transfer|Count)/.test(executorBody), "warehouse requests do not pass through the after-the-fact executor");
+assert.match(api, /db\.transaction\(\(tx\) =>\s+decideWarehouseApprovalRequest\(tx as any/, "the queue decides the request and the document in one transaction");
+assert.equal(api.match(/closeWarehouseApprovalRequests\(tx as any/g)?.length, 4, "both screens close the request when they approve or reject");
+assert.match(api, /type: "warehouse_transfer",[\s\S]{0,400}href: "\/admin\/warehouse-transfers"/, "the transfer notification opens the screen that can approve it");
+assert.match(api, /type: "warehouse_count",[\s\S]{0,400}href: "\/admin\/warehouses"/, "the count notification opens the screen that can approve it");
 
 console.log("PASS warehouse rules: remainder owned by main, no doubling, transfers net to zero, stock and reservation limits, per-warehouse booking lines");

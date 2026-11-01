@@ -3,6 +3,7 @@ import { loadDailyOperations } from "./booking-daily-operations";
 import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
 import { applyWarehouseDeltas, createWarehouse, listWarehouses, mainWarehouseId, requireActiveWarehouse, rowsOf as warehouseRows, shelfCompany, updateWarehouse, warehouseBreakdowns, WarehouseError } from "./warehouses";
 import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTransfer, sourceCommitment } from "./warehouse-transfers";
+import { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest, warehouseApprovalDocument } from "./warehouse-approvals";
 import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence } from "./attendance";
 import { QR_ROTATION_SECONDS, baghdadDate, addDays as attendanceAddDays } from "@/lib/attendance-rules";
 import { approveWarehouseCount, createWarehouseCount, listWarehouseCounts, rejectWarehouseCount, warehouseCountDetail } from "./warehouse-counts";
@@ -3655,6 +3656,7 @@ async function createApprovalRequest(input: {
   oldValues?: Record<string, unknown>;
   newValues?: Record<string, unknown>;
   actor?: ErpActor | null;
+  href?: string;
 }) {
   await ensureAdminExtensionsTables();
   const [draft] = await db
@@ -3685,7 +3687,7 @@ async function createApprovalRequest(input: {
     body: row.title,
     entityType: "approval_request",
     entityId: row.id,
-    href: "/admin/approvals",
+    href: input.href ?? "/admin/approvals",
   });
   if (input.entityType && input.entityId) {
     await addEntityTimeline({
@@ -3966,36 +3968,6 @@ async function executeApprovedApprovalRequest(
       metadata: { approvalRequestId: row.id },
     });
     return { executed: true, voucherId };
-  }
-  if (
-    row.type === "warehouse_transfer" ||
-    row.entityType === "warehouse_transfer"
-  ) {
-    const transferId =
-      row.entityId ?? optionalPositiveId((row.newValues as any)?.transferId);
-    if (!transferId) return { executed: false, reason: "missing_transfer" };
-    try {
-      const result = await db.transaction((tx) =>
-        approveWarehouseTransfer(tx as any, transferId, { id: actor?.id ?? null, name: actor?.name ?? "النظام" }),
-      );
-      return { executed: result.executed, reason: result.reason };
-    } catch (cause) {
-      if (cause instanceof WarehouseError) return { executed: false, reason: cause.message };
-      throw cause;
-    }
-  }
-  if (row.type === "warehouse_count" || row.entityType === "warehouse_count") {
-    const countId = row.entityId ?? optionalPositiveId((row.newValues as any)?.countId);
-    if (!countId) return { executed: false, reason: "missing_count" };
-    try {
-      const result = await db.transaction((tx) =>
-        approveWarehouseCount(tx as any, countId, { id: actor?.id ?? null, name: actor?.name ?? "النظام" }),
-      );
-      return { executed: result.executed, reason: result.reason };
-    } catch (cause) {
-      if (cause instanceof WarehouseError) return { executed: false, reason: cause.message };
-      throw cause;
-    }
   }
   if (row.type === "cancel_kosha_booking") {
     const id = row.entityId;
@@ -35444,6 +35416,7 @@ async function handleWarehouses(req: NextRequest, parts: string[], section: stri
           entityId: detail.id,
           newValues: { countId: detail.id, warehouseId: detail.warehouseId, differences: detail.lines.filter((line) => line.difference !== 0).length },
           actor: erpActorFromAdmin(auth),
+          href: "/admin/warehouses",
         });
       void logAdminActivity(req, "warehouse_count_recorded", "warehouse_count", detail.id, { status: detail.status });
       return json(detail, detail.replayed ? 200 : 201);
@@ -35452,10 +35425,17 @@ async function handleWarehouses(req: NextRequest, parts: string[], section: stri
       if (!may("warehouse_adjust_approve")) return error("اعتماد الجرد متاح لمن يملك صلاحية اعتماد التسويات", 403);
       const raw = await body(req);
       if (String(raw?.status ?? "") === "approved") {
-        const result = await db.transaction((tx) => approveWarehouseCount(tx as any, id, who));
+        const result = await db.transaction(async (tx) => {
+          const approved = await approveWarehouseCount(tx as any, id, who);
+          await closeWarehouseApprovalRequests(tx as any, "warehouse_count", id, "approved", who);
+          return approved;
+        });
         void logAdminActivity(req, "warehouse_count_approved", "warehouse_count", id, { executed: result.executed });
       } else {
-        await db.transaction((tx) => rejectWarehouseCount(tx as any, id, who));
+        await db.transaction(async (tx) => {
+          await rejectWarehouseCount(tx as any, id, who);
+          await closeWarehouseApprovalRequests(tx as any, "warehouse_count", id, "rejected", who);
+        });
         void logAdminActivity(req, "warehouse_count_rejected", "warehouse_count", id, {});
       }
       revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
@@ -41682,26 +41662,37 @@ async function handleAdmin(
         (scope.requiresMain || mode === "main_manager_final" || overLimit)
       )
         delegatedNext = "pending_main_manager";
-      const [delegatedRow] = await db
-        .update(approvalRequestsTable)
-        .set({
-          status: delegatedNext,
-          reviewedBy: auth.id,
-          reviewedByName: auth.fullName || auth.username,
-          reviewNote: nullableText(
-            delegatedBody?.note ?? delegatedBody?.reviewNote,
-          ),
-          reviewedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(approvalRequestsTable.id, id))
-        .returning();
+      let delegatedRow: typeof approvalRequestsTable.$inferSelect;
       let delegatedExecution: unknown = null;
-      if (delegatedNext === "approved")
-        delegatedExecution = await executeApprovedApprovalRequest(
-          delegatedRow,
-          erpActorFromAdmin(auth),
+      if (warehouseApprovalDocument(delegatedRequest) && (delegatedNext === "approved" || delegatedNext === "rejected")) {
+        // The stock and the request change together. A refusal leaves both open and reaches the manager as an error.
+        const decision = delegatedNext;
+        delegatedExecution = await db.transaction((tx) =>
+          decideWarehouseApprovalRequest(tx as any, delegatedRequest, decision, { id: auth.id, name: auth.fullName || auth.username }, nullableText(delegatedBody?.note ?? delegatedBody?.reviewNote)),
         );
+        delegatedRow = (await db.query.approvalRequestsTable.findFirst({ where: eq(approvalRequestsTable.id, id) }))!;
+        revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+      } else {
+        [delegatedRow] = await db
+          .update(approvalRequestsTable)
+          .set({
+            status: delegatedNext,
+            reviewedBy: auth.id,
+            reviewedByName: auth.fullName || auth.username,
+            reviewNote: nullableText(
+              delegatedBody?.note ?? delegatedBody?.reviewNote,
+            ),
+            reviewedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(approvalRequestsTable.id, id))
+          .returning();
+        if (delegatedNext === "approved")
+          delegatedExecution = await executeApprovedApprovalRequest(
+            delegatedRow,
+            erpActorFromAdmin(auth),
+          );
+      }
       await addApprovalAction({
         request: delegatedRequest,
         action: overLimit ? "limit_exceeded_forwarded" : delegatedRule.action,
@@ -42611,6 +42602,7 @@ async function handleAdmin(
           entityId: Number(row.id),
           newValues: { productId: row.product_id, qty: row.quantity, fromWarehouseId: row.from_warehouse_id, toWarehouseId: row.to_warehouse_id },
           actor: erpActorFromAdmin(auth),
+          href: "/admin/warehouse-transfers",
         });
       return json(formatWarehouseTransfer(row), replayed ? 200 : 201);
     }
@@ -42622,12 +42614,20 @@ async function handleAdmin(
       const b = await body(req);
       const approving = String(b?.status ?? "").toLowerCase() === "approved";
       if (approving) {
-        const { executed, row } = await db.transaction((tx) => approveWarehouseTransfer(tx as any, id, transferActor));
+        const { executed, row } = await db.transaction(async (tx) => {
+          const approved = await approveWarehouseTransfer(tx as any, id, transferActor);
+          await closeWarehouseApprovalRequests(tx as any, "warehouse_transfer", id, "approved", transferActor);
+          return approved;
+        });
         void logAdminActivity(req, "warehouse_transfer_approved", "warehouse_transfer", id, { executed });
         revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
         return json({ ...formatWarehouseTransfer(row), execution: { executed } });
       }
-      const row = await db.transaction((tx) => rejectWarehouseTransfer(tx as any, id, transferActor));
+      const row = await db.transaction(async (tx) => {
+        const rejected = await rejectWarehouseTransfer(tx as any, id, transferActor);
+        await closeWarehouseApprovalRequests(tx as any, "warehouse_transfer", id, "rejected", transferActor);
+        return rejected;
+      });
       void logAdminActivity(req, "warehouse_transfer_rejected", "warehouse_transfer", id, {});
       return json({ ...formatWarehouseTransfer(row), execution: null });
     }

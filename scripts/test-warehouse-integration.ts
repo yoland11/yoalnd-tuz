@@ -14,6 +14,7 @@ if (url === process.env.DATABASE_URL) throw new Error("TEST_DATABASE_URL must be
 const { createWarehouse, listWarehouses, mainWarehouseId, updateWarehouse, warehouseBreakdowns, WarehouseError } = await import("../src/server/warehouses");
 const { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTransfer } = await import("../src/server/warehouse-transfers");
 const { approveWarehouseCount, createWarehouseCount } = await import("../src/server/warehouse-counts");
+const { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest } = await import("../src/server/warehouse-approvals");
 const { warehouseMovementRows, warehouseStockRows, warehouseTotals } = await import("../src/server/warehouse-reports");
 const { adjustQuantityAsset, executeQuantityBookingAction } = await import("../src/server/quantity-assets");
 
@@ -177,6 +178,85 @@ try {
   await expectRefusal(() => updateWarehouse(db, secondId, { name: `المخزن الثاني ${stamp}`, isActive: false }), /حوّل كميات هذا المخزن/);
   assert.ok((await listWarehouses(db)).find((row) => row.id === mainId)?.isMain);
   assert.ok(WarehouseError);
+
+  // The approvals queue and the document stay in step, whichever decides first.
+  const [queueItem] = await rows(sql`insert into products (name, name_ar, price, stock) values (${`Queue ${stamp}`}, ${`صنف الموافقات ${stamp}`}, 0, 10) returning id`);
+  const queueItemId = Number(queueItem.id);
+  const queueMove = async (quantity: number) => Number((await createWarehouseTransfer(db, { productId: queueItemId, fromWarehouseId: mainId, toWarehouseId: secondId, quantity }, actor)).row.id);
+  const inSecond = async () => (await warehouseBreakdowns(db, [queueItemId])).get(queueItemId)!.shares.find((row) => row.warehouseId === secondId)!.inWarehouse;
+  let requestSerial = 0;
+  const queueRequest = async (type: string, entityId: number | null) => {
+    const [row] = await rows(sql`insert into approval_requests (request_no, type, title, entity_type, entity_id) values (${`APR-T-${stamp}-${(requestSerial += 1)}`}, ${type}, 'طلب', ${entityId ? type : null}, ${entityId}) returning id, type, entity_type, entity_id, new_values`);
+    return { id: Number(row.id), type: row.type, entityType: row.entity_type, entityId: row.entity_id, newValues: row.new_values };
+  };
+  const requestStatus = async (id: number) => (await rows(sql`select status from approval_requests where id = ${id}`))[0].status;
+  const transferStatus = async (id: number) => (await rows(sql`select status from warehouse_transfers where id = ${id}`))[0].status;
+
+  // A stale transfer: the queue refuses, and neither side pretends it happened.
+  const staleQueued = await queueMove(8);
+  await approveWarehouseTransfer(db, await queueMove(5), actor);
+  const staleAsk = await queueRequest("warehouse_transfer", staleQueued);
+  await expectRefusal(() => decideWarehouseApprovalRequest(db, staleAsk, "approved", actor), /الكمية غير متوفرة/);
+  assert.equal(await requestStatus(staleAsk.id), "pending", "a refused approval leaves the request open");
+  assert.equal(await transferStatus(staleQueued), "pending");
+  assert.equal(await inSecond(), 5, "nothing moved");
+  // Rejecting it in the queue rejects the transfer too.
+  await decideWarehouseApprovalRequest(db, staleAsk, "rejected", actor, "لا حاجة");
+  assert.deepEqual([await requestStatus(staleAsk.id), await transferStatus(staleQueued)], ["rejected", "rejected"]);
+  assert.equal((await rows(sql`select review_note from approval_requests where id = ${staleAsk.id}`))[0].review_note, "لا حاجة");
+
+  // A good approval moves stock once and closes the request; a repeat is refused and moves nothing.
+  const goodMove = await queueMove(2);
+  const goodAsk = await queueRequest("warehouse_transfer", goodMove);
+  assert.equal((await decideWarehouseApprovalRequest(db, goodAsk, "approved", actor)).executed, true);
+  assert.deepEqual([await requestStatus(goodAsk.id), await transferStatus(goodMove)], ["approved", "approved"]);
+  assert.equal(await inSecond(), 7);
+  await expectRefusal(() => decideWarehouseApprovalRequest(db, goodAsk, "approved", actor), /تمت مراجعة هذا الطلب مسبقاً/);
+  assert.equal(await inSecond(), 7, "a repeated approval moves nothing");
+  assert.equal((await rows(sql`select count(*)::int as c from stock_movements where related_type = 'warehouse_transfer' and related_id = ${goodMove}`))[0].c, 1);
+
+  // Deciding on the warehouse screen closes the open request, with an audit row.
+  const screenMove = await queueMove(1);
+  const screenAsk = await queueRequest("warehouse_transfer", screenMove);
+  await approveWarehouseTransfer(db, screenMove, actor);
+  assert.equal(await closeWarehouseApprovalRequests(db, "warehouse_transfer", screenMove, "approved", actor), 1);
+  assert.equal(await requestStatus(screenAsk.id), "approved");
+  const [screenAudit] = await rows(sql`select action, old_status, new_status from approval_actions where approval_request_id = ${screenAsk.id}`);
+  assert.deepEqual([screenAudit.action, screenAudit.old_status, screenAudit.new_status], ["approve", "pending", "approved"]);
+  assert.equal(await closeWarehouseApprovalRequests(db, "warehouse_transfer", screenMove, "approved", actor), 0, "closing twice does nothing");
+  const screenDrop = await queueMove(1);
+  const screenDropAsk = await queueRequest("warehouse_transfer", screenDrop);
+  await rejectWarehouseTransfer(db, screenDrop, actor);
+  await closeWarehouseApprovalRequests(db, "warehouse_transfer", screenDrop, "rejected", actor);
+  assert.equal(await requestStatus(screenDropAsk.id), "rejected");
+
+  // Older rows: an executed transfer with a request left open cannot be rejected, and approving just closes it.
+  const olderMove = await queueMove(1);
+  await approveWarehouseTransfer(db, olderMove, actor);
+  const olderAsk = await queueRequest("warehouse_transfer", olderMove);
+  await expectRefusal(() => decideWarehouseApprovalRequest(db, olderAsk, "rejected", actor), /لا يمكن رفضه/);
+  assert.equal(await requestStatus(olderAsk.id), "pending");
+  const olderShelf = await inSecond();
+  assert.deepEqual(await decideWarehouseApprovalRequest(db, olderAsk, "approved", actor), { executed: false, reason: "already_executed" });
+  assert.equal(await requestStatus(olderAsk.id), "approved");
+  assert.equal(await inSecond(), olderShelf, "closing an older request moves nothing");
+  // A request with no document closes; one whose document is gone refuses approval and closes on rejection.
+  assert.equal((await decideWarehouseApprovalRequest(db, await queueRequest("warehouse_transfer", null), "approved", actor)).reason, "missing_transfer");
+  const goneAsk = await queueRequest("warehouse_transfer", 2147483000);
+  await expectRefusal(() => decideWarehouseApprovalRequest(db, goneAsk, "approved", actor), /التحويل غير موجود/);
+  assert.equal((await decideWarehouseApprovalRequest(db, goneAsk, "rejected", actor)).reason, "document_not_found");
+  assert.equal(await requestStatus(goneAsk.id), "rejected");
+  // The same rule for a stale count.
+  const countStatus = async (id: number) => (await rows(sql`select status from warehouse_counts where id = ${id}`))[0].status;
+  const staleCount = await createWarehouseCount(db, { warehouseId: secondId, requestToken: `q-${stamp}`, lines: [{ productId: queueItemId, countedQuantity: 1 }] }, actor);
+  await approveWarehouseTransfer(db, await queueMove(1), actor);
+  const countAsk = await queueRequest("warehouse_count", staleCount.id);
+  await expectRefusal(() => decideWarehouseApprovalRequest(db, countAsk, "approved", actor), /تغيّر رصيد/);
+  assert.deepEqual([await requestStatus(countAsk.id), await countStatus(staleCount.id)], ["pending", "pending"]);
+  await decideWarehouseApprovalRequest(db, countAsk, "rejected", actor);
+  assert.deepEqual([await requestStatus(countAsk.id), await countStatus(staleCount.id)], ["rejected", "rejected"]);
+  // Every other request type keeps its own path.
+  await expectRefusal(() => decideWarehouseApprovalRequest(db, { id: 1, type: "cancel_order", entityType: "order", entityId: 1, newValues: {} }, "approved", actor), /لا يخص المخازن/);
   throw new Rollback();
 } catch (cause) {
   await db.execute(sql`rollback`);
