@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { createContext, useContext, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDownLeft,
@@ -42,7 +42,7 @@ import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, formatCurrency, formatMoney, type AdminMe } from "./_lib";
+import { adminFetch, formatCurrency, formatMoney, hasPerm, type AdminMe } from "./_lib";
 import { EmptyState } from "./_layout";
 import {financialTransactionTotals,formatFinancialTotal} from "@/lib/financial-transaction-totals";
 import { DateField } from "@/components/ui/date-field";
@@ -68,6 +68,8 @@ type CashBoxDashboard = {
   trend: Array<{ month: string; revenue: number; expenses: number }>;
 };
 
+type BookingLink = { source: "kosha" | "service"; id: number; label: string };
+
 type FinancialTransaction = {
   id: number;
   transactionNo: string;
@@ -85,6 +87,7 @@ type FinancialTransaction = {
   paymentMethod: string;
   sourceType: string | null;
   sourceId: string | null;
+  bookings?: BookingLink[];
   customerId?: number | null;
   customerName?: string | null;
   customerPhone?: string | null;
@@ -228,6 +231,10 @@ function sourceBucket(sourceType: string | null | undefined): ApprovalBucket {
   }
 }
 
+/** The booking workspace opens only for staff with booking access; others keep the invoice. */
+const CanOpenBooking = createContext(false);
+const bookingHref = (booking: BookingLink) => `/admin/bookings/${booking.source}/${booking.id}?tab=finance`;
+
 /** Route to the exact originating document for "View Source". */
 function sourceHref(
   sourceType: string | null | undefined,
@@ -269,20 +276,29 @@ function sourceHref(
   }
 }
 
+function BookingChips({ bookings }: { bookings?: BookingLink[] }) {
+  const canOpen = useContext(CanOpenBooking);
+  if (!canOpen || !bookings?.length) return null;
+  return <p className="mt-1 flex flex-wrap gap-x-2 text-xs">{bookings.map((booking) => <a key={`${booking.source}-${booking.id}`} href={bookingHref(booking)} className="text-primary underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40">حجز <span dir="ltr">{booking.label}</span></a>)}</p>;
+}
+
 function SourceLink({
   sourceType,
   sourceId,
   referenceNo,
+  bookings,
   label,
   compact = false,
 }: {
   sourceType: string | null | undefined;
   sourceId: string | number | null | undefined;
   referenceNo?: string | null;
+  bookings?: BookingLink[];
   label: "عرض المصدر" | "فتح المصدر";
   compact?: boolean;
 }) {
-  const href = sourceHref(sourceType, sourceId, referenceNo);
+  const canOpenBooking = useContext(CanOpenBooking);
+  const href = canOpenBooking && bookings?.[0] ? bookingHref(bookings[0]) : sourceHref(sourceType, sourceId, referenceNo);
   if (!href) {
     return <span className="inline-flex items-center rounded-lg border border-border/30 px-2.5 py-1.5 text-xs text-muted-foreground" title="لا يتوفر سجل مصدر قابل للفتح لهذه الحركة">لا يوجد مصدر</span>;
   }
@@ -348,7 +364,7 @@ function Stat({ label, value, icon: Icon, tone = "text-primary", onClick }: { la
         <p className="truncate text-xs text-muted-foreground">{label}</p>
         <Icon className={`h-4 w-4 shrink-0 ${tone}`} />
       </div>
-      <p className={`truncate text-base font-bold ${tone}`} title={value}>{value}</p>
+      <p className={`break-words text-base font-bold leading-snug ${tone}`}>{value}</p>
     </>
   );
   if (onClick) return <Button variant="ghost" type="button" onClick={onClick} aria-label={`${label}: ${value}`} className={`${cls} block w-full text-right cursor-pointer transition-colors hover:bg-background/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring`}>{inner}</Button>;
@@ -428,7 +444,14 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   });
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
-  const [filters, setFilters] = useState({ from: addDays(todayBaghdad(), -30), to: todayBaghdad(), status: "", direction: "", department: "", voucherType: "", requestedBy: "", search: "" });
+  const [bookingFilter, setBookingFilter] = useState<{ source: "kosha" | "service"; id: number } | null>(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    const source = params.get("bookingSource");
+    const id = Number(params.get("bookingId"));
+    return (source === "kosha" || source === "service") && Number.isInteger(id) && id > 0 ? { source, id } : null;
+  });
+  const [filters, setFilters] = useState({ from: bookingFilter ? "" : addDays(todayBaghdad(), -30), to: bookingFilter ? "" : todayBaghdad(), status: "", direction: "", department: "", voucherType: "", requestedBy: "", search: "" });
   const isManager = me.role === "admin" || me.role === "manager";
   // Final Main Cash Box approval is reserved for the principal administrator.
   // UI visibility mirrors the server-side rule; the API enforces it too.
@@ -441,9 +464,11 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
     queryFn: () => adminFetch<CashBoxDashboard>("/admin/master-cash/dashboard"),
     refetchInterval: 15_000,
   });
+  const bookingParams: Record<string, string> = bookingFilter ? { bookingSource: bookingFilter.source, bookingId: String(bookingFilter.id) } : {};
   const queryString = new URLSearchParams({
-    from: filters.from,
-    to: filters.to,
+    ...(filters.from ? { from: filters.from } : {}),
+    ...(filters.to ? { to: filters.to } : {}),
+    ...bookingParams,
     page: String(page),
     limit: "20",
     ...(filters.status ? { status: filters.status } : {}),
@@ -527,7 +552,15 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   });
 
   const rows = transactions.data?.data ?? [];
-  const [mcTab, setMcTab] = useState("overview");
+  const [mcTab, setMcTab] = useState(bookingFilter ? "ledger" : "overview");
+  const canOpenBooking = hasPerm(me, "orders");
+  const filteredBooking = rows.flatMap((row) => row.bookings ?? []).find((booking) => booking.source === bookingFilter?.source && booking.id === bookingFilter.id);
+  const clearBookingFilter = () => {
+    setBookingFilter(null);
+    setFilters((current) => ({ ...current, from: addDays(todayBaghdad(), -30), to: todayBaghdad() }));
+    setPage(1);
+    window.history.replaceState({}, "", "/admin/finance/master-cash");
+  };
   const [approvalFilter, setApprovalFilter] = useState<ApprovalBucket>("all");
 
   // All pending rows (server-filtered, unpaginated) + the top-filter view.
@@ -578,8 +611,9 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
       // person's requests. The grand total comes from the server aggregate over
       // the full matching set, not just the visible page.
       const exportQuery = new URLSearchParams({
-        from: filters.from,
-        to: filters.to,
+        ...(filters.from ? { from: filters.from } : {}),
+        ...(filters.to ? { to: filters.to } : {}),
+        ...bookingParams,
         page: "1",
         limit: "5000",
         ...(filters.status ? { status: filters.status } : {}),
@@ -656,7 +690,8 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
         <div className="rounded-xl bg-card p-4"><div className="flex items-center justify-between"><p className="text-xs text-muted-foreground">التلف والخسائر هذا الشهر</p><TriangleAlert className="h-4 w-4 text-status-warning" /></div><p className="mt-3 text-xl font-bold text-foreground">{formatCurrency(data.damageLosses)}</p><p className="mt-1 text-xs text-muted-foreground">تُسجل مع المنتج والموظف المسؤول ضمن حركة مالية مدققة.</p></div>
       </div>
 
-      <Tabs value={mcTab} onValueChange={setMcTab} className="space-y-4">
+      <CanOpenBooking.Provider value={canOpenBooking}>
+      <Tabs dir="rtl" value={mcTab} onValueChange={setMcTab} className="space-y-4">
         <TabsList className="print:hidden"><TabsTrigger value="overview">الملخص</TabsTrigger><TabsTrigger value="ledger">دفتر الحركات</TabsTrigger><TabsTrigger value="approvals">الموافقات ({(pendingApprovals.data?.total ?? data.pending.count).toLocaleString("ar-IQ-u-nu-latn")})</TabsTrigger></TabsList>
         <TabsContent value="overview" className="space-y-4">
           <div className="grid gap-4 xl:grid-cols-[1.35fr_1fr]">
@@ -667,6 +702,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
 
         <TabsContent value="ledger" className="space-y-3">
           <div className="flex flex-wrap items-end gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden"><Filter className="mb-2 h-4 w-4 text-muted-foreground" /><DateField type="date" value={filters.from} onChange={(event) => { setFilters({ ...filters, from: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><DateField type="date" value={filters.to} onChange={(event) => { setFilters({ ...filters, to: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><select value={filters.status} onChange={(event) => { setFilters({ ...filters, status: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الحالات</option>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={filters.voucherType} onChange={(event) => { setFilters({ ...filters, voucherType: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل السندات</option>{VOUCHER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={filters.department} onChange={(event) => { setFilters({ ...filters, department: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الأقسام</option>{DEPARTMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><label className="relative min-w-44"><UserRound className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input value={filters.requestedBy} onChange={(event) => { setFilters({ ...filters, requestedBy: event.target.value }); setPage(1); }} list="mc-requester-names" placeholder="مقدم الطلب" className={`${inputClass} pr-9`} /><datalist id="mc-requester-names">{requesterNames.map((name) => <option key={name} value={name} />)}</datalist></label><label className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input value={filters.search} onChange={(event) => { setFilters({ ...filters, search: event.target.value }); setPage(1); }} placeholder="رقم السند أو المرجع أو العميل أو مقدم الطلب" className={`${inputClass} pr-9`} /></label></div>
+          {bookingFilter && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3"><p className="text-sm text-foreground">حركات الحجز <span dir="ltr" className="font-bold text-primary">{filteredBooking?.label ?? `#${bookingFilter.id}`}</span> — عدد الحركات: <span className="font-bold">{(transactions.data?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span></p><div className="flex flex-wrap gap-2 print:hidden">{canOpenBooking && <Button type="button" variant="outline" size="sm" asChild><a href={bookingHref({ ...bookingFilter, label: "" })}><ExternalLink className="h-3.5 w-3.5" /> فتح الحجز</a></Button>}<Button type="button" variant="ghost" size="sm" onClick={clearBookingFilter}>عرض كل الحركات</Button></div></div>}
           {filters.requestedBy.trim() !== "" && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3"><p className="text-sm text-foreground">طلبات <span className="font-bold text-primary">{filters.requestedBy}</span> — عدد الطلبات: <span className="font-bold">{(transactions.data?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn")}</span></p><p className="text-sm text-foreground">المجموع الكلي: <span className="font-bold text-primary">{formatCurrency(transactions.data?.totals.sumAmount ?? 0)}</span></p></div>}
           <TransactionTable rows={rows} loading={transactions.isLoading} isManager={canApprove} onOpen={setSelectedId} onApprove={(id) => approve.mutate(id)} onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }} onRequestModification={requestModification} busy={approve.isPending || reject.isPending} />
           {(transactions.data?.total ?? 0) > 20 && <div className="flex items-center justify-between print:hidden"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>السابق</Button><span className="text-xs text-muted-foreground">صفحة {page.toLocaleString("ar-IQ-u-nu-latn")} من {Math.ceil((transactions.data?.total ?? 0) / 20).toLocaleString("ar-IQ-u-nu-latn")}</span><Button variant="outline" size="sm" disabled={page * 20 >= (transactions.data?.total ?? 0)} onClick={() => setPage((value) => value + 1)}>التالي</Button></div>}
@@ -691,12 +727,13 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
       </Tabs>
 
       <Dialog open={selectedId !== null} onOpenChange={(open) => !open && setSelectedId(null)}><DialogContent className="max-h-[88dvh] max-w-3xl overflow-y-auto" dir="rtl"><DialogHeader><DialogTitle>تفاصيل السند المالي</DialogTitle></DialogHeader>{detail.isLoading || !detail.data ? <Skeleton className="h-72 rounded-xl" /> : <TransactionDetailView data={detail.data} isManager={isManager} canEdit={canEditVoucher} canDelete={canDeleteVoucher} busy={reverse.isPending || updateVoucher.isPending || cancelVoucher.isPending} onUpdate={(values) => updateVoucher.mutate({ id: detail.data!.id, values })} onCancel={(reason) => cancelVoucher.mutate({ id: detail.data!.id, reason })} onReverse={(reason) => reverse.mutate({ id: detail.data!.id, reason })} />}</DialogContent></Dialog>
+      </CanOpenBooking.Provider>
     </div>
   );
 }
 
 function TransactionTable({ rows, loading, isManager, onOpen, onApprove, onReject, onRequestModification, busy, emptyMessage = "لا توجد حركات ضمن الفلاتر" }: { rows: FinancialTransaction[]; loading: boolean; isManager: boolean; onOpen: (id: number) => void; onApprove: (id: number) => void; onReject: (id: number) => void; onRequestModification: (id: number) => void; busy: boolean; emptyMessage?: string }) {
-  return <div className="overflow-x-auto rounded-xl border border-border/30 bg-card">{loading ? <div className="p-5"><Skeleton className="h-56 rounded-xl" /></div> : rows.length === 0 ? <EmptyState message={emptyMessage} /> : <table className="w-full min-w-[920px] text-sm"><thead><tr className="border-b border-border/30 text-xs text-muted-foreground">{["رقم الحركة", "التاريخ", "القسم", "البيان", "الاتجاه والتصنيف", "المبلغ", "الحالة", "بواسطة", "إجراء"].map((label) => <th key={label} className="px-3 py-3 text-center font-medium">{label}</th>)}</tr></thead><tbody>{rows.map((row) => { const movement = movementDisplay(row); return <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]"><td className="px-3 py-3 text-center font-mono text-xs text-primary"><Button variant="ghost" onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</Button></td><td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td><td className="px-3 py-3 text-center">{departmentLabel(row.department)}</td><td className="max-w-56 px-3 py-3"><p className="truncate text-foreground" title={row.description}>{row.description || row.transactionType}</p><p className="text-xs text-muted-foreground">{row.transactionType}</p></td><td className={`px-3 py-3 text-center font-medium ${movement.isLiability ? "text-primary" : row.direction === "revenue" ? "text-status-success" : "text-destructive"}`}><span className="block">{movement.direction}</span><span className="block text-xs font-normal text-muted-foreground">{movement.classification}</span></td><td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td><td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td><td className="px-3 py-3 text-center text-xs text-muted-foreground">{row.requestedByName || "النظام"}</td><td className="px-3 py-3"><div className="flex justify-center gap-1"><Button size="sm" variant="outline" onClick={() => onOpen(row.id)}><History className="h-3.5 w-3.5" /></Button>{isManager && row.approvalStatus === "pending" && <><Button size="sm" disabled={busy} onClick={() => onApprove(row.id)} className="gap-1"><Check className="h-3.5 w-3.5" /> اعتماد</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onRequestModification(row.id)} className="gap-1"><Pencil className="h-3.5 w-3.5" /> طلب تعديل</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onReject(row.id)} className="text-destructive hover:text-destructive"><X className="h-3.5 w-3.5" /></Button></>}</div></td></tr>; })}</tbody><TableTotalsFooter rows={rows} labelColSpan={4} cells={[{ key: "direction", label: "التشغيلي المنفذ فقط", value: () => 0, format: (_, entries) => { const totals=financialTransactionTotals(entries,(entry)=>movementDisplay(entry).isLiability); return totals.complete ? <span className="text-xs"><span className="text-status-success">إيراد {formatFinancialTotal(totals.revenue)}</span><span className="mx-2 text-muted-foreground">/</span><span className="text-destructive">مصروف {formatFinancialTotal(totals.expenses)}</span></span> : <span className="text-destructive">{totals.reason}</span>; } }, { key: "amount", label: "صافي التدفق النقدي المنفذ", value: () => 0, format: (_, entries) => { const totals=financialTransactionTotals(entries,(entry)=>movementDisplay(entry).isLiability); return totals.complete ? formatFinancialTotal(totals.cash) : <span className="text-destructive">{totals.reason}</span>; } }, { key: "status", label: "" }, { key: "requestedBy", label: "" }, { key: "actions", label: "" }]} /></table>}</div>;
+  return <div className="overflow-x-auto rounded-xl border border-border/30 bg-card">{loading ? <div className="p-5"><Skeleton className="h-56 rounded-xl" /></div> : rows.length === 0 ? <EmptyState message={emptyMessage} /> : <table className="w-full min-w-[920px] text-sm"><thead><tr className="border-b border-border/30 text-xs text-muted-foreground">{["رقم الحركة", "التاريخ", "القسم", "البيان", "الاتجاه والتصنيف", "المبلغ", "الحالة", "بواسطة", "إجراء"].map((label) => <th key={label} className="px-3 py-3 text-center font-medium">{label}</th>)}</tr></thead><tbody>{rows.map((row) => { const movement = movementDisplay(row); return <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]"><td className="px-3 py-3 text-center font-mono text-xs text-primary"><Button variant="ghost" onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</Button></td><td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td><td className="px-3 py-3 text-center">{departmentLabel(row.department)}</td><td className="max-w-56 px-3 py-3"><p className="truncate text-foreground" title={row.description}>{row.description || row.transactionType}</p><p className="text-xs text-muted-foreground">{row.transactionType}</p><BookingChips bookings={row.bookings} /></td><td className={`px-3 py-3 text-center font-medium ${movement.isLiability ? "text-primary" : row.direction === "revenue" ? "text-status-success" : "text-destructive"}`}><span className="block">{movement.direction}</span><span className="block text-xs font-normal text-muted-foreground">{movement.classification}</span></td><td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td><td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td><td className="px-3 py-3 text-center text-xs text-muted-foreground">{row.requestedByName || "النظام"}</td><td className="px-3 py-3"><div className="flex justify-center gap-1"><Button size="sm" variant="outline" onClick={() => onOpen(row.id)}><History className="h-3.5 w-3.5" /></Button>{isManager && row.approvalStatus === "pending" && <><Button size="sm" disabled={busy} onClick={() => onApprove(row.id)} className="gap-1"><Check className="h-3.5 w-3.5" /> اعتماد</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onRequestModification(row.id)} className="gap-1"><Pencil className="h-3.5 w-3.5" /> طلب تعديل</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onReject(row.id)} className="text-destructive hover:text-destructive"><X className="h-3.5 w-3.5" /></Button></>}</div></td></tr>; })}</tbody><TableTotalsFooter rows={rows} labelColSpan={4} cells={[{ key: "direction", label: "التشغيلي المنفذ فقط", value: () => 0, format: (_, entries) => { const totals=financialTransactionTotals(entries,(entry)=>movementDisplay(entry).isLiability); return totals.complete ? <span className="text-xs"><span className="text-status-success">إيراد {formatFinancialTotal(totals.revenue)}</span><span className="mx-2 text-muted-foreground">/</span><span className="text-destructive">مصروف {formatFinancialTotal(totals.expenses)}</span></span> : <span className="text-destructive">{totals.reason}</span>; } }, { key: "amount", label: "صافي التدفق النقدي المنفذ", value: () => 0, format: (_, entries) => { const totals=financialTransactionTotals(entries,(entry)=>movementDisplay(entry).isLiability); return totals.complete ? formatFinancialTotal(totals.cash) : <span className="text-destructive">{totals.reason}</span>; } }, { key: "status", label: "" }, { key: "requestedBy", label: "" }, { key: "actions", label: "" }]} /></table>}</div>;
 }
 
 /**
@@ -782,7 +819,7 @@ function ApprovalsPanel({
                   <td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td>
                   <td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td>
                   <td className="px-3 py-3 text-center">
-                    <SourceLink sourceType={row.sourceType} sourceId={row.sourceId} referenceNo={row.sourceReference} label="عرض المصدر" compact />
+                    <SourceLink sourceType={row.sourceType} sourceId={row.sourceId} referenceNo={row.sourceReference} bookings={row.bookings} label="عرض المصدر" compact />
                   </td>
                   {isManager && (
                     <td className="px-3 py-3">
@@ -822,7 +859,7 @@ function TransactionDetailView({ data, isManager, canEdit, canDelete, busy, onUp
   return <div className="space-y-4">
     {(canEdit || canCancel) && <div className="flex flex-wrap gap-2 rounded-lg border border-border/30 bg-background/55 p-3"><>{canEdit && ["draft", "rejected"].includes(data.approvalStatus) && <Button type="button" size="sm" variant="outline" onClick={() => setEditing((value) => !value)} disabled={busy} className="gap-1.5"><Pencil className="h-3.5 w-3.5" /> تعديل السند</Button>}{canCancel && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { const reason = window.prompt("سبب إلغاء السند (3 أحرف على الأقل):"); if (reason && reason.trim().length >= 3) onCancel(reason.trim()); }} className="gap-1.5 text-destructive hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /> إلغاء السند</Button>}</></div>}
     {editing && <VoucherEditor data={data} busy={busy} onClose={() => setEditing(false)} onSave={(values) => { onUpdate(values); setEditing(false); }} />}
-    <div className="flex flex-wrap gap-2 text-xs"><a href="/admin/finance/master-cash" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"><ExternalLink className="h-3.5 w-3.5" /> حركة الصندوق</a>{data.customerId && <a href={`/admin/customers?focus=${data.customerId}`} className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"><ExternalLink className="h-3.5 w-3.5" /> فتح العميل</a>}{data.sourceId && <SourceLink sourceType={data.sourceType} sourceId={data.sourceId} referenceNo={data.referenceNo} label="فتح المصدر" />}{data.entries.length > 0 && <a href="#journal-entry" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"><ExternalLink className="h-3.5 w-3.5" /> القيد المحاسبي</a>}</div>
+    <div className="flex flex-wrap gap-2 text-xs"><a href="/admin/finance/master-cash" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"><ExternalLink className="h-3.5 w-3.5" /> حركة الصندوق</a>{data.customerId && <a href={`/admin/customers?focus=${data.customerId}`} className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"><ExternalLink className="h-3.5 w-3.5" /> فتح العميل</a>}{data.sourceId && <SourceLink sourceType={data.sourceType} sourceId={data.sourceId} referenceNo={data.referenceNo} bookings={data.bookings} label="فتح المصدر" />}{data.entries.length > 0 && <a href="#journal-entry" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"><ExternalLink className="h-3.5 w-3.5" /> القيد المحاسبي</a>}</div>
     <div className="grid gap-2 rounded-lg border border-border/30 bg-background/40 p-3 text-sm sm:grid-cols-2"><p><span className="text-muted-foreground">نوع السند: </span><b>{voucherTypeLabel(data.transactionType)}</b></p><p><span className="text-muted-foreground">رقم المرجع: </span>{data.referenceNo || "—"}</p><p><span className="text-muted-foreground">طريقة الدفع: </span>{data.paymentMethod}</p><p><span className="text-muted-foreground">الطرف: </span>{data.customerName || "—"}</p><p><span className="text-muted-foreground">المصدر: </span>{sourceTypeLabel(data.sourceType)}{data.sourceId ? ` #${data.sourceId}` : ""}</p><p><span className="text-muted-foreground">المرفقات: </span>{data.attachments?.length ?? 0}</p></div>
     {isReversed && <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">تم عكس هذه الحركة{data.reversedByName ? ` بواسطة ${data.reversedByName}` : ""}{data.reversalReason ? ` · السبب: ${data.reversalReason}` : ""}.</div>}
     {isReversalEntry && <div className="rounded-lg border border-status-warning/40 bg-status-warning/10 p-3 text-sm text-status-warning">هذه حركة عكسية (تصحيح){data.reversedTransactionId ? ` للحركة رقم ${data.reversedTransactionId}` : ""}.</div>}

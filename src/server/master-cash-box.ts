@@ -13,6 +13,7 @@ import { prepareDriverPaymentExecution, finishDriverPaymentExecution, type Drive
 import { calculatePartnershipCashPosting, calculatePartnershipCashReversal } from "../lib/vehicle-partnership/cash";
 import { preparePartnershipCashReversal, finishPartnershipCashReversal, type PartnershipCashReversalPlan } from "./vehicle-partnership/cash-reversal";
 import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
+import { attachBookingLinks, bookingEntityType, bookingTransactionCondition } from "./booking-cash-link";
 import { z } from "zod/v4";
 import {
   db,
@@ -162,6 +163,8 @@ export const financialTransactionListSchema = z.object({
   department: z.string().trim().max(40).optional(),
   voucherType: z.string().trim().max(60).optional(),
   requestedBy: z.string().trim().max(120).optional(),
+  bookingSource: z.enum(["kosha", "service"]).optional(),
+  bookingId: z.coerce.number().int().positive().optional(),
   search: z.string().trim().max(120).optional().default(""),
   page: z.coerce.number().int().min(1).optional().default(1),
   // Approval feeds request a large single page so the displayed rows match
@@ -2052,6 +2055,8 @@ export async function listFinancialTransactions(input: unknown) {
     conditions.push(
       ilike(financialTransactionsTable.requestedByName, `%${filters.requestedBy}%`),
     );
+  if (filters.bookingSource && filters.bookingId)
+    conditions.push(await bookingTransactionCondition(db, bookingEntityType(filters.bookingSource)!, filters.bookingId));
   if (filters.search) {
     const value = `%${filters.search}%`;
     conditions.push(
@@ -2093,7 +2098,7 @@ export async function listFinancialTransactions(input: unknown) {
       .where(where),
   ]);
   return {
-    data: await attachFinancialCounterparties(rows),
+    data: await attachBookingLinks(db, await attachFinancialCounterparties(rows)),
     page: filters.page,
     limit: filters.limit,
     total: countRows[0]?.count ?? 0,
@@ -2136,7 +2141,7 @@ export async function getFinancialTransaction(id: number) {
       .where(eq(financialAuditLogsTable.transactionId, id))
       .orderBy(desc(financialAuditLogsTable.createdAt)),
   ]);
-  const [enriched] = await attachFinancialCounterparties([transaction]);
+  const [enriched] = await attachBookingLinks(db, await attachFinancialCounterparties([transaction]));
   return { ...enriched, entries, audits };
 }
 

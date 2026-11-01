@@ -74,7 +74,7 @@
     "test:product-insights": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-product-insights.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-product-details-ui.tsx",
     "test:report-pdf": "node ./scripts/test-report-pdf-download.mjs",
     "test:booking-stock": "node ./scripts/test-booking-shared-stock.mjs",
-    "test:booking-cashbox": "node ./scripts/test-booking-cashbox-link.mjs",
+    "test:booking-cashbox": "node ./scripts/test-booking-cashbox-link.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-cash-link.ts",
     "test:company-loans": "node ./scripts/test-company-loans-approval.mjs",
     "test:booking-transport": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-transport-vehicle.ts",
     "test:vehicle-partnership": "node ./scripts/test-vehicle-partnership.mjs",

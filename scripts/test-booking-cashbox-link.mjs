@@ -21,16 +21,37 @@ for (const name of ["syncOrderFinancialPayment", "syncServiceOrderFinancialPayme
 assert.doesNotMatch(api, /Ø[ª§ -ÿ]/, "no mojibake strings");
 assert.match(api, /"تحصيل مباشر من الإدارة"/);
 
-// 3. The booking's movement log includes receipt-voucher collections (kosha payments).
+// 3. The booking's movement log and the ledger's booking filter share one definition of a
+//    booking's movements, including receipt vouchers, penalties and group photos.
 const finance = api.slice(api.indexOf('if (resource === "finance" && method === "GET") {'));
-assert.match(finance.slice(0, 2500), /SELECT v\.id FROM receipt_vouchers v[\s\S]*v\.kosha_booking_id = \$\{reference\.id\}[\s\S]*receipt_voucher_allocations a/);
-assert.match(finance.slice(0, 2500), /eq\(financialTransactionsTable\.sourceType, "receipt_voucher"\),\s*inArray\(financialTransactionsTable\.sourceId, voucherIds\)/);
+const link = readFileSync("src/server/booking-cash-link.ts", "utf8");
+assert.match(finance.slice(0, 600), /where: await bookingTransactionCondition\(db as any, reference\.entityType, reference\.id\)/);
+assert.match(link, /SELECT v\.id FROM receipt_vouchers v[\s\S]*v\.kosha_booking_id = \$\{id\}[\s\S]*receipt_voucher_allocations a/);
+assert.match(link, /eq\(table\.sourceType, "receipt_voucher"\), inArray\(table\.sourceId, voucherIds\)/);
+assert.match(link, /eq\(table\.sourceType, "booking_penalty"\), inArray\(table\.sourceId, penaltyIds\)/);
+assert.match(link, /eq\(table\.sourceType, "group_photo"\)/);
+const cashBox = readFileSync("src/server/master-cash-box.ts", "utf8");
+assert.match(cashBox, /conditions\.push\(await bookingTransactionCondition\(db, bookingEntityType\(filters\.bookingSource\)!, filters\.bookingId\)\)/, "the ledger filters by the same definition");
+// The tab states the stored total: products are already in it and damage is a separate due.
+assert.match(finance.slice(0, 3000), /const finalAmount = total;/);
+assert.doesNotMatch(finance.slice(0, 3000), /total \+ productCharges/, "product charges are not counted twice");
+assert.match(finance.slice(0, 3000), /cash: await bookingCashSummary\(/);
 
 // 4. The finance tab says when a payment is waiting for approval and which date the cash box uses.
-assert.match(workspace, /دفعة بانتظار الاعتماد: \{money\(amount\)\}/);
+assert.match(workspace, /دفعة بانتظار الاعتماد: \{money\(cash\.waiting\)\}/);
 assert.match(workspace, /href="\/admin\/approvals"/);
 assert.match(workspace, /readableDate\(row\.transactionDate \?\? row\.transactionTime\)/);
-assert.match(workspace, /"لم تُرحّل بعد"/);
+assert.match(workspace, /لم تُرحّل بعد/);
+
+// 4b. Each side opens the other, and only for staff who can open it, in a real RTL layout.
+assert.match(workspace, /<Tabs dir="rtl" value=\{tab\}/);
+const masterCash = readFileSync("src/views/admin/master-cash.tsx", "utf8");
+assert.match(workspace, /const canOpenCash = hasPerm\(me\.data \?\? null, "accounting"\)/);
+assert.match(workspace, /\/admin\/finance\/master-cash\?bookingSource=\$\{booking\.source\}&bookingId=\$\{booking\.id\}/);
+assert.match(workspace, /\/admin\/finance\/master-cash\?transaction=\$\{row\.id\}/);
+assert.match(masterCash, /<Tabs dir="rtl" value=\{mcTab\}/);
+assert.match(masterCash, /const canOpenBooking = hasPerm\(me, "orders"\)/);
+assert.match(masterCash, /\/admin\/bookings\/\$\{booking\.source\}\/\$\{booking\.id\}\?tab=finance/);
 
 // 5. A rejected or cancelled payment request never leaves its booking/order shown as paid:
 //    both paths rebuild the document from approved money, like approval does.

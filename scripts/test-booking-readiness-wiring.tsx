@@ -24,7 +24,7 @@ for(const [name,run] of [
     assert.equal(get({...base,operationalReadiness:{status:"not_ready",percentage:33}}),33);
   }],
   ["workspace cards must not use guessed products/assets/warehouse percentages",()=>{
-    const Summary=extract("src/views/admin/booking-operations-workspace.tsx","OperationsSummary");
+    const Summary=extract("src/views/admin/booking-operations-workspace.tsx","OperationsSummary",{bookingPaymentLabel:()=>"غير مدفوع"});
     const html=renderToStaticMarkup(Summary({data:{warehouseStage:"out",readinessParts:{products:100,assets:100},counts:{alerts:0},alerts:[]},booking:{paymentStatus:"unpaid",remaining:500},onTab:()=>{},readiness:{categories:{equipment:{percentage:20},staff:{percentage:0},transport:{percentage:0}}}}));
     assert.doesNotMatch(html,/100%|80%|60%/);assert.match(html,/20%/);assert.match(html,/فحوص المعدات/);
   }]
