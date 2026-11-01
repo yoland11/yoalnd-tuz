@@ -898,13 +898,10 @@ export async function attendanceReport(executor: Executor, options: { from: stri
   return { from: options.from, to: options.to, data };
 }
 
-const LOCATION_RETENTION_INTERVAL_MS = 60 * 60 * 1000;
-let lastEvidenceSweep = 0;
-/** Coordinates are kept only for the configured days; the rest of the audit trail stays. */
-export async function sweepLocationEvidence(executor: Executor, days: number, nowMs = Date.now()) {
-  if (nowMs - lastEvidenceSweep < LOCATION_RETENTION_INTERVAL_MS) return;
-  lastEvidenceSweep = nowMs;
-  await executor.execute(sql`update attendance_verifications set latitude = null, longitude = null where latitude is not null and created_at < now() - make_interval(days => ${Math.max(1, Math.round(days))})`);
+/** Daily cron: coordinates are kept only for the configured days; the rest of the audit trail stays. */
+export async function sweepLocationEvidence(executor: Executor, days: number) {
+  const result: any = await executor.execute(sql`update attendance_verifications set latitude = null, longitude = null where latitude is not null and created_at < now() - make_interval(days => ${Math.max(1, Math.round(days))})`);
+  return { cleared: Number(result?.rowCount ?? 0) };
 }
 
 /** The inputs payroll needs beyond the attendance rows, so reports and payroll count the same way. */

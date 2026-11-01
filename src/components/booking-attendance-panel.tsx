@@ -15,11 +15,11 @@ type Options = { locations: Array<{ id: number; name: string; isActive: boolean;
  * Attendance shifts for people already assigned to this booking. Being assigned is not attending:
  * the employee still verifies at the venue, and this panel never adds an assignment.
  */
-export function BookingAttendancePanel({ source, bookingId, base, eventDate }: { source: "kosha" | "service"; bookingId: number; base: string; eventDate: string | null }) {
+export function BookingAttendancePanel({ source, bookingId, eventDate }: { source: "kosha" | "service"; bookingId: number; eventDate: string | null }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [form, setForm] = useState({ staffId: "", date: eventDate?.slice(0, 10) ?? "", start: "16:00", end: "23:00", locationId: "", requiredMethod: "gps", payAmount: "" });
-  const assigned = useQuery<{ assignedStaff: Assigned[] }>({ queryKey: ["admin", "booking-operations", source, bookingId, "staff-assignment"], queryFn: () => adminFetch(`${base}/staff-assignment`) });
+  const assigned = useQuery<{ assignedStaff: Assigned[] }>({ queryKey: ["admin", "booking-operations", source, bookingId, "attendance-team"], queryFn: () => adminFetch(`/admin/attendance/booking-team?source=${source}&bookingId=${bookingId}`) });
   const options = useQuery<Options>({ queryKey: ["admin", "attendance", "options"], queryFn: () => adminFetch("/admin/attendance/options"), staleTime: 60_000 });
   const shifts = useQuery<{ data: ShiftRow[] }>({
     queryKey: ["admin", "attendance", "shifts", "booking", source, bookingId],

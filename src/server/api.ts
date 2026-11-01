@@ -3,7 +3,7 @@ import { loadDailyOperations } from "./booking-daily-operations";
 import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
 import { applyWarehouseDeltas, createWarehouse, listWarehouses, mainWarehouseId, requireActiveWarehouse, rowsOf as warehouseRows, shelfCompany, updateWarehouse, warehouseBreakdowns, WarehouseError } from "./warehouses";
 import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTransfer, sourceCommitment } from "./warehouse-transfers";
-import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence } from "./attendance";
+import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence } from "./attendance";
 import { QR_ROTATION_SECONDS, baghdadDate, addDays as attendanceAddDays } from "@/lib/attendance-rules";
 import { approveWarehouseCount, createWarehouseCount, listWarehouseCounts, rejectWarehouseCount, warehouseCountDetail } from "./warehouse-counts";
 import { warehouseDiscrepancies, warehouseMovementRows, warehouseStockRows, warehouseTotals, warehouseTransferRows } from "./warehouse-reports";
@@ -47066,15 +47066,24 @@ async function handleAdmin(
       }
       return error("الطلب غير مدعوم", 405);
     }
-    if (attendanceResource === "kiosks" || attendanceResource === "locations" || attendanceResource === "shifts" || attendanceResource === "settings" || attendanceResource === "dashboard" || attendanceResource === "records" || attendanceResource === "report" || attendanceResource === "options") {
+    if (attendanceResource === "kiosks" || attendanceResource === "locations" || attendanceResource === "shifts" || attendanceResource === "settings" || attendanceResource === "dashboard" || attendanceResource === "records" || attendanceResource === "report" || attendanceResource === "options" || attendanceResource === "booking-team") {
       if (!attendanceViewer) return error("ليس لديك صلاحية عرض الحضور", 403);
       const writeRefused = method !== "GET" && !attendanceManager;
+      const attendanceBookingTeam = (reference: BookingOperationsReference) => new Set([...bookingAssignedStaff(reference.details).ids, ...(reference.source === "kosha" && Number(reference.row.assignedStaffId) > 0 ? [Number(reference.row.assignedStaffId)] : [])]);
+      // Who is assigned, for an attendance manager who cannot manage booking assignments.
+      if (attendanceResource === "booking-team" && method === "GET") {
+        const bookingId = optionalPositiveId(attendanceParams.get("bookingId"));
+        const reference = bookingId ? await loadBookingOperationsReference(String(attendanceParams.get("source") ?? ""), bookingId) : null;
+        if (!reference) return error("الحجز غير موجود", 404);
+        const ids = [...attendanceBookingTeam(reference)];
+        const team = ids.length ? attendanceRows<any>(await db.execute(sql`select id, full_name, username from staff where is_active = true and id in (${sql.join(ids.map((id) => sql`${id}`), sql`, `)}) order by coalesce(nullif(full_name, ''), username)`)) : [];
+        return noStoreJson({ assignedStaff: team.map((row) => ({ id: Number(row.id), name: row.full_name || row.username })) });
+      }
       if (attendanceResource === "options" && method === "GET") {
         const [locations, staffRows] = await Promise.all([listLocations(db as any), db.execute(sql`select id, full_name, username, department, job_title, photo_url from staff where is_active = true order by coalesce(nullif(full_name, ''), username)`)]);
         return noStoreJson({ locations, staff: attendanceRows<any>(staffRows).map((row) => ({ id: Number(row.id), fullName: row.full_name || row.username, username: row.username, department: row.department ?? null, jobTitle: row.job_title ?? null, photoUrl: row.photo_url ?? null })), capabilities: { canManage: attendanceManager, canApprove: attendanceApprover, canManagePolicy: canManageAll, canViewLocation: canManageAll || hasPermission(auth, "attendance_location_view") }, policy: await getPolicy() });
       }
       if (attendanceResource === "dashboard" && method === "GET") {
-        void sweepLocationEvidence(db as any, (await getPolicy()).locationRetentionDays).catch((cause) => console.error("attendance evidence sweep failed", cause));
         return noStoreJson(await attendanceDashboard(db as any, { date: attendanceParams.get("date"), search: attendanceParams.get("search"), department: attendanceParams.get("department"), locationId: optionalPositiveId(attendanceParams.get("locationId")), status: attendanceParams.get("status"), method: attendanceParams.get("method"), staffId: optionalPositiveId(attendanceParams.get("staffId")) }));
       }
       if (attendanceResource === "records") {
@@ -47121,9 +47130,7 @@ async function handleAdmin(
           const bookingSource = String(payload?.bookingSource ?? "");
           const reference = await loadBookingOperationsReference(bookingSource, Number(payload?.bookingId));
           if (!reference) return error("الحجز غير موجود", 404);
-          const assignment = bookingAssignedStaff(reference.details);
-          const assigned = new Set([...assignment.ids, ...(reference.source === "kosha" && Number(reference.row.assignedStaffId) > 0 ? [Number(reference.row.assignedStaffId)] : [])]);
-          if (!assigned.has(Number(payload?.staffId))) return error("عيّن الموظف على الحجز أولاً؛ الوردية لا تنشئ تعييناً جديداً", 409);
+          if (!attendanceBookingTeam(reference).has(Number(payload?.staffId))) return error("عيّن الموظف على الحجز أولاً؛ الوردية لا تنشئ تعييناً جديداً", 409);
           const created = await db.transaction((tx) => createBookingShift(tx as any, payload, attendanceWho));
           void logAdminActivity(req, "attendance_booking_shift_created", reference.entityType, reference.id, { shiftId: created.id, staffId: payload?.staffId });
           return json(created, 201);
@@ -76162,12 +76169,13 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       if (!secret) return error("خدمة Cron غير مهيأة", 503);
       const auth = req.headers.get("authorization") ?? "";
       if (auth !== `Bearer ${secret}`) return error("غير مصرح", 401);
-      const [summary, rateLimitCleanup, workOrderDeadlines] = await Promise.all([
+      const [summary, rateLimitCleanup, workOrderDeadlines, attendanceEvidence] = await Promise.all([
         runSmartNotificationsSweep(),
         cleanupExpiredRateLimits(),
         sweepWorkOrderDeadlines(db, (notice) => createNotification(notice), { force: true }),
+        readAttendancePolicy(db as any).then((policy) => sweepLocationEvidence(db as any, policy.locationRetentionDays)),
       ]);
-      return json({ ok: true, summary, rateLimitCleanup, workOrderDeadlines });
+      return json({ ok: true, summary, rateLimitCleanup, workOrderDeadlines, attendanceEvidence });
     }
     if (
       req.method === "GET" &&

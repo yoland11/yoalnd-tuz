@@ -436,31 +436,30 @@ function ReportsTab({ options }: { options: Options }) {
   const report = useQuery<{ data: ReportRow[] }>({ queryKey: ["admin", "attendance", "report", params.toString()], queryFn: () => adminFetch(`/admin/attendance/report?${params}`) });
   const rows = useMemo(() => (report.data?.data ?? []).filter(REPORTS[kind].keep), [report.data, kind]);
   const preset = (days: number) => setFilters((current) => ({ ...current, from: addDays(today, -days), to: today }));
-  const columns: Array<{ key: string; header: string; value: (row: ReportRow) => string | number }> = [
+  const columns: Array<{ key: string; header: string; value: (row: ReportRow) => string | number; cell?: (row: ReportRow) => number }> = [
     { key: "name", header: "الموظف", value: (row) => row.name },
     { key: "department", header: "القسم", value: (row) => row.department ?? "—" },
     { key: "scheduled", header: "أيام الدوام", value: (row) => row.scheduledDays },
     { key: "present", header: "الحضور", value: (row) => row.presentDays },
     { key: "absent", header: "غياب", value: (row) => row.absentDays },
     { key: "leave", header: "إجازة", value: (row) => row.paidLeaveDays + row.unpaidLeaveDays },
-    { key: "hours", header: "الساعات", value: (row) => number(row.workedHours) },
+    { key: "hours", header: "الساعات", value: (row) => number(row.workedHours), cell: (row) => row.workedHours },
     { key: "late", header: "تأخير (د)", value: (row) => row.lateMinutes },
     { key: "early", header: "انصراف مبكر (د)", value: (row) => row.earlyLeaveMinutes },
-    { key: "overtime", header: "إضافي (س)", value: (row) => number(row.overtimeHours) },
+    { key: "overtime", header: "إضافي (س)", value: (row) => number(row.overtimeHours), cell: (row) => row.overtimeHours },
     { key: "missing", header: "بلا انصراف", value: (row) => row.missingCheckOut },
     { key: "events", header: "مناسبات", value: (row) => `${row.eventAttended}/${row.eventShifts}` },
-    { key: "deductions", header: "خصم مقترح", value: (row) => number(row.proposedDeductions) },
+    { key: "deductions", header: "خصم مقترح", value: (row) => number(row.proposedDeductions), cell: (row) => row.proposedDeductions },
   ];
-  const exportCsv = () => {
-    const cell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-    const csv = "﻿" + [columns.map((column) => column.header), ...rows.map((row) => columns.map((column) => column.value(row)))].map((line) => line.map(cell).join(",")).join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `attendance-${kind}-${filters.from}-${filters.to}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
+  // Hours and money stay real numbers so Excel can add them up.
+  const exportExcel = () => void import("xlsx").then((XLSX) => {
+    const sheet = XLSX.utils.aoa_to_sheet([columns.map((column) => column.header), ...rows.map((row) => columns.map((column) => (column.cell ?? column.value)(row)))]);
+    sheet["!cols"] = columns.map((_, index) => ({ wch: index === 0 ? 28 : 14 }));
+    const workbook = XLSX.utils.book_new();
+    workbook.Workbook = { Views: [{ RTL: true }] };
+    XLSX.utils.book_append_sheet(workbook, sheet, REPORTS[kind].label);
+    XLSX.writeFile(workbook, `attendance-${kind}-${filters.from}-${filters.to}.xlsx`);
+  }).catch((error) => toast({ title: "تعذّر تصدير الملف", description: apiErrorMessage(error), variant: "destructive" }));
   // Real paged print: the rasterised PDF path froze the page for over a minute on this report.
   const print = () => void exportReport({
     options: { title: REPORTS[kind].label, subtitle: `${filters.from} إلى ${filters.to}`, orientation: "landscape", emptyText: "لا توجد بيانات" },
@@ -481,7 +480,7 @@ function ReportsTab({ options }: { options: Options }) {
         <select aria-label="الموظف" className={control} value={filters.staffId} onChange={(event) => setFilters({ ...filters, staffId: event.target.value })}><option value="">كل الموظفين</option>{options.staff.map((row) => <option key={row.id} value={row.id}>{row.fullName}</option>)}</select>
         <select aria-label="القسم" className={control} value={filters.department} onChange={(event) => setFilters({ ...filters, department: event.target.value })}><option value="">كل الأقسام</option>{[...new Set(options.staff.map((row) => row.department).filter(Boolean))].map((value) => <option key={String(value)} value={String(value)}>{value}</option>)}</select>
         <select aria-label="موقع العمل" className={control} value={filters.locationId} onChange={(event) => setFilters({ ...filters, locationId: event.target.value })}><option value="">كل المواقع</option>{options.locations.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
-        <Button type="button" variant="outline" disabled={!rows.length} onClick={exportCsv}><Download className="h-4 w-4" />Excel</Button>
+        <Button type="button" variant="outline" disabled={!rows.length} onClick={exportExcel}><Download className="h-4 w-4" />Excel</Button>
         <Button type="button" variant="outline" disabled={!rows.length} onClick={print}><Printer className="h-4 w-4" />A4</Button>
       </div>
       {report.isError ? <Failed error={report.error} retry={() => void report.refetch()} /> : report.isPending ? <Skeleton className="h-48 w-full" /> : !rows.length ? <Empty>لا توجد بيانات لهذا التقرير في الفترة المحددة.</Empty> : (

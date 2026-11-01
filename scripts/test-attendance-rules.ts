@@ -208,5 +208,9 @@ const api = read("src/server/api.ts");
 assert.match(api, /if \(\(await readEmployeeSettings\(db as any, auth\.id\)\)\.enabled\)\n\s+return error\("سجّل من «دوامي اليوم»/, "the old self check-in has no way around verification");
 assert.match(api, /action: "attendance-punch"/, "check-in is rate limited");
 assert.match(api, /normalizeAttendancePolicy\(\{ \.\.\.previous, \.\.\.\(await body\(req\)\) \}\)/, "a partial policy save keeps the other rules");
+assert.equal(api.match(/sweepLocationEvidence\(db/g)?.length, 1, "coordinates age out in one place");
+assert.match(api, /parts\[1\] === "smart-notifications"[\s\S]{0,700}sweepLocationEvidence\(db/, "the daily cron enforces location retention, so a dashboard GET writes nothing");
+assert.match(read("src/components/booking-attendance-panel.tsx"), /\/admin\/attendance\/booking-team\?/, "an attendance manager sees the team without booking-assignment rights");
+assert.match(read("src/views/admin/attendance-center.tsx"), /XLSX\.writeFile\(workbook, `attendance-/, "the report's Excel button gives a real workbook");
 
 console.log("attendance rules passed");

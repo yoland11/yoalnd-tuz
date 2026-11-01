@@ -326,7 +326,7 @@ try {
 
   // ─── Retention: coordinates age out, the audit stays ──────
   await db.execute(sql`update attendance_verifications set created_at = now() - interval '200 days' where record_id = ${gpsIn.recordId}`);
-  await attendance.sweepLocationEvidence(db, 90, Date.now());
+  assert.ok((await attendance.sweepLocationEvidence(db, 90)).cleared >= 1, "the sweep reports what it cleared");
   const [aged] = await rows(sql`select latitude, longitude, distance_meters from attendance_verifications where record_id = ${gpsIn.recordId} and event = 'check_in'`);
   assert.equal(aged.latitude, null, "old coordinates are cleared");
   assert.equal(aged.longitude, null);

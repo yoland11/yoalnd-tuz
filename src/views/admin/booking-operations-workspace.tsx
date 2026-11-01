@@ -619,7 +619,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
       <TabsContent value="inventory"><InventoryTab base={base} queryKey={key} /></TabsContent>
       <TabsContent value="finance"><FinanceTab base={base} queryKey={key} booking={booking} invoiceUrl={invoiceUrl} paymentUrl={paymentUrl} /></TabsContent>
       <TabsContent value="profitability"><BookingProfitabilityPanel endpoint={`${base}/profitability`} queryKey={key}/></TabsContent>
-      <TabsContent value="attendance"><BookingAttendancePanel source={booking.source} bookingId={booking.id} base={base} eventDate={booking.eventDate ?? null} /></TabsContent>
+      <TabsContent value="attendance"><BookingAttendancePanel source={booking.source} bookingId={booking.id} eventDate={booking.eventDate ?? null} /></TabsContent>
       <TabsContent value="tasks"><TasksTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       <TabsContent value="documents"><DocumentsTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       {booking.source === "service" ? <TabsContent value="group-photos"><BookingGroupPhotos bookingId={booking.id} /></TabsContent> : null}
