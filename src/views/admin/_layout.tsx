@@ -616,6 +616,7 @@ export const NAV: NavItem[] = [
     label: "مركز الموافقات",
     icon: ShieldCheck,
     perm: "tasks",
+    anyPerm: ["tasks", "approvals.view"],
   },
   {
     href: "/admin/documents",

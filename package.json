@@ -84,6 +84,7 @@
     "test:asset-list": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-asset-list-thumbnails.tsx",
     "test:attendance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-attendance-rules.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-attendance-integration.ts",
     "test:warehouses": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-warehouse-stock.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-warehouse-integration.ts",
+    "test:approval-requests": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-approval-requests.ts",
     "audit:warehouses": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/audit-warehouses-readonly.ts",
     "test:quantity-assets": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-quantity-assets.ts && node ./scripts/test-quantity-assets-wiring.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-quantity-assets-ui.tsx",
     "test:custody-safety": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-individual-custody.ts && node ./scripts/test-individual-custody-routes.cjs && node ./scripts/test-linked-custody-routes.mjs && node ./scripts/test-fixed-custody-transaction.cjs && node ./scripts/test-custody-read-identity.cjs && node ./scripts/test-custody-client-identity.cjs",

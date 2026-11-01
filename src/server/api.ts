@@ -4,6 +4,7 @@ import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
 import { applyWarehouseDeltas, createWarehouse, listWarehouses, mainWarehouseId, requireActiveWarehouse, rowsOf as warehouseRows, shelfCompany, updateWarehouse, warehouseBreakdowns, WarehouseError } from "./warehouses";
 import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTransfer, sourceCommitment } from "./warehouse-transfers";
 import { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest, warehouseApprovalDocument } from "./warehouse-approvals";
+import { ApprovalRequestError, OPEN_APPROVAL_STATUSES, WAREHOUSE_APPROVAL_TYPES, approvalTypeCategory, approvalTypeNeedsMainManager, runApprovalDecision, type ApprovalExecution, type ApprovalExecutionPlan } from "./approval-requests";
 import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence } from "./attendance";
 import { QR_ROTATION_SECONDS, baghdadDate, addDays as attendanceAddDays } from "@/lib/attendance-rules";
 import { approveWarehouseCount, createWarehouseCount, listWarehouseCounts, rejectWarehouseCount, warehouseCountDetail } from "./warehouse-counts";
@@ -221,6 +222,7 @@ import {
   lt,
   lte,
   ne,
+  notInArray,
   or,
   sql,
   type SQL,
@@ -3687,7 +3689,7 @@ async function createApprovalRequest(input: {
     body: row.title,
     entityType: "approval_request",
     entityId: row.id,
-    href: input.href ?? "/admin/approvals",
+    href: input.href ?? "/admin/approvals?tab=requests",
   });
   if (input.entityType && input.entityId) {
     await addEntityTimeline({
@@ -3721,11 +3723,34 @@ const DELEGATED_APPROVAL_CODES = [
 function approvalRequestScope(row: any) {
   const values = (row.newValues ?? {}) as Record<string, unknown>;
   return {
-    category: String(values.approvalCategory ?? row.type ?? "other"),
+    category: String(
+      values.approvalCategory ??
+        approvalTypeCategory(row.type) ??
+        row.type ??
+        "other",
+    ),
     department: String(values.department ?? values.departmentId ?? ""),
     branchId: Number(values.branchId ?? 0) || null,
-    requiresMain: values.approvalMode === "main_manager_final",
+    requiresMain:
+      values.approvalMode === "main_manager_final" ||
+      approvalTypeNeedsMainManager(row.type),
     amount: Math.max(0, Number(row.amount ?? 0) || 0),
+  };
+}
+
+/** Whether a delegate's approval is final, or only passes the request up to the main manager. */
+function delegateApprovalReach(delegation: any, row: any) {
+  const scope = approvalRequestScope(row);
+  const modes = (delegation?.categoryModes ?? {}) as Record<string, string>;
+  const overLimit =
+    !delegation?.unlimitedAmount &&
+    scope.amount > Number(delegation?.maxAmount ?? 0);
+  return {
+    overLimit,
+    forwards:
+      scope.requiresMain ||
+      overLimit ||
+      (modes[scope.category] ?? modes[row.type]) === "main_manager_final",
   };
 }
 
@@ -3750,7 +3775,7 @@ function profileAllowsScope(profile: any, row: any) {
     ? profile.allowedBranchIds.map(Number)
     : [];
   return (
-    categories.includes(scope.category) &&
+    (categories.includes(scope.category) || categories.includes(row.type)) &&
     (!departments.length || departments.includes(scope.department)) &&
     (!branches.length ||
       (scope.branchId !== null && branches.includes(scope.branchId)))
@@ -3763,6 +3788,36 @@ async function approvalDelegationFor(user: AdminUser) {
     where: eq(employeeApprovalPermissionsTable.staffId, user.id),
   });
   return profile && activeDelegation(profile) ? profile : null;
+}
+
+/**
+ * The delegation profile lives apart from staff permissions, and the shell needs its codes to offer the
+ * approvals page. Only a hint: the approvals route checks the profile itself, so a failed read here
+ * must not lock anyone out of the whole app.
+ */
+async function publicUserWithApprovalCodes(user: AdminUser, req: NextRequest) {
+  const base = publicUser(user);
+  if (user.role === "admin") return base;
+  try {
+    const delegation = await approvalDelegationFor(user);
+    if (!delegation) return base;
+    return {
+      ...base,
+      permissions: [
+        ...new Set([
+          ...base.permissions,
+          ...(delegation.permissionCodes ?? []).map(String),
+        ]),
+      ],
+    };
+  } catch (err) {
+    console.error("AJN approval delegation read failed", {
+      requestId: makeRequestId(req.headers.get("x-request-id")),
+      staffId: user.id,
+      error: safeServerError(err),
+    });
+    return base;
+  }
 }
 
 async function notifyMainManagers(input: {
@@ -3786,24 +3841,31 @@ async function notifyMainManagers(input: {
         body: input.body,
         entityType: input.requestId ? "approval_request" : "staff",
         entityId: input.requestId ?? null,
-        href: input.href ?? "/admin/approvals",
+        href:
+          input.href ??
+          (input.requestId
+            ? "/admin/approvals?tab=requests"
+            : "/admin/approvals"),
         metadata: input.metadata ?? {},
       }),
     ),
   );
 }
 
-async function addApprovalAction(input: {
-  request: any;
-  action: string;
-  oldStatus: string;
-  newStatus: string;
-  actor: AdminUser;
-  note?: string | null;
-  req: NextRequest;
-  metadata?: Record<string, unknown>;
-}) {
-  await db.insert(approvalActionsTable).values({
+async function addApprovalAction(
+  input: {
+    request: any;
+    action: string;
+    oldStatus: string;
+    newStatus: string;
+    actor: AdminUser;
+    note?: string | null;
+    req: NextRequest;
+    metadata?: Record<string, unknown>;
+  },
+  executor: Pick<typeof db, "insert"> = db,
+) {
+  await executor.insert(approvalActionsTable).values({
     approvalRequestId: input.request.id,
     action: input.action,
     oldStatus: input.oldStatus,
@@ -3819,38 +3881,110 @@ async function addApprovalAction(input: {
   });
 }
 
-async function executeApprovedApprovalRequest(
+type ApprovalTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * The stock writers use the shared pool, so on a one-connection deployment they cannot join the
+ * decision's transaction. They run first: a failure leaves the request open, and the returned undo
+ * re-applies the stock if the decision then fails. Flipping the flag makes a second click harmless.
+ */
+async function restoreStockBeforeApprovedOrderCancel(
   row: typeof approvalRequestsTable.$inferSelect,
-  actor: ErpActor | null,
+  actorInfo: { id: number | null; name: string },
 ) {
+  const nothingToUndo = async () => {};
+  const id = row.entityId;
+  if (row.type !== "cancel_order" || !id) return nothingToUndo;
+  const order = await db.query.ordersTable.findFirst({
+    where: eq(ordersTable.id, id),
+  });
+  if (!order || order.status === "cancelled") return nothingToUndo;
+  const [claimed] = await db
+    .update(ordersTable)
+    .set({
+      stockApplied: 0,
+      stockRestoredAt: new Date(),
+      updatedAt: new Date(),
+    } as any)
+    .where(
+      and(
+        eq(ordersTable.id, id),
+        sql`coalesce(${ordersTable.stockApplied}, 1) = 1`,
+      ),
+    )
+    .returning({ id: ordersTable.id });
+  if (!claimed) return nothingToUndo;
+  try {
+    await applyOrderItemsStock(id, 1, "order_stock_restored", actorInfo);
+  } catch (err) {
+    await db
+      .update(ordersTable)
+      .set({
+        stockApplied: 1,
+        stockRestoredAt: null,
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(ordersTable.id, id));
+    throw err;
+  }
+  return async () => {
+    const current = await db.query.ordersTable.findFirst({
+      where: eq(ordersTable.id, id),
+    });
+    if (current) await syncOrderStockState(current, actorInfo);
+  };
+}
+
+async function executeApprovedApprovalRequest(
+  tx: ApprovalTx,
+  row: typeof approvalRequestsTable.$inferSelect,
+  auth: AdminUser,
+  req: NextRequest,
+): Promise<ApprovalExecutionPlan> {
+  // Every read and write here stays on tx: Vercel's pool has one connection, so the global db would
+  // wait on the connection this transaction holds. What cannot use tx goes in followUps.
+  const actor = erpActorFromAdmin(auth);
   const financeActorValue: FinancialActor = {
-    id: actor?.id ?? null,
-    name: actor?.name ?? "النظام",
+    id: actor.id ?? null,
+    name: actor.name ?? "النظام",
     role: "system",
   };
+  const addTimeline = (entry: {
+    entityType: string;
+    entityId: number;
+    type: string;
+    title: string;
+    body?: string | null;
+    metadata?: Record<string, unknown>;
+  }) =>
+    tx.insert(entityTimelineTable).values({
+      ...entry,
+      body: nullableText(entry.body),
+      actorId: actor.id ?? null,
+      actorName: actor.name ?? "النظام",
+      metadata: { approvalRequestId: row.id, ...entry.metadata },
+    });
   if (row.type === "delete_document") {
-    const documentId =
-      optionalPositiveId((row.oldValues as any)?.documentId) ?? row.entityId;
+    const documentId = optionalPositiveId((row.oldValues as any)?.documentId);
     if (!documentId) return { executed: false, reason: "missing_document" };
-    const existing = await db.query.entityDocumentsTable.findFirst({
+    const existing = await tx.query.entityDocumentsTable.findFirst({
       where: eq(entityDocumentsTable.id, documentId),
     });
     if (!existing) return { executed: false, reason: "document_not_found" };
     if (existing.archivedAt)
       return { executed: false, reason: "already_archived" };
-    const [archived] = await db
+    const [archived] = await tx
       .update(entityDocumentsTable)
       .set({ archivedAt: new Date() })
       .where(eq(entityDocumentsTable.id, documentId))
       .returning();
-    await addEntityTimeline({
+    await addTimeline({
       entityType: archived.entityType,
       entityId: archived.entityId,
       type: "document_deleted_approved",
       title: "تم حذف المستند بعد الموافقة",
       body: archived.title,
-      actor,
-      metadata: { approvalRequestId: row.id, documentId },
+      metadata: { documentId },
     });
     return { executed: true, documentId };
   }
@@ -3858,121 +3992,123 @@ async function executeApprovedApprovalRequest(
     const productId =
       row.entityId ?? optionalPositiveId((row.oldValues as any)?.id);
     if (!productId) return { executed: false, reason: "missing_product" };
-    const existing = (await db.query.productsTable.findFirst({
+    const existing = (await tx.query.productsTable.findFirst({
       where: eq(productsTable.id, productId),
     })) as any;
     if (!existing) return { executed: false, reason: "product_not_found" };
     if (existing.archivedAt)
       return { executed: false, reason: "already_archived" };
-    await db
+    await tx
       .update(productsTable)
       .set({ archivedAt: new Date(), isActive: false, updatedAt: new Date() })
       .where(eq(productsTable.id, productId));
-    await addEntityTimeline({
+    await addTimeline({
       entityType: "product",
       entityId: productId,
       type: "product_archived_approved",
       title: "تمت أرشفة المادة بعد موافقة المدير",
       body: existing.nameAr || existing.name || String(productId),
-      actor,
-      metadata: { approvalRequestId: row.id },
     });
-    return { executed: true, productId };
+    return {
+      executed: true,
+      productId,
+      followUps: [async () => clearStoreCategoriesCache()],
+    };
   }
   if (row.type === "cancel_receipt_voucher") {
     const voucherId = row.entityId;
     if (!voucherId) return { executed: false, reason: "missing_voucher" };
-    const voucher = await db.query.receiptVouchersTable.findFirst({
+    const voucher = await tx.query.receiptVouchersTable.findFirst({
       where: eq(receiptVouchersTable.id, voucherId),
     });
     if (!voucher) return { executed: false, reason: "voucher_not_found" };
     if (voucher.approvalStatus === "cancelled")
       return { executed: false, reason: "already_cancelled" };
     if (voucher.financialTransactionId) {
-      const transaction = await db.query.financialTransactionsTable.findFirst({
+      const transaction = await tx.query.financialTransactionsTable.findFirst({
         where: eq(
           financialTransactionsTable.id,
           voucher.financialTransactionId,
         ),
       });
-      const managerActor = { ...financeActorValue, role: "manager" };
       if (transaction?.approvalStatus === "executed")
         await reverseFinancialTransaction(
           voucher.financialTransactionId,
-          managerActor,
+          financialActor(auth),
           "إلغاء سند قبض بعد موافقة المدير",
+          undefined,
+          tx,
         );
       else
         await cancelFinancialTransactionRequest(
           voucher.financialTransactionId,
-          managerActor,
+          financialActor(auth),
           "إلغاء سند قبض بعد موافقة المدير",
+          tx,
         );
     }
-    await db
+    await tx
       .update(receiptVouchersTable)
       .set({ approvalStatus: "cancelled" })
       .where(eq(receiptVouchersTable.id, voucherId));
-    await addEntityTimeline({
+    await addTimeline({
       entityType: "receipt_voucher",
       entityId: voucherId,
       type: "payment_deleted_approved",
       title: "تم إلغاء سند القبض بعد الموافقة",
       body: voucher.voucherNo,
-      actor,
-      metadata: { approvalRequestId: row.id },
     });
     return { executed: true, voucherId };
   }
   if (row.type === "cancel_payment_voucher") {
     const voucherId = row.entityId;
     if (!voucherId) return { executed: false, reason: "missing_voucher" };
-    const voucher = await db.query.paymentVouchersTable.findFirst({
+    const voucher = await tx.query.paymentVouchersTable.findFirst({
       where: eq(paymentVouchersTable.id, voucherId),
     });
     if (!voucher) return { executed: false, reason: "voucher_not_found" };
     if (voucher.approvalStatus === "cancelled")
       return { executed: false, reason: "already_cancelled" };
     if (voucher.financialTransactionId) {
-      const transaction = await db.query.financialTransactionsTable.findFirst({
+      const transaction = await tx.query.financialTransactionsTable.findFirst({
         where: eq(
           financialTransactionsTable.id,
           voucher.financialTransactionId,
         ),
       });
-      const managerActor = { ...financeActorValue, role: "manager" };
       if (transaction?.approvalStatus === "executed")
         await reverseFinancialTransaction(
           voucher.financialTransactionId,
-          managerActor,
+          financialActor(auth),
           "إلغاء سند صرف بعد موافقة المدير",
+          undefined,
+          tx,
         );
       else
         await cancelFinancialTransactionRequest(
           voucher.financialTransactionId,
-          managerActor,
+          financialActor(auth),
           "إلغاء سند صرف بعد موافقة المدير",
+          tx,
         );
     }
-    await db
+    await tx
       .update(paymentVouchersTable)
       .set({ approvalStatus: "cancelled" })
       .where(eq(paymentVouchersTable.id, voucherId));
-    await addEntityTimeline({
+    await addTimeline({
       entityType: "payment_voucher",
       entityId: voucherId,
       type: "refund_deleted_approved",
       title: "تم إلغاء سند الصرف بعد الموافقة",
       body: voucher.voucherNo,
-      actor,
-      metadata: { approvalRequestId: row.id },
     });
     return { executed: true, voucherId };
   }
   if (row.type === "cancel_kosha_booking") {
     const id = row.entityId;
     if (!id) return { executed: false, reason: "missing_booking" };
-    const existing = await db.query.koshaBookingsTable.findFirst({
+    const existing = await tx.query.koshaBookingsTable.findFirst({
       where: eq(koshaBookingsTable.id, id),
     });
     if (!existing) return { executed: false, reason: "booking_not_found" };
@@ -3981,8 +4117,9 @@ async function executeApprovedApprovalRequest(
     await syncKoshaFinancialPayment(
       { ...existing, status: "cancelled" },
       financeActorValue,
+      tx,
     );
-    const [archived] = await db
+    const [archived] = await tx
       .update(koshaBookingsTable)
       .set({
         status: "cancelled",
@@ -3991,27 +4128,46 @@ async function executeApprovedApprovalRequest(
       })
       .where(eq(koshaBookingsTable.id, id))
       .returning();
-    await syncAutomaticTasksForEntityStatus({
-      entityType: "kosha_booking",
-      entityId: id,
-      status: "cancelled",
-      actor,
-    });
-    await addEntityTimeline({
+    await addTimeline({
       entityType: "kosha_booking",
       entityId: id,
       type: "cancelled_approved",
       title: "تم إلغاء الحجز بعد موافقة المدير",
       body: archived.customerName,
-      actor,
-      metadata: { approvalRequestId: row.id },
     });
-    return { executed: true, bookingId: id };
+    return {
+      executed: true,
+      bookingId: id,
+      followUps: [
+        () =>
+          syncAutomaticTasksForEntityStatus({
+            entityType: "kosha_booking",
+            entityId: id,
+            status: "cancelled",
+            actor,
+          }),
+        async () =>
+          notifyAssignedBookingStaffSafely({
+            req,
+            staffIds: Array.from(new Set([
+              ...bookingAssignedStaff((archived.bookingDetails ?? {}) as Record<string, unknown>).ids,
+              ...(Number(archived.assignedStaffId) > 0 ? [Number(archived.assignedStaffId)] : []),
+            ])),
+            type: "booking_cancelled",
+            title: "تم إلغاء الحجز",
+            body: `${archived.customerName} · ${archived.eventDate ?? "الموعد غير محدد"}`,
+            entityType: "kosha_booking",
+            entityId: id,
+            href: "/staff/koshas",
+            metadata: { source: "kosha", cancelledBy: auth.id },
+          }),
+      ],
+    };
   }
   if (row.type === "cancel_service_order") {
     const id = row.entityId;
     if (!id) return { executed: false, reason: "missing_service_order" };
-    const existing = await db.query.serviceOrdersTable.findFirst({
+    const existing = await tx.query.serviceOrdersTable.findFirst({
       where: eq(serviceOrdersTable.id, id),
     });
     if (!existing)
@@ -4021,38 +4177,48 @@ async function executeApprovedApprovalRequest(
     await syncServiceOrderFinancialPayment(
       { ...existing, status: "cancelled" },
       financeActorValue,
+      tx,
     );
-    const [archived] = await db
+    const [archived] = await tx
       .update(serviceOrdersTable)
       .set({ status: "cancelled", archivedAt: new Date() })
       .where(eq(serviceOrdersTable.id, id))
       .returning();
-    await db.insert(serviceOrderStatusHistoryTable).values({
+    await tx.insert(serviceOrderStatusHistoryTable).values({
       serviceOrderId: id,
       status: "cancelled",
       notes: "إلغاء بعد موافقة المدير",
     });
-    await syncAutomaticTasksForEntityStatus({
-      entityType: "service_order",
-      entityId: id,
-      status: "cancelled",
-      actor,
-    });
-    await addEntityTimeline({
+    await addTimeline({
       entityType: "service_order",
       entityId: id,
       type: "cancelled_approved",
       title: "تم إلغاء الحجز بعد موافقة المدير",
       body: archived.customerName,
-      actor,
-      metadata: { approvalRequestId: row.id },
     });
-    return { executed: true, serviceOrderId: id };
+    return {
+      executed: true,
+      serviceOrderId: id,
+      followUps: [
+        () =>
+          syncAutomaticTasksForEntityStatus({
+            entityType: "service_order",
+            entityId: id,
+            status: "cancelled",
+            actor,
+          }),
+        () =>
+          syncCancelledBookingToPhotography(id, archived.trackingCode, {
+            id: auth.id,
+            name: auth.fullName || auth.username,
+          }),
+      ],
+    };
   }
   if (row.type === "cancel_order") {
     const id = row.entityId;
     if (!id) return { executed: false, reason: "missing_order" };
-    const existing = await db.query.ordersTable.findFirst({
+    const existing = await tx.query.ordersTable.findFirst({
       where: eq(ordersTable.id, id),
     });
     if (!existing) return { executed: false, reason: "order_not_found" };
@@ -4061,8 +4227,9 @@ async function executeApprovedApprovalRequest(
     await syncOrderFinancialPayment(
       { ...existing, status: "cancelled" },
       financeActorValue,
+      tx,
     );
-    const [archived] = await db
+    const [archived] = await tx
       .update(ordersTable)
       .set({
         status: "cancelled",
@@ -4071,27 +4238,161 @@ async function executeApprovedApprovalRequest(
       })
       .where(eq(ordersTable.id, id))
       .returning();
-    await syncOrderStockState(archived, {
-      id: actor?.id ?? null,
-      name: actor?.name ?? "النظام",
-    });
-    await db.insert(orderStatusHistoryTable).values({
+    if (isRentalStoreOrder(existing))
+      await syncRentalRowFromStoreOrder(archived, tx);
+    const cancellation = await cancelStoreSoundBooking(
+      archived,
+      "إلغاء طلب المتجر بعد موافقة المدير",
+      tx,
+    );
+    await tx.insert(orderStatusHistoryTable).values({
       orderId: id,
       status: "cancelled",
       notes: "إلغاء بعد موافقة المدير",
     });
-    await addEntityTimeline({
+    await addTimeline({
       entityType: "order",
       entityId: id,
       type: "cancelled_approved",
       title: "تم إلغاء الطلب بعد موافقة المدير",
       body: archived.customerName,
-      actor,
-      metadata: { approvalRequestId: row.id },
     });
-    return { executed: true, orderId: id };
+    return {
+      executed: true,
+      orderId: id,
+      followUps: cancellation.requiresApproval
+        ? [
+            async () =>
+              logAdminActivity(
+                req,
+                "store_sound_booking_cancel_confirmation_required",
+                "order",
+                id,
+                { storeOrderId: id },
+              ),
+          ]
+        : [],
+    };
   }
   return { executed: false, reason: "no_executor" };
+}
+
+async function syncCancelledBookingToPhotography(
+  id: number,
+  trackingCode: string | null,
+  who: { id: number; name: string },
+) {
+  await ensurePhotographyStaffTables();
+  await ensurePhotographyPostTables();
+  const photographySync = await syncCentralBookingToPhotography(id, who).catch(
+    (err) => {
+      console.error("[photography-sync] booking cancellation failed", {
+        bookingId: id,
+        message: err instanceof Error ? err.message : "unknown",
+      });
+      return null;
+    },
+  );
+  if (photographySync?.linked) {
+    const assignedCrew = await db.query.photographyShootCrewTable.findMany({
+      where: and(
+        eq(photographyShootCrewTable.shootId, photographySync.shoot.id),
+        ne(photographyShootCrewTable.assignmentStatus, "revoked"),
+      ),
+    });
+    await Promise.all(
+      assignedCrew.map((member) =>
+        createNotification({
+          staffId: member.staffId,
+          type: "photography_booking_cancelled",
+          title: "تم إلغاء حجز التصوير",
+          body: trackingCode ?? `#${id}`,
+          entityType: "service_order",
+          entityId: id,
+          href: "/staff/photography",
+        }),
+      ),
+    );
+  }
+}
+
+async function approveGeneralApprovalRequest(input: {
+  request: typeof approvalRequestsTable.$inferSelect;
+  auth: AdminUser;
+  note: string | null;
+  req: NextRequest;
+  audit: Parameters<typeof addApprovalAction>[0];
+}) {
+  const { request, auth, note, req, audit } = input;
+  const reviewer = auth.fullName || auth.username;
+  const logContext = {
+    requestId: makeRequestId(req.headers.get("x-request-id")),
+    approvalRequestId: request.id,
+    type: request.type,
+  };
+  // The financial helpers skip this seed when given a transaction, so it runs before one opens.
+  await ensureMasterCashBoxTables();
+  return runApprovalDecision<ApprovalTx, typeof approvalRequestsTable.$inferSelect>({
+    prepare: () =>
+      restoreStockBeforeApprovedOrderCancel(request, {
+        id: auth.id,
+        name: reviewer,
+      }),
+    transaction: (work) => db.transaction(work),
+    lock: async (tx) => {
+      const [open] = await tx
+        .select({ id: approvalRequestsTable.id })
+        .from(approvalRequestsTable)
+        .where(
+          and(
+            eq(approvalRequestsTable.id, request.id),
+            inArray(approvalRequestsTable.status, OPEN_APPROVAL_STATUSES),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!open) throw new ApprovalRequestError("تمت مراجعة هذا الطلب مسبقاً");
+    },
+    execute: (tx) => executeApprovedApprovalRequest(tx, request, auth, req),
+    close: async (tx, execution: ApprovalExecution) => {
+      const [row] = await tx
+        .update(approvalRequestsTable)
+        .set({
+          status: "approved",
+          reviewedBy: auth.id,
+          reviewedByName: reviewer,
+          reviewNote: note,
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(approvalRequestsTable.id, request.id))
+        .returning();
+      await addApprovalAction(
+        {
+          ...audit,
+          metadata: {
+            ...audit.metadata,
+            execution: {
+              executed: execution.executed,
+              reason: execution.reason ?? null,
+            },
+          },
+        },
+        tx,
+      );
+      return row;
+    },
+    onUndoFailed: (err) =>
+      console.error("AJN approval stock undo failed", {
+        ...logContext,
+        error: safeServerError(err),
+      }),
+    onFollowUpFailed: (err) =>
+      console.error("AJN approval follow-up failed", {
+        ...logContext,
+        error: safeServerError(err),
+      }),
+  });
 }
 
 async function createSmartBookingNotifications(input: {
@@ -11679,10 +11980,14 @@ async function markStoreSoundBookingSyncRequired(order: any, reason: string) {
   });
 }
 
-async function cancelStoreSoundBooking(order: any, note: string) {
+async function cancelStoreSoundBooking(
+  order: any,
+  note: string,
+  executor?: ApprovalTx,
+) {
   const storeOrderId = Number(order.id);
   if (!storeOrderId) return { cancelled: false, requiresApproval: false };
-  return db.transaction(async (tx) => {
+  const run = async (tx: ApprovalTx) => {
     await tx.execute(
       sql`select id from orders where id = ${storeOrderId} for update`,
     );
@@ -11715,7 +12020,8 @@ async function cancelStoreSoundBooking(order: any, note: string) {
       metadata: { source: "store", storeOrderId },
     });
     return { cancelled: Boolean(booking), requiresApproval: false };
-  });
+  };
+  return executor ? run(executor) : db.transaction(run);
 }
 
 async function handleCustomerAccountAuth(req: NextRequest, parts: string[]) {
@@ -22701,6 +23007,7 @@ async function handleAdminKoshas(
             title: `إلغاء حجز كوشة: ${existing.customerName}`,
             entityType: "kosha_booking",
             entityId: id,
+            amount: existing.paidAmount,
             oldValues: {
               status: existing.status,
               customerName: existing.customerName,
@@ -39954,17 +40261,20 @@ async function handleAdmin(
       });
       return withSessionCookie(
         json({
-          user: publicUser({
-            id: user.id,
-            username: user.username,
-            fullName: user.fullName,
-            photoUrl: user.photoUrl ?? null,
-            department: user.department ?? null,
-            jobTitle: user.jobTitle ?? null,
-            role: user.role,
-            permissions: user.permissions ?? [],
-            isActive: user.isActive,
-          }),
+          user: await publicUserWithApprovalCodes(
+            {
+              id: user.id,
+              username: user.username,
+              fullName: user.fullName,
+              photoUrl: user.photoUrl ?? null,
+              department: user.department ?? null,
+              jobTitle: user.jobTitle ?? null,
+              role: user.role,
+              permissions: user.permissions ?? [],
+              isActive: user.isActive,
+            },
+            req,
+          ),
         }),
         token,
       );
@@ -40005,7 +40315,7 @@ async function handleAdmin(
       const resolved = await resolveAdminSession(req);
       if (!resolved) return error("غير مخول", 401);
       return json({
-        user: publicUser(resolved.user),
+        user: await publicUserWithApprovalCodes(resolved.user, req),
         allPermissions: ALL_PERMISSIONS,
         portals: portalAccess(resolved.user),
         sessionId: resolved.session.sessionId,
@@ -41496,8 +41806,22 @@ async function handleAdmin(
       const type = params.get("type")?.trim();
       const q = params.get("q")?.trim();
       const filters: any[] = [];
-      if (status) filters.push(eq(approvalRequestsTable.status, status));
+      if (status === "open")
+        filters.push(
+          inArray(approvalRequestsTable.status, OPEN_APPROVAL_STATUSES),
+        );
+      else if (status) filters.push(eq(approvalRequestsTable.status, status));
       if (type) filters.push(eq(approvalRequestsTable.type, type));
+      // Transfers and counts are decided on their own screens. Mirrors warehouseApprovalDocument.
+      if (params.get("excludeWarehouse") === "1")
+        filters.push(
+          notInArray(approvalRequestsTable.type, WAREHOUSE_APPROVAL_TYPES),
+          or(
+            eq(approvalRequestsTable.type, "delete_document"),
+            isNull(approvalRequestsTable.entityType),
+            notInArray(approvalRequestsTable.entityType, WAREHOUSE_APPROVAL_TYPES),
+          ),
+        );
       if (q)
         filters.push(
           or(
@@ -41514,21 +41838,36 @@ async function handleAdmin(
       const visible = isMainManager
         ? rows
         : rows.filter((row) => profileAllowsScope(delegation, row));
+      const delegateMay = (row: (typeof rows)[number], code: string) =>
+        (delegation?.permissionCodes ?? []).map(String).includes(code) &&
+        row.status !== "pending_main_manager" &&
+        row.requestedBy !== auth.id;
       return json({
-        data: visible.map((row) => ({
-          ...formatApprovalRequest(row),
-          allowedActions: isMainManager
-            ? [
-                "approve",
-                "reject",
-                "return_for_edit",
-                "forward_to_main_manager",
-                "comment",
-                "audit",
-              ]
-            : (delegation?.permissionCodes ?? []).map(String),
-          requiresMainManager: approvalRequestScope(row).requiresMain,
-        })),
+        data: visible.map((row) => {
+          const open = OPEN_APPROVAL_STATUSES.includes(row.status);
+          return {
+            ...formatApprovalRequest(row),
+            allowedActions: isMainManager
+              ? [
+                  "approve",
+                  "reject",
+                  "return_for_edit",
+                  "forward_to_main_manager",
+                  "comment",
+                  "audit",
+                ]
+              : (delegation?.permissionCodes ?? []).map(String),
+            requiresMainManager: approvalRequestScope(row).requiresMain,
+            decisions: {
+              approve:
+                open && (isMainManager || delegateMay(row, "approvals.approve")),
+              reject:
+                open && (isMainManager || delegateMay(row, "approvals.reject")),
+              forwards:
+                !isMainManager && delegateApprovalReach(delegation, row).forwards,
+            },
+          };
+        }),
       });
     }
     if (method === "POST" && !parts[2]) {
@@ -41610,14 +41949,7 @@ async function handleAdmin(
         where: eq(approvalRequestsTable.id, id),
       });
       if (!delegatedRequest) return error("طلب الموافقة غير موجود", 404);
-      if (
-        ![
-          "pending",
-          "under_review",
-          "pending_main_manager",
-          "approved_by_delegate",
-        ].includes(delegatedRequest.status)
-      )
+      if (!OPEN_APPROVAL_STATUSES.includes(delegatedRequest.status))
         return error("تمت مراجعة هذا الطلب مسبقاً", 409);
       if (!isMainManager) {
         if (
@@ -41645,55 +41977,21 @@ async function handleAdmin(
           });
           return error("لا يمكن للموظف اعتماد طلبه الشخصي.", 403);
         }
+        if (delegatedRequest.status === "pending_main_manager")
+          return error("هذا الطلب بانتظار قرار المدير الرئيسي.", 403);
       }
       const scope = approvalRequestScope(delegatedRequest);
       let delegatedNext = delegatedRule.status;
-      const mode = String(
-        (delegation?.categoryModes as any)?.[scope.category] ?? "",
+      const reach =
+        !isMainManager && delegatedRule.action === "approve"
+          ? delegateApprovalReach(delegation, delegatedRequest)
+          : { overLimit: false, forwards: false };
+      const overLimit = reach.overLimit;
+      if (reach.forwards) delegatedNext = "pending_main_manager";
+      const approvalNote = nullableText(
+        delegatedBody?.note ?? delegatedBody?.reviewNote,
       );
-      const overLimit =
-        !isMainManager &&
-        delegatedRule.action === "approve" &&
-        !delegation?.unlimitedAmount &&
-        scope.amount > Number(delegation?.maxAmount ?? 0);
-      if (
-        !isMainManager &&
-        delegatedRule.action === "approve" &&
-        (scope.requiresMain || mode === "main_manager_final" || overLimit)
-      )
-        delegatedNext = "pending_main_manager";
-      let delegatedRow: typeof approvalRequestsTable.$inferSelect;
-      let delegatedExecution: unknown = null;
-      if (warehouseApprovalDocument(delegatedRequest) && (delegatedNext === "approved" || delegatedNext === "rejected")) {
-        // The stock and the request change together. A refusal leaves both open and reaches the manager as an error.
-        const decision = delegatedNext;
-        delegatedExecution = await db.transaction((tx) =>
-          decideWarehouseApprovalRequest(tx as any, delegatedRequest, decision, { id: auth.id, name: auth.fullName || auth.username }, nullableText(delegatedBody?.note ?? delegatedBody?.reviewNote)),
-        );
-        delegatedRow = (await db.query.approvalRequestsTable.findFirst({ where: eq(approvalRequestsTable.id, id) }))!;
-        revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
-      } else {
-        [delegatedRow] = await db
-          .update(approvalRequestsTable)
-          .set({
-            status: delegatedNext,
-            reviewedBy: auth.id,
-            reviewedByName: auth.fullName || auth.username,
-            reviewNote: nullableText(
-              delegatedBody?.note ?? delegatedBody?.reviewNote,
-            ),
-            reviewedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(approvalRequestsTable.id, id))
-          .returning();
-        if (delegatedNext === "approved")
-          delegatedExecution = await executeApprovedApprovalRequest(
-            delegatedRow,
-            erpActorFromAdmin(auth),
-          );
-      }
-      await addApprovalAction({
+      const approvalAudit = {
         request: delegatedRequest,
         action: overLimit ? "limit_exceeded_forwarded" : delegatedRule.action,
         oldStatus: delegatedRequest.status,
@@ -41706,7 +42004,77 @@ async function handleAdmin(
           overLimit,
           requiresMain: scope.requiresMain,
         },
-      });
+      };
+      let delegatedRow: typeof approvalRequestsTable.$inferSelect;
+      let delegatedExecution: unknown = null;
+      let auditWritten = false;
+      if (warehouseApprovalDocument(delegatedRequest) && (delegatedNext === "approved" || delegatedNext === "rejected")) {
+        // The stock and the request change together. A refusal leaves both open and reaches the manager as an error.
+        const decision = delegatedNext;
+        delegatedExecution = await db.transaction((tx) =>
+          decideWarehouseApprovalRequest(tx as any, delegatedRequest, decision, { id: auth.id, name: auth.fullName || auth.username }, approvalNote),
+        );
+        delegatedRow = (await db.query.approvalRequestsTable.findFirst({ where: eq(approvalRequestsTable.id, id) }))!;
+        revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+      } else if (delegatedNext === "approved") {
+        // The work and the request change together. A failure leaves the request open and reaches the manager as an error.
+        try {
+          const approved = await approveGeneralApprovalRequest({
+            request: delegatedRequest,
+            auth,
+            note: approvalNote,
+            req,
+            audit: approvalAudit,
+          });
+          delegatedRow = approved.row;
+          delegatedExecution = approved.execution;
+          auditWritten = true;
+        } catch (err) {
+          if (
+            !(err instanceof ApprovalRequestError) &&
+            !(err instanceof FinancialApprovalError)
+          )
+            throw err;
+          const requestId = makeRequestId(req.headers.get("x-request-id"));
+          console.warn("AJN approval request refused", {
+            requestId,
+            approvalRequestId: id,
+            actorId: auth.id,
+            status: err.status,
+            message: err.message,
+          });
+          return error(err.message, err.status, {
+            code:
+              err.status === 403
+                ? "PERMISSION_DENIED"
+                : err.status === 404
+                  ? "NOT_FOUND"
+                  : "CONFLICT",
+            requestId,
+            retryable: false,
+          });
+        }
+      } else {
+        [delegatedRow] = await db
+          .update(approvalRequestsTable)
+          .set({
+            status: delegatedNext,
+            reviewedBy: auth.id,
+            reviewedByName: auth.fullName || auth.username,
+            reviewNote: approvalNote,
+            reviewedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(approvalRequestsTable.id, id),
+              inArray(approvalRequestsTable.status, OPEN_APPROVAL_STATUSES),
+            ),
+          )
+          .returning();
+        if (!delegatedRow) return error("تمت مراجعة هذا الطلب مسبقاً", 409);
+      }
+      if (!auditWritten) await addApprovalAction(approvalAudit);
       if (delegatedRow.entityType && delegatedRow.entityId)
         void addEntityTimeline({
           entityType: delegatedRow.entityType,
@@ -41726,6 +42094,7 @@ async function handleAdmin(
           actor: erpActorFromAdmin(auth),
           metadata: { approvalRequestId: id, status: delegatedNext },
         });
+      // The decision is committed by now, so a failed notice must not read as a failed decision.
       if (!isMainManager)
         await notifyMainManagers({
           type: "approval_action",
@@ -41738,7 +42107,13 @@ async function handleAdmin(
             note: delegatedBody?.note ?? delegatedBody?.reviewNote,
             overLimit,
           },
-        });
+        }).catch((err) =>
+          console.error("AJN approval notification failed", {
+            requestId: makeRequestId(req.headers.get("x-request-id")),
+            approvalRequestId: id,
+            error: safeServerError(err),
+          }),
+        );
       void logAdminActivity(
         req,
         `approval_${delegatedRule.action}`,
@@ -52662,6 +53037,7 @@ async function handleAdmin(
           title: `إلغاء حجز خدمة: ${existing.customerName}`,
           entityType: "service_order",
           entityId: id,
+          amount: existing.depositAmount,
           oldValues: {
             status: existing.status,
             customerName: existing.customerName,
@@ -52717,39 +53093,10 @@ async function handleAdmin(
         id,
         { oldValues: existing, newValues: archived },
       );
-      await ensurePhotographyStaffTables();
-      await ensurePhotographyPostTables();
-      const photographySync = await syncCentralBookingToPhotography(id, {
+      await syncCancelledBookingToPhotography(id, archived.trackingCode, {
         id: auth.id,
         name: auth.fullName || auth.username,
-      }).catch((err) => {
-        console.error("[photography-sync] booking cancellation failed", {
-          bookingId: id,
-          message: err instanceof Error ? err.message : "unknown",
-        });
-        return null;
       });
-      if (photographySync?.linked) {
-        const assignedCrew = await db.query.photographyShootCrewTable.findMany({
-          where: and(
-            eq(photographyShootCrewTable.shootId, photographySync.shoot.id),
-            ne(photographyShootCrewTable.assignmentStatus, "revoked"),
-          ),
-        });
-        await Promise.all(
-          assignedCrew.map((member) =>
-            createNotification({
-              staffId: member.staffId,
-              type: "photography_booking_cancelled",
-              title: "تم إلغاء حجز التصوير",
-              body: archived.trackingCode ?? `#${id}`,
-              entityType: "service_order",
-              entityId: id,
-              href: "/staff/photography",
-            }),
-          ),
-        );
-      }
       return json({
         message: "تم إلغاء الحجز وأرشفته دون حذف البيانات",
         booking: archived,
@@ -53373,6 +53720,7 @@ async function handleAdmin(
           title: `إلغاء طلب متجر: ${current.customerName}`,
           entityType: "order",
           entityId: id,
+          amount: current.depositAmount,
           oldValues: orderSnapshot(current, currentItems),
           actor: erpActorFromAdmin(auth),
         });
@@ -60440,6 +60788,7 @@ function serviceDepartment(
 async function syncOrderFinancialPayment(
   order: typeof ordersTable.$inferSelect,
   financeActorValue: FinancialActor,
+  executor?: ApprovalTx,
 ) {
   const productAmount = Math.max(
     Number(order.total) - Number(order.deliveryFee),
@@ -60472,14 +60821,16 @@ async function syncOrderFinancialPayment(
       attachments: order.attachments ?? [],
     },
     financeActorValue,
+    executor,
   );
 }
 
 async function syncServiceOrderFinancialPayment(
   order: typeof serviceOrdersTable.$inferSelect,
   financeActorValue: FinancialActor,
+  executor?: ApprovalTx,
 ) {
-  const service = await db.query.servicesTable.findFirst({
+  const service = await (executor ?? db).query.servicesTable.findFirst({
     where: eq(servicesTable.id, order.serviceId),
   });
   const targetPaid =
@@ -60510,12 +60861,14 @@ async function syncServiceOrderFinancialPayment(
       notes: order.notes,
     },
     financeActorValue,
+    executor,
   );
 }
 
 async function syncKoshaFinancialPayment(
   order: typeof koshaBookingsTable.$inferSelect,
   financeActorValue: FinancialActor,
+  executor?: ApprovalTx,
 ) {
   const targetPaid =
     order.status === "cancelled" ? 0 : Number(order.paidAmount);
@@ -60524,7 +60877,9 @@ async function syncKoshaFinancialPayment(
   // phone number. Resolve the canonical customer id while posting the
   // financial movement so cashbox transactions and statements are grouped by
   // customer_id (with the phone fallback retained for legacy rows).
-  const customer = await findCustomerByPhone(order.phone);
+  const customer = executor
+    ? await findCustomerByPhone(order.phone, executor, false)
+    : await findCustomerByPhone(order.phone);
   return syncSourcePaymentTarget(
     {
       sourceType: "kosha_booking",
@@ -60551,6 +60906,7 @@ async function syncKoshaFinancialPayment(
       notes: order.notes,
     },
     financeActorValue,
+    executor,
   );
 }
 
@@ -60612,18 +60968,19 @@ function parseRentalCustomization(
   }
 }
 
-async function findRentalByStoreOrder(order: any) {
+async function findRentalByStoreOrder(order: any, executor: any = db) {
   if (!order || !isRentalStoreOrder(order)) return null;
-  return db.query.rentalOrdersTable.findFirst({
+  return executor.query.rentalOrdersTable.findFirst({
     where: eq(rentalOrdersTable.orderNo, order.trackingCode),
   });
 }
 
 async function syncRentalRowFromStoreOrder(
   order: typeof ordersTable.$inferSelect,
+  executor: any = db,
 ) {
   if (!isRentalStoreOrder(order)) return null;
-  const rental = await findRentalByStoreOrder(order);
+  const rental = await findRentalByStoreOrder(order, executor);
   if (!rental) return null;
   const nextStatus = rentalStatusFromStoreStatus(order.status);
   const update: any = {
@@ -60639,7 +60996,7 @@ async function syncRentalRowFromStoreOrder(
     update.returnedAt = rental.returnedAt ?? new Date();
   if (nextStatus === "cancelled")
     update.cancelledAt = rental.cancelledAt ?? new Date();
-  const [row] = await db
+  const [row] = await executor
     .update(rentalOrdersTable)
     .set(update)
     .where(eq(rentalOrdersTable.id, rental.id))
@@ -72632,6 +72989,7 @@ async function handleAccounting(
             title: `إلغاء سند قبض ${voucher.voucherNo}`,
             entityType: "receipt_voucher",
             entityId: voucher.id,
+            amount: voucher.amount,
             oldValues: voucher as any,
             actor: erpActorFromAdmin(auth),
           });
@@ -72863,6 +73221,7 @@ async function handleAccounting(
             title: `إلغاء سند صرف ${voucher.voucherNo}`,
             entityType: "payment_voucher",
             entityId: voucher.id,
+            amount: voucher.amount,
             oldValues: voucher as any,
             actor: erpActorFromAdmin(auth),
           });

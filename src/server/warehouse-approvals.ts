@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { OPEN_APPROVAL_STATUSES } from "./approval-requests";
 import { approveWarehouseCount, rejectWarehouseCount } from "./warehouse-counts";
 import { approveWarehouseTransfer, rejectWarehouseTransfer } from "./warehouse-transfers";
 import { rowsOf, WarehouseError, type Executor, type WarehouseActor } from "./warehouses";
@@ -7,8 +8,7 @@ import { rowsOf, WarehouseError, type Executor, type WarehouseActor } from "./wa
  * Keeps an approval request and its warehouse document in step, whichever side decides first.
  * The document is always locked first and the request second, so the two paths cannot deadlock.
  */
-const OPEN_STATUSES = ["pending", "under_review", "pending_main_manager", "approved_by_delegate"];
-const openStatuses = () => sql.join(OPEN_STATUSES.map((status) => sql`${status}`), sql`, `);
+const openStatuses = () => sql.join(OPEN_APPROVAL_STATUSES.map((status) => sql`${status}`), sql`, `);
 
 export type WarehouseDocument = "warehouse_transfer" | "warehouse_count";
 type Decision = "approved" | "rejected";
@@ -16,6 +16,8 @@ type ApprovalRequest = { id: number; type: string; entityType: string | null; en
 
 /** The document a request stands for; null for every other request type, which keep their own path. */
 export function warehouseApprovalDocument(request: Pick<ApprovalRequest, "type" | "entityType">): WarehouseDocument | null {
+  // Its entity is the record the file hangs on, so a file on a transfer must not approve that transfer.
+  if (request.type === "delete_document") return null;
   for (const kind of ["warehouse_transfer", "warehouse_count"] as const) if (request.type === kind || request.entityType === kind) return kind;
   return null;
 }

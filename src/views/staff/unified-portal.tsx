@@ -258,7 +258,7 @@ export default function UnifiedStaffPortal() {
         {hasPerm(me, "photography") ? <a className="mb-3 flex min-h-10 items-center gap-3 hover:text-foreground" href="/staff/photography"><QrCode className="h-4 w-4" />بوابة التصوير</a> : null}
         {hasPerm(me, "warehouse_issue") || hasPerm(me, "booking_assets_manage") ? <a className="mb-3 flex min-h-10 items-center gap-3 hover:text-foreground" href="/admin/assets"><Archive className="h-4 w-4" />المخزون و QR</a> : null}
         {hasPerm(me, "staff") ? <a className="mb-3 flex min-h-10 items-center gap-3 hover:text-foreground" href="/admin/attendance"><Clock3 className="h-4 w-4" />الحضور</a> : null}
-        {hasPerm(me, "approvals.view") ? <a className="mb-3 flex min-h-10 items-center gap-3 hover:text-foreground" href="/admin/approvals"><ShieldCheck className="h-4 w-4" />الطلبات الإدارية</a> : null}
+        {hasPerm(me, "approvals.view") ? <a className="mb-3 flex min-h-10 items-center gap-3 hover:text-foreground" href="/admin/approvals?tab=requests"><ShieldCheck className="h-4 w-4" />الطلبات الإدارية</a> : null}
         {hasPerm(me, "staff") ? <a className="mb-3 flex min-h-10 items-center gap-3 hover:text-foreground" href="/admin/hr/performance"><UsersRound className="h-4 w-4" />أدائي</a> : null}
         <a className="mb-3 flex min-h-10 items-center gap-3 hover:text-foreground" href="/admin/messages"><MessageCircle className="h-4 w-4" />الرسائل</a>
       </div>

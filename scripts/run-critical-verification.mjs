@@ -52,6 +52,7 @@ const steps = [
   ["Kosha equipment and decimal inventory", "pnpm", ["run", "test:kosha-equipment"]],
   ["Quantity-based assets", "pnpm", ["run", "test:quantity-assets"]],
   ["Multi-warehouse balances and transfers", "pnpm", ["run", "test:warehouses"]],
+  ["Generic approval requests stay open until their work is done", "pnpm", ["run", "test:approval-requests"]],
   ["Attendance verification and payroll integration", "pnpm", ["run", "test:attendance"]],
   ["Equipment custody transactions and ownership", "pnpm", ["run", "test:custody-safety"]],
   ["Shared asset status and repair retry safety", "pnpm", ["run", "test:asset-status-safety"]],

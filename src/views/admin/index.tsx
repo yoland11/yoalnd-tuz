@@ -997,7 +997,7 @@ export default function Admin() {
           </Route>
           <Route path="/admin/approvals">
             {() => (
-              <Guard me={me} perm="tasks">
+              <Guard me={me} anyPerm={["tasks", "approvals.view"]}>
                 <ApprovalCenterPage />
               </Guard>
             )}

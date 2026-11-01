@@ -1,5 +1,5 @@
 import { useDeferredValue, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -42,7 +42,10 @@ import {
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "./_layout";
 import {
@@ -89,6 +92,28 @@ type FinancialApprovalRow = {
 type FinancialApprovalDetail = FinancialApprovalRow & {
   entries: Array<{ id: number; accountCode: string; accountName: string; side: string; amount: string }>;
   audits: Array<{ id: number; action: string; actorName: string; reason?: string | null; createdAt: string }>;
+};
+
+type ApprovalRequestRow = {
+  id: number;
+  requestNo: string;
+  type: string;
+  title: string;
+  entityType: string | null;
+  entityId: number | null;
+  amount: string | null;
+  oldValues: Record<string, unknown>;
+  status: string;
+  requestedByName: string;
+  reviewedByName: string;
+  reviewNote: string | null;
+  reviewedAt: string | null;
+  createdAt: string | null;
+  decisions: { approve: boolean; reject: boolean; forwards: boolean };
+};
+
+type ApprovalDecisionResult = ApprovalRequestRow & {
+  execution: { executed: boolean; reason?: string; followUpFailed?: boolean } | null;
 };
 
 type DocumentRow = {
@@ -260,6 +285,22 @@ const STATUS_LABELS: Record<string, string> = {
   draft: "مسودة",
   created: "تم الإنشاء",
   completed: "مكتمل",
+  under_review: "قيد المراجعة",
+  pending_main_manager: "بانتظار المدير الرئيسي",
+  approved_by_delegate: "اعتمده المفوض",
+  returned_for_edit: "أعيد للتعديل",
+};
+
+const REVERSAL_STAYS_PENDING = "الدفعة المعتمدة لا تُعكس مباشرة: ينشأ طلب عكس يعتمده المدير الرئيسي من الموافقات المالية.";
+const APPROVAL_REQUEST_TYPES: Record<string, { label: string; effect: string }> = {
+  cancel_kosha_booking: { label: "إلغاء حجز كوشة", effect: `يُلغى الحجز ويُؤرشف وتُلغى مهامه. ${REVERSAL_STAYS_PENDING}` },
+  cancel_service_order: { label: "إلغاء حجز خدمة", effect: `يُلغى الحجز ويُؤرشف وتُلغى مهامه وموعد التصوير المرتبط به. ${REVERSAL_STAYS_PENDING}` },
+  cancel_order: { label: "إلغاء طلب متجر", effect: `يُلغى الطلب ويُؤرشف، وتعود مواده إلى المخزون، ويُلغى حجز الإيجار أو الصوتيات المرتبط به. ${REVERSAL_STAYS_PENDING}` },
+  cancel_receipt_voucher: { label: "إلغاء سند قبض", effect: "يُلغى السند. إذا كان مرحّلاً تُعكس حركته من الصندوق الرئيسي فوراً." },
+  cancel_payment_voucher: { label: "إلغاء سند صرف", effect: "يُلغى السند. إذا كان مرحّلاً تُعكس حركته من الصندوق الرئيسي فوراً." },
+  delete_product: { label: "حذف مادة", effect: "تُؤرشف المادة وتتوقف عن الظهور، ويبقى سجلها محفوظاً." },
+  delete_document: { label: "حذف مستند", effect: "يُؤرشف المستند ويختفي من مركز المستندات، ويبقى سجله محفوظاً." },
+  general: { label: "طلب عام", effect: "قرار فقط: لا يُنفّذ النظام أي إجراء تلقائي." },
 };
 
 function formatDate(value: string | null | undefined) {
@@ -331,7 +372,210 @@ function JsonPreview({ value }: { value: unknown }) {
   );
 }
 
+function QueryFailure({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+      <span className="flex min-w-0 items-center gap-2"><AlertTriangle className="h-4 w-4 shrink-0" />{apiErrorMessage(error)}</span>
+      <Button variant="outline" size="sm" onClick={onRetry} className="gap-1"><RotateCcw className="h-4 w-4" /> إعادة المحاولة</Button>
+    </div>
+  );
+}
+
+const approvalRequestsQuery = (status: string, q: string) => ({
+  queryKey: ["admin", "approvals", status, q],
+  queryFn: () => {
+    const params = new URLSearchParams({ excludeWarehouse: "1" });
+    if (status) params.set("status", status);
+    if (q) params.set("q", q);
+    return adminFetch<{ data: ApprovalRequestRow[] }>(`/admin/approvals?${params}`);
+  },
+  staleTime: 15_000,
+  refetchInterval: 15_000,
+});
+
+/** Where the reviewer can see the record before deciding. */
+function approvalRecordLink(row: ApprovalRequestRow): { href: string; label: string; external?: boolean } | null {
+  if (row.type === "delete_document") {
+    const fileUrl = String(row.oldValues?.fileUrl ?? "");
+    return /^(https?:\/\/|\/)/.test(fileUrl) ? { href: fileUrl, label: "فتح المستند", external: true } : null;
+  }
+  if (row.entityType === "kosha_booking" && row.entityId) return { href: `/admin/kosha-bookings?booking=${row.entityId}`, label: "فتح الحجز" };
+  if (row.entityType === "service_order" && row.entityId) return { href: `/admin/orders?serviceOrder=${row.entityId}`, label: "فتح الحجز" };
+  if (row.entityType === "order" && row.entityId) return { href: `/admin/orders?order=${row.entityId}`, label: "فتح الطلب" };
+  if (row.entityType === "product" && row.entityId) return { href: `/admin/products/${row.entityId}`, label: "فتح المادة" };
+  if (row.entityType === "receipt_voucher" || row.entityType === "payment_voucher") return { href: "/admin/accounting", label: "فتح الحسابات" };
+  return null;
+}
+
+function approvalDecisionToast(result: ApprovalDecisionResult, action: "approve" | "reject") {
+  if (action === "reject") return { title: "تم رفض الطلب", description: "بقي السجل كما هو." };
+  if (result.status === "pending_main_manager") return { title: "تم تحويل الطلب للمدير الرئيسي", description: "لم يُنفّذ شيء بعد." };
+  const { reason, followUpFailed } = result.execution ?? {};
+  if (followUpFailed) return { title: "تم الاعتماد والتنفيذ", description: "تعذر تحديث المهام أو الإشعارات المرتبطة، فراجعها يدوياً.", variant: "destructive" as const };
+  if (reason === "already_cancelled" || reason === "already_archived") return { title: "أُغلق الطلب", description: "كان السجل ملغى أو مؤرشفاً مسبقاً، فلم يتغير شيء." };
+  if (reason === "no_executor") return { title: "تم اعتماد الطلب", description: "هذا النوع قرار فقط ولا يُنفّذ إجراءً تلقائياً." };
+  return { title: "تم الاعتماد والتنفيذ" };
+}
+
+function ApprovalReviewDialog({ row, action, onClose }: { row: ApprovalRequestRow; action: "approve" | "reject"; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [note, setNote] = useState("");
+  const rejecting = action === "reject";
+  const type = APPROVAL_REQUEST_TYPES[row.type];
+  const reasonMissing = rejecting && note.trim().length < 3;
+  const refreshQueues = () => {
+    qc.invalidateQueries({ queryKey: ["admin", "approvals"] });
+    qc.invalidateQueries({ queryKey: ["admin", "financial-approvals"] });
+  };
+  const decide = useMutation({
+    mutationFn: () => adminFetch<ApprovalDecisionResult>(`/admin/approvals/${row.id}`, { method: "PATCH", body: JSON.stringify({ action, note: note.trim() || undefined }) }),
+    onSuccess: (result) => {
+      toast(approvalDecisionToast(result, action));
+      refreshQueues();
+      onClose();
+    },
+    // A refused request may have been decided by someone else meanwhile.
+    onError: refreshQueues,
+  });
+  const effect = rejecting ? "يبقى السجل كما هو ويُغلق الطلب." : row.decisions.forwards ? "لا يُنفّذ شيء الآن، ويبقى القرار النهائي للمدير الرئيسي." : type?.effect ?? "قرار فقط: لا يُنفّذ النظام أي إجراء تلقائي.";
+  const confirmLabel = rejecting ? "رفض الطلب" : row.decisions.forwards ? "تحويل للمدير الرئيسي" : "اعتماد وتنفيذ";
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !decide.isPending) onClose(); }}>
+      <DialogContent
+        dir="rtl"
+        className="max-h-[90dvh] w-[min(calc(100%-2rem),34rem)] overflow-y-auto"
+        // An optional note must not raise the phone keyboard over the consequences.
+        onOpenAutoFocus={(event) => { if (!rejecting) { event.preventDefault(); (event.currentTarget as HTMLElement).focus(); } }}
+      >
+        <DialogHeader className="text-start">
+          <DialogTitle className="break-words">{row.title}</DialogTitle>
+          <DialogDescription>{row.requestNo} · طلبه {row.requestedByName || "النظام"} · {formatDate(row.createdAt)}</DialogDescription>
+        </DialogHeader>
+        <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (!reasonMissing) decide.mutate(); }}>
+          <div className="rounded-lg bg-muted/60 p-3 text-sm">
+            <p className="font-medium text-foreground">عند {rejecting ? "الرفض" : row.decisions.forwards ? "التحويل" : "الاعتماد"}</p>
+            <p className="mt-1 text-muted-foreground">{effect}</p>
+            {Number(row.amount) > 0 ? <p className="mt-2 font-semibold tabular-nums text-foreground">المبلغ: {formatCurrency(row.amount ?? 0)}</p> : null}
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="approval-review-note" className="text-sm font-medium text-foreground">{rejecting ? "سبب الرفض" : "ملاحظة (اختياري)"}</label>
+            <Textarea id="approval-review-note" value={note} onChange={(event) => setNote(event.target.value)} rows={3} maxLength={1000} required={rejecting} minLength={rejecting ? 3 : undefined} />
+          </div>
+          {decide.error ? <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{apiErrorMessage(decide.error)}</p> : null}
+          <DialogFooter className="gap-2 sm:justify-start">
+            <Button type="submit" variant={rejecting ? "destructive" : "default"} disabled={decide.isPending || reasonMissing}>{decide.isPending ? "جاري التنفيذ..." : confirmLabel}</Button>
+            <Button type="button" variant="outline" disabled={decide.isPending} onClick={onClose}>رجوع</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ApprovalRequestsPanel() {
+  const [status, setStatus] = useState("open");
+  const [search, setSearch] = useState("");
+  const q = useDeferredValue(search.trim());
+  const [review, setReview] = useState<{ row: ApprovalRequestRow; action: "approve" | "reject" } | null>(null);
+  const list = useQuery(approvalRequestsQuery(status, q));
+  const rows = list.data?.data ?? [];
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="grid gap-3 md:grid-cols-3">
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="رقم الطلب أو عنوانه..." aria-label="بحث في الطلبات" className="md:col-span-2 rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+          <select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="حالة الطلب" className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
+            <option value="open">بانتظار القرار</option>
+            <option value="approved">المعتمدة</option>
+            <option value="rejected">المرفوضة</option>
+            <option value="">كل الحالات</option>
+          </select>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          تحويلات المخزون والجرد تُعتمد من شاشاتها:{" "}
+          <Link href="/admin/warehouse-transfers" className="font-medium text-primary underline underline-offset-4">التحويلات</Link>
+          {" · "}
+          <Link href="/admin/warehouses" className="font-medium text-primary underline underline-offset-4">المخازن</Link>
+        </p>
+      </Card>
+      {list.error ? <QueryFailure error={list.error} onRetry={() => list.refetch()} /> : list.isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message={status === "open" && !q ? "لا توجد طلبات بانتظار القرار" : "لا توجد طلبات ضمن الفلتر الحالي"} /> : (
+        <ul className="divide-y divide-border/20 overflow-hidden rounded-xl border border-border/30 bg-card">
+          {rows.map((row) => {
+            const type = APPROVAL_REQUEST_TYPES[row.type];
+            const link = approvalRecordLink(row);
+            const open = row.decisions.approve || row.decisions.reject;
+            return (
+              <li key={row.id} className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center lg:gap-6">
+                <div className="min-w-0 space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="min-w-0 break-words font-semibold text-foreground">{row.title}</h3>
+                    <span className={`rounded-full px-2.5 py-0.5 text-xs ${statusClass(row.status)}`}>{STATUS_LABELS[row.status] ?? row.status}</span>
+                  </div>
+                  <p className="break-words text-xs text-muted-foreground">
+                    <span className="font-mono text-primary">{row.requestNo}</span> · {type?.label ?? row.type} · طلبه {row.requestedByName || "النظام"} · {formatDate(row.createdAt)}
+                  </p>
+                  {row.reviewedAt ? <p className="break-words text-xs text-muted-foreground">راجعه {row.reviewedByName || "—"} · {formatDate(row.reviewedAt)}{row.reviewNote ? ` · ${row.reviewNote}` : ""}</p> : null}
+                  {link ? (link.external
+                    ? <a href={link.href} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center text-xs font-medium text-primary underline underline-offset-4">{link.label}</a>
+                    : <Link href={link.href} className="inline-flex min-h-6 items-center text-xs font-medium text-primary underline underline-offset-4">{link.label}</Link>) : null}
+                </div>
+                <div className="flex flex-wrap items-center gap-3 lg:justify-end">
+                  {Number(row.amount) > 0 ? <b className="tabular-nums text-foreground">{formatCurrency(row.amount ?? 0)}</b> : null}
+                  {open ? (
+                    <div className="flex flex-1 gap-2 lg:flex-none">
+                      {row.decisions.approve ? <Button size="sm" className="min-h-10 flex-1 lg:flex-none" onClick={() => setReview({ row, action: "approve" })}>{row.decisions.forwards ? "تحويل للمدير الرئيسي" : "اعتماد"}</Button> : null}
+                      {row.decisions.reject ? <Button size="sm" variant="outline" className="min-h-10 flex-1 lg:flex-none" onClick={() => setReview({ row, action: "reject" })}>رفض</Button> : null}
+                    </div>
+                  ) : row.status !== "approved" && row.status !== "rejected" && row.status !== "returned_for_edit" ? <span className="text-xs text-muted-foreground">بانتظار قرار مسؤول آخر</span> : null}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {review ? <ApprovalReviewDialog key={`${review.row.id}-${review.action}`} row={review.row} action={review.action} onClose={() => setReview(null)} /> : null}
+    </div>
+  );
+}
+
 export default function ApprovalCenterPage() {
+  const me = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
+  const search = useSearch();
+  const [, navigate] = useLocation();
+  const user = me.data ?? null;
+  const canSeeRequests = hasPerm(user, "approvals.view");
+  // Mirrors the server's voucher_view gate on the financial list.
+  const canSeeFinancial = !!user && (user.role === "admin" || user.role === "manager" || user.permissions.includes("accounting") || user.permissions.includes("voucher_view"));
+  const openRequests = useQuery({ ...approvalRequestsQuery("open", ""), enabled: canSeeRequests });
+  const openCount = openRequests.data?.data.length ?? 0;
+  const wanted = new URLSearchParams(search).get("tab") === "requests";
+  const tab = canSeeRequests && (wanted || !canSeeFinancial) ? "requests" : "financial";
+  return (
+    <div className="space-y-4" dir="rtl">
+      <PageHeader
+        icon={ShieldCheck}
+        title="مركز الموافقات"
+        description={tab === "requests" ? "طلبات الموظفين لإلغاء الحجوزات والسندات وحذف المواد والمستندات. لا يتغير شيء قبل القرار." : "لا يظهر أي أثر محاسبي أو نقدي قبل الاعتماد. الاعتماد والترحيل يتمان داخل معاملة ذرّية واحدة."}
+      />
+      {me.isLoading ? <LoadingRows /> : canSeeRequests && canSeeFinancial ? (
+        <Tabs dir="rtl" value={tab} onValueChange={(next) => navigate(next === "requests" ? "/admin/approvals?tab=requests" : "/admin/approvals", { replace: true })}>
+          <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1 print:hidden">
+            <TabsTrigger value="financial">الموافقات المالية</TabsTrigger>
+            <TabsTrigger value="requests" className="gap-2">
+              الطلبات الإدارية
+              {openCount ? <span className="rounded-full bg-primary/10 px-1.5 text-xs tabular-nums text-primary">{openCount >= 200 ? "200+" : openCount}</span> : null}
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="financial" className="mt-4"><FinancialApprovalsPanel /></TabsContent>
+          <TabsContent value="requests" className="mt-4"><ApprovalRequestsPanel /></TabsContent>
+        </Tabs>
+      ) : tab === "requests" ? <ApprovalRequestsPanel /> : <FinancialApprovalsPanel />}
+    </div>
+  );
+}
+
+function FinancialApprovalsPanel() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const me = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
@@ -345,7 +589,7 @@ export default function ApprovalCenterPage() {
     p.set("limit", "5000");
     return p.toString();
   }, [filters]);
-  const { data, isLoading } = useQuery<{ data: FinancialApprovalRow[]; total: number }>({
+  const { data, isLoading, error, refetch } = useQuery<{ data: FinancialApprovalRow[]; total: number }>({
     queryKey: ["admin", "financial-approvals", query],
     queryFn: () => adminFetch(`/admin/master-cash/transactions?${query}`),
     staleTime: 15_000,
@@ -413,13 +657,13 @@ export default function ApprovalCenterPage() {
   };
 
   return (
-    <div className="space-y-4" dir="rtl">
-      <PageHeader icon={ShieldCheck} title="مركز الموافقات المالية" description="لا يظهر أي أثر محاسبي أو نقدي قبل الاعتماد. الاعتماد والترحيل يتمان داخل معاملة ذرّية واحدة." action={<div className="flex gap-2 print:hidden"><Button variant="outline" onClick={exportCsv} className="gap-1"><Download className="h-4 w-4" /> تصدير CSV</Button><Button variant="outline" onClick={() => window.print()} className="gap-1"><Printer className="h-4 w-4" /> طباعة / PDF</Button></div>} />
+    <div className="space-y-4">
+      <div className="flex flex-wrap justify-end gap-2 print:hidden"><Button variant="outline" onClick={exportCsv} className="gap-1"><Download className="h-4 w-4" /> تصدير CSV</Button><Button variant="outline" onClick={() => window.print()} className="gap-1"><Printer className="h-4 w-4" /> طباعة / PDF</Button></div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="بانتظار الموافقة" value={pending.length.toLocaleString("ar-IQ-u-nu-latn")} icon={History} />
-        <StatCard label="مبلغ قيد الانتظار" value={formatCurrency(sum(pending))} icon={Wallet} />
-        <StatCard label="المعتمد اليوم" value={`${approvedToday.length.toLocaleString("ar-IQ-u-nu-latn")} · ${formatCurrency(sum(approvedToday))}`} icon={CheckCircle2} />
-        <StatCard label="المرفوض اليوم" value={`${rejectedToday.length.toLocaleString("ar-IQ-u-nu-latn")} · ${formatCurrency(sum(rejectedToday))}`} icon={XCircle} />
+        <StatCard label="بانتظار الموافقة" value={all.error ? "—" : pending.length.toLocaleString("ar-IQ-u-nu-latn")} icon={History} />
+        <StatCard label="مبلغ قيد الانتظار" value={all.error ? "—" : formatCurrency(sum(pending))} icon={Wallet} />
+        <StatCard label="المعتمد اليوم" value={all.error ? "—" : `${approvedToday.length.toLocaleString("ar-IQ-u-nu-latn")} · ${formatCurrency(sum(approvedToday))}`} icon={CheckCircle2} />
+        <StatCard label="المرفوض اليوم" value={all.error ? "—" : `${rejectedToday.length.toLocaleString("ar-IQ-u-nu-latn")} · ${formatCurrency(sum(rejectedToday))}`} icon={XCircle} />
       </div>
       <Card className="border-primary/20 bg-primary/[0.025]">
         <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4"><p><b>بانتظار قيد محاسبي:</b> 0</p><p><b>بانتظار ترحيل الصندوق:</b> 0</p><p className="text-muted-foreground sm:col-span-2">الترحيل المحاسبي والصندوقي ذري؛ لا يمكن نجاح أحدهما دون الآخر.</p></div>
@@ -437,7 +681,7 @@ export default function ApprovalCenterPage() {
           <input value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })} placeholder="نوع المستند" className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
         </div>
       </Card>
-      {isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد مستندات مالية ضمن الفلتر الحالي" /> : (
+      {error ? <QueryFailure error={error} onRetry={() => refetch()} /> : isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد مستندات مالية ضمن الفلتر الحالي" /> : (
         <div className="overflow-hidden rounded-xl border border-border/30 bg-card">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1180px] text-sm">
