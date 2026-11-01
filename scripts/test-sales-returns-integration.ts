@@ -22,7 +22,7 @@ const { db } = await import("@workspace/db");
 const { sql } = await import("drizzle-orm");
 const returns = await import("../src/server/sales-returns");
 const { reconcilePaymentState } = await import("../src/server/payment-state");
-const { approveAndExecuteFinancialTransaction } = await import("../src/server/master-cash-box");
+const { approveAndExecuteFinancialTransaction, recalculateMasterCashBox } = await import("../src/server/master-cash-box");
 const { getCustomerStatement, getCustomerAccountSummary } = await import("../src/server/customer-account");
 
 const run = `t${Date.now().toString(36)}`;
@@ -305,6 +305,11 @@ await rejects(() => returns.settleSalesReturn(db as any, adminActor, walkReturn.
 assert.equal(n((await one(sql`SELECT remaining_amount FROM sales_invoices WHERE id = ${walkA.id}`)).remaining_amount), 25000);
 await returns.settleSalesReturn(db as any, adminActor, walkReturn.id, { invoiceCredit: 0, customerCredit: 0, refund: 10000, refundMethod: "cash", idempotencyKey: key() });
 assert.equal((await detail(walkReturn.id)).settlements.find((row) => row.kind === "refund")?.transactionStatus, "pending", "walk-in refund waits for approval");
+
+// verify:strict shares this database with the first-admin bootstrap and cash box balance tests that run later.
+// The row stays for its foreign keys, and the balance funded by hand above goes back to what the ledger says.
+await db.execute(sql`UPDATE staff SET role = 'employee', is_active = false WHERE id = ${admin.id}`);
+await recalculateMasterCashBox();
 
 console.log(`PASS sales returns integration (${run}): FIFO across invoices, original pricing with discount share, reservations, concurrency, approvals, inventory by condition, debt/credit/refund settlement, statement, guarded reversal, credit-aware views, module-owned invoices excluded, returns customer search, walk-in invoice scope`);
 process.exit(0);
