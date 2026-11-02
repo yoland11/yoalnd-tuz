@@ -9,7 +9,7 @@ import { EmployeeAvatar } from "@/components/employee-avatar";
 import { EmployeeSelect } from "@/components/employee-select";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { apiErrorMessage, type AdminMe } from "@/views/admin/_lib";
+import { apiErrorMessage, hasPerm, type AdminMe } from "@/views/admin/_lib";
 import { formatCurrency } from "@/lib/money";
 import { LiveScanner } from "../live-scanner";
 import { ShootMediaPanel } from "./post";
@@ -401,7 +401,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
           <div><dt className="text-muted-foreground">المتبقي</dt><dd className="font-medium tabular-nums">{data.remainingPayment == null ? data.paymentIndicator : formatCurrency(data.remainingPayment)}</dd></div>
         </dl>
         {data.bookingCode ? <p className="mt-2 text-xs font-bold text-primary">{data.bookingCode}</p> : null}
-        {data.bookingId ? <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" asChild><a href={`/admin/bookings/service/${data.bookingId}`}>فتح مساحة عمل الحجز</a></Button><Button type="button" variant="outline" size="sm" onClick={() => document.getElementById("booking-group-photos")?.scrollIntoView({ behavior: "smooth" })}>لقطات جماعية</Button></div> : null}
+        {data.bookingId ? <div className="mt-3 flex flex-wrap gap-2">{hasPerm(me, "orders") ? <Button type="button" variant="outline" size="sm" asChild><a href={`/admin/bookings/service/${data.bookingId}`}>فتح مساحة عمل الحجز</a></Button> : null}<Button type="button" variant="outline" size="sm" onClick={() => document.getElementById("booking-group-photos")?.scrollIntoView({ behavior: "smooth" })}>لقطات جماعية</Button></div> : null}
         {myPendingAssignment ? (
           <div className="mt-3 grid grid-cols-2 gap-2">
             <Button disabled={busy} onClick={() => respondToAssignment("accept")}>قبول المهمة</Button>
