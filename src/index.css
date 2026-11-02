@@ -399,7 +399,8 @@ a:hover {
     -webkit-tap-highlight-color: transparent;
   }
 
-  .admin-mobile-shell button:not([role="tab"]),
+  /* Checkbox, radio and switch keep their drawn shape; their components carry a 44px ::after hit area. */
+  .admin-mobile-shell button:not([role="tab"], [data-slot="checkbox"], [data-slot="radio-group-item"], [data-slot="switch"]),
   .admin-mobile-shell [role="button"] {
     min-height: 2.75rem;
   }
