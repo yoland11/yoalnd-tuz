@@ -871,7 +871,9 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
         <DialogHeader>
           <DialogTitle>تفاصيل {order.orderNo}</DialogTitle>
         </DialogHeader>
-        <Tabs defaultValue="details">
+        {/* min-w-0: the dialog is a grid, so the tab strip's full width would
+            otherwise widen the dialog past a phone screen instead of scrolling. */}
+        <Tabs dir="rtl" defaultValue="details" className="min-w-0">
           <TabsList className="w-full justify-start overflow-x-auto">
             <TabsTrigger value="details">الطلب</TabsTrigger>
             <TabsTrigger value="production">الإنتاج</TabsTrigger>
@@ -3031,7 +3033,7 @@ function Settings() {
           حفظ الإعدادات
         </Button>
       </div>
-      <Tabs defaultValue="styles">
+      <Tabs dir="rtl" defaultValue="styles">
         <TabsList className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="styles">الأنواع</TabsTrigger>
           <TabsTrigger value="fabrics">الأقمشة</TabsTrigger>
@@ -3399,7 +3401,7 @@ export default function GraduationAdminPage() {
       ) : mode === "students" ? (
         <GraduationStudentsDirectory />
       ) : mode === "templates" ? (
-        <Tabs defaultValue="products">
+        <Tabs dir="rtl" defaultValue="products">
           <TabsList>
             <TabsTrigger value="products">المنتجات</TabsTrigger>
             <TabsTrigger value="packages">الباقات الجاهزة</TabsTrigger>

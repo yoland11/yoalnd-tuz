@@ -2277,7 +2277,7 @@ function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; i
 
       <div className="ajn-workspace-layout">
         <main>
-          <Tabs defaultValue="summary" className="ajn-workspace-tabs">
+          <Tabs dir="rtl" defaultValue="summary" className="ajn-workspace-tabs">
             <TabsList>
               <TabsTrigger value="summary">الملخص</TabsTrigger>
               {data.services.map((service) => <TabsTrigger key={service.type} value={service.type}>{SERVICE_META.find((item) => item.key === service.type)?.short}</TabsTrigger>)}

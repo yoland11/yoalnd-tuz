@@ -401,7 +401,7 @@ export function GraduationProductsCenter() {
         ))}
       </div>
 
-      <Tabs value={tab} onValueChange={(value) => setTab(value as ProductType)}>
+      <Tabs dir="rtl" value={tab} onValueChange={(value) => setTab(value as ProductType)}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList>
             <TabsTrigger value="robe">الروبات</TabsTrigger>
