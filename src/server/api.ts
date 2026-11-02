@@ -6,6 +6,7 @@ import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTrans
 import { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest, warehouseApprovalDocument } from "./warehouse-approvals";
 import { approvalRecordHref } from "@/lib/approval-records";
 import { ApprovalRequestError, OPEN_APPROVAL_STATUSES, WAREHOUSE_APPROVAL_TYPES, approvalDecisionNotice, approvalTypeCategory, approvalTypeNeedsMainManager, runApprovalDecision, type ApprovalExecution, type ApprovalExecutionPlan } from "./approval-requests";
+import { bookingCashSummary, bookingTransactionCondition, bookingVoucherShares } from "./booking-cash-link";
 import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence } from "./attendance";
 import { QR_ROTATION_SECONDS, baghdadDate, addDays as attendanceAddDays } from "@/lib/attendance-rules";
 import { approveWarehouseCount, createWarehouseCount, listWarehouseCounts, rejectWarehouseCount, warehouseCountDetail } from "./warehouse-counts";
@@ -35205,29 +35206,10 @@ async function handleBookingOperations(
   if (resource === "finance" && method === "GET") {
     if (!can("booking_finance_view"))
       return error("ليس لديك صلاحية عرض مالية الحجز", 403);
-    // Collections recorded as a receipt voucher (سند قبض) post under the
-    // voucher, not the booking; list them here too (read-only, no new entries).
-    const voucherResult: any = await db.execute(sql`
-      SELECT v.id FROM receipt_vouchers v
-      WHERE ${reference.entityType === "kosha_booking" ? sql`v.kosha_booking_id = ${reference.id}` : reference.entityType === "service_order" ? sql`v.booking_id = ${reference.id}` : sql`false`}
-      UNION
-      SELECT a.receipt_voucher_id FROM receipt_voucher_allocations a
-      WHERE a.source_type = ${reference.entityType} AND a.source_id = ${reference.id}
-    `);
-    const voucherIds = ((voucherResult.rows ?? voucherResult ?? []) as any[]).map((row) => String(row.id));
+    // Vouchers, penalties and group photos post under their own source, so the
+    // shared condition lists them with the booking (read-only, no new entries).
     const transactions = await db.query.financialTransactionsTable.findMany({
-      where: or(
-        and(
-          eq(financialTransactionsTable.sourceType, reference.entityType),
-          eq(financialTransactionsTable.sourceId, String(reference.id)),
-        ),
-        voucherIds.length
-          ? and(
-              eq(financialTransactionsTable.sourceType, "receipt_voucher"),
-              inArray(financialTransactionsTable.sourceId, voucherIds),
-            )
-          : undefined,
-      ),
+      where: await bookingTransactionCondition(db as any, reference.entityType, reference.id),
       orderBy: [desc(financialTransactionsTable.transactionTime)],
       limit: 300,
     });
@@ -35254,7 +35236,9 @@ async function handleBookingOperations(
       (sum: number, item: any) => sum + Number(item.estimatedCost ?? 0),
       0,
     );
-    const finalAmount = total + productCharges + damageCharges;
+    // The stored total already includes product charges; damage is a separate due.
+    const finalAmount = total;
+    const voucherShares = await bookingVoucherShares(db as any, reference.entityType, reference.id);
     const estimatedCost = assets.reduce(
       (sum: number, item: any) =>
         sum + Math.max(0, item.purchaseValue - item.currentValue),
@@ -35263,15 +35247,16 @@ async function handleBookingOperations(
     return json({
       total,
       paid,
-      remaining: Math.max(0, finalAmount - paid),
+      remaining: Number(reference.row.remainingAmount ?? Math.max(0, total - paid)),
       productCharges,
       damageCharges,
       finalAmount,
       estimatedCost,
       estimatedProfit: finalAmount - estimatedCost,
-      transactions,
+      transactions: transactions.map((row) => ({ ...row, bookingShare: row.sourceType === "receipt_voucher" ? voucherShares.get(String(row.sourceId)) ?? null : null })),
       ledger,
       customerId: reference.customerId,
+      cash: await bookingCashSummary(db as any, { entityType: reference.entityType, id: reference.id, total, recorded: paid }),
     });
   }
 

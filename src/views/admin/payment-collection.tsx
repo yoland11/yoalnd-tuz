@@ -33,7 +33,12 @@ const PAYMENT_METHODS = [
   { value: "card", label: "بطاقة" },
 ] as const;
 
-const PAYMENT_STATUS_LABELS: Record<string, string> = {
+/** The status the amounts actually show; a stored status can lag behind them on older rows. */
+export function effectivePaymentStatus(total: number, paid: number, remaining: number) {
+  return paid > total ? "overpaid" : remaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid";
+}
+
+export const PAYMENT_STATUS_LABELS: Record<string, string> = {
   paid: "مدفوع بالكامل",
   partial: "مدفوع جزئياً",
   unpaid: "غير مدفوع",
@@ -113,8 +118,7 @@ export function AccountSummaryCard({
       : paid > 0
         ? "text-status-warning"
         : "text-status-danger";
-  const effectivePaymentStatus =
-    paid > total ? "overpaid" : remaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid";
+  const shownPaymentStatus = effectivePaymentStatus(total, paid, remaining);
 
   return (
     <section className={`mt-3 rounded-xl border border-border/25 bg-background/35 ${compact ? "p-3" : "p-4"}`}>
@@ -135,12 +139,12 @@ export function AccountSummaryCard({
             </Button>
           ) : remaining <= 0 ? (
             <span className="inline-flex items-center gap-1 text-xs font-semibold text-status-success">
-              <CheckCircle2 className="h-4 w-4" /> {effectivePaymentStatus === "overpaid" ? "يوجد مبلغ زائد" : "الحساب مسدد"}
+              <CheckCircle2 className="h-4 w-4" /> {shownPaymentStatus === "overpaid" ? "يوجد مبلغ زائد" : "الحساب مسدد"}
             </span>
           ) : null}
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(7.5rem,1fr))] gap-2">
         <SummaryValue label="الإجمالي" value={formatCurrency(total)} />
         <SummaryValue label="الخصم" value={formatCurrency(discount)} />
         <SummaryValue label="المدفوع" value={formatCurrency(paid)} tone="text-status-success" />
@@ -150,7 +154,7 @@ export function AccountSummaryCard({
         <SummaryValue label="طريقة الدفع" value={lastPayment ? METHOD_LABELS[lastPayment.method] ?? lastPayment.method : "—"} />
         <SummaryValue
           label="حالة الدفع"
-          value={PAYMENT_STATUS_LABELS[effectivePaymentStatus] ?? PAYMENT_STATUS_LABELS[paymentStatus] ?? paymentStatus}
+          value={PAYMENT_STATUS_LABELS[shownPaymentStatus] ?? PAYMENT_STATUS_LABELS[paymentStatus] ?? paymentStatus}
           tone={statusTone}
         />
       </div>

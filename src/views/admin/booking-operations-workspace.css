@@ -481,7 +481,7 @@
 .ajn-op-tabs > [role="tablist"] button { min-height: 2.45rem; padding-inline: .75rem; }
 .ajn-op-tabs > [role="tablist"] button[data-state="active"] { background: var(--op-rose-soft); color: var(--op-rose); }
 
-.ajn-op-sidebar { position: sticky; top: 10.5rem; display: grid; gap: .65rem; }
+.ajn-op-sidebar { position: sticky; top: 10.5rem; display: grid; grid-template-columns: minmax(0, 1fr); gap: .65rem; }
 .ajn-op-sidebar > section,
 .ajn-op-side-readiness { border: 1px solid var(--op-border); border-radius: .9rem; background: var(--op-surface); box-shadow: 0 4px 14px rgba(32, 39, 51, .035); }
 .ajn-op-sidebar > section { padding: .85rem; }
@@ -584,7 +584,7 @@
   .ajn-op-header-actions { grid-column: auto; }
   .ajn-op-command-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ajn-op-financial-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .ajn-op-sidebar { grid-template-columns: 1fr 1fr; }
+  .ajn-op-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 640px) {
@@ -599,7 +599,7 @@
   .ajn-op-command-summary button { min-width: 10.5rem; }
   .ajn-op-quickbar { align-items: stretch; }
   .ajn-op-add-item { width: 100%; }
-  .ajn-op-sidebar { grid-template-columns: 1fr; }
+  .ajn-op-sidebar { grid-template-columns: minmax(0, 1fr); }
   .ajn-op-side-actions { grid-template-columns: 1fr 1fr; }
   .ajn-op-flow-steps button { min-width: 6.2rem; }
   .ajn-op-bottom-timeline .ajn-op-timeline article { min-width: 11rem; }
@@ -785,3 +785,41 @@
 @media print {
   .ajn-op-header-bar { display: none !important; }
 }
+
+/* Totals stay readable in a narrow column: the icon gives way before the amount does. */
+.ajn-op-financial-cards { container-type: inline-size; }
+@container (max-width: 60rem) {
+  .ajn-op-financial-cards > button > span { display: none; }
+}
+
+/* A long customer name wraps inside its card instead of pushing out of it. */
+.ajn-op-sidebar dl { grid-template-columns: minmax(0, 1fr); }
+.ajn-op-sidebar dt { flex: none; }
+.ajn-op-sidebar dd { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+
+/* Finance tab: the booking against the main cash box */
+.ajn-op-finance-body { padding: 0 .75rem .75rem; }
+.ajn-op-finance-breakdown { display: flex; flex-wrap: wrap; gap: .35rem 1.5rem; margin-top: .6rem; padding: .55rem .15rem; }
+.ajn-op-finance-breakdown div { display: flex; align-items: baseline; gap: .45rem; }
+.ajn-op-finance-breakdown dt { color: var(--op-muted); font-size: .74rem; }
+.ajn-op-finance-breakdown dd { font-size: .82rem; font-weight: 750; }
+.ajn-op-cash-link { margin-top: .75rem; padding: .85rem; border: 1px solid var(--op-border); border-radius: .65rem; background: var(--op-surface); }
+.ajn-op-cash-link header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; }
+.ajn-op-cash-link h3 { display: flex; align-items: center; gap: .45rem; font-size: .82rem; font-weight: 800; }
+.ajn-op-cash-link h3 svg { width: 1rem; height: 1rem; color: var(--op-rose); }
+.ajn-op-cash-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: .6rem 1rem; margin-top: .8rem; }
+.ajn-op-cash-figures dt { color: var(--op-muted); font-size: .74rem; }
+.ajn-op-cash-figures dd { margin-top: .12rem; font-size: 1.05rem; font-weight: 800; }
+.ajn-op-cash-note { display: flex; align-items: flex-start; gap: .45rem; margin-top: .7rem; padding: .55rem .65rem; border-radius: .55rem; color: var(--op-ink); font-size: .78rem; line-height: 1.65; }
+.ajn-op-cash-note svg { width: 1rem; height: 1rem; flex: none; margin-top: .18rem; }
+.ajn-op-cash-note.is-ok { background: color-mix(in srgb, var(--op-green) 11%, transparent); }
+.ajn-op-cash-note.is-ok svg { color: var(--op-green); }
+.ajn-op-cash-note.is-warn,
+.ajn-op-cash-note.is-waiting { background: color-mix(in srgb, var(--op-amber) 13%, transparent); }
+.ajn-op-cash-note.is-warn svg,
+.ajn-op-cash-note.is-waiting svg { color: var(--op-amber); }
+.ajn-op-cash-note.is-muted { background: var(--op-elevated); }
+.ajn-op-cash-note.is-muted svg { color: var(--op-muted); }
+.ajn-op-cash-aside { margin-top: .6rem; color: var(--op-muted); font-size: .74rem; }
+.ajn-op-cash-ref { color: var(--op-rose); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.ajn-op-cash-ref:focus-visible { border-radius: .2rem; outline: 2px solid var(--op-rose); outline-offset: 2px; }

@@ -14,7 +14,7 @@ assert.ok(table&&display,"execute the real transaction table and its existing le
 const footer=()=>null;
 const stub=()=>null;
 const code=ts.transpileModule(`${display.getText(tree)}\n${table.getText(tree)}\nTransactionTable;`,{compilerOptions:{module:ts.ModuleKind.None,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText;
-const context:Record<string,unknown>={React,financialTransactionTotals,formatFinancialTotal,TableTotalsFooter:footer,Button:stub,History:stub,Check:stub,Pencil:stub,X:stub,Skeleton:stub,EmptyState:stub,STATUS_CLASSES:{},STATUS_LABELS:{},departmentLabel:(value:string)=>value,formatCurrency:(value:unknown)=>String(value)};
+const context:Record<string,unknown>={React,financialTransactionTotals,formatFinancialTotal,TableTotalsFooter:footer,BookingChips:stub,Button:stub,History:stub,Check:stub,Pencil:stub,X:stub,Skeleton:stub,EmptyState:stub,STATUS_CLASSES:{},STATUS_LABELS:{},departmentLabel:(value:string)=>value,formatCurrency:(value:unknown)=>String(value)};
 const component=vm.runInNewContext(code,context);
 function findFooter(node:any):any{
   if(!React.isValidElement(node))return null;

@@ -30,6 +30,7 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  ExternalLink,
   ChevronDown,
   ChevronLeft,
   CircleDollarSign,
@@ -95,7 +96,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, compressImageFile, formatCurrency } from "./_lib";
+import { adminFetch, compressImageFile, fetchAdminMe, formatCurrency, hasPerm } from "./_lib";
 import { printStandaloneDocument } from "@/lib/pdf";
 
 type TransportValue = { mode: "ajn" | "customer" | null; fee: number; vehicleId: number | null; driverId: number | null; note: string | null; inTotal?: boolean };
@@ -106,7 +107,7 @@ type GroupAttendee = { id: string; name: string; phone: string | null; amount: n
 import { BookingThermalPrintAction } from "@/components/booking-thermal-print";
 import { useBookingThermalReceiptPrint } from "@/components/booking-thermal-receipt";
 import { useBookingTransportPrint, type BookingTransportPrintData } from "@/components/booking-transport-print";
-import { AccountSummaryCard } from "./payment-collection";
+import { AccountSummaryCard, PAYMENT_STATUS_LABELS, effectivePaymentStatus } from "./payment-collection";
 import { CustomerFinancialSummary } from "./customer-financial-summary";
 import { BookingGroupPhotos } from "@/components/booking-group-photos";
 import "./booking-operations-workspace.css";
@@ -313,8 +314,15 @@ const FINANCIAL_STATUS_LABELS: Record<string, string> = {
 function ledgerTypeLabel(row: any): string {
   if (row?.reversalReason || row?.reversedTransactionId || String(row?.transactionType ?? "").includes("reversal"))
     return "عكس / تصحيح";
+  if (row?.sourceType === "booking_penalty") return "غرامة";
+  if (row?.sourceType === "group_photo") return "لقطات جماعية";
+  if (row?.sourceType === "receipt_voucher") return "سند قبض";
   if (row?.direction === "revenue") return row?.sourceEvent === "payment" ? "دفعة / قبض" : "قبض";
   return "صرف";
+}
+
+function bookingPaymentLabel(booking: Pick<BookingOperationsBooking, "total" | "paid" | "remaining">) {
+  return PAYMENT_STATUS_LABELS[effectivePaymentStatus(booking.total, booking.paid, booking.remaining)];
 }
 
 function OperationStatus({ value, label }: { value: string; label?: string }) {
@@ -554,7 +562,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
           {transportationLabel ? <span><Truck /><b>{transportationLabel}</b><small>خدمة النقل</small></span> : null}
           <span><Building2 /><b>{department}</b><small>القسم</small></span>
           <span><Users /><b>{responsibleTeam}</b><small>الفريق المسؤول</small></span>
-          <span><CircleDollarSign /><b>{booking.paymentStatus || "غير مكتمل"}</b><small>حالة الدفع</small></span>
+          <span><CircleDollarSign /><b>{bookingPaymentLabel(booking)}</b><small>حالة الدفع</small></span>
           <span><Warehouse /><b>{STAGE_LABELS[overview.data?.warehouseStage ?? "reserved"]}</b><small>حالة المستودع</small></span>
         </div>
       </div>
@@ -609,7 +617,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
     {booking.source === "service" && booking.services.some((service) => service.type === "photography") ? <PhotographyProductionPanel bookingId={booking.id} /> : null}
 
-    <div className="ajn-op-workspace-grid"><main><Tabs value={tab} onValueChange={changeTab} className="ajn-op-tabs">
+    <div className="ajn-op-workspace-grid"><main><Tabs dir="rtl" value={tab} onValueChange={changeTab} className="ajn-op-tabs">
       <TabsList>{TAB_LABELS.filter(([value]) => value !== "group-photos" || booking.source === "service").map(([value, label, Icon]) => <TabsTrigger key={value} value={value}><Icon /> {label}{overview.data && value in overview.data.counts && <em>{(overview.data.counts as any)[value]}</em>}</TabsTrigger>)}</TabsList>
       <TabsContent value="overview"><OverviewTab data={overview.data} loading={overview.isLoading} error={overview.error} booking={booking} onTab={changeTab} readiness={readinessQuery.data} readinessLoading={readinessQuery.isFetching} readinessError={readinessQuery.error} onReadinessRetry={()=>void readinessQuery.refetch()} /></TabsContent>
       <TabsContent value="products"><ProductsTab base={base} queryKey={key} /></TabsContent>
@@ -634,7 +642,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
 
 function BookingFinancialCards({ booking, onFinance }: { booking: BookingOperationsBooking; onFinance: () => void }) {
   const progress = booking.total > 0 ? Math.max(0, Math.min(100, Math.round((booking.paid / booking.total) * 100))) : 0;
-  const status = booking.paymentStatus || (booking.remaining <= 0 ? "مدفوع بالكامل" : booking.paid > 0 ? "مدفوع جزئياً" : "غير مدفوع");
+  const status = bookingPaymentLabel(booking);
   const cards = [
     ["إجمالي الحجز", money(booking.total), ReceiptText, "neutral"],
     ["المدفوع", money(booking.paid), CheckCircle2, "positive"],
@@ -783,7 +791,7 @@ function OperationsSummary({ data, booking, onTab, readiness }: { data?: Overvie
     { label: "فحوص المعدات", value: percentage("equipment"), tone: "green", icon: ShoppingBag, tab: "assets" },
     { label: "تأكيد الفريق", value: percentage("staff"), tone: "purple", icon: Users, tab: "tasks" },
     { label: "فحوص النقل", value: percentage("transport"), tone: "blue", icon: Truck, tab: "overview" },
-    { label: "حالة الدفع", value: booking.paymentStatus || (booking.remaining <= 0 ? "مكتمل" : "جزئي"), tone: booking.remaining <= 0 ? "green" : "amber", icon: CircleDollarSign, tab: "finance" },
+    { label: "حالة الدفع", value: bookingPaymentLabel(booking), tone: booking.remaining <= 0 ? "green" : "amber", icon: CircleDollarSign, tab: "finance" },
     { label: "الرصيد المتبقي", value: formatCurrency(booking.remaining), tone: booking.remaining > 0 ? "amber" : "green", icon: Banknote, tab: "finance" },
     { label: "التنبيهات", value: data ? String(data.counts.alerts) : "غير مفحوص", tone: data?.counts.alerts ? "red" : "amber", icon: TriangleAlert, tab: data?.alerts[0]?.tab || "overview" },
   ];
@@ -1432,14 +1440,32 @@ function PenaltyDetailsDialog({ base, penalty, onClose, onChanged }: { base: str
   );
 }
 
+type BookingCash = { approved: number; waiting: number; recorded: number; penalties: number; groupPhotos: number; state: string; difference: number; overpaid: number };
+
+function bookingCashNote(cash: BookingCash): { tone: "ok" | "warn" | "muted"; text: React.ReactNode } {
+  switch (cash.state) {
+    case "matched": return { tone: "ok", text: "متطابق: المدفوع على الحجز هو نفسه الموجود في الصندوق." };
+    case "overpaid": return { tone: "warn", text: <>دخل الصندوق أكثر من إجمالي الحجز بمبلغ {money(cash.overpaid)}. راجع الحركات أدناه.</> };
+    case "missing_in_cash": return { tone: "warn", text: <>مسجّل على الحجز {money(cash.recorded)} بدون حركة معتمدة في الصندوق. راجع المحاسبة قبل الاعتماد على هذا الرقم.</> };
+    case "mismatch": return { tone: "warn", text: <>فرق {money(Math.abs(cash.difference))}: المسجّل على الحجز {cash.difference > 0 ? "أكثر" : "أقل"} من حركات الصندوق المعتمدة. راجع الحركات أدناه.</> };
+    default: return { tone: "muted", text: "لم تدخل الصندوق أي دفعة لهذا الحجز بعد." };
+  }
+}
+
 function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; queryKey: unknown[]; booking: BookingOperationsBooking; invoiceUrl: string; paymentUrl?: string }) {
   const queryClient = useQueryClient();
   const query = useQuery<any>({ queryKey: [...queryKey, "finance"], queryFn: () => adminFetch(`${base}/finance`) });
+  const me = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
+  const canOpenCash = hasPerm(me.data ?? null, "accounting");
   const data = query.data;
   const assetRental = Number(booking.raw?.assetRentalAmount ?? booking.raw?.equipmentRentalAmount ?? 0);
   const pricing = (booking.source === "kosha" ? booking.raw?.bookingDetails : booking.raw?.customFields)?.pricing;
   const discount = Number(pricing?.discountAmount ?? booking.raw?.discountAmount ?? booking.raw?.discount ?? 0);
-  const summary = [["إجمالي الحجز", data?.finalAmount ?? booking.total], ["المنتجات", data?.productCharges ?? 0], ["تأجير الأصول", assetRental], ["الخصم", discount], ["المدفوع", data?.paid ?? booking.paid], ["المتبقي", data?.remaining ?? booking.remaining]];
+  const breakdown: Array<[string, number]> = [["المنتجات", Number(data?.productCharges ?? 0)], ["تأجير الأصول", assetRental], ["الخصم", discount]];
+  const lastPaymentRow = (data?.transactions ?? []).find((row: any) => row.approvalStatus === "executed" && row.direction === "revenue" && !["booking_penalty", "group_photo"].includes(row.sourceType));
+  const lastPayment = lastPaymentRow ? { amount: Number(lastPaymentRow.bookingShare ?? lastPaymentRow.amount), date: String(lastPaymentRow.transactionDate ?? ""), method: String(lastPaymentRow.paymentMethod ?? ""), status: String(lastPaymentRow.approvalStatus), transactionNo: lastPaymentRow.transactionNo } : null;
+  const cash: BookingCash | null = data?.cash ?? null;
+  const note = cash ? bookingCashNote(cash) : null;
   // One booking = one payment source. The inline collector posts an
   // approval-first receipt against it — no duplicate ledger, no navigating away.
   const sourceType = booking.source === "kosha" ? "kosha_booking" : "service_order";
@@ -1450,53 +1476,58 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
     queryClient.invalidateQueries({ queryKey: ["admin", "customer-account"] });
   };
   return <div className="ajn-op-tab-panel"><div className="ajn-op-section-head"><div><CircleDollarSign /><span><small>مصدر واحد للحقيقة المالية · هذا الحجز وحساب العميل</small><h2>الملخص المالي</h2></span></div><div className="ajn-op-actions"><Button variant="outline" asChild><Link href={invoiceUrl}><Printer /> الفاتورة</Link></Button></div></div>
+    <div className="ajn-op-finance-body">
     {/* 1) Booking summary + inline approval-first "تسجيل دفعة". */}
-    <h3 className="mb-2 mt-1 text-sm font-bold text-foreground">ملخص هذا الحجز</h3>
-    <AccountSummaryCard sourceType={sourceType} sourceId={booking.id} total={booking.total} paid={booking.paid} remaining={booking.remaining} paymentStatus={booking.paymentStatus} onCollected={refetchFinance} />
-    {/* Booking-level discount — reduces the net total; reconciles remaining. */}
-    <BookingDiscountControl base={base} currentDiscount={discount} onChanged={refetchFinance} />
-    {/* 2) Customer-wide account — deliberately distinct from the booking balance. */}
-    <div className="mt-4"><CustomerFinancialSummary customerId={booking.customerId} /></div>
-    {/* 2b) Damage & penalties — a SEPARATE due, never folded into the booking total. */}
-    <BookingPenaltiesSection base={base} booking={booking} queryKey={queryKey} onChanged={refetchFinance} />
+    <AccountSummaryCard sourceType={sourceType} sourceId={booking.id} total={booking.total} discount={discount} paid={booking.paid} remaining={booking.remaining} paymentStatus={booking.paymentStatus} lastPayment={lastPayment} onCollected={refetchFinance} />
     <QueryState loading={query.isLoading} error={query.error}>
-      {/* 3) Booking financial breakdown. */}
-      <section className="ajn-op-finance-summary mt-4">{summary.map(([label, value]) => <div key={String(label)}><span>{label}</span><b>{money(Number(value))}</b></div>)}</section>
-      {/* 4) Movement log — one row per canonical financial_transaction of this booking. */}
-      <section className="ajn-op-ledger mt-4">
-        <h3><Landmark /> سجل الحركات المالية</h3>
-        {(() => {
-          const waiting = (data?.transactions ?? []).filter((row: any) => ["pending", "draft"].includes(row.approvalStatus) && row.direction === "revenue");
-          const amount = waiting.reduce((sum: number, row: any) => sum + Number(row.amount ?? 0), 0);
-          return waiting.length ? (
-            <div role="status" className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-amber-900 dark:text-amber-200">
-              <b>دفعة بانتظار الاعتماد: {money(amount)}</b> — لا تظهر في الصندوق الرئيسي حتى يعتمدها المدير الرئيسي من <Link href="/admin/approvals" className="font-bold underline underline-offset-4">الموافقات</Link>.
-            </div>
-          ) : null;
-        })()}
+      {breakdown.some(([, value]) => value > 0) ? <dl className="ajn-op-finance-breakdown">{breakdown.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{money(value)}</dd></div>)}</dl> : null}
+      {/* 2) The booking against the main cash box: what arrived, what waits, whether they agree. */}
+      {cash && note ? <section className="ajn-op-cash-link" aria-label="الحجز والصندوق الرئيسي">
+        <header>
+          <h3><Landmark /> الحجز والصندوق الرئيسي</h3>
+          {canOpenCash ? <Button variant="outline" size="sm" asChild><Link href={`/admin/finance/master-cash?bookingSource=${booking.source}&bookingId=${booking.id}`}><ExternalLink /> فتح حركات الحجز في الصندوق</Link></Button> : null}
+        </header>
+        <dl className="ajn-op-cash-figures">
+          <div><dt>دخل الصندوق</dt><dd>{money(cash.approved)}</dd></div>
+          <div><dt>بانتظار الاعتماد</dt><dd>{money(cash.waiting)}</dd></div>
+          <div><dt>مسجّل على الحجز</dt><dd>{money(cash.recorded)}</dd></div>
+        </dl>
+        <p className={`ajn-op-cash-note is-${note.tone}`}>{note.tone === "ok" ? <CheckCircle2 /> : note.tone === "warn" ? <TriangleAlert /> : <CircleDollarSign />}<span>{note.text}</span></p>
+        {cash.waiting > 0 ? <p role="status" className="ajn-op-cash-note is-waiting"><CalendarClock /><span><b>دفعة بانتظار الاعتماد: {money(cash.waiting)}</b> — لا تظهر في الصندوق الرئيسي حتى يعتمدها المدير الرئيسي من <Link href="/admin/approvals" className="font-bold underline underline-offset-4">الموافقات</Link>.</span></p> : null}
+        {cash.penalties > 0 || cash.groupPhotos > 0 ? <p className="ajn-op-cash-aside">دخلت الصندوق أيضاً خارج مبلغ الحجز:{cash.penalties > 0 ? <> غرامات {money(cash.penalties)}</> : null}{cash.penalties > 0 && cash.groupPhotos > 0 ? " ·" : null}{cash.groupPhotos > 0 ? <> لقطات جماعية {money(cash.groupPhotos)}</> : null}</p> : null}
+      </section> : null}
+      {/* 3) Movement log — one row per canonical financial_transaction of this booking. */}
+      <section className="ajn-op-ledger mt-3">
+        <h3><ReceiptText /> سجل الحركات المالية</h3>
         {data?.transactions?.length ? (
           <div className="overflow-x-auto rounded-lg border border-border/30">
-            <table className="w-full min-w-[720px] text-right text-xs">
+            <table className="w-full min-w-[560px] text-right text-xs">
               <thead className="bg-muted/40 text-muted-foreground">
-                <tr>{["النوع", "المرجع", "المبلغ", "الحالة", "تاريخ القيد", "الصندوق", "أنشأ الطلب", "اعتمد"].map((head) => <th key={head} className="p-2 font-semibold">{head}</th>)}</tr>
+                <tr>{["النوع", "المرجع", "المبلغ", "الحالة", "تاريخ القيد", "بواسطة"].map((head) => <th key={head} className="p-2 font-semibold">{head}</th>)}</tr>
               </thead>
               <tbody>
                 {data.transactions.map((row: any) => <tr key={row.id} className="border-t border-border/20">
                   <td className="p-2 font-semibold">{ledgerTypeLabel(row)}</td>
-                  <td className="p-2 tabular-nums" dir="ltr">{row.transactionNo || row.referenceNo || `#${row.id}`}</td>
-                  <td className="p-2">{money(Number(row.amount))}</td>
-                  <td className="p-2"><OperationStatus value={row.approvalStatus} label={FINANCIAL_STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus} /></td>
+                  <td className="p-2 tabular-nums" dir="ltr">{canOpenCash ? <Link href={`/admin/finance/master-cash?transaction=${row.id}`} className="ajn-op-cash-ref">{row.transactionNo || row.referenceNo || `#${row.id}`}</Link> : row.transactionNo || row.referenceNo || `#${row.id}`}</td>
+                  <td className="p-2">{money(Number(row.bookingShare ?? row.amount))}{row.bookingShare != null && Number(row.bookingShare) !== Number(row.amount) ? <small className="block text-muted-foreground">من سند {money(Number(row.amount))}</small> : null}</td>
+                  <td className="p-2"><OperationStatus value={row.approvalStatus} label={FINANCIAL_STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus} />{["pending", "draft"].includes(row.approvalStatus) ? <small className="mt-1 block text-muted-foreground">لم تُرحّل بعد</small> : null}</td>
                   <td className="p-2">{readableDate(row.transactionDate ?? row.transactionTime)}</td>
-                  <td className="p-2">{row.approvalStatus === "executed" ? "الصندوق الرئيسي" : ["pending", "draft"].includes(row.approvalStatus) ? "لم تُرحّل بعد" : "—"}</td>
-                  <td className="p-2">{row.requestedByName || "—"}</td>
-                  <td className="p-2">{row.approvedByName || row.executedByName || "—"}</td>
+                  <td className="p-2">{row.requestedByName || "—"}{row.approvedByName || row.executedByName ? <small className="mt-1 block text-muted-foreground">اعتمد: {row.approvedByName || row.executedByName}</small> : null}</td>
                 </tr>)}
               </tbody>
             </table>
           </div>
         ) : <div className="ajn-op-empty compact"><ReceiptText /><h3>لا توجد عملية مالية منشورة</h3><p>تظهر هنا كل حركات هذا الحجز من الصندوق الرئيسي — دفعات وقبض وعكوسات — من دون إنشاء قيد مكرر.</p></div>}
       </section>
-    </QueryState></div>;
+    </QueryState>
+    {/* 4) Booking-level discount — reduces the net total; reconciles remaining. */}
+    <BookingDiscountControl base={base} currentDiscount={discount} onChanged={refetchFinance} />
+    {/* 5) Damage & penalties — a SEPARATE due, never folded into the booking total. */}
+    <BookingPenaltiesSection base={base} booking={booking} queryKey={queryKey} onChanged={refetchFinance} />
+    {/* 6) Customer-wide account — deliberately distinct from the booking balance. */}
+    <div className="mt-4"><CustomerFinancialSummary customerId={booking.customerId} /></div>
+    </div>
+  </div>;
 }
 
 function TasksTab({ base, queryKey, entityType, entityId }: { base: string; queryKey: unknown[]; entityType: string; entityId: number }) {
