@@ -1,3 +1,4 @@
+import {readClosingReopenDetail} from "./vehicle-partnership/closing-reopen-detail";
 import { randomUUID } from "node:crypto";
 import { assertGenericFinancialSourceInput, resolvePartnershipFinancialEffect, partnershipCashPredicate, partnershipOperatingPredicate } from "./vehicle-partnership/financial-classification";
 import { preparePartnershipFinancialRequest, type PartnershipFinancialRequestReference } from "./vehicle-partnership/accounting";
@@ -1545,6 +1546,8 @@ export async function reverseFinancialTransaction(
     const [initial] = await tx.select().from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id, id)).limit(1);
     if (!initial) throw new FinancialApprovalError("المعاملة غير موجودة",404);
+    if ((options?.expectedVersion !== undefined || options?.expectedDigest !== undefined) && (initial.sourceType !== "vehicle_partnership_closing" || initial.sourceEvent !== "monthly_result"))
+      throw new FinancialApprovalError("نسخة الإغلاق وبصمته متاحتان لسند الإغلاق الشهري الأصلي فقط",409);
     let partnershipReversal: PartnershipCashReversalPlan | null = null;
     if (initial.sourceType === "vehicle_partnership_settlement" || initial.sourceType === "vehicle_partnership_driver") {
       try {
@@ -2142,7 +2145,9 @@ export async function getFinancialTransaction(id: number) {
       .orderBy(desc(financialAuditLogsTable.createdAt)),
   ]);
   const [enriched] = await attachBookingLinks(db, await attachFinancialCounterparties([transaction]));
-  return { ...enriched, entries, audits };
+  const closingReopen=await readClosingReopenDetail(db,transaction);
+  return { ...enriched, entries, audits, ...(closingReopen?{closingReopen}:{}) };
+
 }
 
 export async function recalculateMasterCashBox(actor?: FinancialActor) {

@@ -29,6 +29,7 @@ const commands=[
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-posting.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-unused.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-closing-reversal.ts"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-master-reopen.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-payout.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-cash.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-cash-reversal-math.ts"],

@@ -1,3 +1,4 @@
+import {masterClosingReversalOptionsSchema} from "../lib/vehicle-partnership/master-reopen";
 import { revalidateTag, unstable_cache } from "next/cache";
 import { loadDailyOperations } from "./booking-daily-operations";
 import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
@@ -71447,8 +71448,18 @@ async function handleMasterCash(
 
     if (resource === "transactions" && id) {
       if (method === "GET" && !action) {
-        const row = await getFinancialTransaction(id);
-        return row ? json(row) : error("المعاملة غير موجودة", 404);
+        try {
+          const row = await getFinancialTransaction(id);
+          return row ? json(row) : error("المعاملة غير موجودة", 404);
+        } catch (cause) {
+          const requestId=makeRequestId(req.headers.get("x-request-id"));
+          if(cause instanceof PartnershipRepositoryError || cause instanceof PartnershipValidationError){
+            console.warn("MASTER detail source rejected",{requestId,transactionId:id,status:cause.status});
+            return error(cause.message,cause.status,{code:cause.status===403?"PERMISSION_DENIED":cause.status===404?"NOT_FOUND":cause.status===422?"VALIDATION_ERROR":"CONFLICT",requestId,retryable:false});
+          }
+          console.error("MASTER detail read failed",{requestId,transactionId:id,error:safeServerError(cause)});
+          return error("تعذر تحميل السند المالي؛ أعد المحاولة وراجع رقم الطلب.",500,{code:"DATABASE_ERROR",requestId,retryable:true});
+        }
       }
 
       if ((method === "PATCH" || method === "PUT") && !action) {
@@ -71601,10 +71612,13 @@ async function handleMasterCash(
           return error("عكس الحركة المالية متاح للمدير فقط", 403);
         const payload = await body(req);
         try {
+          const parsedOptions=masterClosingReversalOptionsSchema.safeParse(payload?.closingReopen);
+          if(!parsedOptions.success)return validationError("master-cash.closing-reopen",parsedOptions);
           const result = await reverseFinancialTransaction(
             id,
             financeUser,
             String(payload?.reason ?? ""),
+            undefined,undefined,parsedOptions.data,
           );
           const {original,reverse}=result;
           if ("alreadyReversed" in result && result.alreadyReversed)
