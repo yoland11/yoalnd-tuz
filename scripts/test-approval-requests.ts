@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   ApprovalRequestError,
   OPEN_APPROVAL_STATUSES,
+  approvalDecisionNotice,
   approvalExecutionRefusal,
   approvalTypeCategory,
   approvalTypeNeedsMainManager,
@@ -11,6 +12,7 @@ import {
   type ApprovalExecutionPlan,
 } from "../src/server/approval-requests";
 import { warehouseApprovalDocument } from "../src/server/warehouse-approvals";
+import { approvalRecordHref } from "../src/lib/approval-records";
 
 // Every category offered on the staff delegation panel, or the delegate never sees the request.
 const staffPanel = readFileSync("src/views/admin/staff.tsx", "utf8");
@@ -30,6 +32,15 @@ assert.equal(approvalExecutionRefusal({ executed: true }), null);
 for (const reason of ["already_cancelled", "already_archived", "no_executor"]) assert.equal(approvalExecutionRefusal({ executed: false, reason }), null, `${reason} leaves the decision true`);
 for (const reason of ["missing_document", "document_not_found", "missing_product", "product_not_found", "missing_voucher", "voucher_not_found", "missing_booking", "booking_not_found", "missing_service_order", "service_order_not_found", "missing_order", "order_not_found", "something_new"])
   assert.match(String(approvalExecutionRefusal({ executed: false, reason })), /لم يتغير شيء/, `${reason} keeps the request open`);
+
+// What the employee reads.
+assert.deepEqual(approvalDecisionNotice("إلغاء حجز", "rejected", "الزبون أكد"), { title: "تم رفض طلبك", body: "السبب: الزبون أكد · إلغاء حجز" }, "the reason survives the inbox's two-line clamp");
+assert.deepEqual(approvalDecisionNotice("إلغاء حجز", "rejected"), { title: "تم رفض طلبك", body: "إلغاء حجز" }, "a screen rejection has no reason to show");
+assert.deepEqual(approvalDecisionNotice("إلغاء حجز", "approved"), { title: "تم اعتماد طلبك", body: "إلغاء حجز" });
+assert.deepEqual(approvalDecisionNotice("إلغاء حجز", "approved", "تم", "no_executor"), { title: "تم اعتماد طلبك", body: "ملاحظة المراجع: تم · إلغاء حجز" });
+assert.deepEqual(approvalDecisionNotice("إلغاء حجز", "approved", null, "already_cancelled"), { title: "أُغلق طلبك", body: "كان منفذاً مسبقاً · إلغاء حجز" }, "an approval that changed nothing does not claim it did");
+assert.equal(approvalDecisionNotice("إلغاء حجز", "returned_for_edit", "عدّل")?.title, "أعيد طلبك للتعديل");
+for (const status of ["pending_main_manager", "under_review", "pending"]) assert.equal(approvalDecisionNotice("إلغاء حجز", status), null, `${status} is not an answer yet`);
 
 // The decision's order, with a transaction that throws its work away on failure.
 const harness = (plan: { execute?: () => Promise<ApprovalExecutionPlan>; lock?: () => Promise<void>; prepare?: () => Promise<void>; undo?: () => Promise<void> }) => {
@@ -157,6 +168,24 @@ assert.match(route, /decisions: \{/, "each row says what this reviewer may do");
 assert.match(route, /delegatedRequest\.status === "pending_main_manager"\)\s+return error/, "a forwarded request belongs to the main manager");
 assert.match(api, /delegateApprovalReach[\s\S]{0,700}scope\.requiresMain \|\|\s+overLimit/, "limits and main-manager-only requests forward instead of executing");
 assert.match(api, /href: input\.href \?\? "\/admin\/approvals\?tab=requests"/, "the notification opens the tab that can decide it");
+const noticeHelper = between("async function notifyApprovalRequesters(", "\nasync function addApprovalAction(");
+assert.match(noticeHelper, /audienceType: "admin",\s+staffId: requester\.id,/, "the notice is addressed to the employee alone");
+assert.match(noticeHelper, /href: approvalRecordHref\(request\)/, "the notice opens the record, a screen the employee can reach");
+const adminInbox = between('if (section === "notifications") {', '// 🍽 Catering Center');
+assert.match(adminInbox, /const visibleInbox = hasPermission\(auth, "dashboard"\)\s+\? or\([\s\S]{0,120}\)\s+: eq\(notificationsTable\.staffId, auth\.id\);/, "without a dashboard an employee reads only what is addressed to them");
+assert.equal(adminInbox.match(/visibleInbox,/g)?.length, 5, "reading, counting, marking and deleting all use the same limit");
+assert.ok(!/staffId\} is null`,\s+eq\(notificationsTable\.staffId, auth\.id\),\s+\),\s+\),/.test(adminInbox.slice(adminInbox.indexOf("visibleInbox,"))), "no action reaches past that limit");
+assert.match(api, /const portalNotices = and\(\s+eq\(notificationsTable\.staffId, auth\.id\),\s+or\(\s+eq\(notificationsTable\.audienceType, "staff"\),\s+eq\(notificationsTable\.type, "approval_decision"\),/, "the staff portal shows the same notice");
+assert.match(noticeHelper, /request\.requestedBy === reviewerId/, "nobody is told about their own decision");
+assert.match(noticeHelper, /catch \(err\)/, "a failed notice cannot read as a failed decision");
+assert.match(route, /await addApprovalAction\(approvalAudit\);\s+await notifyApprovalRequesters\(\s+\[delegatedRow\]/, "the queue tells the employee only after the decision is saved");
+assert.equal(api.match(/await notifyApprovalRequesters\((closed|result\.closed), \{ status: "(approved|rejected)" \}/g)?.length, 4, "both warehouse screens tell the employee after their transaction");
+
+// A request's record.
+assert.equal(approvalRecordHref({ type: "cancel_kosha_booking", entityType: "kosha_booking", entityId: 7 }), "/admin/kosha-bookings?booking=7");
+assert.equal(approvalRecordHref({ type: "delete_document", entityType: "kosha_booking", entityId: 7 }), "/admin/documents", "a document's entity is the record it hangs on");
+assert.equal(approvalRecordHref({ type: "warehouse_transfer", entityType: "warehouse_transfer", entityId: 3 }), "/admin/warehouse-transfers");
+assert.equal(approvalRecordHref({ type: "general", entityType: null, entityId: null }), null);
 
 // The center.
 const page = readFileSync("src/views/admin/operations.tsx", "utf8");
@@ -168,6 +197,12 @@ assert.match(panel, /row\.decisions\.reject/, "reject follows the server's answe
 assert.match(panel, /list\.error \? <QueryFailure/, "a failed list is an error, not an empty queue");
 assert.ok(!/window\.(prompt|confirm)/.test(panel), "no browser dialogs on a consequential decision");
 assert.match(page, /error \? <QueryFailure error=\{error\} onRetry=\{\(\) => refetch\(\)\} \/> : isLoading/, "a refused financial list says so instead of showing no documents");
-assert.match(readFileSync("src/views/admin/index.tsx", "utf8"), /path="\/admin\/approvals">\s+\{\(\) => \(\s+<Guard me=\{me\} anyPerm=\{\["tasks", "approvals\.view"\]\}>/, "a delegate can open the page");
+const routes = readFileSync("src/views/admin/index.tsx", "utf8");
+assert.match(routes, /path="\/admin\/approvals">\s+\{\(\) => \(\s+<Guard me=\{me\} anyPerm=\{\["tasks", "approvals\.view"\]\}>/, "a delegate can open the page");
+assert.match(routes, /<Guard me=\{me\}>\s+<NotificationsPage \/>/, "an employee without a dashboard can read their notices in full");
+const shell = readFileSync("src/views/admin/_layout.tsx", "utf8");
+const headerRow = shell.slice(shell.indexOf("admin-mobile-header md:hidden"), shell.indexOf('aria-label="فتح القائمة"'));
+assert.ok(!/justify-between[^"]*overflow-hidden/.test(headerRow), "the phone header row must not clip the bell's panel");
+assert.match(headerRow, /flex min-w-0 items-center gap-3 overflow-hidden/, "the title side still clips a long site name");
 
 console.log("PASS approval requests: refused approvals stay open, follow-ups wait for the commit, vouchers reverse as the real reviewer, delegates follow their categories and limits, the center decides through the existing route");

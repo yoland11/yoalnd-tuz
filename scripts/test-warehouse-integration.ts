@@ -219,11 +219,11 @@ try {
   const screenMove = await queueMove(1);
   const screenAsk = await queueRequest("warehouse_transfer", screenMove);
   await approveWarehouseTransfer(db, screenMove, actor);
-  assert.equal(await closeWarehouseApprovalRequests(db, "warehouse_transfer", screenMove, "approved", actor), 1);
+  assert.equal((await closeWarehouseApprovalRequests(db, "warehouse_transfer", screenMove, "approved", actor)).length, 1);
   assert.equal(await requestStatus(screenAsk.id), "approved");
   const [screenAudit] = await rows(sql`select action, old_status, new_status from approval_actions where approval_request_id = ${screenAsk.id}`);
   assert.deepEqual([screenAudit.action, screenAudit.old_status, screenAudit.new_status], ["approve", "pending", "approved"]);
-  assert.equal(await closeWarehouseApprovalRequests(db, "warehouse_transfer", screenMove, "approved", actor), 0, "closing twice does nothing");
+  assert.equal((await closeWarehouseApprovalRequests(db, "warehouse_transfer", screenMove, "approved", actor)).length, 0, "closing twice does nothing");
   const screenDrop = await queueMove(1);
   const screenDropAsk = await queueRequest("warehouse_transfer", screenDrop);
   await rejectWarehouseTransfer(db, screenDrop, actor);

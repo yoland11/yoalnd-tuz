@@ -1251,8 +1251,9 @@ export function AdminLayout({
         dir="rtl"
         style={{ backgroundColor: "hsl(var(--sidebar) / 0.95)" }}
       >
-        <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden px-3 py-2.5">
-          <div className="flex min-w-0 items-center gap-3">
+        <div className="flex min-w-0 items-center justify-between gap-2 px-3 py-2.5">
+          {/* Only the title side clips: on the row itself this also cut off the bell and search panels. */}
+          <div className="flex min-w-0 items-center gap-3 overflow-hidden">
             <Button variant="ghost"
               type="button"
               onClick={() => setMobileSidebarOpen(true)}

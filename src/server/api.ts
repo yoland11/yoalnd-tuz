@@ -4,7 +4,8 @@ import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
 import { applyWarehouseDeltas, createWarehouse, listWarehouses, mainWarehouseId, requireActiveWarehouse, rowsOf as warehouseRows, shelfCompany, updateWarehouse, warehouseBreakdowns, WarehouseError } from "./warehouses";
 import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTransfer, sourceCommitment } from "./warehouse-transfers";
 import { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest, warehouseApprovalDocument } from "./warehouse-approvals";
-import { ApprovalRequestError, OPEN_APPROVAL_STATUSES, WAREHOUSE_APPROVAL_TYPES, approvalTypeCategory, approvalTypeNeedsMainManager, runApprovalDecision, type ApprovalExecution, type ApprovalExecutionPlan } from "./approval-requests";
+import { approvalRecordHref } from "@/lib/approval-records";
+import { ApprovalRequestError, OPEN_APPROVAL_STATUSES, WAREHOUSE_APPROVAL_TYPES, approvalDecisionNotice, approvalTypeCategory, approvalTypeNeedsMainManager, runApprovalDecision, type ApprovalExecution, type ApprovalExecutionPlan } from "./approval-requests";
 import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence } from "./attendance";
 import { QR_ROTATION_SECONDS, baghdadDate, addDays as attendanceAddDays } from "@/lib/attendance-rules";
 import { approveWarehouseCount, createWarehouseCount, listWarehouseCounts, rejectWarehouseCount, warehouseCountDetail } from "./warehouse-counts";
@@ -3850,6 +3851,58 @@ async function notifyMainManagers(input: {
       }),
     ),
   );
+}
+
+/**
+ * Tells each employee how their request ended. One row addressed to them, which both the admin bell
+ * and the staff portal show. The decision is already committed by now, so a failed notice is logged
+ * and never reads as a failed decision.
+ */
+async function notifyApprovalRequesters(
+  requests: Array<{
+    id: number;
+    type: string;
+    entityType: string | null;
+    entityId: number | null;
+    title: string;
+    requestedBy: number | null;
+  }>,
+  decision: { status: string; note?: string | null; reason?: string },
+  reviewerId: number,
+  req: NextRequest,
+) {
+  for (const request of requests) {
+    const notice = approvalDecisionNotice(
+      request.title,
+      decision.status,
+      decision.note,
+      decision.reason,
+    );
+    if (!notice || !request.requestedBy || request.requestedBy === reviewerId)
+      continue;
+    try {
+      const requester = await db.query.staffTable.findFirst({
+        where: eq(staffTable.id, request.requestedBy),
+      });
+      if (!requester?.isActive) continue;
+      await createNotification({
+        audienceType: "admin",
+        staffId: requester.id,
+        type: "approval_decision",
+        ...notice,
+        entityType: "approval_request",
+        entityId: request.id,
+        href: approvalRecordHref(request),
+        metadata: { status: decision.status },
+      });
+    } catch (err) {
+      console.error("AJN approval requester notice failed", {
+        requestId: makeRequestId(req.headers.get("x-request-id")),
+        approvalRequestId: request.id,
+        error: safeServerError(err),
+      });
+    }
+  }
 }
 
 async function addApprovalAction(
@@ -35734,15 +35787,17 @@ async function handleWarehouses(req: NextRequest, parts: string[], section: stri
       if (String(raw?.status ?? "") === "approved") {
         const result = await db.transaction(async (tx) => {
           const approved = await approveWarehouseCount(tx as any, id, who);
-          await closeWarehouseApprovalRequests(tx as any, "warehouse_count", id, "approved", who);
-          return approved;
+          const closed = await closeWarehouseApprovalRequests(tx as any, "warehouse_count", id, "approved", who);
+          return { ...approved, closed };
         });
+        await notifyApprovalRequesters(result.closed, { status: "approved" }, auth.id, req);
         void logAdminActivity(req, "warehouse_count_approved", "warehouse_count", id, { executed: result.executed });
       } else {
-        await db.transaction(async (tx) => {
+        const closed = await db.transaction(async (tx) => {
           await rejectWarehouseCount(tx as any, id, who);
-          await closeWarehouseApprovalRequests(tx as any, "warehouse_count", id, "rejected", who);
+          return closeWarehouseApprovalRequests(tx as any, "warehouse_count", id, "rejected", who);
         });
+        await notifyApprovalRequesters(closed, { status: "rejected" }, auth.id, req);
         void logAdminActivity(req, "warehouse_count_rejected", "warehouse_count", id, {});
       }
       revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
@@ -40435,9 +40490,16 @@ async function handleAdmin(
   }
 
   if (section === "notifications") {
-    const auth = await requirePermission(req, "dashboard");
-    if (isResponse(auth)) return auth;
+    const auth = await getAdminUser(req);
+    if (!auth) return error("غير مخول", 401);
     await ensureAdminExtensionsTables();
+    // Everyone reads what is addressed to them; the shared inbox stays behind the dashboard permission.
+    const visibleInbox = hasPermission(auth, "dashboard")
+      ? or(
+          sql`${notificationsTable.staffId} is null`,
+          eq(notificationsTable.staffId, auth.id),
+        )
+      : eq(notificationsTable.staffId, auth.id);
 
     if (parts[2] === "settings") {
       const settingsAuth = await requirePermission(req, "settings");
@@ -40480,10 +40542,7 @@ async function handleAdmin(
       const filters: any[] = [
         eq(notificationsTable.audienceType, "admin"),
         sql`${notificationsTable.archivedAt} is null`,
-        or(
-          sql`${notificationsTable.staffId} is null`,
-          eq(notificationsTable.staffId, auth.id),
-        ),
+        visibleInbox,
       ];
       const status = params.get("status")?.trim();
       const type = params.get("type")?.trim();
@@ -40518,10 +40577,7 @@ async function handleAdmin(
               eq(notificationsTable.audienceType, "admin"),
               sql`${notificationsTable.archivedAt} is null`,
               sql`${notificationsTable.readAt} is null`,
-              or(
-                sql`${notificationsTable.staffId} is null`,
-                eq(notificationsTable.staffId, auth.id),
-              ),
+              visibleInbox,
             ),
           ),
       ]);
@@ -40547,10 +40603,7 @@ async function handleAdmin(
           and(
             eq(notificationsTable.id, id),
             eq(notificationsTable.audienceType, "admin"),
-            or(
-              sql`${notificationsTable.staffId} is null`,
-              eq(notificationsTable.staffId, auth.id),
-            ),
+            visibleInbox,
           ),
         )
         .returning();
@@ -40567,10 +40620,7 @@ async function handleAdmin(
             eq(notificationsTable.audienceType, "admin"),
             sql`${notificationsTable.archivedAt} is null`,
             sql`${notificationsTable.readAt} is null`,
-            or(
-              sql`${notificationsTable.staffId} is null`,
-              eq(notificationsTable.staffId, auth.id),
-            ),
+            visibleInbox,
           ),
         );
       return json({ message: "تم تحديد الكل كمقروء" });
@@ -40585,10 +40635,7 @@ async function handleAdmin(
           and(
             eq(notificationsTable.id, id),
             eq(notificationsTable.audienceType, "admin"),
-            or(
-              sql`${notificationsTable.staffId} is null`,
-              eq(notificationsTable.staffId, auth.id),
-            ),
+            visibleInbox,
           ),
         );
       return json({ message: "تم حذف الإشعار" });
@@ -42075,6 +42122,16 @@ async function handleAdmin(
         if (!delegatedRow) return error("تمت مراجعة هذا الطلب مسبقاً", 409);
       }
       if (!auditWritten) await addApprovalAction(approvalAudit);
+      await notifyApprovalRequesters(
+        [delegatedRow],
+        {
+          status: delegatedNext,
+          note: approvalNote,
+          reason: (delegatedExecution as { reason?: string } | null)?.reason,
+        },
+        auth.id,
+        req,
+      );
       if (delegatedRow.entityType && delegatedRow.entityId)
         void addEntityTimeline({
           entityType: delegatedRow.entityType,
@@ -42989,20 +43046,20 @@ async function handleAdmin(
       const b = await body(req);
       const approving = String(b?.status ?? "").toLowerCase() === "approved";
       if (approving) {
-        const { executed, row } = await db.transaction(async (tx) => {
+        const { executed, row, closed } = await db.transaction(async (tx) => {
           const approved = await approveWarehouseTransfer(tx as any, id, transferActor);
-          await closeWarehouseApprovalRequests(tx as any, "warehouse_transfer", id, "approved", transferActor);
-          return approved;
+          return { ...approved, closed: await closeWarehouseApprovalRequests(tx as any, "warehouse_transfer", id, "approved", transferActor) };
         });
+        await notifyApprovalRequesters(closed, { status: "approved" }, auth.id, req);
         void logAdminActivity(req, "warehouse_transfer_approved", "warehouse_transfer", id, { executed });
         revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
         return json({ ...formatWarehouseTransfer(row), execution: { executed } });
       }
-      const row = await db.transaction(async (tx) => {
+      const { row, closed } = await db.transaction(async (tx) => {
         const rejected = await rejectWarehouseTransfer(tx as any, id, transferActor);
-        await closeWarehouseApprovalRequests(tx as any, "warehouse_transfer", id, "rejected", transferActor);
-        return rejected;
+        return { row: rejected, closed: await closeWarehouseApprovalRequests(tx as any, "warehouse_transfer", id, "rejected", transferActor) };
       });
+      await notifyApprovalRequesters(closed, { status: "rejected" }, auth.id, req);
       void logAdminActivity(req, "warehouse_transfer_rejected", "warehouse_transfer", id, {});
       return json({ ...formatWarehouseTransfer(row), execution: null });
     }
@@ -67662,11 +67719,18 @@ async function handleUnifiedStaffPortal(
 
   if (resource === "notifications") {
     try {
+    // A decision on the employee's own request is one row, shown here and in the admin bell.
+    const portalNotices = and(
+      eq(notificationsTable.staffId, auth.id),
+      or(
+        eq(notificationsTable.audienceType, "staff"),
+        eq(notificationsTable.type, "approval_decision"),
+      ),
+    );
     if (method === "GET") {
       const rows = await db.query.notificationsTable.findMany({
         where: and(
-          eq(notificationsTable.audienceType, "staff"),
-          eq(notificationsTable.staffId, auth.id),
+          portalNotices,
           sql`${notificationsTable.archivedAt} is null`,
         ),
         orderBy: [desc(notificationsTable.createdAt)],
@@ -67694,8 +67758,7 @@ async function handleUnifiedStaffPortal(
         .where(
           and(
             eq(notificationsTable.id, notificationId),
-            eq(notificationsTable.audienceType, "staff"),
-            eq(notificationsTable.staffId, auth.id),
+            portalNotices,
           ),
         )
         .returning();

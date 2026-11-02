@@ -30,6 +30,7 @@ const TYPE_LABELS: Record<string, string> = {
   task_assigned: "مهمة",
   inventory_low: "مخزون",
   order_cancelled: "إلغاء",
+  approval_decision: "قرار طلبك",
 };
 
 function formatDate(value: string) {

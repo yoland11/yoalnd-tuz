@@ -63,6 +63,18 @@ export function approvalExecutionRefusal(execution: ApprovalExecution) {
   return `${why} لم يتغير شيء، ويمكنك رفض الطلب لإغلاقه.`;
 }
 
+/** What the employee reads once their request is settled; null while the decision is still open. */
+export function approvalDecisionNotice(requestTitle: string, status: string, note?: string | null, reason?: string) {
+  // The inboxes clamp to two lines, so what the employee does not know yet comes first.
+  const details = (...parts: Array<string | null>) => [...parts, requestTitle].filter(Boolean).join(" · ");
+  const reviewerNote = note ? `ملاحظة المراجع: ${note}` : null;
+  if (status === "rejected") return { title: "تم رفض طلبك", body: details(note ? `السبب: ${note}` : null) };
+  if (status === "returned_for_edit") return { title: "أعيد طلبك للتعديل", body: details(reviewerNote) };
+  if (status !== "approved") return null;
+  if (reason === "already_cancelled" || reason === "already_archived") return { title: "أُغلق طلبك", body: details("كان منفذاً مسبقاً", reviewerNote) };
+  return { title: "تم اعتماد طلبك", body: details(reviewerNote) };
+}
+
 /**
  * Approves a request and runs what it stands for as one unit. Anything that fails before the
  * commit leaves the request open and reaches the manager as an error, instead of an approval

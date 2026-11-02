@@ -394,7 +394,7 @@ export default function Admin() {
           </Route>
           <Route path="/admin/notifications">
             {() => (
-              <Guard me={me} perm="dashboard">
+              <Guard me={me}>
                 <NotificationsPage />
               </Guard>
             )}

@@ -61,10 +61,10 @@ export async function decideWarehouseApprovalRequest(executor: Executor, request
   return execution;
 }
 
-/** A document decided on its own screen closes its open request, so the queue never offers it again. */
+/** A document decided on its own screen closes its open request, so the queue never offers it again. Returns what it closed. */
 export async function closeWarehouseApprovalRequests(executor: Executor, kind: WarehouseDocument, id: number, decision: Decision, actor: WarehouseActor) {
   const open = rowsOf(await executor.execute(sql`
-    select id, status, amount from approval_requests where entity_type = ${kind} and entity_id = ${id} and status in (${openStatuses()}) for update
+    select id, status, amount, title, requested_by from approval_requests where entity_type = ${kind} and entity_id = ${id} and status in (${openStatuses()}) for update
   `));
   const note = "قُرّر من شاشة المخازن";
   for (const request of open) {
@@ -76,5 +76,5 @@ export async function closeWarehouseApprovalRequests(executor: Executor, kind: W
       values (${request.id}, ${decision === "approved" ? "approve" : "reject"}, ${request.status}, ${decision}, ${actor.id}, ${actor.name}, ${note}, ${String(Math.max(0, Number(request.amount ?? 0) || 0))})
     `);
   }
-  return open.length;
+  return open.map((request) => ({ id: Number(request.id), type: kind, entityType: kind, entityId: id, title: String(request.title), requestedBy: request.requested_by == null ? null : Number(request.requested_by) }));
 }

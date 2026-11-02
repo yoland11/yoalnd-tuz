@@ -58,6 +58,7 @@ import {
 } from "./_lib";
 import { AssetSaleDialog } from "./asset-sale-dialog";
 import { LiveScanner } from "../staff/live-scanner";
+import { approvalRecordHref } from "@/lib/approval-records";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { Input } from "@/components/ui/input";
 import { EmployeeSelect } from "@/components/employee-select";
@@ -399,12 +400,9 @@ function approvalRecordLink(row: ApprovalRequestRow): { href: string; label: str
     const fileUrl = String(row.oldValues?.fileUrl ?? "");
     return /^(https?:\/\/|\/)/.test(fileUrl) ? { href: fileUrl, label: "فتح المستند", external: true } : null;
   }
-  if (row.entityType === "kosha_booking" && row.entityId) return { href: `/admin/kosha-bookings?booking=${row.entityId}`, label: "فتح الحجز" };
-  if (row.entityType === "service_order" && row.entityId) return { href: `/admin/orders?serviceOrder=${row.entityId}`, label: "فتح الحجز" };
-  if (row.entityType === "order" && row.entityId) return { href: `/admin/orders?order=${row.entityId}`, label: "فتح الطلب" };
-  if (row.entityType === "product" && row.entityId) return { href: `/admin/products/${row.entityId}`, label: "فتح المادة" };
-  if (row.entityType === "receipt_voucher" || row.entityType === "payment_voucher") return { href: "/admin/accounting", label: "فتح الحسابات" };
-  return null;
+  const href = approvalRecordHref(row);
+  const labels: Record<string, string> = { kosha_booking: "فتح الحجز", service_order: "فتح الحجز", order: "فتح الطلب", product: "فتح المادة", receipt_voucher: "فتح الحسابات", payment_voucher: "فتح الحسابات" };
+  return href ? { href, label: labels[row.entityType ?? ""] ?? "فتح السجل" } : null;
 }
 
 function approvalDecisionToast(result: ApprovalDecisionResult, action: "approve" | "reject") {
@@ -459,7 +457,7 @@ function ApprovalReviewDialog({ row, action, onClose }: { row: ApprovalRequestRo
             {Number(row.amount) > 0 ? <p className="mt-2 font-semibold tabular-nums text-foreground">المبلغ: {formatCurrency(row.amount ?? 0)}</p> : null}
           </div>
           <div className="space-y-1.5">
-            <label htmlFor="approval-review-note" className="text-sm font-medium text-foreground">{rejecting ? "سبب الرفض" : "ملاحظة (اختياري)"}</label>
+            <label htmlFor="approval-review-note" className="text-sm font-medium text-foreground">{rejecting ? "سبب الرفض (يصل للموظف)" : "ملاحظة (اختياري، تصل للموظف)"}</label>
             <Textarea id="approval-review-note" value={note} onChange={(event) => setNote(event.target.value)} rows={3} maxLength={1000} required={rejecting} minLength={rejecting ? 3 : undefined} />
           </div>
           {decide.error ? <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{apiErrorMessage(decide.error)}</p> : null}
