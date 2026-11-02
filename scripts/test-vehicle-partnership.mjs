@@ -1,5 +1,7 @@
 import {spawnSync} from "node:child_process";
 const commands=[
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-simple-partnership-ui.tsx"],
+ ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-simple-vehicle-navigation.tsx"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-opening-loss-math.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-opening-loss-source.ts"],
  ["scripts/run-tsx.mjs","--tsconfig","tsconfig.json","scripts/test-vehicle-partnership-opening-loss-classification.ts"],

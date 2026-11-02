@@ -3,6 +3,7 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {createRequire} from 'node:module';
 const {QueryClient,QueryClientProvider}=createRequire(import.meta.url)('@tanstack/react-query') as typeof import('@tanstack/react-query');
+const {Router}=createRequire(import.meta.url)('wouter') as typeof import('wouter');
 (globalThis as any).React=React;
 const page=await import('../src/views/admin/vehicle-partnership');
 // Missing persisted-header controls are the regression. Continue into behavioral
@@ -43,7 +44,7 @@ const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:0}}});
 const setupKey=['vehicle-partnership',12,'setup'];
 client.setQueryData(setupKey,{vehicle:{name:'المركبة الأصلية',plate_number:'فحص 123'},partnership:{id:1,ownershipType:'partnership',registrationOwner:'الشركة',version:7,agreements:[]},configuredElsewhere:false,canApprove:true});
 client.getQueryCache().find({queryKey:setupKey})!.setState({status:'error',error:new Error('تعذر تحديث الإعداد الأصلي')});
-const staleSetup=renderToStaticMarkup(<QueryClientProvider client={client}><page.default vehicleId={12}/></QueryClientProvider>);
+const staleSetup=renderToStaticMarkup(<Router ssrPath="/admin/vehicles/12?tab=partnership"><QueryClientProvider client={client}><page.default vehicleId={12}/></QueryClientProvider></Router>);
 assert.match(staleSetup,/الشراكة والأرباح/,'the same scoped page/controller survives a background setup failure');
 assert.match(staleSetup,/تعذر تحديث الإعداد الأصلي/);assert.match(staleSetup,/role="alert"/);
 assert.doesNotMatch(staleSetup,/حفظ وإرسال للموافقة|اتفاق جديد \/ تعديل مؤرخ/,'failed setup reads cannot expose new stale-configuration actions');

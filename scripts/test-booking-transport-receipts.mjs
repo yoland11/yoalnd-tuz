@@ -1,5 +1,6 @@
 import {spawnSync} from "node:child_process";
 const tests=[
+  "test-simple-transport-ui.tsx",
   "test-booking-transport-plan.ts","test-booking-transport-plan-resources.ts","test-booking-transport-plan-store.ts",
   "test-booking-transport-plan-route.ts","test-kosha-transport-plan-route.ts","test-transport-receipt-projection.ts",
   "test-transport-receipt-route.ts","test-transport-receipt.ts","test-transport-print-request.ts",

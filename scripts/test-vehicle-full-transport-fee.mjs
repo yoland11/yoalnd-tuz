@@ -110,8 +110,9 @@ const vehicleHtml = renderFragment(`${tripsNode.getText(vehicleAst)}; exports.Re
 assert.ok(vehicleHtml.includes("15,000"));
 assert.ok(!vehicleHtml.includes("11,538.46"), "vehicle trip table must not present collection share as income");
 assert.ok(!vehicleHtml.includes(">المنفذ<"));
-assert.equal((vehicleHtml.match(/<th\b/g) ?? []).length, 7);
-assert.ok(renderFragment(`${tripsNode.getText(vehicleAst)}; exports.Render=()=> <VehicleTrips rows={rows}/>;`, { rows: [], transportMoney: value => value == null ? "غير موزّع" : formatter.exports.formatCurrency(value), TransportReceiptAction: () => null }).includes('colSpan="7"'));
+assert.match(vehicleHtml, /<article/, "trip data and receipt remain grouped on mobile");
+for (const label of ["المناسبة", "السائق", "الأجرة", "ربح الرحلة"]) assert.ok(vehicleHtml.includes(label));
+assert.ok(renderFragment(`${tripsNode.getText(vehicleAst)}; exports.Render=()=> <VehicleTrips rows={rows}/>;`, { rows: [], transportMoney: value => value == null ? "غير موزّع" : formatter.exports.formatCurrency(value), TransportReceiptAction: () => null }).includes('لا توجد رحلات نقل مسجلة.'));
 
 const enterpriseText = read("src/views/admin/enterprise.tsx"), enterpriseAst = ts.createSourceFile("enterprise.tsx", enterpriseText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = enterpriseAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "VehicleProfitabilityTab");

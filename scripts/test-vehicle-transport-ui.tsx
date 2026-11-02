@@ -9,4 +9,6 @@ const html=renderToStaticMarkup(<Router ssrPath="/admin/vehicles/6"><VehicleTrip
 assert.ok((html.match(/غير موزّع/g)??[]).length>=3);
 assert.match(html,/وصل رحلة 2/);assert.match(html,/قاعة/);assert.ok(!html.includes("بانتظار دفعة منفذة"));
 assert.match(html,/أجرة كلية/);
+assert.match(html, /<article/, "a trip keeps its customer, amounts and receipt together on a narrow screen");
+assert.doesNotMatch(html, /min-w-\[850px\]/, "daily trips do not require horizontal scrolling to find the customer");
 console.log("PASS actual vehicle transport rows: unallocated money is not zero, exact operation receipt and original-source booking link");

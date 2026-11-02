@@ -12,6 +12,7 @@ client.setQueryData(["admin","vehicle",12,"financial"],{summary:{tripCount:0,tra
 client.setQueryData(["vehicle-partnership",12,"setup"],{vehicle:{name:"مركبة الشراكة",plate_number:"بغداد123"},partnership:null,configuredElsewhere:false,canApprove:true});
 const render=(url:string)=>renderToStaticMarkup(<Router ssrPath={url}><QueryClientProvider client={client}><VehiclesPage/></QueryClientProvider></Router>);
 assert.ok(render("/admin/vehicles/12?tab=partnership").includes("الاتفاق والشريكان"),"real Wouter pathname-only useLocation must still open requested partnership tab");
-assert.ok(render("/admin/vehicles/12").includes("تحديث العداد"),"ordinary original vehicle deep link retains overview");
+assert.ok(render("/admin/vehicles/12").includes("سجل الرحلات وأجور النقل"),"ordinary vehicle link starts with daily transport work");
+assert.ok(render("/admin/vehicles/12?tab=overview").includes("تحديث العداد"),"the original overview remains available by explicit deep link");
 client.clear();
-console.log("PASS real original vehicle with actual Wouter SSR query behavior: partnership link opens usable setup and legacy route retains overview.");
+console.log("PASS real vehicle Wouter SSR query behavior: partnership setup, daily transport default and explicit original overview link.");

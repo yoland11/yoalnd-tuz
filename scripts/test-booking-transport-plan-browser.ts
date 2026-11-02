@@ -21,6 +21,7 @@ try{
  for(const width of [1440,390]){
   const page=await browser.newPage({viewport:{width,height:900}});
   let current=readTransportPlan({source:"service",id:7,bookingNumber:"B-7",legacy:{mode:"ajn",fee:50000,vehicleId:5,driverId:8},storedPlan:null});
+  current={...current,trips:[{...current.trips[0],origin:"مخزن بغداد",destination:"قاعة النور",transportDate:"2026-10-24",departureTime:"08:30",transportType:"تجهيزات محفوظة",expectedArrivalTime:"09:15",driverPhone:"07700000000",assignedWork:"إرجاع التجهيزات",notes:"ملاحظة وصل محفوظة",resourceOccupancy:{start:"2026-10-24T08:00:00+03:00",end:"2026-10-24T12:00:00+03:00"}}]};
   let rejectSave=false,readonly=false,failRead=false;const writes:any[]=[],errors:string[]=[];
   page.on("pageerror",(error:any)=>errors.push(error.message));
   await page.route("**/api/**",async(route:any)=>{
@@ -37,6 +38,23 @@ try{
    return route.fulfill({json:{transportation:{mode:"ajn",fee:50000},transportPlan:current,resourceOccupancy:{start:"2026-10-24T00:00:00+03:00",end:"2026-10-25T00:00:00+03:00"},capabilities:{canEdit:!readonly,canPrintFinancial:!readonly}}});
   });
   await page.goto(origin);await page.getByRole("button",{name:"حفظ خطة النقل",exact:true}).waitFor();
+  assert.equal(await page.getByLabel("موقع الانطلاق",{exact:true}).isVisible(),true,"legacy plans expose primary route controls immediately");
+  assert.equal(await page.getByLabel("المركبة",{exact:true}).isVisible(),true,"legacy plans expose primary assignment controls immediately");
+  const firstTrip=page.locator("fieldset").first(),advanced=firstTrip.locator("details");
+  assert.equal(await advanced.evaluate((element:HTMLDetailsElement)=>element.open),false,"advanced controls start collapsed");
+  assert.equal(await firstTrip.getByLabel("نوع النقل",{exact:true}).isVisible(),false,"secondary trip details do not crowd primary controls");
+  const advancedSummary=advanced.locator("summary");
+  assert.match(await advancedSummary.innerText(),/تفاصيل متقدمة[\s\S]*فترة مخصصة[\s\S]*بيانات إضافية/,"saved optional configuration is indicated while closed");
+  await advancedSummary.click();
+  assert.equal(await firstTrip.getByLabel("هاتف السائق",{exact:true}).inputValue(),"07700000000");
+  await firstTrip.getByLabel("نوع النقل",{exact:true}).fill("تحميل وإرجاع");
+  await firstTrip.getByLabel("الوصول المتوقع",{exact:true}).fill("10:15");
+  await firstTrip.getByLabel("هاتف السائق",{exact:true}).fill("07800000000");
+  await firstTrip.getByLabel("أعمال النقل المكلّف بها",{exact:true}).fill("تحميل المورد وإرجاعه");
+  await firstTrip.getByLabel("ملاحظات النقل",{exact:true}).fill("ملاحظة وصل بعد التعديل");
+  assert.deepEqual(await advanced.locator('input[type="datetime-local"]').evaluateAll((inputs:HTMLInputElement[])=>inputs.map(input=>input.value)),["2026-10-24T08:00","2026-10-24T12:00"],"saved resource interval is retained in local controls");
+  await advancedSummary.focus();await advancedSummary.press("Space");
+  assert.equal(await advanced.evaluate((element:HTMLDetailsElement)=>element.open),false,"advanced details support keyboard collapse");
   await page.getByRole("radio",{name:"أجرة مستقلة لكل رحلة",exact:true}).click();
   await page.getByLabel("أجرة هذه الرحلة — د.ع",{exact:true}).fill("30000");
   await page.getByRole("button",{name:"إضافة رحلة نقل",exact:true}).click();
@@ -48,7 +66,10 @@ try{
   await page.getByRole("checkbox",{name:/أؤكد تغيير طريقة/}).check();
   rejectSave=true;await page.getByRole("button",{name:"حفظ خطة النقل",exact:true}).click();await page.getByRole("alert").filter({hasText:"تغيّرت خطة النقل"}).first().waitFor();
   assert.equal(writes.length,1);assert.equal(writes[0].expectedTransportRevision,0);assert.equal(writes[0].transportPlan.trips.length,2);
+  assert.deepEqual(writes[0].transportPlan.trips[0],{id:"legacy-1",sequence:1,vehicleId:5,driverId:8,origin:"مخزن بغداد",destination:"قاعة النور",transportDate:"2026-10-24",departureTime:"08:30",transportType:"تحميل وإرجاع",expectedArrivalTime:"10:15",driverPhone:"07800000000",assignedWork:"تحميل المورد وإرجاعه",notes:"ملاحظة وصل بعد التعديل",customerCharge:30000,resourceOccupancy:{start:"2026-10-24T08:00:00+03:00",end:"2026-10-24T12:00:00+03:00"}},"closing advanced details retains edited secondary data and exact resource bounds in the submitted plan");
+  assert.equal(writes[0].transportPlan.overallCharge,null);assert.equal(writes[0].transportPlan.trips[1].customerCharge,20000,"both independent trip fees survive disclosure changes");
   rejectSave=false;await page.getByRole("button",{name:"حفظ خطة النقل",exact:true}).click();await page.getByRole("button",{name:/وصل رحلة 2/}).waitFor();
+  assert.deepEqual(writes[1],writes[0],"conflict retry retains the same advanced values, fees and revision");
   await page.getByRole("button",{name:/وصل رحلة 2/}).click();assert.equal(JSON.parse(await page.locator("#printed").innerText()).tripId,current.trips[1].id);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,"no horizontal overflow");
   await mkdir(".next/transport-receipt-review",{recursive:true});await page.screenshot({path:`.next/transport-receipt-review/editor-${width}.png`,fullPage:true});
@@ -56,5 +77,5 @@ try{
   failRead=true;await page.reload();await page.getByRole("alert").filter({hasText:"تعذرت قراءة الحجز"}).waitFor();assert.equal(await page.getByRole("button",{name:"حفظ خطة النقل",exact:true}).count(),0);
   assert.deepEqual(errors,[]);await page.close();
  }
- console.log("PASS real transport editor desktop/mobile: two trip fees, explicit mode confirmation, 409 retry preserving draft/revision, exact trip action, permissions, read failures and no overflow");
+ console.log("PASS real transport editor desktop/mobile: legacy primary controls, keyboard advanced collapse preserving submitted values/resource bounds, two trip fees, explicit mode confirmation, identical 409 retry, exact trip action, permissions, read failures and no overflow");
 }finally{await browser.close();await new Promise<void>((done,reject)=>server.close(error=>error?reject(error):done()));}
