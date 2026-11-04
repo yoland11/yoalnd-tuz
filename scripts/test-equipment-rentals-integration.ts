@@ -52,6 +52,22 @@ try {
   await invoke('GET',['options'],undefined,403,{...actor,role:'employee',permissions:['rental_settings']});
   const first = await invoke("POST", [], input, 201); const id = String(first.id);
   assert.equal(first.status, "draft"); assert.equal(first.total, 110000); assert.equal(first.paid, 0);
+  // Existing contracts pick up the original asset picture without rewriting order snapshots.
+  const pictureUrl = "/uploads/test-rental-chair.png";
+  await db.execute(sql`update products set images=${JSON.stringify([pictureUrl])}::jsonb where id=${productId}`);
+  assert.equal((await invoke("GET", [id])).details.assets[0].image, pictureUrl);
+  assert.equal((await invoke("GET", [])).data.find((r: any) => r.id === first.id).details.assets[0].image, pictureUrl);
+  assert.equal((await one(sql`select equipment_details->'assets'->0->'image' as image from rental_orders where id=${first.id}`)).image, null, "presentation never mutates historical snapshots");
+  const invoiceImage = "/uploads/private-purchase-invoice.png", mainImage = "/uploads/asset-main.png";
+  await db.execute(sql`insert into asset_passports(product_id,image_url,metadata) values(${productId},${mainImage},${JSON.stringify({mainImageUrl:mainImage,invoiceImageUrl:invoiceImage})}::jsonb)`);
+  await db.execute(sql`update products set images=${JSON.stringify([invoiceImage,pictureUrl])}::jsonb where id=${productId}`);
+  assert.equal((await invoke("GET", [id])).details.assets[0].image, mainImage, "reuse original asset passport main picture");
+  assert.equal((await invoke("GET", ["options"])).assets.find((a: any) => a.id === productId).image, mainImage);
+  await db.execute(sql`update asset_passports set image_url=null,metadata=${JSON.stringify({mainImageUrl:null,invoiceImageUrl:invoiceImage})}::jsonb where product_id=${productId}`);
+  await db.execute(sql`update products set images=${JSON.stringify([invoiceImage])}::jsonb where id=${productId}`);
+  assert.equal((await invoke("GET", [id])).details.assets[0].image, null, "invoice photo must never become a rental product picture");
+  await db.execute(sql`update products set images=${JSON.stringify([pictureUrl])}::jsonb where id=${productId}`);
+
   assert.match(first.orderNo, /^RNT-\d{4}-\d{6,}$/);
   assert.equal((await one(sql`select stock from products where id=${productId}`)).stock, "100.000");
   assert.equal(Number((await one(sql`select count(*) as count from financial_transactions`)).count), 0);

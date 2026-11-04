@@ -75,8 +75,27 @@ function readDetails(row: any): EquipmentRentalDetails {
   return { version: 1, address: "", startTime: "00:00", endTime: "23:59", linkedBooking: null, deliveryCharge: 0, installationCharge: 0, discount: 0, depositRequired: 0, terms: String(row.notes ?? ""), resourceWindow: { preparationStart: start, eventStart: start, eventEnd: end, returnEnd: end }, assets: [{ productId: Number(row.product_id), name: "إيجار سابق", image: null, code: "", quantity: 1, warehouseId: null, pricingType: "daily", unitPrice: Number(row.price_per_day), duration: Number(row.days), discount: 0, lineTotal: Number(row.total_amount), stage: row.status === "active" ? "out" : "returned" }], history: [], attachments: [], createRequestId: "" };
 }
 
-async function detail(executor: Executor, row: any, actor: EquipmentRentalActor): Promise<EquipmentRentalDetail> {
-  const details = readDetails(row); const equipment = row.rental_kind === "equipment";
+function assetPicture(product: any): string | null {
+  const metadata = product.asset_metadata ?? {};
+  const invoice = metadata.invoiceImageUrl;
+  const candidates = [metadata.mainImageUrl, product.asset_image, ...(Array.isArray(product.images) ? product.images : [])];
+  return candidates.find(value => typeof value === "string" && value.trim() && value !== invoice) ?? null;
+}
+
+/** Read-only presentation enrichment; never rewrite the saved contract or asset. */
+async function rentalPictures(executor: Executor, rentals: any[]): Promise<Map<number, string | null>> {
+  const ids = [...new Set(rentals.flatMap(row => readDetails(row).assets.map(line => Number(line.productId))))]
+    .filter(id => Number.isSafeInteger(id) && id > 0);
+  if (!ids.length) return new Map();
+  const products = rows(await executor.execute(sql`select p.id,p.images,ap.image_url as asset_image,ap.metadata as asset_metadata from products p left join asset_passports ap on ap.product_id=p.id where p.id in (${idsSql(ids)})`));
+  return new Map(products.map(product => [Number(product.id), assetPicture(product)]));
+}
+
+async function detail(executor: Executor, row: any, actor: EquipmentRentalActor, pictures?: Map<number, string | null>): Promise<EquipmentRentalDetail> {
+  const saved = readDetails(row);
+  const images = pictures ?? await rentalPictures(executor, [row]);
+  const details = { ...saved, assets: saved.assets.map(line => ({ ...line, image: images.has(line.productId) ? images.get(line.productId)! : line.image })) };
+  const equipment = row.rental_kind === "equipment";
   const finance = equipment ? await equipmentRentalFinancialSummary(executor, Number(row.id)) : { total: Number(row.total_amount), paid: Number(row.paid_amount), remaining: Number(row.remaining_amount), depositHeld: 0 };
   const capabilities = equipmentRentalCapabilities(actor);
   const customerOutstanding = details.assets.some(line => lineOutstanding(normalizeQuantityLine(line)) > 0);
@@ -123,16 +142,17 @@ async function list(req: NextRequest, actor: EquipmentRentalActor) {
     coalesce(sum((select coalesce(sum(case when f.direction='revenue' then f.amount::numeric else -f.amount::numeric end),0) from financial_transactions f where f.source_type='equipment_rental_deposit' and f.source_id=r.id::text and f.approval_status='executed')),0) as deposit_held
     from rental_orders r where ${where}`))[0];
   const data = rows(await db.execute(sql`select r.* from rental_orders r where ${where} order by r.created_at desc,r.id desc limit ${pageSize} offset ${(page - 1) * pageSize}`));
-  return json({ data: await Promise.all(data.map(row => detail(db, row, actor))), total: Number(totals.total), summary: { active: Number(totals.active), awaitingDispatch: Number(totals.awaiting_dispatch), dueToday: Number(totals.due_today), overdue: Number(totals.overdue), outstanding: Number(totals.outstanding), depositHeld: Number(totals.deposit_held) }, page, pageSize });
+  const pictures = await rentalPictures(db, data);
+  return json({ data: await Promise.all(data.map(row => detail(db, row, actor, pictures))), total: Number(totals.total), summary: { active: Number(totals.active), awaitingDispatch: Number(totals.awaiting_dispatch), dueToday: Number(totals.due_today), overdue: Number(totals.overdue), outstanding: Number(totals.outstanding), depositHeld: Number(totals.deposit_held) }, page, pageSize });
 }
 
 async function options(req: NextRequest, actor: EquipmentRentalActor) {
   const q = text(req.nextUrl.searchParams.get("q"), 150); const pattern = `%${q}%`;
-  const result = rows(await db.execute(sql`select p.id,coalesce(nullif(p.name_ar,''),p.name) as name,p.barcode,p.images,p.stock,p.price_per_day,p.is_rental,p.rental_settings,p.category,coalesce(a.tracking_mode,'individual') as tracking_mode from products p left join asset_quantity_profiles a on a.product_id=p.id where p.is_asset=true and p.is_active=true and p.archived_at is null and (${q === ""} or p.name ilike ${pattern} or p.name_ar ilike ${pattern} or p.barcode ilike ${pattern}) order by p.name_ar,p.id limit 200`));
+  const result = rows(await db.execute(sql`select p.id,coalesce(nullif(p.name_ar,''),p.name) as name,p.barcode,p.images,ap.image_url as asset_image,ap.metadata as asset_metadata,p.stock,p.price_per_day,p.is_rental,p.rental_settings,p.category,coalesce(a.tracking_mode,'individual') as tracking_mode from products p left join asset_quantity_profiles a on a.product_id=p.id left join asset_passports ap on ap.product_id=p.id where p.is_asset=true and p.is_active=true and p.archived_at is null and (${q === ""} or p.name ilike ${pattern} or p.name_ar ilike ${pattern} or p.barcode ilike ${pattern}) order by p.name_ar,p.id limit 200`));
   const warehouses = rows(await db.execute(sql`select id,name from warehouses where is_active=1 order by id`));
   const employees = rows(await db.execute(sql`select id,coalesce(nullif(full_name,''),username) as name from staff where is_active=true order by full_name,id limit 500`));
   const customers = q ? rows(await db.execute(sql`select id,coalesce(nullif(full_name,''),name) as name,phone from customers where name ilike ${pattern} or full_name ilike ${pattern} or phone ilike ${pattern} order by id desc limit 20`)) : [];
-  return json({ assets: result.map(p => ({ id: Number(p.id), name: p.name, code: p.barcode ?? "", image: Array.isArray(p.images) ? p.images[0] ?? null : null, stock: Number(p.stock), trackingMode: p.tracking_mode, settings: { ...normalizeEquipmentRentalSettings(p.rental_settings, { pricePerDay: p.price_per_day, isRental: p.is_rental }), allowCustomPrice: normalizeEquipmentRentalSettings(p.rental_settings).allowCustomPrice && (equipmentRentalCapabilities(actor).edit || equipmentRentalCapabilities(actor).settings) }, category: p.category ?? "" })), warehouses, employees, customers });
+  return json({ assets: result.map(p => ({ id: Number(p.id), name: p.name, code: p.barcode ?? "", image: assetPicture(p), stock: Number(p.stock), trackingMode: p.tracking_mode, settings: { ...normalizeEquipmentRentalSettings(p.rental_settings, { pricePerDay: p.price_per_day, isRental: p.is_rental }), allowCustomPrice: normalizeEquipmentRentalSettings(p.rental_settings).allowCustomPrice && (equipmentRentalCapabilities(actor).edit || equipmentRentalCapabilities(actor).settings) }, category: p.category ?? "" })), warehouses, employees, customers });
 }
 
 async function lockProducts(executor: Executor, ids: number[]) {
