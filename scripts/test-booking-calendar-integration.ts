@@ -186,9 +186,10 @@ const summary = summarizeCalendarDay(DAY, events);
 const counts = Object.fromEntries(summary.departments.map((row) => [row.key, row.bookings]));
 assert.deepEqual(counts, { kosha: 3, photography: 3, sound: 1, transportation: 1, graduation: 3, gifts: 1, catering: 1, rental: 1 });
 // mixed, byServiceType, reschedulePending, koshaAjn, koshaCustomer, photo, group, undated group, individual, catering, rental.
-assert.equal(summary.total, 11, "each booking counts once in the day total");
+assert.equal(summary.total, 10, "rentals have their own counter outside event bookings");
 assert.equal(summary.departments.find((row) => row.key === "kosha")!.units, 4, "two Kosha lines on one booking are units, not bookings");
 assert.equal(summary.storeOrders, 2);
+assert.equal(summary.rentals, 1);
 assert.equal(summary.staffAssignments, 2);
 
 // Cancelled: out of the counters, available when asked for.
@@ -199,16 +200,17 @@ assert.deepEqual(Object.fromEntries(cancelledSummary.departments.map((row) => [r
 
 // Week totals span days; the department filter narrows cards without touching totals.
 const week = summarizeCalendarRange(days, events);
-assert.equal(week.total, 13, "the Thursday's 11 plus the two on Friday");
+assert.equal(week.total, 12, "event bookings remain separate from rentals");
 const koshaCards = filterCalendarCards(events.filter((event) => event.day === DAY), { status: "", department: "kosha", employee: null, search: "", showStoreOrders: false });
 assert.equal(koshaCards.length, 3);
-assert.equal(summarizeCalendarDay(DAY, events).total, 11);
+assert.equal(summarizeCalendarDay(DAY, events).total, 10);
 
 // Rescheduling moves the booking; cancelling removes it: counters follow the record.
 await db.execute(sql`UPDATE service_orders SET event_date = ${NEXT} WHERE id = ${byServiceType}`);
 await db.execute(sql`UPDATE kosha_bookings SET status = 'cancelled' WHERE id = ${koshaCustomer}`);
 const after = (await readBookingCalendar(db as any, { from: days[0], to: days[6] })).events.filter((event) => event.customerName.startsWith(run));
-assert.equal(summarizeCalendarDay(DAY, after).total, 9);
+assert.equal(summarizeCalendarDay(DAY, after).total, 8, "two events left the original ten-event day; rentals remain separate");
+assert.equal(summarizeCalendarDay(DAY, after).rentals, 1);
 assert.equal(after.find((event) => event.key === `service-${byServiceType}`)!.day, NEXT);
 
 // The route's optional filters keep their meaning.

@@ -75,6 +75,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { LinkedEquipmentRentals } from "@/components/equipment-rental-panels";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -265,6 +266,7 @@ const WAREHOUSE_STEPS = [
 ] as const;
 
 const TAB_LABELS: Array<[string, string, typeof Boxes]> = [
+  ["rentals", "الإيجارات المرتبطة", Boxes],
   ["overview", "نظرة عامة", Gauge],
   ["products", "المنتجات", ShoppingBag],
   ["assets", "الأصول", PackageCheck],
@@ -631,6 +633,7 @@ export function BookingOperationsWorkspace({ booking, onEdit }: { booking: Booki
       <TabsContent value="tasks"><TasksTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       <TabsContent value="documents"><DocumentsTab base={base} queryKey={key} entityType={booking.source === "kosha" ? "kosha_booking" : "service_order"} entityId={booking.id} /></TabsContent>
       {booking.source === "service" ? <TabsContent value="group-photos"><BookingGroupPhotos bookingId={booking.id} /></TabsContent> : null}
+      <TabsContent value="rentals"><LinkedEquipmentRentals source={booking.source} bookingId={booking.id} /></TabsContent>
       <TabsContent value="activity"><ActivityTab base={base} queryKey={key} /></TabsContent>
     </Tabs></main><BookingSidebar booking={booking} data={overview.data} invoiceUrl={invoiceUrl} paymentUrl={paymentUrl} onTab={changeTab} department={department} responsibleTeam={responsibleTeam} readiness={readinessQuery.isError ? undefined : readinessQuery.data} /></div>
 

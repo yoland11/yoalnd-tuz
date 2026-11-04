@@ -1,4 +1,5 @@
 import {IQD_LABEL} from "./money";
+import { equipmentRentalEffect, type EquipmentRentalMoneyKind } from "./equipment-rental-finance";
 
 type TotalRow = {
   direction: "revenue" | "expense";
@@ -7,7 +8,7 @@ type TotalRow = {
   sourceType: string | null;
   transactionType: string;
   cashDirection?: "inflow" | "outflow" | "noncash";
-  accountingClassification?: "revenue" | "expense" | "liability_inflow" | "liability_repayment" | "partnership_transfer";
+  accountingClassification?: "revenue" | "expense" | "liability_inflow" | "liability_repayment" | "partnership_transfer" | "liability_settlement" | "receivable_charge";
 };
 export type FinancialTransactionTotals =
   | {complete: true; revenue: string; expenses: string; cash: string}
@@ -31,11 +32,13 @@ export function financialTransactionTotals<T extends TotalRow>(rows: readonly T[
     if(typeof row.amount!=="string"||!/^(0|[1-9]\d*)(?:\.\d{1,2})?$/.test(row.amount))return {complete:false,reason:"الإجمالي غير متاح: مبلغ حركة غير صالح"};
     const [whole,fraction=""]=row.amount.split(".");
     const amount=BigInt(whole)*100n+BigInt(fraction.padEnd(2,"0"));
-    const direction=row.cashDirection??(row.direction==="revenue"?"inflow":"outflow");
+    const equipment = row.transactionType.startsWith("er_") && ["rental_order", "equipment_rental_deposit", "equipment_rental_charge"].includes(row.sourceType ?? "")
+      ? equipmentRentalEffect(row.transactionType.replace(/^er_/, "").replace(/_reversal$/, "") as EquipmentRentalMoneyKind, row.transactionType.endsWith("_reversal")) : null;
+    const direction=row.cashDirection??equipment?.cashDirection??(row.direction==="revenue"?"inflow":"outflow");
     if(direction==="inflow")cash+=amount;
     if(direction==="outflow")cash-=amount;
     if(!partnership&&(legacyBalanceSheet(row)||["company_loan","company_loan_repayment","employee_advance"].includes(row.sourceType??"")||["company_loan_received","company_loan_repayment","employee_advance","employee_advance_repayment"].includes(row.transactionType)))continue;
-    const classification=row.accountingClassification??row.direction;
+    const classification=row.accountingClassification??equipment?.accountingClassification??row.direction;
     if(classification==="revenue")revenue+=row.direction==="revenue"?amount:-amount;
     if(classification==="expense")expenses+=row.direction==="expense"?amount:-amount;
   }

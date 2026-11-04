@@ -1,11 +1,11 @@
 import { sql, type SQL } from "drizzle-orm";
-import type { BookingOperationRef } from "@/lib/booking-operational-readiness";
+import type { ResourceBookingRef } from "@/lib/booking-resource-conflicts";
 import { bookingResourceSpan,readBookingResourceWindow } from "@/lib/booking-resource-window";
 import { resourceOccupancyTimestamps } from "@/lib/booking-resource-conflicts";
 import { validateTransportPlan } from "@/lib/booking-transport-plan";
 
 export type ResourceExecutor={execute(query:any):Promise<any>};
-export type TimedBookingRef=BookingOperationRef & {operations:Record<string,unknown>;eventDate?:string|null};
+export type TimedBookingRef=ResourceBookingRef & {operations:Record<string,unknown>;eventDate?:string|null};
 /** Scheduling identity only. Never pass photography to booking finance, stock,
  * custody or the central booking reader. Linked events keep service identity. */
 export type StaffTimedRef=Omit<TimedBookingRef,"source">&{source:TimedBookingRef["source"]|"photography"};
@@ -54,7 +54,7 @@ export function resourceTimingProblem(reference:Pick<TimedBookingRef,"operations
 export function firstBookingOverlap(reference:StaffTimedRef,candidates:any[],allowPhotography=false){
   const target=resourceInterval(reference),targetExact=!!readBookingResourceWindow(reference.operations,reference.eventDate);
   for(const candidate of candidates){
-    if(!["kosha","service",...(allowPhotography?["photography"]:[])].includes(candidate.source)||!Number.isSafeInteger(Number(candidate.id))||Number(candidate.id)<=0)throw Error("Invalid resource booking identity");
+    if(!["kosha","service","rental",...(allowPhotography?["photography"]:[])].includes(candidate.source)||!Number.isSafeInteger(Number(candidate.id))||Number(candidate.id)<=0)throw Error("Invalid resource booking identity");
     if(candidate.source===reference.source&&Number(candidate.id)===reference.id)continue;
     if(candidate.still_out===true)return {...candidate,timingIncomplete:false};
     const operations=candidate.details?.bookingOperations??{};
@@ -77,6 +77,8 @@ export async function findBookingPhysicalConflict(reference:TimedBookingRef,prod
     WITH bookings AS (
       SELECT 'kosha'::text AS source,id,event_date::text AS event_date,status,booking_details AS details FROM kosha_bookings WHERE archived_at IS NULL
       UNION ALL SELECT 'service',id,event_date,status,custom_fields FROM service_orders WHERE archived_at IS NULL
+      UNION ALL SELECT 'rental',id,start_date::text,status,jsonb_build_object('bookingOperations',to_jsonb(r)->'equipment_details')
+      FROM rental_orders r WHERE to_jsonb(r)->>'rental_kind'='equipment'
     ), original_lines AS (
       SELECT b.source,b.id,b.event_date,b.details,
         bool_or(coalesce(a->>'stage','linked')='out') AS still_out
@@ -85,6 +87,7 @@ export async function findBookingPhysicalConflict(reference:TimedBookingRef,prod
         || (CASE WHEN jsonb_typeof(b.details->'linkedAssets')='array' THEN b.details->'linkedAssets' ELSE '[]'::jsonb END)
       ) a WHERE a->>'productId'=${String(productId)} AND coalesce(a->>'stage','linked') NOT IN ('released','returned','inspection','completed')
         AND (lower(coalesce(b.status,'')) NOT IN ('cancelled','canceled','deleted','completed','delivered','closed') OR a->>'stage'='out')
+        AND (b.source <> 'rental' OR lower(coalesce(b.status,'')) NOT IN ('draft','pending_approval') OR a->>'stage'='out')
         AND NOT(b.source=${reference.source} AND b.id=${reference.id})
       GROUP BY b.source,b.id,b.event_date,b.details
     ), fixed AS (

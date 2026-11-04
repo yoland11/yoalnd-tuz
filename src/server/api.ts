@@ -1,5 +1,6 @@
 import {masterClosingReversalOptionsSchema} from "../lib/vehicle-partnership/master-reopen";
 import { revalidateTag, unstable_cache } from "next/cache";
+import { handleEquipmentRentals } from "./equipment-rentals";
 import { loadDailyOperations } from "./booking-daily-operations";
 import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
 import { applyWarehouseDeltas, createWarehouse, listWarehouses, mainWarehouseId, requireActiveWarehouse, rowsOf as warehouseRows, shelfCompany, updateWarehouse, warehouseBreakdowns, WarehouseError } from "./warehouses";
@@ -17,6 +18,7 @@ import { handleSalesReturnsRequest } from "./sales-returns-routes";
 import { centralBookingDepartments, koshaBookingDepartments, serviceOrderDepartments } from "./booking-departments";
 import { BookingCalendarRangeError, parseBookingCalendarRange, readBookingCalendar } from "./booking-calendar";
 import { resolvePartnershipFinancialEffect, partnershipIncomePredicate } from "./vehicle-partnership/financial-classification";
+import { equipmentRentalOperatingPredicate } from "./equipment-rental-classification";
 import { PartnershipRepositoryError } from "./vehicle-partnership/repository";
 import { PartnershipValidationError } from "@/lib/vehicle-partnership/types";
 import { loadBookingReadiness } from "./booking-operational-readiness";
@@ -864,6 +866,7 @@ export const COOKIE_NAME = "ajn_admin_session";
 export const CUSTOMER_COOKIE_NAME = "ajn_customer_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const ALL_PERMISSIONS = [
+  "rental_view", "rental_create", "rental_edit", "rental_approve", "rental_dispatch", "rental_return", "rental_inspect", "rental_payment", "rental_reports", "rental_settings",
   "dashboard",
   "orders",
   "bookings",
@@ -19133,6 +19136,7 @@ async function handleCustomerPrivatePhoto(req: NextRequest, parts: string[]) {
 async function handleCustomer(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
   const privatePhoto = await handleCustomerPrivatePhoto(req, parts);
   if (privatePhoto) return privatePhoto;
   const accountSession = await resolveCustomerAccountSession(req);
@@ -39901,6 +39905,16 @@ async function handleAdmin(
   if (section === "customer-followups") {
     const auth = await getAdminUser(req);
     return customerFollowupRoute(req, parts.slice(2), auth ? followupActor(auth) : null, db);
+  }
+
+  if (section === "rental-orders" && parts[2] === "equipment") {
+    // Product editors can configure only an original asset's rental settings.
+    // All contract/customer/finance endpoints retain the rental access gate.
+    const auth = parts[3] === "settings" && parts.length === 5 && ["GET", "PUT"].includes(method)
+      ? await requireAnyPermission(req, ["products", "rental_settings"])
+      : await requireAnyPermission(req, ["orders", "bookings", "rental_view", "rental_create", "rental_edit", "rental_approve", "rental_dispatch", "rental_return", "rental_inspect", "rental_payment", "rental_reports", "rental_settings"]);
+    if (isResponse(auth)) return auth;
+    return handleEquipmentRentals(req, parts.slice(3), { id: auth.id, name: auth.fullName || auth.username, role: auth.role, permissions: auth.permissions ?? [] });
   }
 
   if (section === "koshat-tasks")
@@ -61736,6 +61750,8 @@ async function formatRentalOrder(row: typeof rentalOrdersTable.$inferSelect) {
     orderNo: row.orderNo,
     trackingCode: row.orderNo,
     kind: "rental",
+    rentalKind: row.rentalKind,
+    workspaceHref: row.rentalKind === "equipment" ? `/admin/bookings/rentals/${row.id}` : null,
     productId: row.productId,
     productName: product?.nameAr || product?.name || "منتج إيجار",
     productImage: product
@@ -62067,6 +62083,7 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
       where: eq(rentalOrdersTable.id, id),
     });
     if (!existing) return error("حجز الإيجار غير موجود", 404);
+    if (existing.rentalKind === "equipment") return error("استخدم مساحة إيجار المعدات للتسليم والإرجاع؛ لا يُعدّل مخزون العقد من مسار الإيجار القديم",409);
     const update: any = { status: nextStatus, updatedAt: new Date() };
     if (
       existing.status === RENTAL_ACTIVE_STATUS &&
@@ -72889,6 +72906,7 @@ async function handleAccounting(
           });
           if (
             !row ||
+            (row.rentalKind === "equipment" && ["draft", "pending_approval", "cancelled", "canceled"].includes(row.status)) ||
             (row.customerId != null && row.customerId !== customer.id) ||
             (row.customerId == null &&
               normalizeIraqiPhone(row.phone) !==
@@ -73904,6 +73922,7 @@ async function handleAccounting(
           FROM financial_transactions
           WHERE direction = 'revenue' AND approval_status = 'executed'
             AND ${partnershipIncomePredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
+            AND ${equipmentRentalOperatingPredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
             AND transaction_date BETWEEN ${from} AND ${to}
           GROUP BY to_char(transaction_date, ${period})
           ORDER BY period DESC

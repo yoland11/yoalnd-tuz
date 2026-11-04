@@ -5,13 +5,16 @@ import ts from "typescript";
 import {sql} from "drizzle-orm";
 import {PgDialect} from "drizzle-orm/pg-core";
 import {PARTNERSHIP_POSTING_TYPES,resolvePartnershipFinancialEffect,partnershipCashPredicate,partnershipOperatingPredicate,partnershipIncomePredicate} from "../src/server/vehicle-partnership/financial-classification";
+import {isEquipmentRentalFinancial} from "../src/server/equipment-rental-finance";
+import {equipmentRentalEffect} from "../src/lib/equipment-rental-finance";
+import {equipmentRentalOperatingPredicate,equipmentRentalCashPredicate} from "../src/server/equipment-rental-classification";
 const source=readFileSync("src/server/master-cash-box.ts","utf8"),tree=ts.createSourceFile("finance.ts",source,ts.ScriptTarget.Latest,true);
-const names=["isBalanceSheetTransfer","cashMovementPresentation","balanceSheetTransferSql","cashImpactSql"];
+const names=["isBalanceSheetTransfer","cashMovementPresentation","balanceSheetTransferSql","cashImpactSql","operatingReversalSql"];
 const nodes=names.map(name=>tree.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name));
 assert.ok(nodes.every(Boolean),"every aggregate must have an explicit cash predicate independent of operating classification");
 const table=Object.fromEntries(["sourceType","transactionType"].map(key=>[key,sql.raw(`f.${key}`)]));
-const code=ts.transpileModule(nodes.map(n=>n!.getText(tree)).join("\n")+"\n({isBalanceSheetTransfer,cashMovementPresentation,balanceSheetTransferSql,cashImpactSql})",{compilerOptions:{module:ts.ModuleKind.None,target:ts.ScriptTarget.ES2022}}).outputText;
-const api=vm.runInNewContext(code,{sql,financialTransactionsTable:table,resolvePartnershipFinancialEffect,partnershipCashPredicate,partnershipOperatingPredicate});
+const code=ts.transpileModule(nodes.map(n=>n!.getText(tree)).join("\n")+"\n({isBalanceSheetTransfer,cashMovementPresentation,balanceSheetTransferSql,cashImpactSql,operatingReversalSql})",{compilerOptions:{module:ts.ModuleKind.None,target:ts.ScriptTarget.ES2022}}).outputText;
+const api=vm.runInNewContext(code,{sql,financialTransactionsTable:table,isEquipmentRentalFinancial,equipmentRentalEffect,equipmentRentalOperatingPredicate,equipmentRentalCashPredicate,resolvePartnershipFinancialEffect,partnershipCashPredicate,partnershipOperatingPredicate});
 for(const [type,rule] of Object.entries(PARTNERSHIP_POSTING_TYPES)){
  for(const reversal of [false,true]){
   const row={sourceType:rule.sourceType,transactionType:reversal?`${type}_reversal`:type,sourceEvent:reversal?"reversal":rule.sourceEvent,direction:reversal?(rule.direction==="revenue"?"expense":"revenue"):rule.direction,reversedTransactionId:reversal?22:null};
@@ -29,7 +32,7 @@ const trendQueries:ts.TaggedTemplateExpression[]=[];
 function findTrend(node:ts.Node){if(ts.isTaggedTemplateExpression(node)&&node.tag.getText(tree)==="sql"&&node.template.getText(tree).includes("SELECT to_char(transaction_date"))trendQueries.push(node);ts.forEachChild(node,findTrend);}
 findTrend(tree);assert.equal(trendQueries.length,1,"inspect the actual dashboard monthly trend query");
 const trendCode=ts.transpileModule(`const trend=${trendQueries[0].getText(tree)};trend;`,{compilerOptions:{module:ts.ModuleKind.None,target:ts.ScriptTarget.ES2022}}).outputText;
-const trendQuery=dialect.sqlToQuery(vm.runInNewContext(trendCode,{sql,today:"2026-10-25",balanceSheetTransferSql:api.balanceSheetTransferSql}));
+const trendQuery=dialect.sqlToQuery(vm.runInNewContext(trendCode,{sql,today:"2026-10-25",balanceSheetTransferSql:api.balanceSheetTransferSql,operatingReversalSql:api.operatingReversalSql}));
 assert.ok(trendQuery.params.includes("vp_partner_operating_advance"),"monthly trend must use the shared operating classifier: noncash attribution/capital/internal entitlement are not company operating revenue/expense");
 assert.equal((source.match(/cashNet: sql<number>`/g)||[]).length,2);
 for(const match of source.matchAll(/cashNet: sql<number>`([^`]+)`/g))assert.ok(match[1].includes("cashImpactSql()"),"reversal/recalculation cash totals exclude noncash sources");
@@ -46,7 +49,7 @@ for(const [file,needle,count] of [
  assert.equal(queries.length,count,`${file}: each actual income query needs income-only classification, including cost reversals`);
  for(const query of queries){
   const js=ts.transpileModule(`${query.getText(ast)};`,{compilerOptions:{module:ts.ModuleKind.None,target:ts.ScriptTarget.ES2022}}).outputText;
-  const actual=dialect.sqlToQuery(vm.runInNewContext(js,{sql,partnershipIncomePredicate,period:"2026-10",from:"2026-10-01",to:"2026-10-31",trunc:"month",back:"12 months",staffFilter:sql``}));
+  const actual=dialect.sqlToQuery(vm.runInNewContext(js,{sql,partnershipIncomePredicate,equipmentRentalOperatingPredicate,period:"2026-10",from:"2026-10-01",to:"2026-10-31",trunc:"month",back:"12 months",staffFilter:sql``}));
   assert.ok(actual.params.includes("vehicle_partnership_")&&actual.params.includes("vp_"),`${file}: exact feature namespaces excluded by actual generated SQL`);
   assert.ok(!actual.params.includes("vp_driver_accrual_reversal"),"income-only guard must not allow cost reversals as sales");
  }
@@ -58,7 +61,7 @@ const dashboard=tree.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.tex
 let revenueAggregates=0;
 const checkNet=(node:ts.Node)=>{if(ts.isPropertyAssignment(node)&&node.name.getText(tree)==="revenue"&&ts.isTaggedTemplateExpression(node.initializer)){
  revenueAggregates++;const actual=node.initializer.getText(tree);
- assert.ok(actual.includes("not like '%_reversal'")&&actual.includes("then -"),"every dashboard operating revenue aggregate nets reversals instead of treating cost reversal as income");
+ assert.ok(actual.includes("operatingReversalSql()")&&actual.includes("then -"),"every dashboard operating revenue aggregate nets reversals instead of treating cost reversal as income");
 }ts.forEachChild(node,checkNet);};checkNet(dashboard);assert.equal(revenueAggregates,3);
 assert.match(readFileSync("src/server/api.ts","utf8"),/row\.direction === "revenue" && \(resolvePartnershipFinancialEffect\(row\)\?\.cash \?\? "in"\) === "in"/,"noncash attribution must not send a fake customer payment notification");
 console.log("PASS shared financial presentation/aggregate contracts: noncash separate from P&L, payouts/capital not expenses/revenue, cash rebuild/reversal predicates, daily/command-center classification and payment-notification guard.");

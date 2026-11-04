@@ -146,6 +146,18 @@ export async function reconcilePaymentState(
         WHERE s.kind = 'invoice_credit' AND s.status = 'applied' AND s.invoice_id = ${sourceId}
       )`
     : sql`, return_credits AS (SELECT 0::numeric AS value)`;
+  // A deposit is a liability until one approved noncash application settles
+  // this original rental. Its reversal restores both liability and receivable.
+  // Financial source strings require no new table, keeping legacy installs safe.
+  const rentalDepositApplications = input.sourceType === "rental_order"
+    ? sql`, rental_deposit_applications AS (
+        SELECT coalesce(sum(CASE WHEN direction='expense' THEN amount::numeric ELSE -amount::numeric END),0)::numeric AS value
+        FROM financial_transactions
+        WHERE source_type='equipment_rental_deposit' AND source_id=${String(sourceId)}
+          AND transaction_type IN ('er_deposit_apply','er_deposit_apply_reversal')
+          AND approval_status='executed'
+      )`
+    : sql`, rental_deposit_applications AS (SELECT 0::numeric AS value)`;
 
   const result = await tx.execute(sql`
     WITH source AS (
@@ -163,11 +175,11 @@ export async function reconcilePaymentState(
         AND source_id = ${String(sourceId)}
         AND approval_status = 'executed'
     )
-    ${allocations}${installments}${returnCredits}, computed AS (
+    ${allocations}${installments}${returnCredits}${rentalDepositApplications}, computed AS (
       SELECT source.id, source.total_amount,
-        greatest(direct_financials.value + allocations.value + installment_financials.value, 0)::numeric AS approved_paid,
+        greatest(direct_financials.value + allocations.value + installment_financials.value + rental_deposit_applications.value, 0)::numeric AS approved_paid,
         greatest(return_credits.value, 0)::numeric AS credits
-      FROM source, direct_financials, allocations, installment_financials, return_credits
+      FROM source, direct_financials, allocations, installment_financials, return_credits, rental_deposit_applications
     )
     UPDATE ${table} document
     SET ${paid} = least(computed.total_amount, computed.approved_paid),

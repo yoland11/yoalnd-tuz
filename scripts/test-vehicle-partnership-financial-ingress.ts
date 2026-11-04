@@ -3,9 +3,10 @@ import {readFileSync} from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 import {assertGenericFinancialSourceInput} from "../src/server/vehicle-partnership/financial-classification";
+import {assertGenericEquipmentRentalInput} from "../src/server/equipment-rental-finance";
 const source=readFileSync("src/server/master-cash-box.ts","utf8"),tree=ts.createSourceFile("master-cash-box.ts",source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
 let entered=0;
-const context={assertGenericFinancialSourceInput,ensureMasterCashBoxTables:async()=>{entered++;throw Error("ORIGINAL_PATH");},financialTransactionInputSchema:{parse:()=>{entered++;throw Error("ORIGINAL_PATH");}}};
+const context={assertGenericFinancialSourceInput,assertGenericEquipmentRentalInput,ensureMasterCashBoxTables:async()=>{entered++;throw Error("ORIGINAL_PATH");},financialTransactionInputSchema:{parse:()=>{entered++;throw Error("ORIGINAL_PATH");}}};
 function actual(name:string){const node=tree.statements.find(s=>ts.isFunctionDeclaration(s)&&s.name?.text===name);assert.ok(node,`actual original ${name} exists`);const code=ts.transpileModule(node.getText(tree).replace(/^export\s+/,""),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;return vm.runInNewContext(`${code}\n${name}`,context);}
 const admin={id:7,name:"مدير",role:"admin",permissions:[]};
 for(const name of ["createFinancialTransaction","createAndExecuteSourceFinancialTransaction"]){

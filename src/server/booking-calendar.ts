@@ -145,10 +145,10 @@ export async function readBookingCalendar(executor: Executor, query: BookingCale
       ORDER BY c.event_date, c.id LIMIT ${ROW_CAP + 1}
     `),
     executor.execute(sql`
-      SELECT r.id, r.order_no, r.customer_name, r.phone, r.start_date::text AS start_date, r.end_date::text AS end_date, r.status,
+      SELECT r.id, r.order_no, r.customer_name, r.phone, r.start_date::text AS start_date, r.end_date::text AS end_date, r.status, to_jsonb(r)->'equipment_details' AS equipment_details,
         (SELECT coalesce(nullif(p.name_ar, ''), p.name) FROM products p WHERE p.id = r.product_id) AS product_name
       FROM rental_orders r
-      WHERE r.start_date >= ${from}::date AND r.start_date <= ${to}::date
+      WHERE ((r.start_date >= ${from}::date AND r.start_date <= ${to}::date) OR (r.end_date >= ${from}::date AND r.end_date <= ${to}::date))
         AND NOT EXISTS (SELECT 1 FROM orders store WHERE store.tracking_code = r.order_no)
       ORDER BY r.start_date, r.id LIMIT ${ROW_CAP + 1}
     `),
@@ -360,25 +360,20 @@ export async function readBookingCalendar(executor: Executor, query: BookingCale
 
   for (const row of capped(rentals)) {
     const id = Number(row.id);
-    const day = eventCalendarDay(row.start_date);
-    if (!inRange(day)) continue;
-    events.push(bookingEvent({
-      id,
-      kind: "rental",
-      title: text(row.product_name) || "حجز إيجار",
-      customerName: text(row.customer_name),
-      phone: text(row.phone),
-      trackingCode: null,
-      number: text(row.order_no) || `RNT-${id}`,
-      status: text(row.status),
-      date: day,
-      day,
-      startTime: null,
-      timeNote: row.end_date ? `حتى ${text(row.end_date)}` : null,
-      location: "",
-      departments: department("rental"),
-      detailHref: "/admin/bookings",
-    }));
+    const details = row.equipment_details && typeof row.equipment_details === "object" ? row.equipment_details : {};
+    const assets = Array.isArray(details.assets) ? details.assets : [];
+    const title = assets.length ? assets.map((line: any) => `${text(line.name)} × ${Number(line.quantity)}`).join("، ") : text(row.product_name) || "إيجار معدات";
+    const startDay = eventCalendarDay(row.start_date), returnDay = eventCalendarDay(row.end_date);
+    for (const [milestone, day] of [["dispatch", startDay], ["return", returnDay]] as const) {
+      if (!inRange(day) || (milestone === "return" && !details.version)) continue;
+      events.push(bookingEvent({ id, key: milestone === "dispatch" ? `rental-${id}` : `rental-${id}-return`, kind: "rental", rentalMilestone: milestone,
+        title: `${milestone === "return" ? "إرجاع" : "تسليم"}: ${title}`, customerName: text(row.customer_name), phone: text(row.phone),
+        trackingCode: null, number: text(row.order_no) || `RNT-${id}`, status: text(row.status), date: day, day,
+        startTime: text(milestone === "return" ? details.endTime : details.startTime) || null,
+        timeNote: `${text(row.start_date)} ← ${text(row.end_date)}`, location: text(details.address), departments: department("rental"),
+        detailHref: `/admin/bookings/rentals/${id}`, workspaceHref: `/admin/bookings/rentals/${id}`,
+      }));
+    }
   }
 
   for (const row of capped(storeOrders)) {

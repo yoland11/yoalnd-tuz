@@ -215,6 +215,13 @@ export async function quantityCommitmentRows(executor: Executor, productIds: num
     from service_orders s
     cross join lateral jsonb_array_elements(${assetsArray(sql`s.custom_fields`)}) as a(value)
     where s.archived_at is null and a.value->>'productId' in (${textIdList(ids)})
+    union all
+    select 'rental_order', r.id, r.start_date::text, r.status, r.customer_name, a.value,
+      to_jsonb(r)->'equipment_details'->'resourceWindow'
+    from rental_orders r
+    cross join lateral jsonb_array_elements(case when jsonb_typeof(to_jsonb(r)->'equipment_details'->'assets') = 'array'
+      then to_jsonb(r)->'equipment_details'->'assets' else '[]'::jsonb end) as a(value)
+    where to_jsonb(r)->>'rental_kind' = 'equipment' and a.value->>'productId' in (${textIdList(ids)})
   `);
   if (!Array.isArray(result?.rows)) throw new Error("Invalid quantity commitment database response");
   for (const row of result.rows as any[]) {
@@ -305,7 +312,7 @@ export async function quantityAvailability(
   const companyRows = rowsMap.get(input.productId) ?? [];
   const rows = input.warehouse ? scopeCommitments(companyRows, input.warehouse.id, input.warehouse.mainId) : companyRows;
   if (input.interval !== undefined) {
-    const source=input.exclude?.source === "kosha_booking" ? "kosha" : input.exclude?.source === "service_order" ? "service" : null;
+    const source=input.exclude?.source === "kosha_booking" ? "kosha" : input.exclude?.source === "service_order" ? "service" : input.exclude?.source === "rental_order" ? "rental" : null;
     if(!source || !input.exclude)throw new QuantityAssetError("يلزم تحديد الحجز الأصلي لفحص فترة المعدات",422);
     const result=quantityPeriodAvailability({booking:{source,id:input.exclude.bookingId},buckets:input.buckets,rows,interval:input.interval,otherHolds:holds,today:baghdadDay()});
     if(!result.complete || !result.availability)throw new QuantityAssetError("لا يمكن تأكيد التوفر: راجع فترات الحجوزات المرتبطة وتطابق الكميات الخارجة قبل الحجز",409);
@@ -386,7 +393,7 @@ async function assetTimeline(
 // ─── Booking lines ──────────────────────────────────────────────────────────
 
 export type QuantityBookingInput = {
-  mode: "link" | "unlink" | "reserve" | "pick" | "checkout" | "return" | "inspect";
+  mode: "link" | "unlink" | "reserve" | "release" | "pick" | "checkout" | "return" | "inspect";
   productId: number;
   quantity: number;
   problem: "none" | "damaged" | "missing";
@@ -399,6 +406,7 @@ export type QuantityBookingInput = {
   goodQuantity?: number;
   damagedQuantity?: number;
   missingQuantity?: number;
+  pendingInspectionQuantity?: number;
   warehouseId?: number;
   allocations?: Array<{ warehouseId: number; quantity: number }>;
   vehicle?: string;
@@ -421,6 +429,7 @@ const MODE_TITLES: Record<QuantityBookingInput["mode"], string> = {
   link: "تمت إضافة أصل متعدد الكمية للحجز",
   unlink: "تمت إزالة أصل متعدد الكمية من الحجز",
   reserve: "تم حجز كمية من الأصل",
+  release: "تم تحرير حجز كمية الأصل",
   pick: "تم تجهيز كمية من الأصل",
   checkout: "خرجت كمية من الأصل من المستودع",
   return: "تم إرجاع كمية من الأصل",
@@ -438,6 +447,7 @@ export function quantityLineSummary(raw: any) {
     returnedGood: line.returnedGoodQty,
     damaged: line.returnedDamagedQty,
     missing: line.missingQty,
+    pendingInspection: whole(line.pendingInspectionQty),
     returned: line.returnedGoodQty + line.returnedDamagedQty + line.missingQty,
     stage: raw?.stage === "completed" ? "completed" : quantityLineStage(line),
   };
@@ -468,7 +478,7 @@ export async function executeQuantityBookingAction(
   const unit = locked.profile.unit;
   const bookingRef = { source: reference.entityType, bookingId: reference.id };
   const requestKey = action.requestId ? `qasset:${action.productId}:${action.requestId}` : null;
-  if (requestKey && ["checkout", "return"].includes(action.mode) && (await movementExists(executor, requestKey)))
+  if (requestKey && ["checkout", "return", "inspect"].includes(action.mode) && (await movementExists(executor, requestKey)))
     return { ok: true, replayed: true, productId: action.productId, name: locked.product.name };
 
   const bookingStatus = String(reference.status ?? "").toLowerCase();
@@ -502,6 +512,7 @@ export async function executeQuantityBookingAction(
   for (const part of action.allocations ?? []) await requireActiveWarehouse(executor, part.warehouseId);
   let allocations: LineAllocations = currentRaw ? lineAllocations(currentRaw, homeId) : {};
   const deltas: WarehouseDelta[] = [];
+  const pendingInspectionByWarehouse: Record<string, number> = { ...(currentRaw?.pendingInspectionByWarehouse ?? {}) };
   const shelves = (await warehouseBreakdowns(executor, [action.productId])).get(action.productId) as ProductBreakdown;
   // The warehouse the movement is recorded against; a split keeps every slice in its metadata.
   let warehouseId: number = action.warehouseId ?? homeId;
@@ -581,6 +592,11 @@ export async function executeQuantityBookingAction(
       await warehouseAvailabilityFor();
       break;
     }
+    case "release":
+      next.reservedQty = line.checkedOutQty;
+      next.preparedQty = Math.min(next.preparedQty, line.checkedOutQty);
+      allocations = rebalanceAllocations(allocations, next.reservedQty, warehouseId);
+      break;
     case "pick": {
       if (line.reservedQty <= 0) throw new QuantityAssetError("احجز الكمية قبل التجهيز", 409);
       if (quantity > line.reservedQty)
@@ -647,9 +663,10 @@ export async function executeQuantityBookingAction(
       break;
     }
     case "return": {
-      const hasSplit = [action.goodQuantity, action.damagedQuantity, action.missingQuantity].some((value) => value !== undefined);
+      const pending = whole(action.pendingInspectionQuantity);
+      const hasSplit = [action.goodQuantity, action.damagedQuantity, action.missingQuantity, action.pendingInspectionQuantity].some((value) => value !== undefined);
       const split = hasSplit
-        ? { good: whole(action.goodQuantity), damaged: whole(action.damagedQuantity), missing: whole(action.missingQuantity) }
+        ? { good: whole(action.goodQuantity) + pending, damaged: whole(action.damagedQuantity), missing: whole(action.missingQuantity) }
         : action.problem === "damaged"
           ? { good: 0, damaged: quantity, missing: 0 }
           : action.problem === "missing"
@@ -663,19 +680,22 @@ export async function executeQuantityBookingAction(
         throw new QuantityAssetError("تسجيل النقص يتطلب اعتماد المدير", 422);
       if (buckets.checkedOut < checked.total)
         throw new QuantityAssetError("رصيد الكمية الخارجة لا يطابق الإرجاع؛ راجع حركات الأصل", 409);
-      next.returnedGoodQty += checked.good;
+      next.returnedGoodQty += checked.good - pending;
+      next.pendingInspectionQty = whole(line.pendingInspectionQty) + pending;
       next.returnedDamagedQty += checked.damaged;
       next.missingQty += checked.missing;
-      stockDelta = checked.good;
+      stockDelta = checked.good - pending;
       buckets.checkedOut -= checked.total;
-      buckets.inWarehouse += checked.good;
+      buckets.inWarehouse += checked.good - pending;
+      buckets.maintenance += pending;
       buckets.damaged += checked.damaged;
       buckets.missing += checked.missing;
       // Units come off the warehouses they left from. Good and damaged units land in the chosen
       // destination, or go back where they came from. Missing units stay on their source's record.
       if (!Object.keys(allocations).length) allocations = { [String(homeId)]: { reserved: 0, checkedOut: 0, returned: 0 } };
       const sources = consumeOutstanding(allocations, checked.total);
-      let good = checked.good;
+      let good = checked.good - pending;
+      let pendingLeft = pending;
       let damagedLeft = checked.damaged;
       for (const source of sources) {
         const key = String(source.warehouseId);
@@ -685,10 +705,13 @@ export async function executeQuantityBookingAction(
         good -= backGood;
         const backDamaged = Math.min(damagedLeft, source.quantity - backGood);
         damagedLeft -= backDamaged;
-        const backMissing = source.quantity - backGood - backDamaged;
+        const backPending = Math.min(pendingLeft, source.quantity - backGood - backDamaged);
+        pendingLeft -= backPending;
+        const backMissing = source.quantity - backGood - backDamaged - backPending;
         deltas.push({ warehouseId: source.warehouseId, checkedOut: -source.quantity, missing: backMissing });
         const target = action.warehouseId ?? source.warehouseId;
-        deltas.push({ warehouseId: target, inWarehouse: backGood, damaged: backDamaged });
+        if (backPending) pendingInspectionByWarehouse[String(target)] = whole(pendingInspectionByWarehouse[String(target)]) + backPending;
+        deltas.push({ warehouseId: target, inWarehouse: backGood, damaged: backDamaged, maintenance: backPending });
       }
       warehouseId = action.warehouseId ?? sources[0]?.warehouseId ?? homeId;
       const details = {
@@ -701,7 +724,7 @@ export async function executeQuantityBookingAction(
       };
       movement = {
         reason: "quantity_asset_return",
-        metadata: { action: "return", good: checked.good, damaged: checked.damaged, missing: checked.missing, remainingOut: checked.remaining, ...details },
+        metadata: { action: "return", good: checked.good - pending, pendingInspection: pending, damaged: checked.damaged, missing: checked.missing, remainingOut: checked.remaining, ...details },
       };
       const baseKey = requestKey ?? `qasset:${action.productId}:${reference.entityType}:${reference.id}:${now}`;
       if (checked.damaged > 0)
@@ -710,10 +733,34 @@ export async function executeQuantityBookingAction(
         extraMovements.push({ reason: "quantity_asset_loss", key: `${baseKey}:missing`, metadata: { action: "return_missing", quantity: checked.missing, ...details } });
       break;
     }
-    case "inspect":
-      if (line.checkedOutQty <= 0 || lineOutstanding(line) > 0)
+    case "inspect": {
+      const pending = whole(line.pendingInspectionQty);
+      const good = whole(action.goodQuantity), damaged = whole(action.damagedQuantity), resolved = good + damaged;
+      if (pending > 0) {
+        if (!resolved || resolved > pending || buckets.maintenance < resolved)
+          throw new QuantityAssetError("كميات الفحص لا تطابق الكمية المعلقة في الصيانة", 409);
+        if (damaged && !action.description?.trim()) throw new QuantityAssetError("اكتب وصف التلف", 422);
+        const evidence = Object.values(pendingInspectionByWarehouse).reduce((sum, n) => sum + whole(n), 0);
+        if (evidence !== pending) throw new QuantityAssetError("مخازن الفحص لا تطابق الكمية المعلقة؛ راجع حركات الإرجاع", 409);
+        let left = resolved, goodLeft = good;
+        for (const [key, amount] of Object.entries(pendingInspectionByWarehouse)) {
+          const take = Math.min(left, whole(amount));
+          if (!take) continue;
+          const healthy = Math.min(goodLeft, take);
+          pendingInspectionByWarehouse[key] = whole(amount) - take;
+          goodLeft -= healthy; left -= take;
+          deltas.push({ warehouseId: Number(key), maintenance: -take, inWarehouse: healthy, damaged: take - healthy });
+        }
+        buckets.maintenance -= resolved; buckets.inWarehouse += good; buckets.damaged += damaged;
+        stockDelta = good;
+        next.pendingInspectionQty = pending - resolved;
+        next.returnedGoodQty += good; next.returnedDamagedQty += damaged;
+        movement = { reason: "quantity_asset_inspection", metadata: { action: "inspect", good, damaged, pendingInspection: next.pendingInspectionQty, bookingType: reference.entityType, bookingId: reference.id } };
+      } else if (line.checkedOutQty <= 0 || lineOutstanding(line) > 0) {
         throw new QuantityAssetError("يجب تسجيل إرجاع كامل الكمية الخارجة قبل الفحص", 409);
+      }
       break;
+    }
     case "unlink":
       if (line.checkedOutQty > 0)
         throw new QuantityAssetError("لا يمكن إزالة أصل خرجت منه كميات ضمن هذا الحجز؛ أكمل الإرجاع والفحص", 409);
@@ -733,7 +780,9 @@ export async function executeQuantityBookingAction(
     returnedGoodQty: next.returnedGoodQty,
     returnedDamagedQty: next.returnedDamagedQty,
     missingQty: next.missingQty,
-    stage: action.mode === "inspect" ? "completed" : quantityLineStage(next),
+    pendingInspectionQty: whole(next.pendingInspectionQty),
+    stage: action.mode === "inspect" && !lineOutstanding(next) && !whole(next.pendingInspectionQty) ? "completed" : action.mode === "release" && !lineOutstanding(next) ? "released" : quantityLineStage(next),
+    ...(Object.keys(pendingInspectionByWarehouse).length ? { pendingInspectionByWarehouse } : {}),
     ...(Object.keys(allocations).length ? { warehouseAllocations: allocations, warehouseId: Number(Object.keys(allocations)[0]) } : {}),
     updatedAt: now,
     ...(action.mode === "reserve" ? { reservedAt: now } : {}),

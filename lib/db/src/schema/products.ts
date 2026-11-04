@@ -58,6 +58,9 @@ export const productsTable = pgTable("products", {
   sharedStockProductId: integer("shared_stock_product_id"),
 
   isRental: boolean("is_rental").notNull().default(false),
+  // Equipment rentals reuse the original product and stock identity. Optional
+  // settings preserve every historical storefront rental's existing defaults.
+  rentalSettings: jsonb("rental_settings").$type<Record<string, unknown> | null>(),
   pricePerDay: numeric("price_per_day", { precision: 12, scale: 2 })
     .notNull()
     .default("0"),
@@ -164,6 +167,8 @@ export const productsTable = pgTable("products", {
 
 export const rentalOrdersTable = pgTable("rental_orders", {
   id: serial("id").primaryKey(),
+  rentalKind: varchar("rental_kind", { length: 20 }).notNull().default("product"),
+  equipmentDetails: jsonb("equipment_details").$type<Record<string, unknown> | null>(),
   orderNo: varchar("order_no", { length: 40 }).notNull().unique(),
   productId: integer("product_id")
     .notNull()

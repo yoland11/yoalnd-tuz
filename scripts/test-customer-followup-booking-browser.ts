@@ -98,7 +98,8 @@ try {
     };
     let row: any = { ...initial },
       contextFails = true,
-      conflict = true;
+      conflict = true,
+      manualShortcutMode = false;
     const requests: { method: string; path: string; search: string }[] = [],
       posts: any[] = [],
       unexpected: string[] = [];
@@ -184,6 +185,7 @@ try {
         };
         return route.fulfill({ json: { id: 602, trackingCode: "SRV-602" } });
       }
+      if (manualShortcutMode && req.method() === "GET" && path.startsWith("/api/admin/")) return route.fulfill({ json: [] });
       unexpected.push(`${req.method()} ${path}`);
       return route.fulfill({
         status: 403,
@@ -363,6 +365,21 @@ try {
       [],
       "successful followup conversion never falls through to the historical global customer GET",
     );
+    // Rental/event shortcut must react to query-only navigation in the same
+    // mounted BookingDashboard, without bypassing a source followup gate.
+    await page.goto(`${origin}/admin/bookings?followup=17&new=1`, { waitUntil: "networkidle" });
+    await form().waitFor({ state: "hidden" });
+    assert.equal(posts.length, 2, "a converted followup is not a new manual booking");
+    manualShortcutMode = true;
+    await page.goto(`${origin}/admin/bookings`, { waitUntil: "networkidle" });
+    for (const attempt of [1, 2]) {
+      await page.evaluate(() => { window.history.pushState(null, "", "/admin/bookings?new=1"); window.dispatchEvent(new PopStateEvent("popstate")); });
+      await form().waitFor();
+      assert.equal(new URL(page.url()).searchParams.has("new"), false, `shortcut consumed after opening ${attempt}`);
+      await form().getByRole("button", { name: "إلغاء", exact: true }).click();
+      await form().waitFor({ state: "hidden" });
+    }
+    assert.equal(posts.length, 2, "navigation-only checks do not submit bookings");
     assert.equal(errors.length, 0, errors.join("\n"));
     console.log(
       `PASS actual BookingCenterPage ${width}px: scoped failed-read gate, locked original customer, graduation, original financial payload, typed conflict recovery/no duplicate and successful conversion without broad customer reads`,

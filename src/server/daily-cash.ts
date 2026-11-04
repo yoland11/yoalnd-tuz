@@ -7,6 +7,7 @@ import {
 } from "@workspace/db";
 import { ensureMasterCashBoxTables } from "@/server/master-cash-box";
 import { partnershipOperatingPredicate } from "./vehicle-partnership/financial-classification";
+import { equipmentRentalOperatingPredicate, equipmentRentalCashPredicate } from "./equipment-rental-classification";
 
 export type DailyCashActor = {
   id: number | null;
@@ -21,6 +22,7 @@ export type DailyCashApprovalStatus = "none" | "pending" | "approved";
 export type DailyCashStatus = "balanced" | "surplus" | "shortage";
 
 export type DailyCashBreakdown = {
+  rentalDepositsNet: number;
   invoiceSales: number;
   productOrderSales: number;
   serviceOrderSales: number;
@@ -152,7 +154,7 @@ function reconciliationStatus(difference: number): DailyCashStatus {
 
 async function aggregateDailyCash(from: string, to: string) {
   await ensureMasterCashBoxTables();
-  const [invoiceRows, productOrderRows, serviceOrderRows, otherRevenueRows, expenseRows] = await Promise.all([
+  const [invoiceRows, productOrderRows, serviceOrderRows, otherRevenueRows, expenseRows, rentalDepositRows] = await Promise.all([
     db.execute(sql`
       SELECT day, COALESCE(SUM(total),0)::float AS total, COALESCE(SUM(count),0)::int AS count FROM (
         SELECT date::text AS day, COALESCE(SUM(total::numeric),0) AS total, COUNT(*)::int AS count
@@ -205,13 +207,14 @@ async function aggregateDailyCash(from: string, to: string) {
     `),
     db.execute(sql`
       SELECT transaction_date::text AS day,
-        COALESCE(SUM(CASE WHEN direction='revenue' AND transaction_type NOT LIKE '%_reversal' THEN amount::numeric WHEN direction='expense' AND transaction_type LIKE '%_reversal' THEN -amount::numeric ELSE 0 END),0)::float AS total
+        COALESCE(SUM(CASE WHEN direction='revenue' AND NOT (CASE WHEN transaction_type='er_rent_refund' THEN true WHEN transaction_type='er_rent_refund_reversal' THEN false ELSE transaction_type LIKE '%_reversal' END) THEN amount::numeric WHEN direction='expense' AND (CASE WHEN transaction_type='er_rent_refund' THEN true WHEN transaction_type='er_rent_refund_reversal' THEN false ELSE transaction_type LIKE '%_reversal' END) THEN -amount::numeric ELSE 0 END),0)::float AS total
       FROM financial_transactions
       WHERE approval_status='executed'
         AND COALESCE(source_type,'') NOT IN ('sales_invoice','order','service_order','kosha_booking')
         AND COALESCE(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance')
         AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment')
         AND ${partnershipOperatingPredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
+        AND ${equipmentRentalOperatingPredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
         AND transaction_date >= ${from} AND transaction_date <= ${to}
       GROUP BY transaction_date
     `),
@@ -224,19 +227,26 @@ async function aggregateDailyCash(from: string, to: string) {
         GROUP BY date
         UNION ALL
         SELECT transaction_date::text AS day,
-          COALESCE(SUM(CASE WHEN direction='expense' AND transaction_type NOT LIKE '%_reversal' THEN amount::numeric WHEN direction='revenue' AND transaction_type LIKE '%_reversal' THEN -amount::numeric ELSE 0 END),0) AS total
+          COALESCE(SUM(CASE WHEN direction='expense' AND NOT (CASE WHEN transaction_type='er_rent_refund' THEN true WHEN transaction_type='er_rent_refund_reversal' THEN false ELSE transaction_type LIKE '%_reversal' END) THEN amount::numeric WHEN direction='revenue' AND (CASE WHEN transaction_type='er_rent_refund' THEN true WHEN transaction_type='er_rent_refund_reversal' THEN false ELSE transaction_type LIKE '%_reversal' END) THEN -amount::numeric ELSE 0 END),0) AS total
       FROM financial_transactions
         WHERE approval_status='executed'
           AND COALESCE(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance')
           AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment')
           AND ${partnershipOperatingPredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
+          AND ${equipmentRentalOperatingPredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
           AND transaction_date >= ${from} AND transaction_date <= ${to}
         GROUP BY transaction_date
       ) rows GROUP BY day
     `),
+    db.execute(sql`SELECT transaction_date::text AS day,
+      coalesce(sum(CASE WHEN direction='revenue' THEN amount::numeric ELSE -amount::numeric END),0)::float AS total
+      FROM financial_transactions WHERE approval_status='executed' AND source_type='equipment_rental_deposit'
+        AND ${equipmentRentalCashPredicate({sourceType:sql`source_type`,transactionType:sql`transaction_type`})}
+        AND transaction_date >= ${from} AND transaction_date <= ${to} GROUP BY transaction_date`),
   ]);
 
   const map = new Map<string, {
+    rentalDepositsNet: number;
     invoiceSales: number;
     productOrderSales: number;
     serviceOrderSales: number;
@@ -250,6 +260,7 @@ async function aggregateDailyCash(from: string, to: string) {
     const existing = map.get(day);
     if (existing) return existing;
     const next = {
+      rentalDepositsNet: 0,
       invoiceSales: 0,
       productOrderSales: 0,
       serviceOrderSales: 0,
@@ -283,6 +294,7 @@ async function aggregateDailyCash(from: string, to: string) {
   for (const row of (expenseRows.rows ?? []) as any[]) {
     ensure(String(row.day)).totalExpenses = toNumber(row.total);
   }
+  for (const row of (rentalDepositRows.rows ?? []) as any[]) ensure(String(row.day)).rentalDepositsNet = toNumber(row.total);
   return map;
 }
 
@@ -300,7 +312,8 @@ function buildCashRow(
   const totalSales = money(invoiceSales + productOrderSales + serviceOrderSales + otherRevenue);
   const totalExpenses = money(day?.totalExpenses ?? 0);
   const openingBalance = money(toNumber(report?.openingBalance ?? reconciliation?.openingBalance ?? 0));
-  const closingBalance = money(openingBalance + totalSales - totalExpenses);
+  const rentalDepositsNet = money(day?.rentalDepositsNet ?? 0);
+  const closingBalance = money(openingBalance + totalSales - totalExpenses + rentalDepositsNet);
   const actualCashInDrawer = reconciliation ? money(toNumber(reconciliation.actualCashInDrawer)) : null;
   const difference = reconciliation ? money(toNumber(reconciliation.difference)) : null;
   return {
@@ -328,6 +341,7 @@ function buildCashRow(
     approvalNote: String(reconciliation?.approvalNote ?? ""),
     approvedAt: reconciliation?.approvedAt ? new Date(reconciliation.approvedAt).toISOString() : null,
     breakdown: {
+      rentalDepositsNet,
       invoiceSales,
       productOrderSales,
       serviceOrderSales,
@@ -478,7 +492,7 @@ export async function upsertDailyCashReconciliation(input: unknown, actor: Daily
   await assertDayEditable(parsed.reportDate, actor);
   const current = await getDailyCashRow(parsed.reportDate);
   const openingBalance = money(parsed.openingBalance ?? current.openingBalance);
-  const expectedCashBalance = money(openingBalance + current.totalSales - current.totalExpenses);
+  const expectedCashBalance = money(openingBalance + current.totalSales - current.totalExpenses + current.breakdown.rentalDepositsNet);
   const actualCashInDrawer = money(parsed.actualCashInDrawer);
   const difference = money(actualCashInDrawer - expectedCashBalance);
   const status = reconciliationStatus(difference);
@@ -579,7 +593,7 @@ export async function closeDailyCashDay(reportDate: string, actor: DailyCashActo
   const parsedDate = dateStringSchema.parse(reportDate);
   const current = await getDailyCashRow(parsedDate);
   const openingBalance = current.hasManualOpeningBalance ? current.openingBalance : await suggestOpeningBalance(parsedDate);
-  const closingBalance = money(openingBalance + current.totalSales - current.totalExpenses);
+  const closingBalance = money(openingBalance + current.totalSales - current.totalExpenses + current.breakdown.rentalDepositsNet);
   const now = new Date();
   await db
     .insert(dailyCashReportsTable)

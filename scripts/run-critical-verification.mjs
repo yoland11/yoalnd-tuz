@@ -41,6 +41,8 @@ const steps = [
   ["Original photography scheduling, crew and transactional source synchronization", "pnpm", ["run", "test:photography-resource-period"]],
   ["Original photography shoot clock consistency", "pnpm", ["run", "test:photography-shoot-clock"]],
   ["Booking group photos (isolated PostgreSQL and local private storage)", "pnpm", ["run", "test:booking-group-photos"]],
+  ["Equipment rentals pricing, permissions, inventory and deposits", "pnpm", ["run", "test:equipment-rentals"]],
+  ["Equipment rentals original PostgreSQL lifecycle", "pnpm", ["run", "test:equipment-rentals-db"]],
   ["Booking resource review regressions and original graduation photo requests", "pnpm", ["run", "test:booking-resource-review"]],
   ["Repeated booking destination operational isolation", "pnpm", ["run", "test:booking-repeat"]],
   ["Read-only booking conflict report, permissions and RTL UI", "pnpm", ["run", "test:booking-conflicts"]],

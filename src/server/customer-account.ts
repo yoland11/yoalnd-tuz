@@ -99,6 +99,14 @@ export async function getCustomerAccountDocuments(
       WHERE archived_at IS NULL AND status <> 'cancelled'
         AND (customer_id = ${cid}
              OR (customer_id IS NULL AND ${phone ? sql`phone = ${phone}` : sql`false`}))
+      UNION ALL
+      SELECT 'rental_order', r.id, r.order_no, r.created_at,
+             r.total_amount::numeric, r.remaining_amount::numeric, r.payment_status,
+             (r.customer_id = ${cid}), 0::numeric
+      FROM rental_orders r
+      WHERE to_jsonb(r)->>'rental_kind'='equipment' AND r.status NOT IN ('draft','pending_approval','cancelled','canceled')
+        AND NOT EXISTS (SELECT 1 FROM orders mirror WHERE mirror.tracking_code = r.order_no)
+        AND (r.customer_id = ${cid} OR (r.customer_id IS NULL AND ${phone ? sql`r.phone = ${phone}` : sql`false`}))
     )
     SELECT source_type, source_id, reference, doc_date,
            total::text AS total, remaining::text AS remaining,
@@ -172,7 +180,14 @@ export async function getCustomerStatement(
              CASE WHEN direction = 'revenue' THEN amount::numeric ELSE 0 END AS credit
       FROM financial_transactions
       WHERE customer_id = ${cid} AND approval_status = 'executed'
-        AND source_type IN ('sales_invoice', 'order', 'service_order', 'kosha_booking')
+        AND source_type IN ('sales_invoice', 'order', 'service_order', 'kosha_booking', 'rental_order')
+      UNION ALL
+      SELECT transaction_time::text, 'تسوية تأمين', transaction_no, description,
+        CASE WHEN transaction_type='er_deposit_apply_reversal' THEN amount::numeric ELSE 0 END,
+        CASE WHEN transaction_type='er_deposit_apply' THEN amount::numeric ELSE 0 END
+      FROM financial_transactions
+      WHERE customer_id=${cid} AND approval_status='executed' AND source_type='equipment_rental_deposit'
+        AND transaction_type IN ('er_deposit_apply','er_deposit_apply_reversal')
       UNION ALL
       SELECT coalesce(a.posted_at::text, v.date::text) AS date, 'سند قبض' AS type,
              v.voucher_no AS reference, 'تخصيص سند قبض' AS description,
@@ -181,7 +196,7 @@ export async function getCustomerStatement(
       FROM receipt_voucher_allocations a
       JOIN receipt_vouchers v ON v.id = a.receipt_voucher_id
       WHERE a.customer_id = ${cid} AND a.posted_at IS NOT NULL
-        AND a.source_type IN ('sales_invoice', 'order', 'service_order', 'kosha_booking')
+        AND a.source_type IN ('sales_invoice', 'order', 'service_order', 'kosha_booking', 'rental_order')
         AND coalesce(v.approval_status, 'executed') = 'executed'
     ) movements
   `);

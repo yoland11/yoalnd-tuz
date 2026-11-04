@@ -130,6 +130,7 @@ type TransactionDetail = FinancialTransaction & {
 };
 
 const DEPARTMENTS = [
+  { value: "rentals", label: "إيجار المعدات" },
   { value: "general", label: "عام" },
   { value: "store", label: "المتجر" },
   { value: "koshas", label: "الكوشات" },
@@ -171,6 +172,8 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   service_order: "خدمة",
   order: "طلب متجر",
   rental_order: "إيجار",
+  equipment_rental_deposit: "تأمين إيجار مسترد",
+  equipment_rental_charge: "رسوم إيجار مستحقة",
   sales_invoice: "فاتورة مبيعات",
   purchase_invoice: "فاتورة مشتريات",
   receipt_voucher: "سند قبض",

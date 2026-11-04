@@ -9,6 +9,7 @@ export { formatCurrency, formatMoney } from "@/lib/money";
 
 // ───── Cookie-based admin auth client ─────
 export const ALL_PERMISSIONS = [
+  "rental_view", "rental_create", "rental_edit", "rental_approve", "rental_dispatch", "rental_return", "rental_inspect", "rental_payment", "rental_reports", "rental_settings",
   "dashboard",
   "orders",
   "bookings",
@@ -520,6 +521,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   booking_staff_assign: "تعيين فريق الحجز",
   booking_operations_view: "عرض مساحة عمليات الحجز",
   booking_edit: "تعديل الحجز",
+  rental_view: "الإيجارات: العرض", rental_create: "الإيجارات: إنشاء عقد", rental_edit: "الإيجارات: تعديل المسودة", rental_approve: "الإيجارات: اعتماد وحجز المعدات", rental_dispatch: "الإيجارات: تسليم المعدات", rental_return: "الإيجارات: استلام الإرجاع", rental_inspect: "الإيجارات: الفحص", rental_payment: "الإيجارات: تسجيل طلب دفعة", rental_reports: "الإيجارات: التقارير المالية", rental_settings: "الإيجارات: إعدادات الأصول والعقد",
   booking_status_change: "تغيير حالة الحجز",
   booking_products_manage: "إدارة منتجات الحجز",
   inventory_shortage_override: "تجاوز عجز المخزون",

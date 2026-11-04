@@ -215,13 +215,14 @@ export type BookingCalendarEvent = {
   serviceId?: number;
   serviceType?: string | null;
   crewName?: string;
+  rentalMilestone?: "dispatch" | "return";
   primaryEmployeeName?: string | null;
   assistantEmployeeName?: string | null;
 };
 
 export type DepartmentCount = { key: string; label: string; short: string; bookings: number; units: number };
-export type DaySummary = { day: string; total: number; departments: DepartmentCount[]; storeOrders: number; staffAssignments: number };
-export type RangeSummary = { total: number; departments: DepartmentCount[]; storeOrders: number };
+export type DaySummary = { day: string; total: number; departments: DepartmentCount[]; storeOrders: number; rentals: number; staffAssignments: number };
+export type RangeSummary = { total: number; departments: DepartmentCount[]; storeOrders: number; rentals: number };
 
 /** Status rule shared by counters and cards: cancelled only when asked for. */
 export function matchesCalendarStatus(event: Pick<BookingCalendarEvent, "status">, statusLabel: string): boolean {
@@ -234,8 +235,9 @@ function departmentCounts(events: readonly BookingCalendarEvent[]): DepartmentCo
   for (const event of events) {
     for (const key of event.departments) {
       const entry = counts.get(key) ?? { bookings: new Set<string>(), units: 0 };
-      if (!entry.bookings.has(event.key)) {
-        entry.bookings.add(event.key);
+      const identity = event.kind === "rental" ? `rental:${event.id}` : event.key;
+      if (!entry.bookings.has(identity)) {
+        entry.bookings.add(identity);
         entry.units += Math.max(event.departmentUnits[key] ?? 1, 1);
       }
       counts.set(key, entry);
@@ -254,9 +256,10 @@ export function summarizeCalendarDay(day: string, events: readonly BookingCalend
   const bookings = dayEvents.filter((event) => event.countsAsBooking);
   return {
     day,
-    total: new Set(bookings.map((event) => event.key)).size,
+    total: new Set(bookings.filter(event => event.kind !== "rental").map((event) => event.key)).size,
     departments: departmentCounts(bookings),
-    storeOrders: dayEvents.length - bookings.length,
+    storeOrders: dayEvents.filter(event => event.kind === "order").length,
+    rentals: new Set(dayEvents.filter(event => event.kind === "rental").map(event => event.id)).size,
     staffAssignments: bookings.reduce((sum, event) => sum + event.staff.length, 0),
   };
 }
@@ -265,7 +268,7 @@ export function summarizeCalendarRange(days: readonly string[], events: readonly
   const inRange = new Set(days);
   const scoped = events.filter((event) => inRange.has(event.day) && matchesCalendarStatus(event, statusLabel));
   const bookings = scoped.filter((event) => event.countsAsBooking);
-  return { total: new Set(bookings.map((event) => event.key)).size, departments: departmentCounts(bookings), storeOrders: scoped.length - bookings.length };
+  return { total: new Set(bookings.filter(event => event.kind !== "rental").map((event) => event.key)).size, departments: departmentCounts(bookings), storeOrders: scoped.filter(event => event.kind === "order").length, rentals: new Set(scoped.filter(event => event.kind === "rental").map(event => event.id)).size };
 }
 
 const normalizeText = (value: string) =>
@@ -279,12 +282,13 @@ export function matchesCalendarSearch(event: BookingCalendarEvent, query: string
   return [event.customerName, event.number, event.title, event.location, event.phone].some((value) => normalizeText(value ?? "").includes(needle));
 }
 
-export type CalendarCardFilters = { status: string; department: string; employee: number | null; search: string; showStoreOrders: boolean };
+export type CalendarCardFilters = { status: string; department: string; employee: number | null; search: string; showStoreOrders: boolean; bookingType?: "all" | "events" | "rentals" };
 
 /** The cards a view shows, by time; events with no known time come first. */
 export function filterCalendarCards(events: readonly BookingCalendarEvent[], filters: CalendarCardFilters): BookingCalendarEvent[] {
   return events
     .filter((event) => (event.countsAsBooking ? true : filters.showStoreOrders && !filters.department))
+    .filter((event) => !filters.bookingType || filters.bookingType === "all" || (filters.bookingType === "rentals" ? event.kind === "rental" : event.kind !== "rental"))
     .filter((event) => matchesCalendarStatus(event, filters.status))
     .filter((event) => !filters.department || event.departments.includes(filters.department))
     .filter((event) => filters.employee == null || event.staff.some((staff) => staff.id === filters.employee))

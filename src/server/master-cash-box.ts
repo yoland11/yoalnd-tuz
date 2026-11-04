@@ -1,4 +1,7 @@
 import {readClosingReopenDetail} from "./vehicle-partnership/closing-reopen-detail";
+import { assertGenericEquipmentRentalInput, isEquipmentRentalFinancial, lockEquipmentRentalReceiptSources, executeEquipmentRentalFinancial, rejectEquipmentRentalFinancial, reverseEquipmentRentalFinancial } from "./equipment-rental-finance";
+import { equipmentRentalEffect, type EquipmentRentalMoneyKind } from "../lib/equipment-rental-finance";
+import { equipmentRentalCashPredicate, equipmentRentalOperatingPredicate } from "./equipment-rental-classification";
 import { randomUUID } from "node:crypto";
 import { assertGenericFinancialSourceInput, resolvePartnershipFinancialEffect, partnershipCashPredicate, partnershipOperatingPredicate } from "./vehicle-partnership/financial-classification";
 import { preparePartnershipFinancialRequest, type PartnershipFinancialRequestReference } from "./vehicle-partnership/accounting";
@@ -57,6 +60,7 @@ const optionalText = z.string().trim().max(2000).optional().nullable();
 
 /** Cash movements that settle a balance-sheet account, never operating income/expense. */
 function isBalanceSheetTransfer(transaction: Pick<typeof financialTransactionsTable.$inferSelect, "transactionType" | "sourceType"> & Partial<Pick<typeof financialTransactionsTable.$inferSelect,"sourceEvent"|"direction"|"reversedTransactionId">>) {
+  if (transaction.sourceType === "equipment_rental_deposit" || transaction.sourceType === "equipment_rental_charge") return true;
   if (String(transaction.sourceType??"").startsWith("vehicle_partnership_") || transaction.transactionType.startsWith("vp_")) {
     const effect=resolvePartnershipFinancialEffect({...transaction,sourceEvent:transaction.sourceEvent??"",direction:transaction.direction??""});
     return effect?.operating==="none";
@@ -71,6 +75,11 @@ function isBalanceSheetTransfer(transaction: Pick<typeof financialTransactionsTa
  * schema; callers receive this semantic classification for display/export.
  */
 function cashMovementPresentation(transaction: Pick<typeof financialTransactionsTable.$inferSelect, "direction" | "transactionType" | "sourceType"> & Partial<Pick<typeof financialTransactionsTable.$inferSelect,"sourceEvent"|"reversedTransactionId">>) {
+  if (isEquipmentRentalFinancial(transaction)) {
+    const effect = equipmentRentalEffect(transaction.transactionType.replace(/^er_/, "").replace(/_reversal$/, "") as EquipmentRentalMoneyKind, transaction.transactionType.endsWith("_reversal"));
+    const labels = { revenue: "تحصيل إيجار", liability_inflow: "تأمين مسترد / التزام", liability_repayment: "إعادة تأمين / تخفيض التزام", liability_settlement: "تسوية تأمين غير نقدية", receivable_charge: "رسوم مستحقة غير نقدية" };
+    return { ...effect, cashDirectionLabel: effect.cashDirection === "noncash" ? "غير نقدي" : effect.cashDirection === "inflow" ? "وارد" : "صادر", accountingClassificationLabel: labels[effect.accountingClassification] };
+  }
   if (String(transaction.sourceType??"").startsWith("vehicle_partnership_") || transaction.transactionType.startsWith("vp_")) {
     const effect=resolvePartnershipFinancialEffect({...transaction,sourceEvent:transaction.sourceEvent??""})!;
     return {
@@ -97,11 +106,17 @@ function balanceSheetTransferSql() {
     coalesce(${financialTransactionsTable.sourceType}, '') in ('company_loan', 'company_loan_repayment', 'employee_advance')
     or ${financialTransactionsTable.transactionType} in ('company_loan_received', 'company_loan_repayment', 'employee_advance', 'employee_advance_repayment')
     or NOT ${partnershipOperatingPredicate({sourceType:sql`${financialTransactionsTable.sourceType}`,transactionType:sql`${financialTransactionsTable.transactionType}`})}
+    or NOT ${equipmentRentalOperatingPredicate({sourceType:sql`${financialTransactionsTable.sourceType}`,transactionType:sql`${financialTransactionsTable.transactionType}`})}
   )`;
 }
 
 function cashImpactSql() {
-  return partnershipCashPredicate({sourceType:sql`${financialTransactionsTable.sourceType}`,transactionType:sql`${financialTransactionsTable.transactionType}`});
+  return sql`(${partnershipCashPredicate({sourceType:sql`${financialTransactionsTable.sourceType}`,transactionType:sql`${financialTransactionsTable.transactionType}`})} AND ${equipmentRentalCashPredicate({sourceType:sql`${financialTransactionsTable.sourceType}`,transactionType:sql`${financialTransactionsTable.transactionType}`})})`;
+}
+
+/** Refunds of rent reduce collections revenue; their reversals restore it. */
+function operatingReversalSql() {
+  return sql`CASE WHEN ${financialTransactionsTable.transactionType}='er_rent_refund' THEN true WHEN ${financialTransactionsTable.transactionType}='er_rent_refund_reversal' THEN false ELSE ${financialTransactionsTable.transactionType} LIKE '%_reversal' END`;
 }
 
 export const financialTransactionInputSchema = z.object({
@@ -396,8 +411,10 @@ export async function createFinancialTransaction(
   input: unknown,
   actor: FinancialActor,
   executor?: FinancialTransactionExecutor,
+  sourceAdapter?: "equipment_rental",
 ): Promise<typeof financialTransactionsTable.$inferSelect> {
   assertGenericFinancialSourceInput(input);
+  if (sourceAdapter !== "equipment_rental") assertGenericEquipmentRentalInput(input);
   if (!executor) await ensureMasterCashBoxTables();
   const data = financialTransactionInputSchema.parse(input);
   if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(data.sourceType ?? ""))
@@ -412,6 +429,7 @@ export async function createFinancialTransaction(
   });
   if (existing) {
     assertGenericFinancialSourceInput(existing);
+    if (sourceAdapter !== "equipment_rental") assertGenericEquipmentRentalInput(existing);
     return existing;
   }
   const [row] = await connection
@@ -471,6 +489,7 @@ export async function updateFinancialTransaction(
   actor: FinancialActor,
 ) {
   assertGenericFinancialSourceInput(input);
+  assertGenericEquipmentRentalInput(input);
   await ensureMasterCashBoxTables();
   const data = financialTransactionPatchSchema.parse(input);
   const existing = await db.query.financialTransactionsTable.findFirst({
@@ -478,6 +497,7 @@ export async function updateFinancialTransaction(
   });
   if (!existing) throw new Error("المعاملة غير موجودة");
   assertGenericFinancialSourceInput(existing);
+  assertGenericEquipmentRentalInput(existing);
   if (!["draft", "rejected"].includes(existing.approvalStatus))
     throw new Error("لا يمكن تعديل المعاملة بعد إرسالها أو تنفيذها");
   const reason = data.reason;
@@ -518,6 +538,7 @@ export async function submitFinancialTransaction(
   });
   if (!existing) throw new Error("المعاملة غير موجودة");
   assertGenericFinancialSourceInput(existing);
+  assertGenericEquipmentRentalInput(existing);
   if (!["draft", "rejected"].includes(existing.approvalStatus))
     throw new Error("المعاملة مرسلة مسبقاً");
   const [saved] = await db
@@ -551,6 +572,7 @@ export async function syncSourceFinancialRequest(
   executor?: FinancialTransactionExecutor,
 ): Promise<typeof financialTransactionsTable.$inferSelect> {
   assertGenericFinancialSourceInput(input);
+  assertGenericEquipmentRentalInput(input);
   if (!executor) await ensureMasterCashBoxTables();
   const data = financialTransactionInputSchema.parse({
     ...(input as Record<string, unknown>),
@@ -562,6 +584,7 @@ export async function syncSourceFinancialRequest(
   });
   if (!existing) throw new Error("المعاملة المالية المرتبطة غير موجودة");
   assertGenericFinancialSourceInput(existing);
+  assertGenericEquipmentRentalInput(existing);
   if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(existing.sourceType ?? ""))
     return db.transaction(tx => syncSourceFinancialRequest(id, input, actor, reason, tx));
   if (executor) {
@@ -627,6 +650,7 @@ export async function cancelFinancialTransactionRequest(
   const apply = async (tx: FinancialTransactionExecutor) => {
     const initial = await tx.query.financialTransactionsTable.findFirst({where:eq(financialTransactionsTable.id,id)});
     if (!initial) return null;
+    if (isEquipmentRentalFinancial(initial)) return rejectEquipmentRentalFinancial(tx, initial, actor, reason);
     if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
       try {
         await rejectPartnershipFinancialTransaction(tx, initial, {
@@ -839,6 +863,7 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
           payment_status = CASE WHEN total_amount::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
           updated_at = now()
         WHERE id = ${allocation.source_id} AND remaining_amount::numeric >= ${value}
+          AND (coalesce(to_jsonb(rental_orders)->>'rental_kind','product') <> 'equipment' OR status NOT IN ('draft','pending_approval','cancelled','canceled'))
           AND (customer_id = ${allocation.customer_id} OR EXISTS (SELECT 1 FROM customers c WHERE c.id = ${allocation.customer_id}
             AND right(regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(coalesce(rental_orders.phone, ''), '[^0-9]', '', 'g'), 10)))
         RETURNING id
@@ -891,6 +916,7 @@ async function executePendingFinancialTransaction(
       .where(eq(financialTransactionsTable.id, id))
       .limit(1);
     if (!initial) throw new FinancialApprovalError("المعاملة غير موجودة", 404);
+    if (isEquipmentRentalFinancial(initial)) return executeEquipmentRentalFinancial(tx, initial, actor, note);
     let partnershipCash: DistributionExecution | DriverPaymentExecution | AdvancePaymentExecution | null = null;
     if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
       try {
@@ -923,7 +949,10 @@ async function executePendingFinancialTransaction(
     }
     if (initial.approvalStatus === "executed") return initial;
     if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "execute");
-    if (!partnershipCash) await lockGraduationPaymentSource(tx, initial, {requireActive:initial.direction === "revenue"});
+    if (!partnershipCash) {
+      await lockGraduationPaymentSource(tx, initial, {requireActive:initial.direction === "revenue"});
+      await lockEquipmentRentalReceiptSources(tx, initial, {requireActive:initial.direction === "revenue"});
+    }
     // Source writers acquire the original order before changing their pending
     // request. Re-read under the financial row lock AFTER acquiring that source
     // lock; otherwise approval can post an old amount while marking a newer
@@ -1334,6 +1363,7 @@ export async function createAndExecuteSourceFinancialTransaction(
   actor: FinancialActor,
 ) {
   assertGenericFinancialSourceInput(input);
+  assertGenericEquipmentRentalInput(input);
   const data = financialTransactionInputSchema.parse({
     ...input,
     approvalStatus: "pending",
@@ -1428,6 +1458,7 @@ export async function rejectFinancialTransaction(
   const [initial] = await tx.select().from(financialTransactionsTable)
     .where(eq(financialTransactionsTable.id, id)).limit(1);
   if (!initial) throw new Error("المعاملة غير موجودة");
+  if (isEquipmentRentalFinancial(initial)) return rejectEquipmentRentalFinancial(tx, initial, actor, cleanReason);
   if (String(initial.sourceType ?? "").startsWith("vehicle_partnership_")) {
     try {
       await rejectPartnershipFinancialTransaction(tx, initial, {
@@ -1546,6 +1577,11 @@ export async function reverseFinancialTransaction(
     const [initial] = await tx.select().from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id, id)).limit(1);
     if (!initial) throw new FinancialApprovalError("المعاملة غير موجودة",404);
+    if (isEquipmentRentalFinancial(initial)) {
+      const result = await reverseEquipmentRentalFinancial(tx, initial, actor, cleanReason, options);
+      if (withinTransaction && !result.alreadyReversed) await withinTransaction(tx, result);
+      return result;
+    }
     if ((options?.expectedVersion !== undefined || options?.expectedDigest !== undefined) && (initial.sourceType !== "vehicle_partnership_closing" || initial.sourceEvent !== "monthly_result"))
       throw new FinancialApprovalError("نسخة الإغلاق وبصمته متاحتان لسند الإغلاق الشهري الأصلي فقط",409);
     let partnershipReversal: PartnershipCashReversalPlan | null = null;
@@ -1583,7 +1619,10 @@ export async function reverseFinancialTransaction(
       return {original,reverse,alreadyReversed:result.alreadyReversed};
     }
     if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "reverse");
-    if (!partnershipReversal) await lockGraduationPaymentSource(tx, initial, {requireActive:false});
+    if (!partnershipReversal) {
+      await lockGraduationPaymentSource(tx, initial, {requireActive:false});
+      await lockEquipmentRentalReceiptSources(tx, initial, {requireActive:false});
+    }
     const [original] = await tx
       .select()
       .from(financialTransactionsTable)
@@ -1895,12 +1934,12 @@ export async function reverseFinancialTransaction(
       .select({
         cashNet: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus}='executed' and ${cashImpactSql()} and ${financialTransactionsTable.direction}='revenue' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.approvalStatus}='executed' and ${cashImpactSql()} and ${financialTransactionsTable.direction}='expense' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
         revenue: sql<number>`coalesce(sum(case
-        when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric
-        when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric
+        when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric
+        when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric
         else 0 end),0)::float`,
         expenses: sql<number>`coalesce(sum(case
-        when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric
-        when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric
+        when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric
+        when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric
         else 0 end),0)::float`,
       })
       .from(financialTransactionsTable);
@@ -2092,8 +2131,8 @@ export async function listFinancialTransactions(input: unknown) {
       .where(where),
     db
       .select({
-        revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
-        expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
         pending: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus} = 'pending' then ${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
         sumAmount: sql<number>`coalesce(sum(${financialTransactionsTable.amount}::numeric),0)::float`,
       })
@@ -2159,12 +2198,12 @@ export async function recalculateMasterCashBox(actor?: FinancialActor) {
       when ${financialTransactionsTable.approvalStatus} = 'executed' and ${cashImpactSql()} and ${financialTransactionsTable.direction} = 'expense' then -${financialTransactionsTable.amount}::numeric
       else 0 end),0)::float`,
       revenue: sql<number>`coalesce(sum(case
-      when ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric
-      when ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric
+      when ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction} = 'revenue' and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric
+      when ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction} = 'expense' and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric
       else 0 end),0)::float`,
       expenses: sql<number>`coalesce(sum(case
-      when ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction} = 'expense' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric
-      when ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction} = 'revenue' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric
+      when ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction} = 'expense' and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric
+      when ${financialTransactionsTable.approvalStatus} = 'executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction} = 'revenue' and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric
       else 0 end),0)::float`,
     })
     .from(financialTransactionsTable);
@@ -2206,8 +2245,8 @@ export async function getMasterCashDashboard() {
   if (!cashBox) throw new Error("الصندوق الرئيسي غير مهيأ");
   const [operatingTotals] = await db
     .select({
-      revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
-      expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+      revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+      expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.approvalStatus}='executed' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
     })
     .from(financialTransactionsTable);
   const [
@@ -2221,8 +2260,8 @@ export async function getMasterCashDashboard() {
   ] = await Promise.all([
     db
       .select({
-        revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction}='revenue' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction}='expense' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
-        expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction}='expense' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction}='revenue' and not ${balanceSheetTransferSql()} and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        revenue: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction}='revenue' and not ${balanceSheetTransferSql()} and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction}='expense' and not ${balanceSheetTransferSql()} and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        expenses: sql<number>`coalesce(sum(case when ${financialTransactionsTable.direction}='expense' and not ${balanceSheetTransferSql()} and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric when ${financialTransactionsTable.direction}='revenue' and not ${balanceSheetTransferSql()} and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
       })
       .from(financialTransactionsTable)
       .where(
@@ -2269,8 +2308,8 @@ export async function getMasterCashDashboard() {
     db
       .select({
         department: financialTransactionsTable.department,
-        revenue: sql<number>`coalesce(sum(case when not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
-        expenses: sql<number>`coalesce(sum(case when not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric when not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        revenue: sql<number>`coalesce(sum(case when not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric when not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
+        expenses: sql<number>`coalesce(sum(case when not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='expense' and NOT ${operatingReversalSql()} then ${financialTransactionsTable.amount}::numeric when not ${balanceSheetTransferSql()} and ${financialTransactionsTable.direction}='revenue' and ${operatingReversalSql()} then -${financialTransactionsTable.amount}::numeric else 0 end),0)::float`,
       })
       .from(financialTransactionsTable)
       .where(
@@ -2282,8 +2321,8 @@ export async function getMasterCashDashboard() {
       .groupBy(financialTransactionsTable.department),
     db.execute(sql`
       SELECT to_char(transaction_date, 'YYYY-MM') AS month,
-        COALESCE(SUM(CASE WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='revenue' AND transaction_type NOT LIKE '%_reversal' THEN amount::numeric WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='expense' AND transaction_type LIKE '%_reversal' THEN -amount::numeric ELSE 0 END),0)::float AS revenue,
-        COALESCE(SUM(CASE WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='expense' AND transaction_type NOT LIKE '%_reversal' THEN amount::numeric WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='revenue' AND transaction_type LIKE '%_reversal' THEN -amount::numeric ELSE 0 END),0)::float AS expenses
+        COALESCE(SUM(CASE WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='revenue' AND NOT ${operatingReversalSql()} THEN amount::numeric WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='expense' AND ${operatingReversalSql()} THEN -amount::numeric ELSE 0 END),0)::float AS revenue,
+        COALESCE(SUM(CASE WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='expense' AND NOT ${operatingReversalSql()} THEN amount::numeric WHEN coalesce(source_type,'') NOT IN ('company_loan','company_loan_repayment','employee_advance') AND transaction_type NOT IN ('company_loan_received','company_loan_repayment','employee_advance','employee_advance_repayment') AND direction='revenue' AND ${operatingReversalSql()} THEN -amount::numeric ELSE 0 END),0)::float AS expenses
       FROM financial_transactions
       WHERE approval_status='executed' AND NOT ${balanceSheetTransferSql()} AND transaction_date >= (${today}::date - interval '11 months')
       GROUP BY to_char(transaction_date, 'YYYY-MM') ORDER BY month
@@ -2337,11 +2376,13 @@ export async function createSourceFinancialRequest(
   > & { idempotencyKey: string },
   actor: FinancialActor,
   executor?: FinancialTransactionExecutor,
+  sourceAdapter?: "equipment_rental",
 ) {
   return createFinancialTransaction(
     { ...input, approvalStatus: "pending" },
     actor,
     executor,
+    sourceAdapter,
   );
 }
 

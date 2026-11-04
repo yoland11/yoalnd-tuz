@@ -1,9 +1,12 @@
 import type { BookingOperationRef } from "./booking-operational-readiness";
 
+/** Scheduling identity only; rentals do not enter booking finance or readiness. */
+export type ResourceBookingRef = BookingOperationRef | { source: "rental"; id: number };
+
 export type ResourceOccupancy = { start: string; end: string };
 export type ResourceReservation = {
   id: string;
-  booking: BookingOperationRef;
+  booking: ResourceBookingRef;
   /** Canonical stock/variant or physical-asset identity, resolved by server adapter. */
   resource: string;
   quantity: number;
@@ -11,7 +14,7 @@ export type ResourceReservation = {
   interval: ResourceOccupancy | null;
 };
 export type ResourceConflictInput = {
-  booking: BookingOperationRef;
+  booking: ResourceBookingRef;
   resource: string;
   required: number;
   stock: number;
@@ -26,11 +29,11 @@ export type ResourceConflictResult = {
   available: number | null;
   reserved: number | null;
   missing: number | null;
-  conflictingBookings: BookingOperationRef[];
+  conflictingBookings: ResourceBookingRef[];
 };
 const statuses = new Set(["reserved", "checked_out", "released", "cancelled", "returned", "consumed"]);
-const validBooking = (ref: BookingOperationRef) => ref && ["kosha", "service"].includes(ref.source) && Number.isSafeInteger(ref.id) && ref.id > 0;
-const bookingKey = (ref: BookingOperationRef) => `${ref.source}:${ref.id}`;
+const validBooking = (ref: ResourceBookingRef) => ref && ["kosha", "service", "rental"].includes(ref.source) && Number.isSafeInteger(ref.id) && ref.id > 0;
+const bookingKey = (ref: ResourceBookingRef) => `${ref.source}:${ref.id}`;
 const round = (value: number) => Math.round((value + Number.EPSILON) * 1e8) / 1e8;
 
 export function resourceOccupancyTimestamps(interval: ResourceOccupancy | null): [number, number] | null {
@@ -64,7 +67,7 @@ export function evaluateResourceConflict(input: ResourceConflictInput): Resource
     identities.add(row.id);
   }
   const target = resourceOccupancyTimestamps(input.interval);
-  const conflicting = new Map<string, BookingOperationRef>();
+  const conflicting = new Map<string, ResourceBookingRef>();
   const incomplete = (): ResourceConflictResult => ({ status: "incomplete", required: input.required, available: null, reserved: null, missing: null, conflictingBookings: [...conflicting.values()] });
   if (!target) return incomplete();
   const events: Array<{ at: number; delta: number }> = [];

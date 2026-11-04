@@ -145,7 +145,7 @@ assert.equal(filterCalendarCards([store], { ...noFilters, showStoreOrders: true 
 assert.equal(filterCalendarCards([store], { ...noFilters, showStoreOrders: true, department: "kosha" }).length, 0);
 
 // 15. Empty day.
-assert.deepEqual(summarizeCalendarDay(DAY, []), { day: DAY, total: 0, departments: [], storeOrders: 0, staffAssignments: 0 });
+assert.deepEqual(summarizeCalendarDay(DAY, []), { day: DAY, total: 0, departments: [], storeOrders: 0, rentals: 0, staffAssignments: 0 });
 assert.equal(bookingCountLabel(0), "لا حجوزات");
 assert.equal(bookingCountLabel(1), "حجز واحد");
 assert.equal(bookingCountLabel(2), "حجزان");

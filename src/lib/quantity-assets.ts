@@ -74,6 +74,8 @@ export type QuantityLine = {
   returnedGoodQty: number;
   returnedDamagedQty: number;
   missingQty: number;
+  /** Physically returned into maintenance quarantine, excluded from usable stock. */
+  pendingInspectionQty?: number;
   stage: string;
 };
 
@@ -98,6 +100,7 @@ export function normalizeQuantityLine(raw: any): QuantityLine {
       returnedGoodQty,
       returnedDamagedQty,
       missingQty,
+      pendingInspectionQty: whole(raw.pendingInspectionQty),
       stage,
     };
   }
@@ -116,7 +119,7 @@ export function normalizeQuantityLine(raw: any): QuantityLine {
 }
 
 export function lineReturnedQty(line: QuantityLine) {
-  return line.returnedGoodQty + line.returnedDamagedQty + line.missingQty;
+  return line.returnedGoodQty + line.returnedDamagedQty + line.missingQty + whole(line.pendingInspectionQty);
 }
 
 /** Units of this line that are physically outside the warehouse right now. */
@@ -151,6 +154,7 @@ export type CommitmentRow = {
   day: string | null;
   status: string;
   line: any;
+  interval?: { start: string; end: string } | null;
 };
 
 const dayOf = (value: unknown) => {
@@ -181,13 +185,16 @@ export function commitmentFor(row: CommitmentRow, targetDay: string | null, toda
   const line = normalizeQuantityLine(row.line);
   const bookingDay = dayOf(row.day);
   const target = dayOf(targetDay);
-  const overlaps = !bookingDay || !target || bookingDay === target;
+  const rentalPeriod = row.source === "rental_order" && row.interval;
+  const overlaps = rentalPeriod && target
+    ? Date.parse(rentalPeriod.start) < Date.parse(`${target}T00:00:00+03:00`) + 86_400_000 && Date.parse(rentalPeriod.end) > Date.parse(`${target}T00:00:00+03:00`)
+    : row.source === "rental_order" ? true : !bookingDay || !target || bookingDay === target;
   const reserved = overlaps ? lineReservedNotOut(line, row.status) : 0;
   const outstanding = lineOutstanding(line);
   const expectedBack = Boolean(
     bookingDay && target && bookingDay < target && bookingDay >= today,
   );
-  return { reserved, out: expectedBack ? 0 : outstanding };
+  return { reserved, out: expectedBack && row.source !== "rental_order" ? 0 : outstanding };
 }
 
 export type Availability = {

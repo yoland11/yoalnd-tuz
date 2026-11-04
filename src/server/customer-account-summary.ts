@@ -10,7 +10,8 @@ export type CustomerAccountSourceType =
   | "sales_invoice"
   | "order"
   | "service_order"
-  | "kosha_booking";
+  | "kosha_booking"
+  | "rental_order";
 
 export type CustomerAccountDocument = {
   sourceType: CustomerAccountSourceType;
@@ -57,6 +58,7 @@ const SOURCE_TYPE_LABEL_AR: Record<string, string> = {
   order: "طلب متجر",
   service_order: "حجز خدمة",
   kosha_booking: "حجز كوشة",
+  rental_order: "إيجار معدات",
 };
 
 export function customerSourceLabelAr(sourceType: string): string {

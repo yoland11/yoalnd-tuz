@@ -872,8 +872,18 @@ function BookingDashboard() {
   const [serviceFilter, setServiceFilter] = useState<ServiceKey | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
   useEffect(() => {
-    if (followupToken != null) setShowCreate(Boolean(followup && !followup.booking && followup.status !== "uninterested"));
-  }, [followupToken, followup?.id, followup?.status, followup?.booking?.id]);
+    if (followupToken != null) {
+      setShowCreate(Boolean(followup && !followup.booking && followup.status !== "uninterested"));
+    } else {
+      const params = new URLSearchParams(bookingSearch);
+      if (params.get("new") === "1") {
+        setShowCreate(true);
+        params.delete("new");
+        const remaining = params.toString();
+        setBookingLocation(`/admin/bookings${remaining ? `?${remaining}` : ""}`, { replace: true });
+      }
+    }
+  }, [bookingSearch, followupToken, followup?.id, followup?.status, followup?.booking?.id, setBookingLocation]);
   const [reportFor, setReportFor] = useState<ServiceKey | "all" | null>(null);
   const [selectedBookings,setSelectedBookings]=useState<Set<string>>(new Set());
   const centralBookingsQuery = useQuery({ queryKey: ["admin", "booking-center"], queryFn: () => adminFetch<any[]>("/admin/booking-center?readiness=1") });
@@ -977,6 +987,8 @@ function BookingDashboard() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" asChild><Link href="/admin/calendar"><CalendarDays className="h-4 w-4" /> التقويم</Link></Button>
+          <Button variant="outline" asChild><Link href="/admin/bookings/rentals/new"><Boxes className="h-4 w-4" /> إيجار معدات</Link></Button>
+          <Button variant="outline" asChild><Link href="/admin/bookings/rentals"><PackageCheck className="h-4 w-4" /> إيجارات المعدات</Link></Button>
           <Button
             variant="outline"
             onClick={() => setReportFor("all")}

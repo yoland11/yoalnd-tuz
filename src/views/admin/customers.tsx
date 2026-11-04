@@ -8,6 +8,7 @@ import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { CustomerFinancialSummary } from "./customer-financial-summary";
 import { CustomerStatement } from "./customer-statement";
+import { LinkedEquipmentRentals } from "@/components/equipment-rental-panels";
 import { CustomerReturnsHistory } from "./sales-returns";
 import { EmptyState } from "./_layout";
 import ScanDocumentButton from "./scan-document-button";
@@ -309,6 +310,7 @@ export default function CustomersPage() {
 
                 {/* Grouped multi-invoice returns: history, credit and a shortcut to create one. */}
                 <CustomerReturnsHistory customerId={detail.id} />
+                <LinkedEquipmentRentals customerId={detail.id} />
 
                 <div className="rounded-xl border border-border/25 bg-background/40 p-4">
                   <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground"><Wallet className="h-4 w-4 text-primary" /> آخر دفعة</h4>

@@ -3,6 +3,7 @@ import { check, index, pgTable, serial, text, numeric, integer, timestamp, varch
 import { staffTable } from "./staff";
 import { customersTable } from "./customers";
 import { ordersTable } from "./orders";
+import { rentalOrdersTable } from "./products";
 import { serviceOrdersTable } from "./services";
 import { koshaBookingsTable, koshasTable } from "./koshas";
 import { suppliersTable } from "./suppliers";
@@ -75,6 +76,7 @@ export const paymentVouchersTable = pgTable("payment_vouchers", {
 });
 
 export const expensesTable = pgTable("expenses", {
+  rentalOrderId: integer("rental_order_id").references(() => rentalOrdersTable.id, { onDelete: "set null" }),
   id: serial("id").primaryKey(),
   date: date("date").notNull().defaultNow(),
   name: text("name").notNull().default(""),

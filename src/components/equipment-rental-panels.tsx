@@ -1,0 +1,29 @@
+import { useEffect, useState } from "react";
+import { Link } from "wouter";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, Boxes, Loader2, Plus } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { adminFetch, apiErrorMessage, formatCurrency } from "@/views/admin/_lib";
+import type { EquipmentRentalList, EquipmentRentalSettings } from "@/lib/equipment-rentals";
+import { EQUIPMENT_RENTAL_STATUS_LABELS } from "@/lib/equipment-rentals";
+
+const api = "/admin/rental-orders/equipment";
+export function LinkedEquipmentRentals({ source, bookingId, customerId }: { source?: "service" | "kosha"; bookingId?: number; customerId?: number }) {
+  const params = new URLSearchParams(customerId ? { customerId: String(customerId) } : { bookingSource: source!, bookingId: String(bookingId) });
+  const result = useQuery<EquipmentRentalList>({ queryKey: ["equipment-rentals", "linked", params.toString()], queryFn: () => adminFetch(`${api}?${params}`), enabled: !!customerId || (!!source && !!bookingId) });
+  return <section dir="rtl" className="space-y-3 rounded-xl border border-primary/10 bg-card p-4"><header className="flex flex-wrap items-center justify-between gap-2"><h3 className="flex items-center gap-2 font-bold"><Boxes className="h-4 w-4 text-primary" />{customerId ? "إيجارات العميل" : "الإيجارات المرتبطة"}</h3><Button variant="outline" size="sm" asChild><Link href={`/admin/bookings/rentals/new?${params}`}><Plus className="h-4 w-4" /> إيجار معدات</Link></Button></header>{result.isLoading ? <Loader2 role="status" aria-label="جار تحميل الإيجارات" className="h-5 w-5 animate-spin" /> : result.error ? <div role="alert" className="text-sm text-destructive"><AlertTriangle className="inline h-4 w-4" /> {apiErrorMessage(result.error)}<Button variant="ghost" size="sm" onClick={() => void result.refetch()}>إعادة المحاولة</Button></div> : result.data?.data.length ? <div className="space-y-2">{result.data.data.map(row => <Link href={`/admin/bookings/rentals/${row.id}`} key={row.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 text-sm"><span className="font-semibold text-primary">{row.orderNo}</span><span>{row.details.assets.map(line => `${line.name} × ${line.quantity}`).join("، ")}</span><span>{EQUIPMENT_RENTAL_STATUS_LABELS[row.status] || row.status}</span><span>الإجمالي {formatCurrency(row.total)}</span><span>المتبقي {formatCurrency(row.remaining)}</span><span>التأمين {formatCurrency(Number(row.finance.depositHeld || 0))}</span><span>فتح الإيجار ←</span></Link>)}</div> : <p className="text-sm text-muted-foreground">لا توجد إيجارات مرتبطة.</p>}</section>;
+}
+
+export function RentalAssetSettings({ productId, onSaved }: { productId: number; onSaved?: (settings: EquipmentRentalSettings) => void }) {
+  const client = useQueryClient();
+  const query = useQuery<EquipmentRentalSettings>({ queryKey: ["equipment-rentals", "settings", productId], queryFn: () => adminFetch(`${api}/settings/${productId}`), enabled: productId > 0 });
+  const [form, setForm] = useState<EquipmentRentalSettings | null>(null); useEffect(() => { if (query.data) setForm(query.data); }, [query.data]);
+  const mutation = useMutation({ mutationFn: () => adminFetch(`${api}/settings/${productId}`, { method: "PUT", body: JSON.stringify({ ...form, requestId: crypto.randomUUID() }) }), onSuccess: () => { if (form) onSaved?.(form); void client.invalidateQueries({ queryKey: ["equipment-rentals"] }); } });
+  if (query.isLoading) return <Loader2 className="h-4 w-4 animate-spin" />;
+  if (query.error) return <p role="alert" className="text-sm text-destructive">{apiErrorMessage(query.error)}</p>;
+  if (!form) return null;
+  const set = (key: keyof EquipmentRentalSettings, value: unknown) => setForm(old => old ? { ...old, [key]: value } : old);
+  return <div className="mt-4 space-y-4 rounded-xl border p-4" dir="rtl"><h3 className="font-bold">إعدادات إيجار المعدات</h3><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.enabled} onChange={e => set("enabled", e.target.checked)} />متاح للإيجار</label><div className="grid grid-cols-2 gap-3 md:grid-cols-3"><label className="space-y-1 text-xs">نوع التسعير الافتراضي<select className="h-10 w-full rounded-lg border bg-card px-2" value={form.pricingType} onChange={e => set("pricingType", e.target.value)}><option value="fixed">ثابت</option><option value="daily">يومي</option><option value="hourly">بالساعة</option><option value="custom">مدة مخصصة</option></select></label>{[["fixedPrice", "السعر الثابت"], ["dailyPrice", "السعر اليومي"], ["hourlyPrice", "سعر الساعة"], ["minimumDuration", "أقل مدة إيجار"], ["deposit", "التأمين الاختياري"]].map(([key, label]) => <label key={key} className="space-y-1 text-xs">{label}<Input type="number" min={key === "minimumDuration" ? 1 : 0} value={form[key as keyof EquipmentRentalSettings] as number} onChange={e => set(key as keyof EquipmentRentalSettings, Number(e.target.value))} /></label>)}</div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.allowCustomPrice} onChange={e => set("allowCustomPrice", e.target.checked)} />السماح بسعر مخصص للمخولين</label><label className="block space-y-1 text-xs">ملاحظات وشروط الإيجار<Textarea value={form.terms} onChange={e => set("terms", e.target.value)} /></label>{mutation.error ? <p role="alert" className="text-sm text-destructive">{apiErrorMessage(mutation.error)}</p> : null}{mutation.isSuccess ? <p role="status" className="text-sm text-emerald-700">تم حفظ إعدادات الإيجار.</p> : null}<Button type="button" disabled={mutation.isPending} onClick={() => mutation.mutate()}>حفظ إعدادات الإيجار</Button></div>;
+}

@@ -7,7 +7,7 @@ import { BookingResourceConflictError,resourceTimingProblem,findBookingPhysicalC
 
 type Ref={source:"kosha"|"service";id:number};
 type Database=ResourceExecutor&{transaction<T>(run:(tx:ResourceExecutor)=>Promise<T>):Promise<T>};
-export type ResourceBooking=TimedBookingRef&{details:Record<string,any>;status:string;archivedAt?:unknown;assignedStaffId:number|null;staffIds:number[];vehicleId:number|null;vehicleIds:number[];transportUses:TransportResourceUse[];driverId:number|null;crewId:number|null;koshaId:number|null;assets:any[];eventTime:string|null;eventEndTime?:string|null};
+export type ResourceBooking=Omit<TimedBookingRef,"source">&{source:"kosha"|"service";details:Record<string,any>;status:string;archivedAt?:unknown;assignedStaffId:number|null;staffIds:number[];vehicleId:number|null;vehicleIds:number[];transportUses:TransportResourceUse[];driverId:number|null;crewId:number|null;koshaId:number|null;assets:any[];eventTime:string|null;eventEndTime?:string|null};
 export type ResourceWindowSaveOptions={eventDate?:unknown;expectedEventDate?:unknown;afterSave?:(tx:ResourceExecutor,next:ResourceBooking)=>Promise<void>};
 const id=(v:any)=>Number.isSafeInteger(Number(v))&&Number(v)>0?Number(v):null;
 const object=(v:any):Record<string,any>=>{if(v==null)return {};if(typeof v!=="object"||Array.isArray(v))throw new BookingResourceConflictError("بيانات موارد الحجز غير صالحة؛ راجع المسؤول",422);return v};

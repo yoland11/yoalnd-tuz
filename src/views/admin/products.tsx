@@ -46,6 +46,7 @@ type ProductForm = {
 };
 
 type RentalBookingRow = {
+  rentalKind?: string; workspaceHref?: string | null;
   id: number;
   orderNo: string;
   customerName: string;
@@ -1038,7 +1039,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                           }`}>
                             {active ? "active" : returned ? "returned" : cancelled ? "cancelled" : booking.status}
                           </span>
-                          {active ? (
+                          {booking.rentalKind === "equipment" ? <Button variant="outline" size="sm" asChild><a href={booking.workspaceHref || `/admin/bookings/rentals/${booking.id}`}>فتح مساحة الإيجار</a></Button> : active ? (
                             <>
                               <Button variant="ghost"
                                 type="button"

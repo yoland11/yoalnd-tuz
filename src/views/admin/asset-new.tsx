@@ -1,3 +1,4 @@
+import { RentalAssetSettings } from "@/components/equipment-rental-panels";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useSearch } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1269,6 +1270,7 @@ export default function AssetNewPage() {
             </Section>
           )}
 
+          {isEditMode ? <RentalAssetSettings productId={editProductId} onSaved={settings => { set("isRental", settings.enabled); set("pricePerDay", String(settings.dailyPrice)); }} /> : null}
           <Section title="الإيجار والإهلاك">
             <Grid>
               <Field label="متاح للإيجار">

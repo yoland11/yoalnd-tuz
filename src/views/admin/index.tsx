@@ -17,6 +17,7 @@ const DashboardPage = lazy(() => import("./dashboard"));
 const NotificationsPage = lazy(() => import("./notifications"));
 const OrdersPage = lazy(() => import("./orders"));
 const BookingCenterPage = lazy(() => import("./booking-center"));
+const EquipmentRentalsPage = lazy(() => import("./equipment-rentals"));
 const SoundCenterPage = lazy(() => import("./sound-center"));
 const InvoicePage = lazy(() => import("./invoice"));
 const CalendarPage = lazy(() => import("./calendar"));
@@ -406,6 +407,15 @@ export default function Admin() {
                 <OrdersPage />
               </Guard>
             )}
+          </Route>
+          <Route path="/admin/bookings/rentals/:id">
+            {() => <Guard me={me} anyPerm={["orders", "bookings", "rental_view", "rental_create", "rental_edit", "rental_approve", "rental_dispatch", "rental_return", "rental_inspect", "rental_payment", "rental_reports", "rental_settings"]}><EquipmentRentalsPage me={me} /></Guard>}
+          </Route>
+          <Route path="/admin/bookings/rentals">
+            {() => <Guard me={me} anyPerm={["orders", "bookings", "rental_view", "rental_create", "rental_edit", "rental_approve", "rental_dispatch", "rental_return", "rental_inspect", "rental_payment", "rental_reports", "rental_settings"]}><EquipmentRentalsPage me={me} /></Guard>}
+          </Route>
+          <Route path="/admin/rental-orders">
+            {() => <Redirect to={`/admin/bookings/rentals${Number(new URLSearchParams(window.location.search).get("order")) > 0 ? `/${Number(new URLSearchParams(window.location.search).get("order"))}` : ""}`} />}
           </Route>
           <Route path="/admin/bookings/:source/:id">
             {() => (

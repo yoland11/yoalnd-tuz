@@ -201,7 +201,7 @@ type BoardProps = {
   onOpenDay: (day: string) => void;
 };
 
-const emptySummary = (day: string): DaySummary => ({ day, total: 0, departments: [], storeOrders: 0, staffAssignments: 0 });
+const emptySummary = (day: string): DaySummary => ({ day, total: 0, departments: [], storeOrders: 0, rentals: 0, staffAssignments: 0 });
 
 function DayCards({ day, summary, cards, conflictKeys, onOpenDay, limit }: { day: string; summary: DaySummary; cards: BookingCalendarEvent[]; conflictKeys: Set<string>; onOpenDay: (day: string) => void; limit?: number }) {
   if (!cards.length) return <p className="py-2 text-center text-xs text-muted-foreground">{summary.total ? "لا بطاقات مطابقة للتصفية" : "لا حجوزات"}</p>;
@@ -448,6 +448,7 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
   const [employee, setEmployee] = useState<number | null>(initial.employee);
   const [search, setSearch] = useState(initial.search);
   const [showStoreOrders, setShowStoreOrders] = useState(initial.showStoreOrders);
+  const [bookingType, setBookingType] = useState<"all" | "events" | "rentals">(() => { const v = new URLSearchParams(window.location.search).get("bookingType"); return v === "events" || v === "rentals" ? v : "all"; });
   const [panelDay, setPanelDay] = useState<string | null>(null);
   const [printing, setPrinting] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -466,8 +467,9 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
     set("employee", employee ? String(employee) : null);
     set("q", search.trim() || null);
     set("store", showStoreOrders ? "1" : null);
+    set("bookingType", bookingType === "all" ? null : bookingType);
     window.history.replaceState(window.history.state, "", url);
-  }, [view, anchor, today, department, status, employee, search, showStoreOrders]);
+  }, [view, anchor, today, department, status, employee, search, showStoreOrders, bookingType]);
 
   const days = useMemo(() => calendarViewDays(view, anchor), [view, anchor]);
   const from = days[0];
@@ -483,7 +485,7 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
   const showingOtherRange = Boolean(data && (data.range.from !== from || data.range.to !== to));
   const events = useMemo(() => data?.events ?? [], [data?.events]);
 
-  const filters: CalendarCardFilters = useMemo(() => ({ status, department, employee, search, showStoreOrders }), [status, department, employee, search, showStoreOrders]);
+  const filters: CalendarCardFilters = useMemo(() => ({ status, department, employee, search, showStoreOrders, bookingType }), [status, department, employee, search, showStoreOrders, bookingType]);
   const summaries = useMemo(() => new Map(days.map((day) => [day, summarizeCalendarDay(day, events, status)])), [days, events, status]);
   const cardsByDay = useMemo(() => {
     const cards = new Map<string, BookingCalendarEvent[]>();
@@ -492,7 +494,7 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
   }, [events, filters]);
   const summaryDays = useMemo(() => (view === "month" ? days.filter((day) => isSameCalendarMonth(day, anchor)) : days), [view, days, anchor]);
   const rangeSummary = useMemo(() => summarizeCalendarRange(summaryDays, events, status), [summaryDays, events, status]);
-  const visibleBookings = useMemo(() => summaryDays.reduce((sum, day) => sum + (cardsByDay.get(day) ?? []).filter((event) => event.countsAsBooking).length, 0), [summaryDays, cardsByDay]);
+  const visibleBookings = useMemo(() => summaryDays.reduce((sum, day) => sum + (cardsByDay.get(day) ?? []).filter((event) => event.countsAsBooking && event.kind !== "rental").length, 0), [summaryDays, cardsByDay]);
   const conflicts = useMemo(() => calendarConflicts(events), [events]);
   const conflictKeys = useMemo(() => new Set(conflicts.flatMap((group) => group.events.map((event) => event.key))), [conflicts]);
   const statusOptions = useMemo(() => {
@@ -506,14 +508,14 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
 
   const mobileDay = days.includes(anchor) ? anchor : days[0];
   const cardFiltersActive = Boolean(department || employee || search.trim());
-  const anyFilter = cardFiltersActive || Boolean(status) || showStoreOrders;
+  const anyFilter = cardFiltersActive || Boolean(status) || showStoreOrders || bookingType !== "all";
   const activeFilterCount = [department, status, employee, showStoreOrders].filter(Boolean).length;
   const filterNote = [
     status ? `الأعداد والبطاقات حسب الحالة: ${status}.` : null,
     department ? `البطاقات تعرض ${bookingDepartment(department)?.label ?? ""} فقط؛ الأعداد تبقى لكل الأقسام.` : null,
     (employee || search.trim()) ? "البطاقات مصفّاة بالبحث أو الموظف؛ الأعداد تبقى لكامل اليوم." : null,
   ].filter(Boolean).join(" ") || null;
-  const resetFilters = () => { setDepartment(""); setStatus(""); setEmployee(null); setSearch(""); setShowStoreOrders(false); };
+  const resetFilters = () => { setDepartment(""); setStatus(""); setEmployee(null); setSearch(""); setShowStoreOrders(false); setBookingType("all"); };
   const toggleDepartment = (key: string) => setDepartment((current) => (current === key ? "" : key));
 
   const printSchedule = async (scope: "day" | "week", day: string) => {
@@ -594,6 +596,7 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
             <option value="">كل الأقسام</option>
             {BOOKING_DEPARTMENTS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
           </select>
+          <select aria-label="نوع الحجز" value={bookingType} onChange={event => setBookingType(event.target.value as "all" | "events" | "rentals")} className={`${control} basis-36`}><option value="all">كل العمليات</option><option value="events">المناسبات</option><option value="rentals">إيجارات المعدات</option></select>
           <select aria-label="الحالة" title="الملغي لا يُحسب إلا عند اختياره" value={status} onChange={(event) => setStatus(event.target.value)} className={`${control} basis-32`}>
             <option value="">كل الحالات</option>
             {statusOptions.map((label) => <option key={label} value={label}>{label}</option>)}
@@ -624,6 +627,7 @@ export default function CalendarPage({ canViewInvoices }: { canViewInvoices: boo
         <div className={`space-y-3 transition-opacity duration-150 ${showingOtherRange ? "pointer-events-none opacity-50" : ""}`} aria-busy={showingOtherRange}>
           <div className="flex flex-col gap-1.5 md:flex-row md:flex-wrap md:items-center">
             <span className="me-1 text-sm font-bold text-foreground">{rangeTitle}: {bookingCountLabel(rangeSummary.total)}</span>
+            <span className="rounded-lg border border-primary/15 px-2 py-1 text-xs text-primary">الإيجارات: {rangeSummary.rentals}</span>
             <div className="-mx-1 flex gap-1.5 overflow-x-auto overscroll-x-contain px-1 pb-1 md:contents">
               <DepartmentChips rows={rangeSummary.departments} activeDepartment={department} onToggle={toggleDepartment} />
             </div>

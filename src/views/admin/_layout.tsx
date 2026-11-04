@@ -70,6 +70,7 @@ import {
   Speaker,
   ChefHat,
   Plus,
+  Clock,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -77,6 +78,7 @@ import { AdminNotificationsBell } from "./notifications-bell";
 import { AdminGlobalSearch } from "./global-search";
 
 export type NavItem = {
+  bookingChild?: boolean;
   href: string;
   label: string;
   icon: any;
@@ -294,6 +296,10 @@ export const NAV: NavItem[] = [
     icon: CalendarDays,
     perm: "orders",
   },
+  { href: "/admin/bookings?new=1", label: "إضافة حجز", icon: Plus, perm: "orders", bookingChild: true },
+  { href: "/admin/bookings/rentals", label: "إيجارات المعدات", icon: Boxes, perm: "rental_view", anyPerm: ["orders", "bookings", "rental_view"], bookingChild: true },
+  { href: "/admin/bookings/rentals/returns", label: "التسليم والإرجاع", icon: PackageCheck, perm: "rental_view", anyPerm: ["orders", "rental_view", "rental_dispatch", "rental_return"], bookingChild: true },
+  { href: "/admin/bookings/rentals/overdue", label: "الإيجارات المتأخرة", icon: Clock, perm: "rental_view", anyPerm: ["orders", "rental_view"], bookingChild: true },
   {
     href: "/admin/preparation",
     label: "قائمة التجهيز",
@@ -932,10 +938,14 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ShoppingBag,
     items: [
       navItem("/admin/bookings"),
+      navItem("/admin/bookings?new=1"),
+      { ...navItem("/admin/calendar"), bookingChild: true },
+      navItem("/admin/bookings/rentals"),
+      navItem("/admin/bookings/rentals/returns"),
+      navItem("/admin/bookings/rentals/overdue"),
       navItem("/admin/preparation"),
       navItem("/admin/sound-center"),
       navItem("/admin/orders"),
-      navItem("/admin/calendar"),
       navItem("/admin/qr-orders"),
       navItem("/admin/archive"),
       navItem("/admin/services"),
@@ -1563,7 +1573,7 @@ function AdminSidebarEntry({
   compact: boolean;
 }) {
   const ItemIcon = item.icon;
-  const baseClass = `w-full flex min-w-0 items-center gap-2.5 rounded-xl text-sm transition-colors ${
+  const baseClass = `w-full flex min-w-0 items-center gap-2.5 rounded-xl text-sm transition-colors ${isNavItem(item) && item.bookingChild ? "border-s-2 border-primary/15 ps-6" : ""} ${
     compact ? "px-3 py-2.5" : "px-3 py-2.5"
   }`;
   if (!isNavItem(item)) {
