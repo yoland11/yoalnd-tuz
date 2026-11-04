@@ -10,6 +10,8 @@
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "typecheck": "tsc --noEmit",
+    "test:customer-followups": "node ./scripts/test-customer-followups.mjs",
+    "test:customer-followups-browser": "node ./scripts/test-customer-followups-browser.mjs",
     "test:booking-repeat": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-repeat.ts",
     "test:booking-conflicts": "node ./scripts/test-booking-conflict-report-route.cjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-conflict-report.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-conflict-report-ui.tsx",
     "test:booking-conflicts-browser": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-conflict-report-browser.ts",

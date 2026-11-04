@@ -1,6 +1,8 @@
+import { lazy, Suspense } from "react";
+import { CustomerFollowupReminder } from "@/components/customer-followup-reminder";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import {
   Archive, Bell, BellRing, CalendarDays, CheckCircle2, ChevronLeft,
   ClipboardCheck, Clock3, Home, Loader2, LogOut, MapPin,
@@ -28,7 +30,8 @@ import {
   type AdminMe,
 } from "@/views/admin/_lib";
 
-type Tab = "home" | "tasks" | "work" | "bookings" | "salary" | "notifications" | "account";
+const CustomerFollowupsPage = lazy(() => import("@/views/admin/customer-followups"));
+type Tab = "home" | "followups" | "tasks" | "work" | "bookings" | "salary" | "notifications" | "account";
 type Task = {
   id: number; taskNo?: string | null; title: string; description: string; customerName?: string | null; status: string; priority: string; dueAt: string | null; startAt: string | null;
   relatedType: string | null; relatedId: number | null; department?: string | null; taskType?:string;assignedStaffIds?:number[];archivedAt?:string|null; location?: string | null; notes?: string; completionNotes?: string; submittedAt?: string | null; completedAt?: string | null;
@@ -177,7 +180,7 @@ function PortalLogin({ onDone }: { onDone: (user: AdminMe) => void }) {
   </main>;
 }
 
-const PORTAL_TABS = ["tasks", "work", "bookings", "salary", "notifications", "account"] as const;
+const PORTAL_TABS = ["followups", "tasks", "work", "bookings", "salary", "notifications", "account"] as const;
 
 /** "?tab=…" for a valid requested portal tab in the current URL, else "". */
 function requestedTabQuery(): string {
@@ -187,11 +190,16 @@ function requestedTabQuery(): string {
 
 export default function UnifiedStaffPortal() {
   const [, navigate] = useLocation();
+  const portalSearch = useSearch();
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>(() => {
     const value = new URLSearchParams(window.location.search).get("tab");
-    return value === "tasks" || value === "work" || value === "bookings" || value === "salary" || value === "notifications" || value === "account" ? value : "home";
+    return value === "followups" || value === "tasks" || value === "work" || value === "bookings" || value === "salary" || value === "notifications" || value === "account" ? value : "home";
   });
+  useEffect(() => {
+    const requested = new URLSearchParams(portalSearch).get("tab");
+    setTab((PORTAL_TABS as readonly string[]).includes(requested ?? "") ? requested as Tab : "home");
+  }, [portalSearch]);
   const { toast } = useToast();
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   const [salaryDetails, setSalaryDetails] = useState<SimpleSalary | null>(null);
@@ -242,7 +250,7 @@ export default function UnifiedStaffPortal() {
 
   const selectTab = (next: Tab) => { setTab(next); window.history.replaceState(null, "", next === "home" ? "/staff" : `/staff?tab=${next}`); };
   const navigation = useMemo(() => [
-    { id: "home" as Tab, label: "الرئيسية", icon: Home }, { id: "tasks" as Tab, label: "مهامي", icon: ClipboardCheck }, { id: "work" as Tab, label: "الأوامر", icon: MessagesSquare }, { id: "bookings" as Tab, label: "حجوزاتي", icon: CalendarDays }, { id: "salary" as Tab, label: "راتبي", icon: WalletCards }, { id: "notifications" as Tab, label: "الإشعارات", icon: Bell }, { id: "account" as Tab, label: "حسابي", icon: UserRound },
+    { id: "home" as Tab, label: "الرئيسية", icon: Home }, { id: "followups" as Tab, label: "متابعات العملاء", icon: CalendarDays }, { id: "tasks" as Tab, label: "مهامي", icon: ClipboardCheck }, { id: "work" as Tab, label: "الأوامر", icon: MessagesSquare }, { id: "bookings" as Tab, label: "حجوزاتي", icon: CalendarDays }, { id: "salary" as Tab, label: "راتبي", icon: WalletCards }, { id: "notifications" as Tab, label: "الإشعارات", icon: Bell }, { id: "account" as Tab, label: "حسابي", icon: UserRound },
   ], []);
 
   if (me === undefined) return <div className="grid min-h-dvh place-items-center bg-background"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
@@ -266,9 +274,11 @@ export default function UnifiedStaffPortal() {
     </aside>
 
     <main className="mx-auto max-w-7xl px-4 pb-24 pt-5 lg:mr-64 lg:px-8 lg:pb-10">
-      <header className="mb-6 flex items-start justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><EmployeeAvatar name={account?.name || me.fullName || me.username} photoUrl={account?.photoUrl ?? me.photoUrl} size={64} /><div className="min-w-0"><div className="mb-1 text-sm text-muted-foreground">مرحباً، {account?.name || me.fullName || me.username}</div><h1 className="text-2xl font-black tracking-tight">{tab === "home" ? "ما الذي لدي اليوم؟" : ({ tasks: "مهامي", work: "أوامر العمل والمحادثات", bookings: "حجوزاتي", notifications: "الإشعارات", account: "حسابي" } as Record<string, string>)[tab]}</h1><p className="mt-1 text-sm text-muted-foreground">{[account?.jobTitle || me.jobTitle, account?.department || me.department].filter(Boolean).join(" · ") || "بوابة عملك الموحدة"}</p></div></div><Button variant="ghost" type="button" onClick={() => selectTab("notifications")} className="relative grid h-11 w-11 place-items-center rounded-xl border border-border bg-card text-muted-foreground hover:text-foreground"><Bell className="h-5 w-5" />{unread ? <span className="absolute left-1 top-1 h-2.5 w-2.5 rounded-full bg-destructive" /> : null}</Button></header>
+      <header className="mb-6 flex items-start justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><EmployeeAvatar name={account?.name || me.fullName || me.username} photoUrl={account?.photoUrl ?? me.photoUrl} size={64} /><div className="min-w-0"><div className="mb-1 text-sm text-muted-foreground">مرحباً، {account?.name || me.fullName || me.username}</div><h1 className="text-2xl font-black tracking-tight">{tab === "home" ? "ما الذي لدي اليوم؟" : ({ followups: "متابعات العملاء", tasks: "مهامي", work: "أوامر العمل والمحادثات", bookings: "حجوزاتي", notifications: "الإشعارات", account: "حسابي" } as Record<string, string>)[tab]}</h1><p className="mt-1 text-sm text-muted-foreground">{[account?.jobTitle || me.jobTitle, account?.department || me.department].filter(Boolean).join(" · ") || "بوابة عملك الموحدة"}</p></div></div><Button variant="ghost" type="button" onClick={() => selectTab("notifications")} className="relative grid h-11 w-11 place-items-center rounded-xl border border-border bg-card text-muted-foreground hover:text-foreground"><Bell className="h-5 w-5" />{unread ? <span className="absolute left-1 top-1 h-2.5 w-2.5 rounded-full bg-destructive" /> : null}</Button></header>
 
       {dashboard.isError ? <Failure title="تعذر تحميل مساحة العمل" error={dashboard.error} onRetry={() => void dashboard.refetch()} /> : null}
+      {tab === "followups" ? <Suspense fallback={<WorkspaceSkeleton />}><CustomerFollowupsPage mode="staff" /></Suspense> : null}
+      {tab === "home" ? <CustomerFollowupReminder /> : null}
       {tab === "home" && dashboard.isLoading ? <WorkspaceSkeleton /> : null}
       {tab === "home" && !dashboard.isLoading ? <div className="space-y-6">
         <section className="grid gap-4 lg:grid-cols-[1.25fr_.75fr]">
@@ -299,7 +309,7 @@ export default function UnifiedStaffPortal() {
       <StaffTaskDialog taskId={selectedTaskId} open={selectedTaskId !== null} onOpenChange={(open) => { if (!open) setSelectedTaskId(null); }} />
       <Dialog open={Boolean(salaryDetails)} onOpenChange={(open) => { if (!open) setSalaryDetails(null); }}><DialogContent dir="rtl"><DialogHeader><DialogTitle>تفاصيل الراتب</DialogTitle></DialogHeader>{salaryDetails ? <div className="space-y-3 text-sm"><p>الشهر: <b>{salaryDetails.month}</b></p><dl className="grid grid-cols-2 gap-3 rounded-xl bg-muted/40 p-4"><div><dt>الراتب الأساسي</dt><dd className="mt-1 font-bold">{money.format(salaryDetails.baseSalary)}</dd></div><div><dt>المكافأة</dt><dd className="mt-1 font-bold">{money.format(salaryDetails.bonus)}</dd></div><div><dt>الخصم</dt><dd className="mt-1 font-bold">{money.format(salaryDetails.deduction)}</dd></div><div><dt>الصافي</dt><dd className="mt-1 font-bold text-primary">{money.format(salaryDetails.netSalary)}</dd></div><div><dt>المستلم من الراتب</dt><dd className="mt-1 font-bold text-emerald-700">{money.format(salaryDetails.amountPaid)}</dd></div><div><dt>المتبقي من الراتب</dt><dd className="mt-1 font-bold text-primary">{money.format(salaryDetails.remaining)}</dd></div></dl><p>الحالة: <b>{salaryPaymentLabel(salaryDetails)}</b></p>{salaryDetails.paidAt ? <p>تاريخ الصرف: <b>{textDate(salaryDetails.paidAt)}</b></p> : null}<section className="rounded-xl border"><div className="border-b p-3 font-bold">حركات الراتب</div>{salaryDetails.movements.length ? <div className="divide-y">{salaryDetails.movements.map((movement) => <div key={movement.id} className="p-3"><div className="flex items-center justify-between gap-3"><b>{movement.type === "bonus" ? "مكافأة" : movement.type === "deduction" ? "استقطاع" : "تعديل راتب"}</b><span className={movement.type === "deduction" ? "text-destructive" : "text-emerald-700"}>{movement.type === "deduction" ? "−" : "+"}{money.format(movement.amount)}</span></div><p className="mt-1 text-muted-foreground">{movement.reason}</p><p className="mt-1 text-xs text-muted-foreground">{movement.effectiveDate} · {movement.status}</p></div>)}</div> : <p className="p-3 text-muted-foreground">لا توجد حركات منفصلة لهذا الراتب.</p>}</section></div> : null}</DialogContent></Dialog>
     </main>
-    <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">{navigation.map((item) => <Button variant="ghost" key={item.id} type="button" onClick={() => selectTab(item.id)} className={`relative flex min-h-16 flex-col items-center justify-center gap-1 text-[10px] font-bold ${tab === item.id ? "text-primary" : "text-muted-foreground"}`}><item.icon className="h-5 w-5" />{item.label}{item.id === "notifications" && unread ? <span className="absolute top-2 h-2 w-2 rounded-full bg-destructive" /> : null}</Button>)}</nav>
+    <nav aria-label="أقسام بوابة الموظف" className="fixed inset-x-0 bottom-0 z-30 flex overflow-x-auto border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">{navigation.map((item) => <Button variant="ghost" key={item.id} type="button" onClick={() => selectTab(item.id)} className={`relative flex min-h-16 min-w-20 shrink-0 flex-col items-center justify-center gap-1 text-[10px] font-bold ${tab === item.id ? "text-primary" : "text-muted-foreground"}`}><item.icon className="h-5 w-5" />{item.label}{item.id === "notifications" && unread ? <span className="absolute top-2 h-2 w-2 rounded-full bg-destructive" /> : null}</Button>)}</nav>
   </div>;
 }
 

@@ -201,6 +201,9 @@ import {
   ProductionEnvironmentError,
 } from "@/server/production-env";
 import { safeServerError } from "@/server/safe-server-log";
+import { customerFollowupRoute } from "@/server/customer-followup-route";
+import { CustomerFollowupError, completeFollowupConversion, resolveFollowupBookingCustomer } from "@/server/customer-followups";
+import type { FollowupActor } from "@/lib/customer-followups";
 import {
   assertCurrentSchema,
   REQUIRED_SCHEMA_REVISION,
@@ -11239,7 +11242,7 @@ async function createServiceOrderWithHistory(
     "trackingCode" | "phoneLast4"
   >,
   historyNote: string,
-  options?: { settleByAmount?: boolean; serviceItems?: Array<{ productId: number; productName: string; unit: string; quantity: number; unitPrice: number; discount: number; total: number }>; afterCreate?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], order: typeof serviceOrdersTable.$inferSelect) => Promise<void> },
+  options?: { settleByAmount?: boolean; serviceItems?: Array<{ productId: number; productName: string; unit: string; quantity: number; unitPrice: number; discount: number; total: number }>; resolveCustomer?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], phone: string) => Promise<{ id: number }>; afterCreate?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], order: typeof serviceOrdersTable.$inferSelect) => Promise<void> },
 ) {
   // Schema setup must complete before the transaction starts. The customer
   // upsert, booking row, and status-history row below use one transaction.
@@ -11254,7 +11257,9 @@ async function createServiceOrderWithHistory(
       serviceId: values.serviceId,
       phone: values.phone,
     });
-    const customer = await ensureCustomerForPhone(
+    // Only the admin followup flow supplies this resolver. It preserves its
+    // existing customer identity and recovers a saved source before reserving resources.
+    const customer = options?.resolveCustomer ? await options.resolveCustomer(tx, values.phone) : await ensureCustomerForPhone(
       values.phone,
       (values as any).customerName,
       tx,
@@ -39878,6 +39883,13 @@ async function handleKoshaWorkOrders(
   return error("المسار غير موجود", 404);
 }
 
+function followupActor(auth: AdminUser): FollowupActor {
+  return { id: auth.id, role: auth.role, permissions: Array.isArray(auth.permissions) ? auth.permissions : [],
+    canBook: hasPermission(auth, "orders") && hasPermission(auth, "bookings"),
+    canCreateCustomer: hasPermission(auth, "customers"),
+  };
+}
+
 async function handleAdmin(
   req: NextRequest,
   parts: string[],
@@ -39885,6 +39897,11 @@ async function handleAdmin(
 ) {
   const method = req.method;
   const section = parts[1];
+
+  if (section === "customer-followups") {
+    const auth = await getAdminUser(req);
+    return customerFollowupRoute(req, parts.slice(2), auth ? followupActor(auth) : null, db);
+  }
 
   if (section === "koshat-tasks")
     return handleKoshaWorkOrders(req, parts, "admin");
@@ -52364,9 +52381,23 @@ async function handleAdmin(
             customFields,
           },
           "إضافة من الإدارة",
-          { settleByAmount: true, serviceItems, afterCreate:async(tx,created) => { photographySync=await syncCentralBookingToPhotography(created.id,{id:auth.id,name:auth.fullName||auth.username,ipAddress:req.headers.get("x-forwarded-for"),userAgent:req.headers.get("user-agent")},tx); } },
+          { settleByAmount: true, serviceItems,
+            ...(customFields.customerFollowupId != null ? { resolveCustomer: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], phone: string) => resolveFollowupBookingCustomer(tx, { actor: followupActor(auth), followupId: customFields.customerFollowupId, phone }) } : {}),
+            afterCreate:async(tx,created) => {
+            if (customFields.customerFollowupId != null) {
+              const followupId = customFields.customerFollowupId;
+              if (typeof followupId !== "number" || !Number.isSafeInteger(followupId) || followupId <= 0) throw new CustomerFollowupError(400, "VALIDATION_ERROR", "مرجع المتابعة غير صحيح");
+              await completeFollowupConversion(tx, { actor: followupActor(auth), followupId, customerId: created.customerId!, booking: { source: "service", id: created.id } });
+            }
+            photographySync=await syncCentralBookingToPhotography(created.id,{id:auth.id,name:auth.fullName||auth.username,ipAddress:req.headers.get("x-forwarded-for"),userAgent:req.headers.get("user-agent")},tx);
+          } },
         );
       } catch (err) {
+        if (err instanceof CustomerFollowupError) {
+          const requestId = makeRequestId(req.headers.get("x-request-id"));
+          console.error("AJN followup booking conversion failed", { requestId, actorId: auth.id, error: safeServerError(err) });
+          return json({ ...createApiErrorPayload({ status: err.status, code: err.status >= 500 ? "DATABASE_ERROR" : err.status === 403 ? "PERMISSION_DENIED" : err.status === 404 ? "NOT_FOUND" : err.status === 409 ? "CONFLICT" : "VALIDATION_ERROR", message: err.message, requestId, retryable: err.retryable }), featureCode: err.code, ...(err.existingBooking ? { existingBooking: err.existingBooking } : {}) }, err.status, { "Cache-Control": "private, no-store", "x-request-id": requestId });
+        }
         const diagnostic = safeServerError(err);
         const databaseError = (err as any)?.cause ?? err;
         console.error("admin service booking core save failed", {
@@ -76553,12 +76584,16 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   // schema probes must not run as a side effect of opening the calendar.
   const isCalendarReadRequest =
     root === "admin" && parts[1] === "calendar" && req.method === "GET";
+  // Feature storage has an isolated migration. Reading reminders or writing a
+  // followup must not run unrelated customer/financial backfills on cold start.
+  const isCustomerFollowupRequest =
+    root === "admin" && parts[1] === "customer-followups";
   const isHealthCheck =
     req.method === "GET" && (!root || root === "healthz");
   const exposeAuthDiagnostics =
     isAdminAuth && req.headers.get("x-ajn-auth-diagnostics") === "1";
   const shouldBootstrapAdminSchemas =
-    root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest && !isBookingCenterReadRequest && !isCalendarReadRequest;
+    root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest && !isBookingCenterReadRequest && !isCalendarReadRequest && !isCustomerFollowupRequest;
 
   try {
     assertProductionEnvironment();
@@ -76672,10 +76707,10 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
               ensurePerformanceIndexes(),
             ])
           : undefined,
-        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest && !isCalendarReadRequest
+        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest && !isCalendarReadRequest && !isCustomerFollowupRequest
           ? ensureStaffActivityColumn()
           : undefined,
-        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest && !isCalendarReadRequest
+        root === "admin" && !isInvoiceRegisterRequest && !isAdminAuth && !isBookingCenterReadRequest && !isCalendarReadRequest && !isCustomerFollowupRequest
           ? ensureAdminProductsColumns()
           : undefined,
         root === "products" || shouldBootstrapAdminSchemas

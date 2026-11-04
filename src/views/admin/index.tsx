@@ -79,6 +79,7 @@ const RecycleBinPage = lazy(() => import("./recycle-bin"));
 const DocumentScannerPage = lazy(() => import("./document-scanner"));
 const DocumentLibraryPage = lazy(() => import("./document-library"));
 const CustomersPage = lazy(() => import("./customers"));
+const CustomerFollowupsPage = lazy(() => import("./customer-followups"));
 const LoyaltyPage = lazy(() => import("./loyalty"));
 const CrewsPage = lazy(() => import("./crews"));
 const StaffPage = lazy(() => import("./staff"));
@@ -912,6 +913,7 @@ export default function Admin() {
               </Guard>
             )}
           </Route>
+          <Route path="/admin/customer-followups"><CustomerFollowupsPage /></Route>
           <Route path="/admin/customers">
             {() => (
               <Guard me={me} perm="customers">

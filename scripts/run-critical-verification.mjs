@@ -26,6 +26,7 @@ const steps = [
   ["Graduation group per-sash pricing", "pnpm", ["run", "test:graduation-group-pricing"]],
   ["Graduation group confirmation navigation", "pnpm", ["run", "test:graduation-group-step-flow"]],
   ["Calendar event target", "pnpm", ["run", "test:calendar-event-target"]],
+  ["Customer followup scope, canonical booking conversion and simple UI", "pnpm", ["run", "test:customer-followups"]],
   ["Booking center read preflight", "pnpm", ["run", "test:booking-center-read"]],
   ["Calendar read preflight", "pnpm", ["run", "test:calendar-read"]],
   ["Shared Arabic date field", "pnpm", ["run", "test:date-field"]],

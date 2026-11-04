@@ -1,3 +1,4 @@
+import { CustomerFollowupReminder } from "@/components/customer-followup-reminder";
 import { Button } from "@/components/ui/button";
 import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
@@ -607,6 +608,7 @@ function StaffPortalContent() {
       </header>
 
       <main className="pb-20">
+        {!onDetail && <div className="px-4 pt-4"><CustomerFollowupReminder /></div>}
         <Switch>
           <Route path="/staff/koshas/work-orders/:id">{(p) => <KoshatWorkOrderDetail id={Number(p.id)} />}</Route>
           <Route path="/staff/koshas/passport/:id">{(p) => <KoshaPassport id={Number(p.id)} />}</Route>

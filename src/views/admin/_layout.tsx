@@ -568,6 +568,7 @@ export const NAV: NavItem[] = [
     icon: Users,
     perm: "customers",
   },
+  { href: "/admin/customer-followups", label: "مركز المتابعة", icon: MessageCircle, perm: "customers", anyPerm: ["customers", "tasks"] },
   {
     href: "/admin/customer-hub",
     label: "البحث الذكي عن العملاء",
@@ -949,10 +950,10 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/categories"),
       navItem("/admin/gallery"),
       navItem("/admin/delivery"),
-      navItem("/admin/customers"),
-      navItem("/admin/customer-hub"),
+
     ],
   },
+  { id: "customers", label: "العملاء", icon: Users, items: [navItem("/admin/customers"), navItem("/admin/customer-hub"), navItem("/admin/customer-followups")] },
   {
     id: "sales",
     label: "المبيعات والفواتير",
@@ -1131,6 +1132,7 @@ function isNavItem(item: NavEntry): item is NavItem {
 export function canSeeItem(me: AdminMe, item: NavEntry) {
   if (!isNavItem(item)) return true;
   if (item.adminOnly && me.role !== "admin") return false;
+  if (item.href === "/admin/customer-followups" && me.role === "manager") return true;
   if (item.anyPerm) return item.anyPerm.some((p) => hasPerm(me, p));
   return hasPerm(me, item.perm);
 }

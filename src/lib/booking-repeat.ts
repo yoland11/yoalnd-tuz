@@ -13,6 +13,7 @@ export function normalizeRepeatedBookingDetails(input:unknown):RepeatDetails{
   const original=next.bookingOperations;
   if(original!=null&&!isObject(original))return invalid();
   for(const key of [
+    "customerFollowupId",
     "linkedAssets","assignedStaffId","assignedStaffName","assignedStaffIds","primaryEmployeeId","primaryEmployeeName","assistantEmployeeId","assistantEmployeeName","bookingStaffAssignments","assignedEmployees","executionTeam",
     "assignedPhotographerId","photographerId","photographyAssignments","photographers","assignedPhotographers","photographyPortal","photographyWorkflowStatus","photographyCustomerStatus",
     "transportationDriverId","transportationDriverName","transportationVehicleId","transportationVehicleName","vehicle","vehicles","team",

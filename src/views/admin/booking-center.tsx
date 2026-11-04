@@ -1,6 +1,9 @@
-import { useMemo, useState } from "react";
+import type { FollowupRow, FollowupBooking } from "@/lib/customer-followups";
+import { FOLLOWUP_SERVICES } from "@/lib/customer-followups";
+import { followupBookingPreset, followupBookingMetadata, recoveredFollowupBooking } from "@/lib/customer-followup-booking";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -857,11 +860,20 @@ export default function BookingCenterPage() {
 }
 
 function BookingDashboard() {
+  const [, setBookingLocation] = useLocation();
+  const bookingSearch = useSearch();
+  const followupToken = new URLSearchParams(bookingSearch).get("followup");
+  const followupId = followupToken && /^[1-9]\d*$/.test(followupToken) && Number.isSafeInteger(Number(followupToken)) ? Number(followupToken) : null;
+  const followupContext = useQuery({ queryKey: ["customer-followups", "booking-context", followupId], queryFn: () => adminFetch<{ followup: FollowupRow }>(`/admin/customer-followups/${followupId}`), enabled: followupId != null, retry: false });
+  const followup = followupContext.data?.followup;
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [serviceFilter, setServiceFilter] = useState<ServiceKey | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
+  useEffect(() => {
+    if (followupToken != null) setShowCreate(Boolean(followup && !followup.booking && followup.status !== "uninterested"));
+  }, [followupToken, followup?.id, followup?.status, followup?.booking?.id]);
   const [reportFor, setReportFor] = useState<ServiceKey | "all" | null>(null);
   const [selectedBookings,setSelectedBookings]=useState<Set<string>>(new Set());
   const centralBookingsQuery = useQuery({ queryKey: ["admin", "booking-center"], queryFn: () => adminFetch<any[]>("/admin/booking-center?readiness=1") });
@@ -872,7 +884,7 @@ function BookingDashboard() {
     staleTime: 30_000,
   });
   const servicesQuery = useQuery({ queryKey: ["admin", "services", "booking-center"], queryFn: () => adminFetch<AdminService[]>("/admin/services") });
-  const customersQuery = useQuery({ queryKey: ["admin", "customers", "booking-center"], queryFn: () => adminFetch<Customer[]>("/admin/customers") });
+  const customersQuery = useQuery({ queryKey: ["admin", "customers", "booking-center"], queryFn: () => adminFetch<Customer[]>("/admin/customers"), enabled: followupToken == null });
   const bookings = useMemo(() => (centralBookingsQuery.data ?? []).map(toUnifiedBooking), [centralBookingsQuery.data]);
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
@@ -990,15 +1002,22 @@ function BookingDashboard() {
         })}
       </section>
 
-      {showCreate && (
+      {followupToken != null && !followupId ? <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">مرجع المتابعة غير صحيح. افتح الحجز من مركز المتابعة.</div> : null}
+      {followupId && followupContext.isPending ? <div role="status" className="rounded-xl border border-border p-4 text-sm">جارٍ تحميل العميل المرتبط بالمتابعة…</div> : null}
+      {followupContext.isError ? <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><p>تعذر تحميل المتابعة: {apiErrorMessage(followupContext.error)}</p><Button variant="outline" onClick={() => void followupContext.refetch()}>إعادة المحاولة</Button></div> : null}
+      {followup?.booking ? <div className="rounded-xl border border-border bg-card p-4 text-sm"><p>هذه المتابعة مرتبطة بحجز محفوظ بالفعل.</p><Button variant="outline" asChild><Link href={`/admin/bookings/${followup.booking.source}/${followup.booking.id}`}>فتح الحجز {followup.booking.number}</Link></Button></div> : null}
+      {followup && !followup.booking && followup.status === "uninterested" ? <div role="alert" className="rounded-xl border border-border bg-card p-4 text-sm">الاستفسار غير مهتم بهذه الخدمة. حدّث حالة المتابعة عند تجدد اهتمام العميل.</div> : null}
+      {showCreate && (followupToken == null || followup && !followup.booking && followup.status !== "uninterested" && !followupContext.isError) && (
         <UnifiedBookingForm
+          key={followup?.id ?? "manual"}
+          followup={followup ?? null}
           services={servicesQuery.data ?? []}
           servicesLoading={servicesQuery.isLoading || servicesQuery.isFetching}
           servicesError={servicesQuery.isError ? apiErrorMessage(servicesQuery.error, "تعذر تحميل قائمة الخدمات") : ""}
           onRetryServices={() => void servicesQuery.refetch()}
           customers={customersQuery.data ?? []}
-          onCancel={() => setShowCreate(false)}
-          onCreated={() => { setShowCreate(false); refresh(); toast({ title: "تم إنشاء الحجز الموحد بنجاح", description: "تم حفظ العميل والخدمات ضمن رقم حجز واحد." }); }}
+          onCancel={() => { setShowCreate(false); if (followupToken != null) setBookingLocation("/admin/customer-followups"); }}
+          onCreated={() => { setShowCreate(false); refresh(); queryClient.invalidateQueries({ queryKey: ["customer-followups"] }); toast({ title: "تم إنشاء الحجز الموحد بنجاح", description: "تم حفظ العميل والخدمات ضمن رقم حجز واحد." }); }}
         />
       )}
 
@@ -1211,9 +1230,10 @@ function BookingCustomerSelector({ value, onChange, error }: { value: Customer |
   );
 }
 
-function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryServices, customers, onCancel, onCreated }: { services: AdminService[]; servicesLoading: boolean; servicesError: string; onRetryServices: () => void; customers: Customer[]; onCancel: () => void; onCreated: () => void }) {
+export function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryServices, customers, onCancel, onCreated, followup = null }: { services: AdminService[]; servicesLoading: boolean; servicesError: string; onRetryServices: () => void; customers: Customer[]; onCancel: () => void; onCreated: () => void; followup?: FollowupRow | null }) {
   const { toast } = useToast();
-  const [customer, setCustomer] = useState<Customer | null>(null);
+  const [customer, setCustomer] = useState<Customer | null>(() => followup ? followupBookingPreset(followup).customer : null);
+  const [recoveryBooking, setRecoveryBooking] = useState<FollowupBooking | null>(null);
   const [eventDate, setEventDate] = useState("");
   const [eventTime, setEventTime] = useState("");
   const [hallName, setHallName] = useState("");
@@ -1225,7 +1245,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
   const [replacePhotoIndex, setReplacePhotoIndex] = useState<number | null>(null);
   const [imageUploading, setImageUploading] = useState(false);
   const [notes, setNotes] = useState("");
-  const [selected, setSelected] = useState<ServiceKey[]>(["kosha"]);
+  const [selected, setSelected] = useState<ServiceKey[]>(() => followup ? followupBookingPreset(followup).departments : ["kosha"]);
   // Session, video and aerial photography are independent choices on the same booking.
   const [photoSessionOn, setPhotoSessionOn] = useState(true);
   const [videoOn, setVideoOn] = useState(false);
@@ -1311,6 +1331,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
   const mutation = useMutation({
     mutationFn: async () => {
       setFieldErrors({});
+      if (recoveryBooking) throw new Error("المتابعة مرتبطة بحجز محفوظ؛ افتح الحجز الأصلي");
       const selectedCustomer = customer;
       if (!selectedCustomer) {
         setFieldErrors({ customer: "اختر العميل أولاً" });
@@ -1367,6 +1388,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
           customFields: {
             bookingCenterVersion: 1,
             customerId: selectedCustomer.id,
+            ...(followup ? followupBookingMetadata(followup, selectedCustomer.id) : {}),
             eventTime,
             hallName,
             mapUrl,
@@ -1431,6 +1453,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
     },
     onSuccess: onCreated,
     onError: (error: any) => {
+      setRecoveryBooking(recoveredFollowupBooking(error?.data));
       const returnedErrors = error?.fieldErrors;
       if (returnedErrors && typeof returnedErrors === "object" && Object.keys(returnedErrors).length) {
         setFieldErrors(returnedErrors);
@@ -1501,10 +1524,11 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
   return (
     <section id="booking-create-form" className="ajn-unified-form" tabIndex={-1}>
       <div className="ajn-section-heading"><div><span>إدخال سريع</span><h2>إنشاء حجز متعدد الخدمات</h2><p>لن تُنشأ فاتورة أو حركة صندوق حتى تنفيذ الإجراء من وحدته المالية الحالية.</p></div><Button variant="ghost" onClick={onCancel}>إغلاق</Button></div>
+      {recoveryBooking ? <div role="alert" className="m-5 rounded-xl border border-border bg-card p-4 text-sm"><p>تم حفظ حجز لهذه المتابعة؛ لن يُنشأ طلب مكرر.</p><Button variant="outline" asChild><Link href={recoveryBooking.href}>فتح الحجز المحفوظ {recoveryBooking.number}</Link></Button></div> : null}
       <div className="grid gap-4 p-5 lg:grid-cols-[1.15fr_.85fr]">
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <BookingCustomerSelector value={customer} onChange={setCustomer} error={fieldErrors.customer || fieldErrors.phone} />
+            {followup ? <div className="space-y-2 rounded-xl border border-border bg-card p-3"><Label>العميل المرتبط بالمتابعة</Label><p className="font-semibold">{customer?.name}</p><p className="text-sm tabular-nums" dir="ltr">{customer?.phone}</p><p className="text-xs text-muted-foreground">{FOLLOWUP_SERVICES.find(service => service.key === followup.serviceKey)?.label} · يبقى العميل نفسه عند التحويل. اختر الخدمات الفعلية وراجع تفاصيل الحجز.</p></div> : <BookingCustomerSelector value={customer} onChange={setCustomer} error={fieldErrors.customer || fieldErrors.phone} />}
             <div className="space-y-2"><Label htmlFor="booking-contract">رقم العقد</Label><Input id="booking-contract" value={contractNumber} onChange={(event) => setContractNumber(event.target.value)} placeholder="يُترك فارغاً عند عدم وجود عقد" /></div>
             <div className="space-y-2"><Label htmlFor="booking-date">تاريخ المناسبة *</Label><Input id="booking-date" type="date" aria-invalid={Boolean(fieldErrors.eventDate)} className={fieldErrors.eventDate ? "border-destructive" : ""} value={eventDate} onChange={(event) => { setEventDate(event.target.value); setFieldErrors((current) => ({ ...current, eventDate: "" })); }} />{fieldErrors.eventDate ? <p className="text-xs text-destructive">{fieldErrors.eventDate}</p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-time">وقت المناسبة</Label><Input id="booking-time" type="time" value={eventTime} onChange={(event) => setEventTime(event.target.value)} /></div>
@@ -1659,7 +1683,7 @@ function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryS
             </div>
             {transportationMode === "ajn" ? <div className="space-y-1.5"><Label htmlFor="booking-transport-fee">أجرة النقل</Label><Input id="booking-transport-fee" inputMode="decimal" value={transportationFee} onChange={(event) => setTransportationFee(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" /><p className="text-xs text-muted-foreground">تُضاف أجرة النقل تلقائياً إلى المبلغ الكلي للحجز. يمكن تحديد السيارة والسائق لاحقاً من مساحة تنفيذ الحجز.</p></div> : null}
           </section> : null}
-          <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending || imageUploading || depositTooHigh || servicesLoading || !!servicesError || services.length === 0} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : servicesLoading ? "جارٍ تحميل الخدمات..." : "حفظ الحجز"}</Button></div>
+          <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={Boolean(recoveryBooking) || mutation.isPending || imageUploading || depositTooHigh || servicesLoading || !!servicesError || services.length === 0} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : servicesLoading ? "جارٍ تحميل الخدمات..." : "حفظ الحجز"}</Button></div>
         </div>
       </div>
     </section>
