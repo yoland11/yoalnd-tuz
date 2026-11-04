@@ -1,7 +1,7 @@
 import { AttendanceSettingsPanel } from "@/components/attendance-settings-panel";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Edit2, Archive, X, Building2, ChevronDown, Eye, EyeOff } from "lucide-react";
+import { Plus, Edit2, Archive, X, CalendarCheck, Building2, ChevronDown, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmployeeAvatar } from "@/components/employee-avatar";
@@ -497,10 +497,12 @@ export default function StaffPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-foreground">
           الموظفون والصلاحيات
         </h1>
+        <div className="flex flex-wrap gap-2">
+        {(["staff", "attendance_view", "attendance_manage", "attendance_approve", "attendance_reports"] as const).some(permission => hasPerm(currentUser, permission)) ? <Button type="button" size="sm" variant="outline" asChild><Link href="/admin/attendance"><CalendarCheck className="size-4" />الحضور والانصراف</Link></Button> : null}
         {canCreateStaff ? <Button
           onClick={() => { setShowPassword(false); setEditorTab("profile"); setEditing({ ...blank, role: canManageStaffRoles ? blank.role : "employee", permissions: canManageStaffRoles ? blank.permissions : ROLE_PRESETS.employee }); }}
           size="sm"
@@ -508,6 +510,7 @@ export default function StaffPage() {
         >
           <Plus className="w-4 h-4" /> إضافة موظف
         </Button> : null}
+        </div>
       </div>
 
       {isLoading ? (

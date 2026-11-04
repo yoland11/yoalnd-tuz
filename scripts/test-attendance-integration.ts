@@ -8,19 +8,22 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
 import pg from "pg";
 
-const url = process.env.TEST_DATABASE_URL;
-if (process.env.AJN_ENV !== "test" || process.env.ALLOW_TEST_WRITES !== "true" || !url) {
-  console.log("SKIPPED attendance PostgreSQL integration: needs AJN_ENV=test, ALLOW_TEST_WRITES=true and TEST_DATABASE_URL");
+// @ts-expect-error shared fail-closed JavaScript test guard
+import { assertSafeTestDatabase } from "./lib/test-database-guard.mjs";
+let url: string;
+try { url = assertSafeTestDatabase(process.env).url; }
+catch (cause) {
+  if (process.env.TEST_DATABASE_URL || process.argv.includes("--strict")) throw cause;
+  console.log("SKIPPED attendance PostgreSQL integration: isolated TEST database and write flags required (not PASS)");
   process.exit(0);
 }
-if (url === process.env.DATABASE_URL) throw new Error("TEST_DATABASE_URL must be a separate database");
 // Payroll reads the shared connection. Point it at the isolated database before anything loads it.
 process.env.DATABASE_URL = url;
 
 const attendance = await import("../src/server/attendance");
 const { baghdadMoment } = await import("../src/lib/attendance-rules");
 const { issueKioskCode, parseKioskCode } = await import("../src/server/attendance-qr");
-const { applyBonus, createPayrollRun, previewPayrollRun, recalculatePayrollDraftsForAttendance } = await import("../src/server/hr-intelligence");
+const { applyBonus, createPayrollRun, previewPayrollRun, recalculatePayrollDraftsForAttendance, approvePayrollRun, payPayrollRun } = await import("../src/server/hr-intelligence");
 const { AttendanceError } = attendance;
 
 const pool = new pg.Pool({ connectionString: url });
@@ -96,6 +99,7 @@ try {
   await expectRefusal(() => attendance.recordAttendance(db, qrUser, { action: "check_in", qrCode: "AJN1.1.1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, nine), /غير صالح/);
   await expectRefusal(async () => attendance.recordAttendance(db, qrUser, { action: "check_in", qrCode: await codeAt(nine - 120_000) }, nine), /انتهت صلاحية/, "QR_INVALID");
   await expectRefusal(async () => attendance.recordAttendance(db, qrUser, { action: "check_in", qrCode: await codeAt(nine, storeKiosk.deviceToken) }, nine), /لموقع عمل آخر/, "QR_WRONG_LOCATION");
+  await expectRefusal(() => attendance.recordAttendance(db, qrUser, { action: "checkin" } as any, nine), /بيانات تسجيل الحضور/, "VALIDATION_ERROR");
   assert.equal(await recordCount(qrUser), 0, "no refused attempt leaves a record");
   const checkedIn = await attendance.recordAttendance(db, qrUser, { action: "check_in", qrCode: firstCode }, nine);
   assert.equal(checkedIn.status, "present");
@@ -132,6 +136,31 @@ try {
   await expectRefusal(() => attendance.recordAttendance(db, revokedUser, { action: "check_in", qrCode: spareCode }, nine), /غير صالح/);
 
   // ─── GPS ──────────────────────────────────────────────────
+  const zeroGrace = await newStaff(rows, "zero_grace");
+  await attendance.saveEmployeeSettings(db, zeroGrace, fixed("gps", { scheduleType: "rotating", graceMinutes: 10 }), actor);
+  await attendance.createShifts(db, { staffId: zeroGrace, date: MONDAY, start: "09:00", end: "17:00", locationId: shop, graceMinutes: 0 }, actor);
+  assert.equal((await attendance.recordAttendance(db, zeroGrace, { action: "check_in", gps: inside }, at(MONDAY,"09:01"))).status,"late","explicit zero-minute shift grace overrides employee/company grace");
+  assert.equal((await attendance.payrollScheduleInputs(db,[zeroGrace],MONDAY,MONDAY)).get(zeroGrace)?.shifts[0].graceMinutes,0);
+  const splitShiftStaff = await newStaff(rows, "split_shift");
+  await attendance.saveEmployeeSettings(db,splitShiftStaff,fixed("gps",{scheduleType:"rotating"}),actor);
+  const splitFirst=(await attendance.createShifts(db,{staffId:splitShiftStaff,date:MONDAY,start:"09:00",end:"12:00",locationId:shop},actor)).created[0];
+  const splitSecond=(await attendance.createShifts(db,{staffId:splitShiftStaff,date:MONDAY,start:"12:00",end:"16:00",locationId:store},actor)).created[0];
+  await attendance.recordAttendance(db,splitShiftStaff,{action:"check_in",gps:inside,shiftId:splitFirst},at(MONDAY,"09:00"));
+  await attendance.recordAttendance(db,splitShiftStaff,{action:"check_out",gps:inside},at(MONDAY,"10:00"));
+  const nextShiftContext=await attendance.attendanceToday(db,splitShiftStaff,at(MONDAY,"11:30"));
+  assert.equal(nextShiftContext.current?.shiftId,splitSecond,"early next-shift check-in must skip the already attended first shift");
+  assert.equal(nextShiftContext.current?.locationId,store);
+  await attendance.recordAttendance(db,splitShiftStaff,{action:"check_in",gps:{latitude:34.9,longitude:44.7,accuracy:10},shiftId:nextShiftContext.current?.shiftId},at(MONDAY,"11:30"));
+  const splitNightStaff=await newStaff(rows,"split_night");
+  await attendance.saveEmployeeSettings(db,splitNightStaff,fixed("gps",{scheduleType:"rotating"}),actor);
+  const splitNightFirst=(await attendance.createShifts(db,{staffId:splitNightStaff,date:MONDAY,start:"22:00",end:"06:00",locationId:shop},actor)).created[0];
+  const splitNightNext=(await attendance.createShifts(db,{staffId:splitNightStaff,date:TUESDAY,start:"06:00",end:"14:00",locationId:store},actor)).created[0];
+  await attendance.recordAttendance(db,splitNightStaff,{action:"check_in",gps:inside,shiftId:splitNightFirst},at(MONDAY,"22:00"));
+  await attendance.recordAttendance(db,splitNightStaff,{action:"check_out",gps:inside},at(TUESDAY,"01:00"));
+  const nightNextContext=await attendance.attendanceToday(db,splitNightStaff,at(TUESDAY,"04:30"));
+  assert.equal(nightNextContext.current?.shiftId,splitNightNext,"completed previous-day overnight shift must not displace the next early shift");
+  assert.equal(nightNextContext.current?.locationId,store);
+  await attendance.recordAttendance(db,splitNightStaff,{action:"check_in",gps:{latitude:34.9,longitude:44.7,accuracy:10},shiftId:nightNextContext.current?.shiftId},at(TUESDAY,"04:30"));
   const gpsUser = await newStaff(rows, "gps");
   await attendance.saveEmployeeSettings(db, gpsUser, fixed("gps"), actor);
   await expectRefusal(() => attendance.recordAttendance(db, gpsUser, { action: "check_in", gps: outside }, nine), /^أنت خارج نطاق موقع العمل المسموح\.$/, "GPS_REJECTED");
@@ -221,6 +250,10 @@ try {
   await expectRefusal(() => attendance.recordAttendance(db, eventUser, { action: "check_in", gps: inside }, at(eventDay, "16:00")), /خارج نطاق/, "GPS_REJECTED");
   await attendance.recordAttendance(db, eventUser, { action: "check_in", gps: eventGps }, at(eventDay, "16:00"));
   assert.equal((await attendance.attendanceToday(db, eventUser, at(eventDay, "17:00"))).status, "mission", "at an event the employee is on an external task");
+  const overdueEvent = await attendance.attendanceToday(db,eventUser,at("2026-09-20","10:00"));
+  assert.equal(overdueEvent.current?.locationId,hall,"open event check-out keeps its original workplace even after its shift ends");
+  assert.equal(overdueEvent.current?.needsGps,true);
+  assert.equal(overdueEvent.current?.needsQr,false);
   await expectRefusal(() => attendance.cancelShift(db, bookingShift.id), /لا يمكن إلغاؤها/, "CONFLICT");
   await attendance.recordAttendance(db, eventUser, { action: "check_out", gps: eventGps }, at(eventDay, "20:00"));
   await attendance.recordAttendance(db, eventUser, { action: "check_in", gps: eventGps }, at(eventDay, "21:00"));
@@ -414,8 +447,12 @@ try {
   const moneyAtPayroll = await staffMoney2();
   const run: any = await createPayrollRun({ period, employeeIds: owned }, payrollActor);
   const runId = Number(run.id ?? run.run?.id);
-  assert.ok(runId, "the run exists in the existing payroll table");
   ownedRuns.push(runId);
+  assert.ok(runId, "the run exists in the existing payroll table");
+  await assert.rejects(() => approvePayrollRun(runId, { ...payrollActor, role: "employee" }), /للمدير فقط/, "attendance deductions cannot be approved by employee");
+  await assert.rejects(() => approvePayrollRun(runId, { ...payrollActor, role: "admin" }), /إرسال دورة الرواتب/, "a draft still needs the original manager approval workflow");
+  await assert.rejects(() => payPayrollRun(runId, { ...payrollActor, role: "admin" }), /اعتماد دورة الرواتب/, "attendance payroll cannot be paid before manager approval");
+
   const lineOf = async (staffId: number) => (await committed(sql`select * from payroll_lines where payroll_run_id = ${runId} and staff_id = ${staffId}`))[0];
   assert.equal(Number((await lineOf(perEvent)).bonus_amount), 0, "approval alone does not touch the line");
 

@@ -10,6 +10,7 @@ import {
   dayKey,
   dayStatusFor,
   expectedShiftsFor,
+  fixedShiftFor,
   methodSteps,
   resolveMethod,
   toMs,
@@ -21,6 +22,7 @@ import {
 } from "../lib/attendance-rules";
 import { issueKioskCode, newKioskDeviceToken, newKioskSecret, parseKioskCode, sha256, verifyKioskCode } from "./attendance-qr";
 import { calculateAttendancePayroll, normalizeAttendancePolicy, type AttendancePolicy } from "./attendance-payroll";
+import { attendancePunchSchema } from "../lib/attendance-submission";
 
 export type Executor = { execute: (query: any) => Promise<any> };
 export type AttendanceActor = { id: number | null; name: string };
@@ -208,13 +210,14 @@ export async function scheduleContexts(executor: Executor, staffIds: number[]) {
 
 // ─── Shifts ──────────────────────────────────────────────────
 
-const shiftFromRow = (row: any): ExpectedShift & { staffId: number; date: string; status: string; payAmount: number | null; locationName: string | null; staffName: string | null; notes: string | null } => ({
+const shiftFromRow = (row: any): ExpectedShift & { graceMinutesOverride: number | null; staffId: number; date: string; status: string; payAmount: number | null; locationName: string | null; staffName: string | null; notes: string | null } => ({
   shiftId: Number(row.id),
   staffId: Number(row.staff_id),
   date: String(row.shift_date).slice(0, 10),
   startMs: toMs(row.start_at) as number,
   endMs: toMs(row.end_at) as number,
   graceMinutes: row.grace_minutes == null ? 0 : Number(row.grace_minutes),
+  graceMinutesOverride: row.grace_minutes == null ? null : Number(row.grace_minutes),
   kind: String(row.kind),
   locationId: row.location_id == null ? null : Number(row.location_id),
   requiredMethod: row.required_method ?? null,
@@ -364,7 +367,7 @@ export async function kioskDisplay(executor: Executor, deviceToken: string, nowM
 
 // ─── Today's state ───────────────────────────────────────────
 
-type SessionRow = { id: number; startMs: number; endMs: number | null; shiftId: number | null; method: string | null; isEvent: boolean };
+type SessionRow = { id: number; startMs: number; endMs: number | null; shiftId: number | null; locationId: number | null; method: string | null; isEvent: boolean };
 
 /** Sessions that belong to a day: started that day, or still open from before. */
 async function sessionsFor(executor: Executor, staffIds: number[], date: string) {
@@ -374,7 +377,7 @@ async function sessionsFor(executor: Executor, staffIds: number[], date: string)
   const start = baghdadMoment(date, "00:00").toISOString();
   const end = baghdadMoment(addDays(date, 1), "00:00").toISOString();
   const rows = rowsOf(await executor.execute(sql`
-    select r.id, r.staff_id, r.check_in_at, r.check_out_at, r.status, r.shift_id, r.method, l.kind as location_kind, s.kind as shift_kind
+    select r.id, r.staff_id, r.check_in_at, r.check_out_at, r.status, r.shift_id, r.location_id, r.method, l.kind as location_kind, s.kind as shift_kind
     from attendance_records r left join attendance_shifts s on s.id = r.shift_id left join attendance_locations l on l.id = r.location_id
     where r.staff_id in (${idList(staffIds)}) and (
       (r.check_in_at >= (${start}::timestamptz at time zone 'utc') and r.check_in_at < (${end}::timestamptz at time zone 'utc'))
@@ -389,7 +392,7 @@ async function sessionsFor(executor: Executor, staffIds: number[], date: string)
     const startMs = toMs(row.check_in_at);
     if (startMs == null) continue;
     map.set(staffId, [...(map.get(staffId) ?? []), {
-      id: Number(row.id), startMs, endMs: toMs(row.check_out_at), shiftId: row.shift_id == null ? null : Number(row.shift_id), method: row.method ?? null,
+      id: Number(row.id), startMs, endMs: toMs(row.check_out_at), shiftId: row.shift_id == null ? null : Number(row.shift_id), locationId: row.location_id == null ? null : Number(row.location_id), method: row.method ?? null,
       isEvent: row.shift_kind === "event" || ["event", "photography", "transport"].includes(String(row.location_kind)),
     }]);
   }
@@ -400,7 +403,12 @@ async function sessionsFor(executor: Executor, staffIds: number[], date: string)
 const hasWeeklyRest = (schedule: ScheduleInput, date: string) => (schedule.scheduleType === "fixed" || schedule.scheduleType === "part_time") && schedule.weeklyDaysOff.includes(dayKey(date));
 
 function resolveShiftRow(rows: ReturnType<typeof shiftFromRow>[], staffId: number, schedule: ScheduleInput, date: string) {
-  return rows.filter((row) => row.staffId === staffId && row.date === date).map((row) => ({ ...row, graceMinutes: row.graceMinutes || schedule.graceMinutes }));
+  return rows.filter((row) => row.staffId === staffId && row.date === date).map((row) => ({ ...row, graceMinutes: row.graceMinutesOverride ?? schedule.graceMinutes }));
+}
+
+/** Match punch admission's lookback, including closed overnight sessions started yesterday. */
+async function usedAttendanceShifts(executor: Executor, staffId: number, nowMs: number): Promise<Set<number>> {
+  return new Set(rowsOf(await executor.execute(sql`select shift_id from attendance_records where staff_id = ${staffId} and shift_id is not null and check_in_at >= (${new Date(nowMs - 3 * 24 * 60 * 60 * 1000).toISOString()}::timestamptz at time zone 'utc')`)).map(row => Number(row.shift_id)));
 }
 
 export async function attendanceToday(executor: Executor, staffId: number, nowMs = Date.now()) {
@@ -409,7 +417,7 @@ export async function attendanceToday(executor: Executor, staffId: number, nowMs
   const { settings, schedule } = contexts.get(staffId)!;
   const staff = rowsOf(await executor.execute(sql`select full_name, username from staff where id = ${staffId}`))[0];
   const rows = await shiftsBetween(executor, { staffIds: [staffId], from: addDays(date, -1), to: date });
-  const running = rows.filter((row) => (row.date === date) || (row.date < date && row.endMs > nowMs)).map((row) => ({ ...row, graceMinutes: row.graceMinutes || schedule.graceMinutes }));
+  const running = rows.filter((row) => (row.date === date) || (row.date < date && row.endMs > nowMs)).map((row) => ({ ...row, graceMinutes: row.graceMinutesOverride ?? schedule.graceMinutes }));
   const expected = settings.enabled || running.length ? expectedShiftsFor(date, schedule, running) : [];
   const { sessions, leave } = await sessionsFor(executor, [staffId], date);
   const mine = sessions.get(staffId) ?? [];
@@ -427,8 +435,21 @@ export async function attendanceToday(executor: Executor, staffId: number, nowMs
     };
   };
   const shifts = expected.map(describe);
-  const openShift = open ? shifts.find((row) => row.shiftId === open.shiftId) ?? null : null;
-  const current = openShift ?? shifts.find((row) => row.endMs > nowMs) ?? shifts[0] ?? null;
+  // Checkout uses the original open session, not today's next shift or home workplace.
+  let originalShift = open?.shiftId ? rows.find(row => row.shiftId === open.shiftId) : undefined;
+  if (open?.shiftId && !originalShift) {
+    const saved = rowsOf(await executor.execute(sql`select * from attendance_shifts where id=${open.shiftId} and staff_id=${staffId}`))[0];
+    if (saved) originalShift = shiftFromRow(saved);
+  }
+  const openBase = open ? originalShift ?? fixedShiftFor(baghdadDate(open.startMs), schedule) ?? { shiftId: null, startMs: open.startMs, endMs: nowMs, graceMinutes: 0, kind: open.isEvent ? "event" : "flexible", locationId: null, requiredMethod: null, title: null, bookingSource: null, bookingId: null } : null;
+  const openShift = open && openBase ? describe({ ...openBase, locationId: open.locationId ?? openBase.locationId ?? settings.primaryLocationId }) : null;
+  const usedShifts = await usedAttendanceShifts(executor, staffId, nowMs);
+  const availableShifts = shifts.filter(row => row.shiftId == null || !usedShifts.has(row.shiftId));
+  const policy = await readAttendancePolicy(executor);
+  const current = openShift
+    ?? availableShifts.find(row => nowMs >= row.startMs - policy.checkInEarlyMinutes * 60000 && nowMs <= row.endMs)
+    ?? availableShifts.find(row => row.endMs > nowMs)
+    ?? availableShifts[0] ?? null;
   const fallback = !current ? describe({ shiftId: null, startMs: nowMs, endMs: nowMs, graceMinutes: 0, kind: "flexible", locationId: settings.primaryLocationId, requiredMethod: null, title: null, bookingSource: null, bookingId: null }) : null;
   return {
     enabled: settings.enabled,
@@ -459,6 +480,7 @@ const EARLY_WINDOW_MS = (policy: AttendancePolicy) => (policy.checkInEarlyMinute
  * line of defence against two open sessions.
  */
 export async function recordAttendance(executor: Executor, staffId: number, input: AttendanceSubmission, nowMs = Date.now()) {
+  if (!attendancePunchSchema.safeParse(input).success) throw new AttendanceError("بيانات تسجيل الحضور غير صحيحة", 422, "VALIDATION_ERROR");
   await executor.execute(sql`select pg_advisory_xact_lock(${staffId})`);
   const policy = await readAttendancePolicy(executor);
   const contexts = await scheduleContexts(executor, [staffId]);
@@ -486,11 +508,11 @@ export async function recordAttendance(executor: Executor, staffId: number, inpu
     if (rowsOf(await executor.execute(sql`select id from attendance_records where staff_id = ${staffId} and status in ('paid_leave', 'unpaid_leave') and check_in_at >= (${baghdadMoment(date, "00:00").toISOString()}::timestamptz at time zone 'utc') and check_in_at < (${baghdadMoment(addDays(date, 1), "00:00").toISOString()}::timestamptz at time zone 'utc') limit 1`)).length)
       throw new AttendanceError("لديك إجازة معتمدة اليوم", 409, "CONFLICT");
     const rows = await shiftsBetween(executor, { staffIds: [staffId], from: addDays(date, -1), to: date });
-    const live = rows.filter((row) => row.date === date || row.endMs > nowMs).map((row) => ({ ...row, graceMinutes: row.graceMinutes || schedule.graceMinutes }));
+    const live = rows.filter((row) => row.date === date || row.endMs > nowMs).map((row) => ({ ...row, graceMinutes: row.graceMinutesOverride ?? schedule.graceMinutes }));
     const expected = expectedShiftsFor(date, schedule, live);
     const chosenId = positive(input.shiftId);
     if (chosenId && !expected.some((row) => row.shiftId === chosenId)) throw new AttendanceError("هذه الوردية ليست لك أو ليست اليوم", 403, "PERMISSION_DENIED");
-    const usedShifts = new Set(rowsOf(await executor.execute(sql`select shift_id from attendance_records where staff_id = ${staffId} and shift_id is not null and check_in_at >= (${new Date(nowMs - 3 * 24 * 60 * 60 * 1000).toISOString()}::timestamptz at time zone 'utc')`)).map((row) => Number(row.shift_id)));
+    const usedShifts = await usedAttendanceShifts(executor, staffId, nowMs);
     const eligible = expected.filter((row) => (!chosenId || row.shiftId === chosenId) && !(row.shiftId && usedShifts.has(row.shiftId)) && nowMs >= row.startMs - EARLY_WINDOW_MS(policy) && nowMs <= row.endMs);
     const shift = eligible[0];
     if (!shift) {
@@ -601,7 +623,7 @@ export async function attendanceDashboard(executor: Executor, options: { date?: 
     const context = contexts.get(id)!;
     const mine = sessions.get(id) ?? [];
     const rowsToday = resolveShiftRow(shifts, id, context.schedule, date);
-    const overnight = shifts.filter((shift) => shift.staffId === id && shift.date < date && shift.endMs > effectiveNow).map((shift) => ({ ...shift, graceMinutes: shift.graceMinutes || context.schedule.graceMinutes }));
+    const overnight = shifts.filter((shift) => shift.staffId === id && shift.date < date && shift.endMs > effectiveNow).map((shift) => ({ ...shift, graceMinutes: shift.graceMinutesOverride ?? context.schedule.graceMinutes }));
     const live = [...overnight, ...rowsToday];
     // Only employees on this system, or with a shift row, are expected. Nobody else counts as absent.
     const expected = context.settings.enabled || live.length ? expectedShiftsFor(date, context.schedule, live) : [];
@@ -917,7 +939,7 @@ export async function payrollScheduleInputs(executor: Executor, staffIds: number
       enabled: settings.enabled,
       scheduleMode: settings.enabled && ["rotating", "flexible", "event"].includes(settings.scheduleType) ? "shifts_only" : "fixed",
       graceMinutes: settings.enabled ? schedule.graceMinutes : undefined,
-      shifts: rows.filter((row) => row.staffId === staffId).map((row) => ({ date: row.date, startMs: row.startMs, endMs: row.endMs, graceMinutes: row.graceMinutes || schedule.graceMinutes })),
+      shifts: rows.filter((row) => row.staffId === staffId).map((row) => ({ date: row.date, startMs: row.startMs, endMs: row.endMs, graceMinutes: row.graceMinutesOverride ?? schedule.graceMinutes })),
       shiftStart: settings.enabled ? settings.shiftStart : null,
       shiftEnd: settings.enabled ? settings.shiftEnd : null,
       weeklyDaysOff: settings.enabled ? settings.weeklyDaysOff : null,

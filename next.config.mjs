@@ -21,6 +21,13 @@ const nextConfig = {
           },
         ],
       },
+      {
+        source: "/attendance-kiosk/:path*",
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
+        ],
+      },
     ];
   },
 };

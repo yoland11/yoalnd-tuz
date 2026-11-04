@@ -24,6 +24,7 @@ import {preparationDepartmentLabel} from '@/lib/preparation-departments';
 // The staff portal no longer exposes a salary tab or calls the payroll endpoint.
 import { salarySlipCss } from "@/views/admin/print-helpers";
 import { AttendanceTodayCard } from "@/components/attendance-today-card";
+import { attendanceReturnQuery } from "@/lib/attendance-client";
 import {
   adminFetch, apiErrorMessage, apiErrorStatus, fetchAdminMe, hasPerm,
   isSessionDecision, loginAdmin, logoutAdmin,
@@ -184,8 +185,7 @@ const PORTAL_TABS = ["followups", "tasks", "work", "bookings", "salary", "notifi
 
 /** "?tab=…" for a valid requested portal tab in the current URL, else "". */
 function requestedTabQuery(): string {
-  const value = new URLSearchParams(window.location.search).get("tab") ?? "";
-  return (PORTAL_TABS as readonly string[]).includes(value) ? `?tab=${value}` : "";
+  return attendanceReturnQuery(window.location.search);
 }
 
 export default function UnifiedStaffPortal() {

@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { ATTENDANCE_METHODS, ATTENDANCE_METHOD_LABELS, CORRECTION_TYPES, DAY_LABELS, DAY_STATUS_LABELS, LOCATION_KIND_LABELS, SHIFT_KIND_LABELS, addDays, baghdadDate, baghdadTime } from "@/lib/attendance-rules";
 import { adminFetch, apiErrorMessage } from "./_lib";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
+import { attendanceTimestamp } from "@/lib/attendance-client";
 
 type Capabilities = { canManage: boolean; canApprove: boolean; canManagePolicy: boolean; canViewLocation: boolean };
 type LocationRow = { id: number; name: string; kind: string; address: string | null; latitude: number | null; longitude: number | null; radiusMeters: number; maxAccuracyMeters: number; requiredMethod: string; warehouseId: number | null; warehouseName: string | null; isActive: boolean };
@@ -346,14 +347,14 @@ function KioskTab({ options }: { options: Options }) {
         <div className="space-y-3 rounded-2xl border border-[#f4d6da] bg-card p-4 dark:border-border">
           <h3 className="font-bold">شاشة حضور جديدة (آيباد)</h3>
           <div className="flex flex-wrap items-end gap-2">
-            <label className="text-xs font-medium">موقع العمل<select className={`${control} mt-1 block`} value={locationId} onChange={(event) => setLocationId(event.target.value)}><option value="">اختر الموقع</option>{options.locations.filter((row) => row.isActive).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+            <label className="text-xs font-medium">موقع العمل<select aria-label="موقع العمل لشاشة QR" className={`${control} mt-1 block`} value={locationId} onChange={(event) => setLocationId(event.target.value)}><option value="">اختر الموقع</option>{options.locations.filter((row) => row.isActive).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
             <Button type="button" disabled={!locationId || create.isPending} onClick={() => create.mutate()}><QrCode className="h-4 w-4" />إنشاء رابط الشاشة</Button>
           </div>
           {created ? (
             <div className="space-y-2 rounded-xl bg-primary/5 p-3 text-sm">
               <p className="font-semibold">افتح هذا الرابط على الآيباد. يظهر مرة وحدة فقط.</p>
               <p dir="ltr" className="break-all text-xs">{created}</p>
-              <Button type="button" size="sm" variant="outline" onClick={() => { void navigator.clipboard?.writeText(created); toast({ title: "تم نسخ الرابط" }); }}><Copy className="h-3.5 w-3.5" />نسخ الرابط</Button>
+              <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={async () => { try { if (!navigator.clipboard) throw new Error("نسخ الرابط غير متاح؛ انسخه يدوياً من الحقل أعلاه"); await navigator.clipboard.writeText(created); toast({ title: "تم نسخ الرابط" }); } catch (cause) { toast({ title: "تعذّر النسخ", description: apiErrorMessage(cause), variant: "destructive" }); } }}><Copy className="h-3.5 w-3.5" />نسخ الرابط</Button><Button type="button" size="sm" asChild><a href={created} target="_blank" rel="noreferrer"><ExternalLink className="size-4" />فتح شاشة QR</a></Button></div>
             </div>
           ) : null}
           <p className="text-xs text-muted-foreground">الرمز يتغيّر كل 30 ثانية. لأنه يمكن مشاركته عن بعد، استخدم QR + GPS حيث يهم إثبات الوجود.</p>
@@ -366,7 +367,7 @@ function KioskTab({ options }: { options: Options }) {
             <tr key={row.id}>
               <td className={`${td} font-medium`}>{row.name}</td>
               <td className={`${td} text-xs`}>{row.locationName}</td>
-              <td className={`${td} text-xs tabular-nums`}>{row.lastSeenAt ? `${baghdadDate(new Date(`${String(row.lastSeenAt).replace(" ", "T")}Z`).getTime())} ${baghdadTime(row.lastSeenAt)}` : "—"}</td>
+              <td className={`${td} text-xs tabular-nums`}>{attendanceTimestamp(row.lastSeenAt)}</td>
               <td className={td}><span className={`inline-flex rounded-full px-2.5 py-1 text-xs ${row.isActive ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300" : "bg-muted text-muted-foreground"}`}>{row.isActive ? "فعالة" : "ملغاة"}</span></td>
               <td className={td}>{row.isActive && options.capabilities.canManage ? <Button type="button" size="sm" variant="ghost" disabled={revoke.isPending} onClick={() => revoke.mutate(row.id)}>إلغاء</Button> : null}</td>
             </tr>
@@ -470,6 +471,7 @@ function ReportsTab({ options }: { options: Options }) {
   }).catch((error) => toast({ title: "تعذّرت الطباعة", description: apiErrorMessage(error), variant: "destructive" }));
   return (
     <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">خصومات الحضور مقترحة فقط؛ لا تُطبق أو تُصرف قبل اعتماد المدير لدورة الرواتب عبر المسار المالي الحالي.</p>
       <div className="flex flex-wrap items-end gap-2">
         <select aria-label="نوع التقرير" className={control} value={kind} onChange={(event) => setKind(event.target.value)}>{Object.entries(REPORTS).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select>
         <label className="flex flex-col gap-1 text-xs font-medium">من<Input type="date" className="w-40" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label>
@@ -480,8 +482,8 @@ function ReportsTab({ options }: { options: Options }) {
         <select aria-label="الموظف" className={control} value={filters.staffId} onChange={(event) => setFilters({ ...filters, staffId: event.target.value })}><option value="">كل الموظفين</option>{options.staff.map((row) => <option key={row.id} value={row.id}>{row.fullName}</option>)}</select>
         <select aria-label="القسم" className={control} value={filters.department} onChange={(event) => setFilters({ ...filters, department: event.target.value })}><option value="">كل الأقسام</option>{[...new Set(options.staff.map((row) => row.department).filter(Boolean))].map((value) => <option key={String(value)} value={String(value)}>{value}</option>)}</select>
         <select aria-label="موقع العمل" className={control} value={filters.locationId} onChange={(event) => setFilters({ ...filters, locationId: event.target.value })}><option value="">كل المواقع</option>{options.locations.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
-        <Button type="button" variant="outline" disabled={!rows.length} onClick={exportExcel}><Download className="h-4 w-4" />Excel</Button>
-        <Button type="button" variant="outline" disabled={!rows.length} onClick={print}><Printer className="h-4 w-4" />A4</Button>
+        <Button type="button" variant="outline" disabled={report.isError || report.isPending || !rows.length} onClick={exportExcel}><Download className="h-4 w-4" />Excel</Button>
+        <Button type="button" variant="outline" disabled={report.isError || report.isPending || !rows.length} onClick={print}><Printer className="h-4 w-4" />A4</Button>
       </div>
       {report.isError ? <Failed error={report.error} retry={() => void report.refetch()} /> : report.isPending ? <Skeleton className="h-48 w-full" /> : !rows.length ? <Empty>لا توجد بيانات لهذا التقرير في الفترة المحددة.</Empty> : (
         <TableShell wide={1040}>

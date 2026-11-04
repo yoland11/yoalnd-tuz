@@ -9,8 +9,9 @@ import { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest, warehou
 import { approvalRecordHref } from "@/lib/approval-records";
 import { ApprovalRequestError, OPEN_APPROVAL_STATUSES, WAREHOUSE_APPROVAL_TYPES, approvalDecisionNotice, approvalTypeCategory, approvalTypeNeedsMainManager, runApprovalDecision, type ApprovalExecution, type ApprovalExecutionPlan } from "./approval-requests";
 import { bookingCashSummary, bookingTransactionCondition, bookingVoucherShares } from "./booking-cash-link";
-import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence } from "./attendance";
+import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence, rowsOf as attendanceDatabaseRows } from "./attendance";
 import { QR_ROTATION_SECONDS, baghdadDate, addDays as attendanceAddDays } from "@/lib/attendance-rules";
+import { attendancePunchSchema } from "@/lib/attendance-submission";
 import { approveWarehouseCount, createWarehouseCount, listWarehouseCounts, rejectWarehouseCount, warehouseCountDetail } from "./warehouse-counts";
 import { warehouseDiscrepancies, warehouseMovementRows, warehouseStockRows, warehouseTotals, warehouseTransferRows } from "./warehouse-reports";
 import { SalesReturnError, salesInvoiceReturnCredits, salesInvoiceReturnCreditsSql, salesReturnsForInvoice } from "./sales-returns";
@@ -47460,7 +47461,7 @@ async function handleAdmin(
     await ensureAdminExtensionsTables();
     const canManageAll = ["admin", "manager"].includes(auth.role) || hasPermission(auth, "staff");
     const attendanceActor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
-    const attendanceRows = <T = any>(value: any): T[] => (value?.rows ?? value ?? []) as T[];
+    const attendanceRows = <T = any>(value: any): T[] => attendanceDatabaseRows(value) as T[];
     const getPolicy = async () => normalizeAttendancePolicy((await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, "attendancePolicy") }))?.value);
     const attendanceManager = canManageAll || hasPermission(auth, "attendance_manage");
     const attendanceApprover = canManageAll || hasPermission(auth, "attendance_approve");
@@ -47477,9 +47478,10 @@ async function handleAdmin(
     if (attendanceResource === "punch" && method === "POST") {
       const limit = await consumeRateLimit({ action: "attendance-punch", keyParts: [String(auth.id)], limit: 20, windowMs: 60_000 });
       if (!limit.allowed) return rateLimitError(limit);
-      const payload = await body(req);
-      const action = payload?.action === "check_out" ? "check_out" : "check_in";
-      const result = await db.transaction((tx) => recordAttendance(tx as any, auth.id, { action, qrCode: payload?.qrCode, gps: payload?.gps, shiftId: payload?.shiftId }));
+      const parsed = attendancePunchSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("attendance.punch", parsed);
+      const { action } = parsed.data;
+      const result = await db.transaction((tx) => recordAttendance(tx as any, auth.id, parsed.data));
       void logAdminActivity(req, action === "check_in" ? "attendance_checkin" : "attendance_checkout", "attendance", result.recordId, { method: result.method });
       if (result.status === "late") void createNotificationOnce({ audienceType: "admin", type: "attendance_abnormal", title: "حضور متأخر", body: `${attendanceWho.name} سجل حضوراً متأخراً`, entityType: "attendance", entityId: result.recordId } as any);
       return json({ ...result, today: await attendanceToday(db as any, auth.id) }, action === "check_in" ? 201 : 200);
