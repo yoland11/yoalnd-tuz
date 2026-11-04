@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
+import { DirectionProvider } from "@radix-ui/react-direction";
 import "@/index.css";
 import { getCachedPublicSettings } from "@/server/public-settings";
 
@@ -79,7 +80,9 @@ export default async function RootLayout({
             __html: `window.__AJN_PUBLIC_SETTINGS__=${serializeForInlineScript(settings)};`,
           }}
         />
-        {children}
+        {/* Radix falls back to ltr without a provider; give it the document's
+            direction. Pages that switch language nest their own provider. */}
+        <DirectionProvider dir="rtl">{children}</DirectionProvider>
       </body>
     </html>
   );

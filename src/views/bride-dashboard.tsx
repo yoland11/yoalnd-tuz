@@ -1,3 +1,4 @@
+import { DirectionProvider } from "@radix-ui/react-direction";
 import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
@@ -42,7 +43,7 @@ export default function BrideDashboard() {
   if (!data) return <main className="grid min-h-dvh place-items-center"><Clock3 className="h-6 w-6 animate-spin text-primary" /></main>;
   const booking = data.booking;
   const nav = [["home", t.home, Sparkles], ["services", t.services, Heart], ["finance", t.payments, CircleDollarSign], ["schedule", t.schedule, CalendarDays], ["documents", t.documents, FileText], ["chat", t.chat, MessageCircle], ["notes", t.notes, Palette]] as const;
-  return <main className="min-h-dvh bg-muted/30 pb-8" dir={direction} lang={locale}>
+  return <DirectionProvider dir={direction}><main className="min-h-dvh bg-muted/30 pb-8" dir={direction} lang={locale}>
     <header className="sticky top-0 z-20 border-b bg-background/90 backdrop-blur"><div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3"><div><p className="text-xs text-muted-foreground">AJN</p><h1 className="font-bold">{t.title}</h1></div><div className="flex items-center gap-2"><select aria-label="اللغة" value={locale} onChange={(event) => setLocale(event.target.value as Locale)} className="h-9 rounded-md border bg-background px-2 text-xs"><option value="ar">العربية</option><option value="ku">کوردی</option><option value="tr">Türkçe</option></select><Button size="iconSm" variant="ghost" className="grid h-9 w-9 place-items-center rounded-md border" aria-label="الإشعارات"><Bell className="h-4 w-4" /></Button></div></div></header>
     <div className="mx-auto max-w-6xl px-4 py-5">
       <section className="overflow-hidden rounded-2xl bg-foreground px-5 py-6 text-background shadow-xl shadow-foreground/10 sm:px-8"><div className="grid gap-6 lg:grid-cols-[1.2fr_.8fr]"><div><p className="text-sm opacity-70">{t.welcome}، {booking.brideName}</p><h2 className="mt-2 text-3xl font-bold text-background">{booking.brideName}{booking.groomName ? ` × ${booking.groomName}` : ""}</h2><p className="mt-3 text-sm opacity-75">{booking.packageName} · {booking.hall || "AJN"}</p><div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-sm"><span><CalendarDays className="ml-1 inline h-4 w-4" />{booking.date || "—"}</span><span>#{booking.number}</span><span>{booking.status}</span></div></div><div><p className="mb-3 text-sm font-semibold">{t.remaining}</p><Countdown date={booking.date} locale={locale} /></div></div></section>
@@ -55,7 +56,7 @@ export default function BrideDashboard() {
       {tab === "chat" && <Chat t={t} />}
       {tab === "notes" && <RequestForm bookingId={booking.id} t={t} />}
     </div>
-  </main>;
+  </main></DirectionProvider>;
 }
 
 function Empty({ dir, title, description, action }: { dir: string; title: string; description: string; action?: React.ReactNode }) { return <main className="grid min-h-dvh place-items-center p-6 text-center" dir={dir}><div><Sparkles className="mx-auto mb-4 h-10 w-10 text-primary" /><h1 className="text-2xl font-bold">{title}</h1><p className="mt-2 text-muted-foreground">{description}</p>{action}</div></main>; }

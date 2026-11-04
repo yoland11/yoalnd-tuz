@@ -1,4 +1,5 @@
 "use client";
+import { DirectionProvider } from "@radix-ui/react-direction";
 import { Button } from "@/components/ui/button";
 
 
@@ -72,13 +73,13 @@ export default function WeddingOS() {
   const complete = checklist.filter((item) => item.status === "done").length; const personalSpend = expenses.reduce((sum, item) => sum + Number(item.data?.amount || 0), 0); const progress = checklist.length ? Math.round((complete / checklist.length) * 100) : Math.min(100, Math.round((b.paid / Math.max(1, b.total)) * 100));
   const nav = [["home", t.home, Sparkles], ["plan", t.plan, ClipboardCheck], ["money", t.money, WalletCards], ["guests", t.guests, Users], ["services", t.services, Package], ["memories", t.memories, Image], ["chat", t.chat, MessageCircle]];
   const sendMessage = async () => { if (!message.trim()) return; await api("/requests", { method: "POST", body: JSON.stringify({ bookingId: b.id, type: "note", department: "support", body: message }) }); setMessage(""); };
-  return <main className="min-h-dvh bg-background text-foreground" dir={direction} lang={locale}>
+  return <DirectionProvider dir={direction}><main className="min-h-dvh bg-background text-foreground" dir={direction} lang={locale}>
     <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85"><div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-4"><div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">AJN</span><div><h1 className="text-sm font-bold">{t.title}</h1><p className="text-xs text-muted-foreground">{b.number}</p></div></div><div className="flex items-center gap-2"><select aria-label="اللغة" value={locale} onChange={(e) => setLocale(e.target.value as keyof typeof labels)} className="h-9 rounded-md border bg-background px-2 text-xs"><option value="ar">العربية</option><option value="ku">کوردی</option><option value="tr">Türkçe</option></select><Button size="iconSm" variant="ghost" aria-label="الإشعارات" className="grid h-9 w-9 place-items-center rounded-md border"><Bell className="h-4 w-4" /></Button></div></div></header>
     <div className="mx-auto grid max-w-7xl gap-5 px-4 py-5 lg:grid-cols-[190px_minmax(0,1fr)]">
       <nav className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">{nav.map(([key, label, Icon]: any) => <Button variant="ghost" key={key} onClick={() => setTab(key)} className={`flex shrink-0 items-center gap-2 rounded-md px-3 py-2.5 text-sm transition-colors ${tab === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}><Icon className="h-4 w-4" />{label}</Button>)}</nav>
       <section className="min-w-0">{tab === "home" && <HomeView booking={b} services={data.services} timeline={data.timeline} progress={progress} reduceMotion={reduceMotion} />}{tab === "plan" && <PlanView bookingId={b.id} items={checklist} refresh={refresh} />}{tab === "money" && <MoneyView booking={b} invoices={data.invoices} expenses={expenses} spent={personalSpend} refresh={refresh} />}{tab === "guests" && <GuestsView bookingId={b.id} items={guests} refresh={refresh} />}{tab === "services" && <ServicesView services={data.services} />}{tab === "memories" && <MemoriesView wishes={wishes} bookingId={b.id} refresh={refresh} />}{tab === "chat" && <ChatView contacts={data.contacts} message={message} setMessage={setMessage} send={sendMessage} />}</section>
     </div>
-  </main>;
+  </main></DirectionProvider>;
 }
 
 function Gate({ title, text, action, dir }: { title: string; text: string; action?: string; dir: string }) { return <main className="grid min-h-dvh place-items-center bg-background p-6 text-center" dir={dir}><div className="max-w-sm"><Heart className="mx-auto h-10 w-10 text-primary" /><h1 className="mt-4 text-xl font-bold">{title}</h1><p className="mt-2 text-sm text-muted-foreground">{text}</p>{action && <Link href="/login" className="mt-5 inline-flex rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground">{action}</Link>}</div></main>; }

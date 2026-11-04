@@ -30,6 +30,7 @@ const steps = [
   ["Booking center read preflight", "pnpm", ["run", "test:booking-center-read"]],
   ["Calendar read preflight", "pnpm", ["run", "test:calendar-read"]],
   ["Shared Arabic date field", "pnpm", ["run", "test:date-field"]],
+  ["Radix controls follow the page direction", "pnpm", ["run", "test:radix-direction"]],
   ["Single expense voucher print", "pnpm", ["run", "test:expense-voucher"]],
   ["Booking calendar department counters", "pnpm", ["run", "test:booking-calendar"]],
   ["Booking calendar real database", "pnpm", ["run", "test:booking-calendar-db"]],
