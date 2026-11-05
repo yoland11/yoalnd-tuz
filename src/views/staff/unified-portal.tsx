@@ -32,7 +32,7 @@ import {
 } from "@/views/admin/_lib";
 
 const CustomerFollowupsPage = lazy(() => import("@/views/admin/customer-followups"));
-type Tab = "home" | "followups" | "tasks" | "work" | "bookings" | "salary" | "notifications" | "account";
+type Tab = "home" | "attendance" | "followups" | "tasks" | "work" | "bookings" | "salary" | "notifications" | "account";
 type Task = {
   id: number; taskNo?: string | null; title: string; description: string; customerName?: string | null; status: string; priority: string; dueAt: string | null; startAt: string | null;
   relatedType: string | null; relatedId: number | null; department?: string | null; taskType?:string;assignedStaffIds?:number[];archivedAt?:string|null; location?: string | null; notes?: string; completionNotes?: string; submittedAt?: string | null; completedAt?: string | null;
@@ -181,7 +181,7 @@ function PortalLogin({ onDone }: { onDone: (user: AdminMe) => void }) {
   </main>;
 }
 
-const PORTAL_TABS = ["followups", "tasks", "work", "bookings", "salary", "notifications", "account"] as const;
+const PORTAL_TABS = ["attendance", "followups", "tasks", "work", "bookings", "salary", "notifications", "account"] as const;
 
 /** "?tab=…" for a valid requested portal tab in the current URL, else "". */
 function requestedTabQuery(): string {
@@ -194,7 +194,7 @@ export default function UnifiedStaffPortal() {
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>(() => {
     const value = new URLSearchParams(window.location.search).get("tab");
-    return value === "followups" || value === "tasks" || value === "work" || value === "bookings" || value === "salary" || value === "notifications" || value === "account" ? value : "home";
+    return (PORTAL_TABS as readonly string[]).includes(value ?? "") ? value as Tab : "home";
   });
   useEffect(() => {
     const requested = new URLSearchParams(portalSearch).get("tab");
@@ -250,7 +250,7 @@ export default function UnifiedStaffPortal() {
 
   const selectTab = (next: Tab) => { setTab(next); window.history.replaceState(null, "", next === "home" ? "/staff" : `/staff?tab=${next}`); };
   const navigation = useMemo(() => [
-    { id: "home" as Tab, label: "الرئيسية", icon: Home }, { id: "followups" as Tab, label: "متابعات العملاء", icon: CalendarDays }, { id: "tasks" as Tab, label: "مهامي", icon: ClipboardCheck }, { id: "work" as Tab, label: "الأوامر", icon: MessagesSquare }, { id: "bookings" as Tab, label: "حجوزاتي", icon: CalendarDays }, { id: "salary" as Tab, label: "راتبي", icon: WalletCards }, { id: "notifications" as Tab, label: "الإشعارات", icon: Bell }, { id: "account" as Tab, label: "حسابي", icon: UserRound },
+    { id: "home" as Tab, label: "الرئيسية", icon: Home }, { id: "attendance" as Tab, label: "حضوري", icon: Clock3 }, { id: "followups" as Tab, label: "متابعات العملاء", icon: CalendarDays }, { id: "tasks" as Tab, label: "مهامي", icon: ClipboardCheck }, { id: "work" as Tab, label: "الأوامر", icon: MessagesSquare }, { id: "bookings" as Tab, label: "حجوزاتي", icon: CalendarDays }, { id: "salary" as Tab, label: "راتبي", icon: WalletCards }, { id: "notifications" as Tab, label: "الإشعارات", icon: Bell }, { id: "account" as Tab, label: "حسابي", icon: UserRound },
   ], []);
 
   if (me === undefined) return <div className="grid min-h-dvh place-items-center bg-background"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
@@ -274,10 +274,11 @@ export default function UnifiedStaffPortal() {
     </aside>
 
     <main className="mx-auto max-w-7xl px-4 pb-24 pt-5 lg:mr-64 lg:px-8 lg:pb-10">
-      <header className="mb-6 flex items-start justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><EmployeeAvatar name={account?.name || me.fullName || me.username} photoUrl={account?.photoUrl ?? me.photoUrl} size={64} /><div className="min-w-0"><div className="mb-1 text-sm text-muted-foreground">مرحباً، {account?.name || me.fullName || me.username}</div><h1 className="text-2xl font-black tracking-tight">{tab === "home" ? "ما الذي لدي اليوم؟" : ({ followups: "متابعات العملاء", tasks: "مهامي", work: "أوامر العمل والمحادثات", bookings: "حجوزاتي", notifications: "الإشعارات", account: "حسابي" } as Record<string, string>)[tab]}</h1><p className="mt-1 text-sm text-muted-foreground">{[account?.jobTitle || me.jobTitle, account?.department || me.department].filter(Boolean).join(" · ") || "بوابة عملك الموحدة"}</p></div></div><Button variant="ghost" type="button" onClick={() => selectTab("notifications")} className="relative grid h-11 w-11 place-items-center rounded-xl border border-border bg-card text-muted-foreground hover:text-foreground"><Bell className="h-5 w-5" />{unread ? <span className="absolute left-1 top-1 h-2.5 w-2.5 rounded-full bg-destructive" /> : null}</Button></header>
+      <header className="mb-6 flex items-start justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><EmployeeAvatar name={account?.name || me.fullName || me.username} photoUrl={account?.photoUrl ?? me.photoUrl} size={64} /><div className="min-w-0"><div className="mb-1 text-sm text-muted-foreground">مرحباً، {account?.name || me.fullName || me.username}</div><h1 className="text-2xl font-black tracking-tight">{tab === "home" ? "ما الذي لدي اليوم؟" : ({ attendance: "حضوري", followups: "متابعات العملاء", tasks: "مهامي", work: "أوامر العمل والمحادثات", bookings: "حجوزاتي", notifications: "الإشعارات", account: "حسابي" } as Record<string, string>)[tab]}</h1><p className="mt-1 text-sm text-muted-foreground">{[account?.jobTitle || me.jobTitle, account?.department || me.department].filter(Boolean).join(" · ") || "بوابة عملك الموحدة"}</p></div></div><Button variant="ghost" type="button" onClick={() => selectTab("notifications")} className="relative grid h-11 w-11 place-items-center rounded-xl border border-border bg-card text-muted-foreground hover:text-foreground"><Bell className="h-5 w-5" />{unread ? <span className="absolute left-1 top-1 h-2.5 w-2.5 rounded-full bg-destructive" /> : null}</Button></header>
 
       {dashboard.isError ? <Failure title="تعذر تحميل مساحة العمل" error={dashboard.error} onRetry={() => void dashboard.refetch()} /> : null}
       {tab === "followups" ? <Suspense fallback={<WorkspaceSkeleton />}><CustomerFollowupsPage mode="staff" /></Suspense> : null}
+      {tab === "attendance" ? <AttendanceTodayCard detailed /> : null}
       {tab === "home" ? <CustomerFollowupReminder /> : null}
       {tab === "home" && dashboard.isLoading ? <WorkspaceSkeleton /> : null}
       {tab === "home" && !dashboard.isLoading ? <div className="space-y-6">
@@ -285,7 +286,7 @@ export default function UnifiedStaffPortal() {
           <div className="rounded-2xl bg-primary p-5 text-primary-foreground"><div className="flex items-start justify-between gap-3"><div><p className="text-sm text-primary-foreground/75">الخطوة التالية</p><h2 className="mt-2 text-xl font-black">{nextTask?.title ?? todayBookings[0]?.customer ?? "يومك مرتب"}</h2><p className="mt-2 max-w-xl text-sm leading-6 text-primary-foreground/80">{nextTask ? (nextTask.dueAt ? `موعد الإنجاز: ${textDate(nextTask.dueAt, true)}` : "هذه المهمة بانتظار البدء") : todayBookings[0] ? `${todayBookings[0].service} · ${todayBookings[0].location ?? "الموقع سيظهر في التفاصيل"}` : "لا توجد مهمة أو حجز عاجل الآن."}</p></div><CalendarDays className="h-6 w-6 text-primary-foreground/80" /></div>{nextTask ? <Button variant="secondary" className="mt-5 min-h-11" onClick={() => nextTask.status === "new" ? taskAction.mutate({ task: nextTask, statusAction: "accept" }) : nextTask.status === "accepted" ? taskAction.mutate({ task: nextTask, statusAction: "start" }) : setSelectedTaskId(nextTask.id)} disabled={taskAction.isPending}>{taskAction.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : nextTask.status === "new" ? "استلام المهمة" : nextTask.status === "accepted" ? "بدء العمل" : "فتح تفاصيل المهمة"}</Button> : null}</div>
           <dl className="grid grid-cols-3 divide-x divide-x-reverse divide-border rounded-2xl border border-border bg-card"><div className="p-4"><dt className="text-xs text-muted-foreground">مهام اليوم</dt><dd className="mt-2 text-2xl font-black">{dashboard.data?.summary.todayTasks ?? "—"}</dd></div><div className="p-4"><dt className="text-xs text-muted-foreground">حجوزات اليوم</dt><dd className="mt-2 text-2xl font-black">{bookings.isLoading ? "…" : todayBookings.length}</dd></div><div className="p-4"><dt className="text-xs text-muted-foreground">متأخرة</dt><dd className="mt-2 text-2xl font-black text-destructive">{dashboard.data?.summary.overdueTasks ?? "—"}</dd></div></dl>
         </section>
-        <AttendanceTodayCard />
+        <AttendanceTodayCard onOpenHistory={() => selectTab("attendance")} />
         <section className="grid gap-6 xl:grid-cols-[1.25fr_.75fr]">
           <div className="rounded-2xl border border-border bg-card p-5"><SectionTitle action={<Button variant="ghost" className="text-sm font-bold text-primary" onClick={() => selectTab("tasks")}>كل المهام</Button>}>جدول اليوم</SectionTitle><div className="mt-4 divide-y divide-border">{[...tasks.filter((task) => task.dueAt?.slice(0, 10) === today), ...todayBookings.map((booking) => ({ ...booking, kind: "booking" as const }))].slice(0, 8).map((item: any) => <div key={`${item.kind ?? "task"}-${item.id}`} className="flex items-center gap-3 py-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">{item.kind === "booking" ? <CalendarDays className="h-4 w-4" /> : <ClipboardCheck className="h-4 w-4" />}</span><div className="min-w-0 flex-1"><div className="truncate font-bold">{item.kind === "booking" ? item.customer : item.title}</div><div className="mt-1 text-xs text-muted-foreground">{item.kind === "booking" ? `${item.service} · ${item.time ?? "الوقت يحدد لاحقاً"}` : textDate(item.dueAt, true)}</div></div><span className="text-xs font-semibold text-muted-foreground">{item.kind === "booking" ? statusLabel(item.status) : statusLabel(item.status)}</span></div>)}</div>{!tasks.length && !todayBookings.length ? <Empty>لا توجد مواعيد أو مهام مسجلة اليوم.</Empty> : null}</div>
           <div className="space-y-6"><div className="rounded-2xl border border-border bg-card p-5"><SectionTitle action={<Button variant="ghost" className="text-sm font-bold text-primary" onClick={() => selectTab("notifications")}>عرض الكل</Button>}>إشعارات جديدة</SectionTitle><div className="mt-3 space-y-1">{notifications.isError ? <Failure title="تعذر تحميل الإشعارات" error={notifications.error} onRetry={() => void notifications.refetch()} /> : (notifications.data?.data ?? []).slice(0, 4).map((notice) => <Button variant="ghost" key={notice.id} type="button" onClick={() => { if (!notice.readAt) void adminFetch(`/staff/portal/notifications/${notice.id}/read`, { method: "POST" }).then(() => queryClient.invalidateQueries({ queryKey: ["staff-portal", "notifications"] })); if (notice.href) window.location.href = notice.href; }} className={`w-full rounded-lg px-2 py-3 text-right ${notice.readAt ? "text-muted-foreground" : "bg-primary/5 text-foreground"}`}><div className="flex gap-2"><BellRing className="mt-0.5 h-4 w-4 shrink-0 text-primary" /><div className="min-w-0"><div className="truncate text-sm font-bold">{notice.title}</div><div className="mt-1 line-clamp-2 text-xs">{notice.body}</div></div></div></Button>)}{notifications.isSuccess && !(notifications.data?.data ?? []).length ? <Empty>لا توجد إشعارات جديدة.</Empty> : null}</div></div>

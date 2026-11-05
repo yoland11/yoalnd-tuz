@@ -22,7 +22,7 @@ export function attendanceReturnQuery(search: string): string {
   const qr = readAttendanceCode(params.get("attendanceQr"));
   if (qr) return `?${new URLSearchParams({ attendanceQr: qr })}`;
   const tab = params.get("tab") ?? "";
-  return ["followups", "tasks", "work", "bookings", "salary", "notifications", "account"].includes(tab) ? `?tab=${tab}` : "";
+  return ["attendance", "followups", "tasks", "work", "bookings", "salary", "notifications", "account"].includes(tab) ? `?tab=${tab}` : "";
 }
 
 export type KioskDisplay = { name: string; locationName: string; rotatesAt: number; serverTime: number; rotationSeconds: number; qrDataUrl: string };

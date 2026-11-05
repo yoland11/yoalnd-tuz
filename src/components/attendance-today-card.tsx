@@ -2,14 +2,14 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearch } from "wouter";
 import { readAttendanceCode } from "@/lib/attendance-client";
-import { CalendarClock, CheckCircle2, ClipboardPen, LogIn, LogOut, MapPin, QrCode, Timer } from "lucide-react";
+import { CalendarClock, CheckCircle2, ClipboardPen, History, Loader2, LogIn, LogOut, MapPin, QrCode, RefreshCw, Timer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { ATTENDANCE_METHOD_LABELS, CORRECTION_TYPES, baghdadDate, baghdadTime, type AttendanceMethod } from "@/lib/attendance-rules";
+import { ATTENDANCE_METHOD_LABELS, CORRECTION_TYPES, DAY_STATUS_LABELS, baghdadDate, baghdadTime, type AttendanceMethod } from "@/lib/attendance-rules";
 import { fileToDataUrl } from "@/lib/image-tools";
 import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
 
@@ -17,15 +17,17 @@ const LiveScanner = lazy(() => import("@/views/staff/live-scanner").then((module
 
 type ShiftView = { shiftId: number | null; startMs: number; endMs: number; kind: string; title: string | null; bookingSource: string | null; bookingId: number | null; locationName: string | null; method: AttendanceMethod; needsQr: boolean; needsGps: boolean; manualOnly: boolean; allowedMethods: string[] };
 type Today = {
-  enabled: boolean; employeeName: string; date: string; status: string; statusLabel: string; workedMinutes: number; open: { id: number; startMs: number } | null; shifts: ShiftView[]; current: ShiftView | null; canCheckIn: boolean; canCheckOut: boolean;
-  recent?: Array<{ id: number; checkInMs: number | null; checkOutMs: number | null; workedMinutes: number; status: string; locationName: string | null }>;
+  enabled: boolean; employeeName: string; date: string; serverTime?: number; status: string; statusLabel: string; workedMinutes: number; open: { id: number; startMs: number } | null; shifts: ShiftView[]; current: ShiftView | null; canCheckIn: boolean; canCheckOut: boolean;
+  recent?: Array<{ id: number; checkInMs: number | null; checkOutMs: number | null; workedMinutes: number; method: string | null; status: string; locationName: string | null }>;
   corrections: Array<{ id: number; workDate: string; requestType: string; status: string }>;
 };
 type Action = "check_in" | "check_out";
 type Submission = { action: Action; shiftId?: number; qrCode?: string; gps?: { latitude: number; longitude: number; accuracy: number } | null };
 
-const hours = (minutes: number) => `${Math.floor(minutes / 60)}س ${minutes % 60}د`;
+const hours = (minutes: number) => `${Math.floor(minutes / 60)} ساعة و${minutes % 60} دقيقة`;
 const CORRECTION_STATUS: Record<string, string> = { pending: "بانتظار الموافقة", approved: "تمت الموافقة", rejected: "مرفوض" };
+const RECORD_STATUS_LABELS: Record<string, string> = { ...DAY_STATUS_LABELS, paid_leave: "إجازة مدفوعة", unpaid_leave: "إجازة غير مدفوعة" };
+const NON_PUNCH_STATUSES = new Set(["paid_leave", "unpaid_leave", "absent", "leave", "rest", "not_scheduled", "not_started"]);
 const STATUS_TONE: Record<string, string> = {
   present: "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
   mission: "bg-sky-500/10 text-sky-800 dark:text-sky-300",
@@ -90,7 +92,7 @@ function CorrectionDialog({ open, onClose }: { open: boolean; onClose: () => voi
 }
 
 /** «دوامي اليوم» in the existing staff portal. The server decides the time and what is required. */
-export function AttendanceTodayCard() {
+export function AttendanceTodayCard({ detailed = false, onOpenHistory }: { detailed?: boolean; onOpenHistory?: () => void } = {}) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const today = useQuery<Today>({ queryKey: ["staff", "attendance", "me"], queryFn: () => adminFetch("/admin/attendance/me"), refetchInterval: 60_000 });
@@ -135,6 +137,7 @@ export function AttendanceTodayCard() {
       toast({ title: message });
       void queryClient.invalidateQueries({ queryKey: ["staff", "attendance"] });
       void queryClient.invalidateQueries({ queryKey: ["staff-portal", "dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "attendance"] });
     },
     onError: (cause) => { if (mounted.current) { setProblem(apiErrorMessage(cause)); setDone(""); } },
   });
@@ -142,7 +145,7 @@ export function AttendanceTodayCard() {
 
   async function submit(action: Action, qrCode?: string) {
     const shift = today.data?.current;
-    if (!shift || submissionActive.current) return;
+    if (!shift || !today.data?.enabled || submissionActive.current) return;
     submissionActive.current = true;
     setProblem(""); setDone("");
     const wantsGps = shift.needsGps || (shift.method === "any" && (qrCode ? !shift.allowedMethods.includes("qr") && shift.allowedMethods.includes("qr_gps") : shift.allowedMethods.includes("gps")));
@@ -162,7 +165,7 @@ export function AttendanceTodayCard() {
 
   function start(action: Action) {
     const shift = today.data?.current;
-    if (!shift || submissionActive.current) return;
+    if (!shift || !today.data?.enabled || submissionActive.current) return;
     if (shift.manualOnly) { setCorrecting(true); return; }
     const requiresQr = shift.needsQr || (shift.method === "any" && !shift.allowedMethods.includes("gps"));
     if (requiresQr || scannedCode) {
@@ -180,18 +183,23 @@ export function AttendanceTodayCard() {
       </div>
     );
   const data = today.data;
-  if (!data.enabled && !data.shifts.length) return null;
+  if (!data.enabled && !data.shifts.length && !data.open && !detailed) return null;
   const shift = data.current;
   const tone = STATUS_TONE[data.status] ?? "bg-muted text-muted-foreground";
   return (
-    <section aria-label="دوامي اليوم" className="rounded-2xl border border-[#f4d6da] bg-card p-5 dark:border-border">
+    <section aria-label="دوامي اليوم" className="rounded-2xl border border-[#f4d6da] bg-card p-4 sm:p-5 dark:border-border">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-lg font-bold"><CalendarClock className="h-5 w-5 text-primary" aria-hidden />دوامي اليوم</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">{data.employeeName} · <span dir="ltr">{data.date}</span></p>
         </div>
-        <span className={`rounded-full px-3 py-1 text-sm font-semibold ${tone}`}>{data.statusLabel}</span>
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full px-3 py-1 text-sm font-semibold ${tone}`}>{data.statusLabel}</span>
+          <Button type="button" variant="ghost" size="icon" aria-label="تحديث دوامي" disabled={today.isFetching || busy} onClick={() => void today.refetch()}><RefreshCw className={`h-4 w-4 ${today.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden /></Button>
+        </div>
       </div>
+      {!data.enabled ? <p className="mt-4 rounded-lg bg-muted p-3 text-sm"><b className="block">تسجيل الحضور غير مفعّل لحسابك</b><span className="mt-1 block text-muted-foreground">راجع مسؤول الحضور لتفعيل دوامك. سجلاتك السابقة تبقى ظاهرة.</span></p> : null}
+      {data.open ? <p className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted px-3 py-2.5 text-sm"><span className="font-semibold">{data.enabled ? "أنت على رأس العمل" : "لديك حضور مفتوح؛ أرسل طلب تصحيح لمراجعته"}</span><span>وقت الحضور <b className="ms-1 tabular-nums" dir="ltr">{baghdadTime(data.open.startMs)}</b></span></p> : null}
       <dl className="mt-4 grid gap-3 text-sm [grid-template-columns:repeat(2,minmax(0,1fr))] md:[grid-template-columns:repeat(4,minmax(0,1fr))]">
         <div className="min-w-0"><dt className="text-xs text-muted-foreground">بداية الدوام</dt><dd className="mt-0.5 font-semibold tabular-nums">{shift && shift.kind !== "flexible" ? baghdadTime(shift.startMs) : "مرن"}</dd></div>
         <div className="min-w-0"><dt className="text-xs text-muted-foreground">نهاية الدوام</dt><dd className="mt-0.5 font-semibold tabular-nums">{shift && shift.kind !== "flexible" ? baghdadTime(shift.endMs) : "—"}</dd></div>
@@ -199,6 +207,7 @@ export function AttendanceTodayCard() {
         <div className="min-w-0"><dt className="flex items-center gap-1 text-xs text-muted-foreground"><Timer className="h-3 w-3" aria-hidden />ساعات اليوم</dt><dd className="mt-0.5 font-semibold tabular-nums">{hours(data.workedMinutes)}</dd></div>
       </dl>
       {shift ? <p className="mt-3 text-xs text-muted-foreground">طريقة التسجيل: <b className="text-foreground">{ATTENDANCE_METHOD_LABELS[shift.method]}</b>{shift.needsGps ? " · نقرأ موقعك مرة واحدة عند التسجيل فقط" : ""}</p> : null}
+      {shift?.manualOnly ? <p className="mt-2 text-sm text-muted-foreground">دوامك يحتاج موافقة المدير. استخدم «طلب تصحيح» لإرسال وقت الحضور أو الانصراف.</p> : data.enabled && !data.canCheckIn && !data.canCheckOut ? <p className="mt-2 text-sm text-muted-foreground">التسجيل غير متاح حالياً حسب حالة دوامك. يمكنك مراجعة سجلك أو إرسال طلب تصحيح.</p> : null}
       {scannedCode ? <p className="mt-3 rounded-lg bg-primary/5 p-2.5 text-sm"><QrCode className="me-1 inline h-4 w-4 text-primary" aria-hidden />تمت قراءة رمز الحضور. اختر حضور أو انصراف.</p> : null}
       {data.shifts.filter((row) => row.bookingId).map((row) => (
         <p key={row.shiftId} className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/50 p-2.5 text-sm">
@@ -209,13 +218,54 @@ export function AttendanceTodayCard() {
       {done ? <p role="status" className="mt-3 flex items-center gap-1.5 rounded-lg bg-emerald-500/10 p-2.5 text-sm font-semibold text-emerald-800 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden />{done}</p> : null}
       {problem ? <p role="alert" className="mt-3 rounded-lg bg-destructive/10 p-2.5 text-sm font-semibold text-destructive">{problem}</p> : null}
       <div className="mt-4 flex flex-wrap gap-2">
-        <Button type="button" className="min-h-11 flex-1 basis-36" disabled={busy || !data.canCheckIn} onClick={() => start("check_in")}><LogIn className="h-4 w-4" />تسجيل حضور</Button>
-        <Button type="button" variant="outline" className="min-h-11 flex-1 basis-36" disabled={busy || !data.canCheckOut} onClick={() => start("check_out")}><LogOut className="h-4 w-4" />تسجيل انصراف</Button>
-        {shift && (shift.needsQr || (shift.method === "any" && shift.allowedMethods.some(value => value === "qr" || value === "qr_gps"))) ? <Button type="button" variant="outline" className="min-h-11" disabled={busy || (!data.canCheckIn && !data.canCheckOut)} onClick={() => beginScan(data.canCheckOut ? "check_out" : "check_in")}><QrCode className="h-4 w-4" />{scannedCode ? "مسح QR جديد" : "مسح QR"}</Button> : null}
+        <Button type="button" className="min-h-12 flex-1 basis-36 text-base" disabled={busy || !data.enabled || !data.canCheckIn} onClick={() => start("check_in")}>{punch.isPending && punch.variables?.action === "check_in" ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden /> : <LogIn className="h-5 w-5" aria-hidden />}تسجيل حضور</Button>
+        <Button type="button" variant="outline" className="min-h-12 flex-1 basis-36 text-base" disabled={busy || !data.enabled || !data.canCheckOut} onClick={() => start("check_out")}>{punch.isPending && punch.variables?.action === "check_out" ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden /> : <LogOut className="h-5 w-5" aria-hidden />}تسجيل انصراف</Button>
+        {shift && (shift.needsQr || (shift.method === "any" && shift.allowedMethods.some(value => value === "qr" || value === "qr_gps"))) ? <Button type="button" variant="outline" className="min-h-11" disabled={busy || !data.enabled || (!data.canCheckIn && !data.canCheckOut)} onClick={() => beginScan(data.canCheckOut ? "check_out" : "check_in")}><QrCode className="h-4 w-4" />{scannedCode ? "مسح QR جديد" : "مسح QR"}</Button> : null}
         <Button type="button" variant="ghost" className="min-h-11" onClick={() => setCorrecting(true)}><ClipboardPen className="h-4 w-4" />طلب تصحيح</Button>
       </div>
       {data.corrections.filter((row) => row.status === "pending").length ? <p className="mt-2 text-xs text-muted-foreground">لديك {data.corrections.filter((row) => row.status === "pending").length} طلب {CORRECTION_STATUS.pending}.</p> : null}
       {locating ? <p role="status" className="mt-3 text-sm text-muted-foreground">جارٍ التحقق من موقعك الحالي…</p> : null}
+      {!detailed && onOpenHistory ? <Button type="button" variant="link" className="mt-2 min-h-11 px-0" onClick={onOpenHistory}><History className="h-4 w-4" aria-hidden />سجل حضوري وطلبات التصحيح</Button> : null}
+      {detailed ? <div className="mt-6 space-y-5 border-t border-border pt-5">
+        <section aria-label="سجل حضوري">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="flex items-center gap-2 font-bold"><History className="h-4 w-4 text-primary" aria-hidden />سجل حضوري</h3>
+            <span className="text-xs text-muted-foreground">آخر 7 أيام · أحدث 20 تسجيلاً</span>
+          </div>
+          {data.recent?.length ? <ul className="mt-3 divide-y divide-border">
+            {data.recent.map((record) => {
+              const nonPunch = NON_PUNCH_STATUSES.has(record.status);
+              const methodLabel = record.method === "self" ? "تسجيل مباشر" : record.method && ((ATTENDANCE_METHOD_LABELS as Record<string, string>)[record.method] ?? record.method);
+              return <li key={record.id} className="py-3 first:pt-0 last:pb-0">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <time dir="ltr" className="font-semibold tabular-nums">{record.checkInMs != null ? baghdadDate(record.checkInMs) : "تاريخ غير متوفر"}</time>
+                  <span className="text-xs text-muted-foreground">{RECORD_STATUS_LABELS[record.status] ?? record.status}</span>
+                </div>
+                <dl className="mt-2 grid grid-cols-3 gap-2 text-sm">
+                  <div><dt className="text-xs text-muted-foreground">الحضور</dt><dd className="mt-1 tabular-nums" dir="ltr">{nonPunch ? "—" : baghdadTime(record.checkInMs)}</dd></div>
+                  <div><dt className="text-xs text-muted-foreground">الانصراف</dt><dd className="mt-1 tabular-nums">{nonPunch ? "—" : record.checkOutMs != null ? baghdadTime(record.checkOutMs) : "بدون انصراف"}</dd></div>
+                  <div><dt className="text-xs text-muted-foreground">المدة المسجلة</dt><dd className="mt-1 tabular-nums">{nonPunch ? "—" : record.checkOutMs != null ? hours(record.workedMinutes) : "غير مكتملة"}</dd></div>
+                </dl>
+                <p className="mt-2 break-words text-xs text-muted-foreground">{record.locationName ?? "الموقع غير محدد"}{methodLabel ? ` · ${methodLabel}` : ""}</p>
+              </li>;
+            })}
+          </ul> : <p className="mt-3 rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground">لا توجد تسجيلات حضور خلال آخر 7 أيام.</p>}
+        </section>
+        <section aria-label="طلبات تصحيح حضوري">
+          <h3 className="font-bold">طلبات التصحيح</h3>
+          <p className="mt-1 text-xs text-muted-foreground">تظهر أحدث 10 طلبات. لا يتغير السجل قبل اعتماد المدير.</p>
+          {data.corrections.length ? <ul className="mt-3 divide-y divide-border">
+            {data.corrections.map((request) => <li key={request.id} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
+              <div>
+                <span className="font-medium">{CORRECTION_TYPES[request.requestType] ?? request.requestType}</span>
+                <time dir="ltr" className="mt-1 block text-xs tabular-nums text-muted-foreground">{request.workDate}</time>
+              </div>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${request.status === "pending" ? "bg-amber-500/10 text-amber-800 dark:text-amber-300" : "bg-muted text-foreground"}`}>{CORRECTION_STATUS[request.status] ?? request.status}</span>
+            </li>)}
+          </ul> : <p className="mt-3 text-sm text-muted-foreground">ليس لديك طلبات تصحيح.</p>}
+        </section>
+        {data.serverTime != null ? <p className="text-xs text-muted-foreground">آخر تحديث من النظام: <span dir="ltr" className="tabular-nums">{baghdadTime(data.serverTime)}</span> · توقيت بغداد</p> : null}
+      </div> : null}
       <Dialog open={scanFor !== null} onOpenChange={(next) => { if (!next) closeScan(); }}>
         <DialogContent dir="rtl" className="w-[min(calc(100%-2rem),26rem)]">
           <DialogHeader className="text-start"><DialogTitle>امسح رمز شاشة الحضور</DialogTitle><DialogDescription>وجّه الكاميرا على الرمز الظاهر على الشاشة الآن.</DialogDescription></DialogHeader>
@@ -232,10 +282,6 @@ export function AttendanceTodayCard() {
           ) : null}
         </DialogContent>
       </Dialog>
-      <details className="mt-4 border-t border-border pt-3">
-        <summary className="cursor-pointer text-sm font-semibold">سجل حضوري · آخر 7 أيام</summary>
-        {data.recent?.length ? <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[420px] text-right text-xs"><thead><tr>{["التاريخ", "الحضور", "الانصراف", "المدة", "الموقع"].map(label => <th key={label} className="border-b p-2">{label}</th>)}</tr></thead><tbody>{data.recent.map(row => <tr key={row.id}><td className="border-b p-2 tabular-nums">{row.checkInMs == null ? "—" : baghdadDate(row.checkInMs)}</td><td className="border-b p-2 tabular-nums">{baghdadTime(row.checkInMs)}</td><td className="border-b p-2 tabular-nums">{baghdadTime(row.checkOutMs)}</td><td className="border-b p-2 tabular-nums">{hours(row.workedMinutes)}</td><td className="border-b p-2">{row.locationName ?? "—"}</td></tr>)}</tbody></table></div> : <p className="mt-2 text-sm text-muted-foreground">لا توجد سجلات حضور خلال هذه الفترة.</p>}
-      </details>
       <CorrectionDialog open={correcting} onClose={() => setCorrecting(false)} />
     </section>
   );

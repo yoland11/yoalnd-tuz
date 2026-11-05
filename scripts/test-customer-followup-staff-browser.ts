@@ -72,7 +72,7 @@ try {
     await reminder.getByText("2 اليوم · 1 متأخرة", { exact: true }).waitFor();
     const mobileNav = page.getByRole("navigation", { name: "أقسام بوابة الموظف" });
     if (width < 1024) {
-      const buttons = mobileNav.getByRole("button"); assert.equal(await buttons.count(), 8);
+      const buttons = mobileNav.getByRole("button"); assert.equal(await buttons.count(), 9);
       const bounds = await buttons.evaluateAll((nodes: HTMLElement[]) => nodes.map(node => ({ top: node.getBoundingClientRect().top, height: node.getBoundingClientRect().height })));
       assert.equal(new Set(bounds.map(b => b.top)).size, 1, "all mobile navigation buttons stay in one row");
       assert.ok(bounds.every(b => b.height >= 44), "touch-friendly navigation");

@@ -1,12 +1,13 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Briefcase, CalendarCheck, Clock3, Copy, Download, ExternalLink, Fingerprint, Loader2, LogOut, MapPin, Pencil, Plus, Printer, QrCode, Settings2, Trash2, UserCheck, UserX, Users } from "lucide-react";
+import { Briefcase, CalendarCheck, Clock3, Copy, Download, ExternalLink, Fingerprint, Loader2, LogOut, MapPin, Pencil, Plus, Printer, QrCode, RefreshCw, Search, Settings2, SlidersHorizontal, Trash2, UserCheck, UserX, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AttendanceSettingsPanel } from "@/components/attendance-settings-panel";
+import { EmployeeAvatar } from "@/components/employee-avatar";
 import { useToast } from "@/hooks/use-toast";
 import { ATTENDANCE_METHODS, ATTENDANCE_METHOD_LABELS, CORRECTION_TYPES, DAY_LABELS, DAY_STATUS_LABELS, LOCATION_KIND_LABELS, SHIFT_KIND_LABELS, addDays, baghdadDate, baghdadTime } from "@/lib/attendance-rules";
 import { adminFetch, apiErrorMessage } from "./_lib";
@@ -18,8 +19,8 @@ type LocationRow = { id: number; name: string; kind: string; address: string | n
 type StaffOption = { id: number; fullName: string; department: string | null };
 type Policy = Record<string, any>;
 type Options = { locations: LocationRow[]; staff: StaffOption[]; capabilities: Capabilities; policy: Policy };
-type DashboardRow = { staffId: number; name: string; department: string | null; locationName: string | null; shiftStartMs: number | null; shiftEndMs: number | null; checkInMs: number | null; checkOutMs: number | null; workedMinutes: number; method: string | null; status: string; statusLabel: string; isLate: boolean; missingCheckOut: boolean; bookingSource: string | null; bookingId: number | null };
-type Dashboard = { date: string; summary: { total: number; presentNow: number; late: number; absent: number; out: number; mission: number; onLeave: number; scheduled: number }; rows: DashboardRow[]; departments: string[]; locations: Array<{ id: number; name: string }> };
+type DashboardRow = { staffId: number; name: string; department: string | null; photoUrl?: string | null; locationName: string | null; shiftStartMs: number | null; shiftEndMs: number | null; checkInMs: number | null; checkOutMs: number | null; workedMinutes: number; method: string | null; status: string; statusLabel: string; isLate: boolean; missingCheckOut: boolean; bookingSource: string | null; bookingId: number | null };
+type Dashboard = { date: string; serverTime?: number; summary: { total: number; presentNow: number; late: number; absent: number; out: number; mission: number; onLeave: number; scheduled: number }; rows: DashboardRow[]; departments: string[]; locations: Array<{ id: number; name: string }> };
 type RecordRow = { id: number; name: string; department: string | null; checkInMs: number | null; checkOutMs: number | null; status: string; method: string | null; workedMinutes: number; overtimeApprovedMinutes: number | null; locationName: string | null; shiftTitle: string | null; bookingSource: string | null; bookingId: number | null; evidence?: Array<{ event: string; method: string; distance: number | null; accuracy: number | null }> };
 type ShiftRow = { shiftId: number; staffId: number; staffName: string | null; date: string; startMs: number; endMs: number; kind: string; title: string | null; locationName: string | null; requiredMethod: string | null; bookingSource: string | null; bookingId: number | null; payAmount: number | null };
 type Kiosk = { id: number; name: string; locationName: string; isActive: boolean; lastSeenAt: string | null };
@@ -27,7 +28,7 @@ type Correction = { id: number; name: string; department: string | null; workDat
 type ReportRow = { staffId: number; name: string; department: string | null; scheduledDays: number; presentDays: number; absentDays: number; paidLeaveDays: number; unpaidLeaveDays: number; workedHours: number; lateArrivals: number; lateMinutes: number; earlyLeaveMinutes: number; overtimeHours: number; missingCheckOut: number; eventShifts: number; eventAttended: number; proposedDeductions: number };
 
 const number = (value: number) => Number(value ?? 0).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
-const hours = (minutes: number) => `${Math.floor(minutes / 60)}س ${minutes % 60}د`;
+const hours = (minutes: number) => `${Math.floor(minutes / 60)} ساعة و${minutes % 60} دقيقة`;
 const control = "h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm";
 const th = "whitespace-nowrap border-b border-border/60 bg-muted/40 p-2.5 text-xs font-semibold text-muted-foreground";
 const td = "border-b border-border/30 p-2.5 align-middle";
@@ -67,6 +68,7 @@ function Stat({ label, value, note, icon: Icon, tone = "text-primary" }: { label
 
 function DashboardTab({ options, onSettings }: { options: Options; onSettings: (staffId: number, name: string) => void }) {
   const [filters, setFilters] = useState({ date: baghdadDate(), search: "", department: "", locationId: "", status: "", method: "" });
+  const [expandedFilters, setExpandedFilters] = useState(false);
   const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value));
   const dashboard = useQuery<Dashboard>({ queryKey: ["admin", "attendance", "dashboard", params.toString()], queryFn: () => adminFetch(`/admin/attendance/dashboard?${params}`), refetchInterval: 60_000 });
   const set = (patch: Partial<typeof filters>) => setFilters((current) => ({ ...current, ...patch }));
@@ -83,25 +85,46 @@ function DashboardTab({ options, onSettings }: { options: Options; onSettings: (
           <Stat icon={Briefcase} label="في مهمة خارجية" value={summary.mission} tone="text-sky-600" />
         </div>
       ) : <div className="grid gap-3 [grid-template-columns:repeat(2,minmax(0,1fr))] lg:[grid-template-columns:repeat(6,minmax(0,1fr))]">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-24" />)}</div>}
+      <div className="space-y-3 rounded-xl border border-border bg-card p-3 sm:p-4">
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex flex-col gap-1 text-xs font-medium">التاريخ<Input type="date" className="w-40" value={filters.date} onChange={(event) => set({ date: event.target.value })} /></label>
-        <Input aria-label="ابحث عن موظف" placeholder="ابحث عن موظف" className="min-w-40 flex-1 basis-40" value={filters.search} onChange={(event) => set({ search: event.target.value })} />
+        <Button type="button" variant={filters.date === baghdadDate() ? "secondary" : "ghost"} className="min-h-10" onClick={() => set({ date: baghdadDate() })}>اليوم</Button>
+        <Button type="button" variant={filters.date === addDays(baghdadDate(), -1) ? "secondary" : "ghost"} className="min-h-10" onClick={() => set({ date: addDays(baghdadDate(), -1) })}>أمس</Button>
+        <div className="relative min-w-40 flex-1 basis-60"><Search className="pointer-events-none absolute start-3 top-3 h-4 w-4 text-muted-foreground" aria-hidden /><Input type="search" aria-label="ابحث عن موظف" placeholder="ابحث باسم الموظف…" className="ps-9" value={filters.search} onChange={(event) => set({ search: event.target.value })} /></div>
+        <select aria-label="الحالة" className={`${control} min-h-10`} value={filters.status} onChange={(event) => set({ status: event.target.value })}><option value="">كل الحالات</option>{Object.entries(DAY_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+        <Button type="button" variant="outline" className="min-h-10" aria-expanded={expandedFilters} aria-controls="attendance-daily-filters" onClick={() => setExpandedFilters(current => !current)}><SlidersHorizontal className="h-4 w-4" aria-hidden />تصفية إضافية{[filters.department, filters.locationId, filters.method].filter(Boolean).length ? <span className="rounded-full bg-primary/10 px-1.5 text-primary">{[filters.department, filters.locationId, filters.method].filter(Boolean).length}</span> : null}</Button>
+        <Button type="button" variant="ghost" className="min-h-10" aria-label="تحديث الحضور" disabled={dashboard.isFetching} onClick={() => void dashboard.refetch()}><RefreshCw className={`h-4 w-4 ${dashboard.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden />تحديث</Button>
+      </div>
+      {expandedFilters ? <div id="attendance-daily-filters" className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
         <select aria-label="القسم" className={control} value={filters.department} onChange={(event) => set({ department: event.target.value })}><option value="">كل الأقسام</option>{(dashboard.data?.departments ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <select aria-label="موقع العمل" className={control} value={filters.locationId} onChange={(event) => set({ locationId: event.target.value })}><option value="">كل المواقع</option>{(dashboard.data?.locations ?? []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
-        <select aria-label="الحالة" className={control} value={filters.status} onChange={(event) => set({ status: event.target.value })}><option value="">كل الحالات</option>{Object.entries(DAY_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
         <select aria-label="طريقة التحقق" className={control} value={filters.method} onChange={(event) => set({ method: event.target.value })}><option value="">كل الطرق</option>{ATTENDANCE_METHODS.filter((value) => value !== "any").map((value) => <option key={value} value={value}>{ATTENDANCE_METHOD_LABELS[value]}</option>)}</select>
+        <Button type="button" variant="link" onClick={() => set({ department: "", locationId: "", method: "", status: "", search: "" })}>مسح التصفية</Button>
+      </div> : null}
+      {dashboard.data && !dashboard.isError ? <p className="text-xs text-muted-foreground">{number(dashboard.data.rows.length)} موظف في العرض{dashboard.data.serverTime != null ? ` · آخر تحديث ${baghdadTime(dashboard.data.serverTime)} بتوقيت بغداد` : ""}</p> : null}
       </div>
       {dashboard.isPending ? <Skeleton className="h-48 w-full" /> : dashboard.isError ? null : !dashboard.data.rows.length ? <Empty>لا يوجد موظفون يطابقون التصفية.</Empty> : (
+        <>
+        <ul aria-label="حضور الموظفين" className="space-y-3 md:hidden">
+          {dashboard.data.rows.map(row => <li key={row.staffId} className="rounded-xl border border-[#f4d6da] bg-card p-4 dark:border-border">
+            <div className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-center gap-2.5"><EmployeeAvatar name={row.name} photoUrl={row.photoUrl} size={40} /><div className="min-w-0"><h3 className="break-words text-sm font-bold">{row.name}</h3><p className="mt-1 break-words text-xs text-muted-foreground">{row.department ?? "القسم غير محدد"}</p></div></div><span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_TONE[row.status] ?? "bg-muted text-muted-foreground"}`}>{row.statusLabel}</span></div>
+            <dl className="mt-4 grid grid-cols-3 gap-2 text-sm"><div><dt className="text-xs text-muted-foreground">الحضور</dt><dd className="mt-1 font-semibold tabular-nums">{baghdadTime(row.checkInMs)}</dd></div><div><dt className="text-xs text-muted-foreground">الانصراف</dt><dd className="mt-1 font-semibold tabular-nums">{baghdadTime(row.checkOutMs)}</dd></div><div><dt className="text-xs text-muted-foreground">الساعات المسجلة</dt><dd className="mt-1 font-semibold tabular-nums">{row.checkInMs != null ? hours(row.workedMinutes) : "—"}</dd></div></dl>
+            <div className="mt-3 space-y-1 text-xs text-muted-foreground"><p className="flex items-start gap-1.5"><MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden /><span className="break-words">{row.locationName ?? "الموقع غير محدد"}</span></p><p>الوردية: {row.shiftStartMs != null ? <bdi dir="ltr">{baghdadTime(row.shiftStartMs)}–{baghdadTime(row.shiftEndMs)}</bdi> : "غير محددة"} · {methodLabel(row.method)}</p></div>
+            {row.isLate || row.missingCheckOut ? <p className="mt-3 text-xs font-semibold text-amber-800 dark:text-amber-300">{[row.isLate ? "حضور متأخر" : "", row.missingCheckOut ? "تسجيل انصراف مفقود" : ""].filter(Boolean).join(" · ")}</p> : null}
+            {row.bookingId || options.capabilities.canManage ? <div className="mt-3 flex items-center justify-end gap-2 border-t border-border pt-2">{row.bookingId ? <Button type="button" size="sm" variant="ghost" className="min-h-11" asChild><a href={`/admin/bookings/${row.bookingSource}/${row.bookingId}`}><ExternalLink className="h-4 w-4" aria-hidden />الحجز</a></Button> : null}{options.capabilities.canManage ? <Button type="button" variant="ghost" size="sm" className="min-h-11" aria-label={`إعدادات ${row.name}`} onClick={() => onSettings(row.staffId, row.name)}><Settings2 className="h-4 w-4" aria-hidden />إعدادات الموظف</Button> : null}</div> : null}
+          </li>)}
+        </ul>
+        <div className="hidden md:block">
         <TableShell wide={820}>
           <thead><tr>{["الموظف والقسم", "موقع العمل", "الوردية", "الحضور", "الانصراف", "الساعات", "الطريقة", "الحالة", ""].map((label, index) => <th key={index} className={th}>{label}</th>)}</tr></thead>
           <tbody>{dashboard.data.rows.map((row) => (
             <tr key={row.staffId}>
-              <td className={`${td} font-medium`}>{row.name}<span className="block text-[11px] font-normal text-muted-foreground">{row.department ?? "—"}</span></td>
+              <td className={`${td} font-medium`}><div className="flex items-center gap-2.5"><EmployeeAvatar name={row.name} photoUrl={row.photoUrl} size={32} /><div><span>{row.name}</span><span className="block text-xs font-normal text-muted-foreground">{row.department ?? "—"}</span></div></div></td>
               <td className={`${td} text-xs`}>{row.locationName ?? "—"}</td>
-              <td className={`${td} whitespace-nowrap text-xs tabular-nums`}>{row.shiftStartMs ? `${baghdadTime(row.shiftStartMs)}–${baghdadTime(row.shiftEndMs)}` : "—"}</td>
+              <td className={`${td} whitespace-nowrap text-xs tabular-nums`}>{row.shiftStartMs != null ? <bdi dir="ltr">{baghdadTime(row.shiftStartMs)}–{baghdadTime(row.shiftEndMs)}</bdi> : "—"}</td>
               <td className={`${td} tabular-nums`}>{baghdadTime(row.checkInMs)}{row.isLate ? <span className="ms-1 text-[11px] text-amber-700 dark:text-amber-300">متأخر</span> : null}</td>
               <td className={`${td} tabular-nums`}>{baghdadTime(row.checkOutMs)}{row.missingCheckOut ? <span className="ms-1 text-[11px] text-destructive">مفقود</span> : null}</td>
-              <td className={`${td} whitespace-nowrap tabular-nums`}>{row.workedMinutes ? hours(row.workedMinutes) : "—"}</td>
+              <td className={`${td} whitespace-nowrap tabular-nums`}>{row.checkInMs != null ? hours(row.workedMinutes) : "—"}</td>
               <td className={`${td} text-xs`}>{methodLabel(row.method)}</td>
               <td className={td}><span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_TONE[row.status] ?? "bg-muted text-muted-foreground"}`}>{row.statusLabel}</span></td>
               <td className={td}>
@@ -113,6 +136,8 @@ function DashboardTab({ options, onSettings }: { options: Options; onSettings: (
             </tr>
           ))}</tbody>
         </TableShell>
+        </div>
+        </>
       )}
     </div>
   );
@@ -544,9 +569,12 @@ export function AttendanceCenter({ policyEditor }: { policyEditor: ReactNode }) 
   const data = options.data;
   return (
     <div className="space-y-4" dir="rtl">
-      <div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
         <h1 className="flex items-center gap-2 text-2xl font-bold text-foreground"><CalendarCheck className="h-5 w-5 text-primary" aria-hidden />الحضور والانصراف</h1>
         <p className="mt-1 text-sm text-muted-foreground">متابعة الدوام وإدارة الورديات والمواقع، وربط ما يُعتمد منها بدورة الرواتب.</p>
+        </div>
+        <Button type="button" variant="outline" className="min-h-11" asChild><a href="/staff?tab=attendance"><UserCheck className="h-4 w-4" aria-hidden />فتح حضوري</a></Button>
       </div>
       <Tabs dir="rtl" value={tab} onValueChange={setTab}>
         <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">

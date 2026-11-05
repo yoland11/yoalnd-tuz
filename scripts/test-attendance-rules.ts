@@ -196,7 +196,7 @@ const kiosk = read("src/views/attendance-kiosk.tsx");
 assert.ok(!/staffName|employeeName|fullName|salary/i.test(kiosk), "the public kiosk shows nothing about employees");
 const card = read("src/components/attendance-today-card.tsx");
 assert.ok(!/watchPosition/.test(card), "location is read once at the event; no continuous tracking");
-assert.match(read("src/views/staff/unified-portal.tsx"), /<AttendanceTodayCard \/>/, "the card sits in the existing staff portal");
+assert.match(read("src/views/staff/unified-portal.tsx"), /<AttendanceTodayCard\s[^>]*\/>/, "the card sits in the existing staff portal, including its history variant");
 assert.match(read("src/views/admin/employee-salaries.tsx"), /ملخص الحضور والانصراف/, "payroll shows the summary");
 assert.match(read("src/views/admin/staff.tsx"), /<AttendanceSettingsPanel staffId=\{editing\.id\} \/>/, "the employee profile holds the settings");
 assert.match(read("src/views/admin/booking-operations-workspace.tsx"), /<BookingAttendancePanel /, "the booking holds its attendance tab");
