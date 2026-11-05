@@ -1,9 +1,39 @@
-import type { EquipmentRentalDetail } from "@/lib/equipment-rentals";
+import type { EquipmentRentalDetail, EquipmentRentalReturn } from "@/lib/equipment-rentals";
 import { EQUIPMENT_RENTAL_STATUS_LABELS } from "@/lib/equipment-rentals";
 import { thermalReceiptCss } from "./print-helpers";
 
 const esc = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const cash = (value: unknown) => `${Number(value ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} د.ع`;
+
+export function equipmentRentalReturnPrintHtml(
+  rental: Pick<EquipmentRentalDetail, "orderNo" | "customerName">,
+  record: EquipmentRentalReturn,
+  company: { site_name?: string },
+) {
+  const date = new Date(record.returnedAt).toLocaleString("ar-IQ", { timeZone: "Asia/Baghdad" });
+  const rows = record.lines.map(line => `<tr>
+    <td><b>${esc(line.name)}</b><small><bdi>${esc(line.code)}</bdi></small>${line.note && line.note !== record.note ? `<small class="note">${esc(line.note)}</small>` : ""}</td>
+    <td>${esc(line.receivingEmployeeName)}<small>${esc(line.warehouseName || "—")}</small></td>
+    ${[line.good, line.damaged, line.missing, line.pending, line.outstandingAfter].map(quantity => `<td><bdi>${esc(quantity)}</bdi></td>`).join("")}
+  </tr>`).join("");
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+    <title>سند استرجاع معدات · ${esc(rental.orderNo)}</title><style>
+      @page{size:A4;margin:14mm}*{box-sizing:border-box}
+      body{font:12px/1.6 Cairo,Tahoma,Arial,sans-serif;color:#21191c;max-width:180mm;margin:auto}
+      header{border-bottom:2px solid #70032c;padding-bottom:12px;text-align:center}h1{font-size:24px;color:#70032c;margin:4px 0}
+      table{width:100%;border-collapse:collapse;margin:16px 0}thead{display:table-header-group}
+      th,td{padding:7px 5px;border-bottom:1px solid #eadde1;text-align:start;overflow-wrap:anywhere;vertical-align:top}
+      th{background:#fbf5f7}tr{break-inside:avoid}small{display:block;color:#666}bdi{unicode-bidi:isolate}
+      .note{white-space:pre-wrap;overflow-wrap:anywhere}.signatures{display:flex;justify-content:space-between;gap:24px;break-inside:avoid;margin-top:28px}
+    </style></head><body><main><header><b>${esc(company.site_name || "AJN")}</b><h1>سند استرجاع معدات</h1><bdi>${esc(rental.orderNo)}</bdi></header>
+    <p>العميل: <b>${esc(rental.customerName)}</b> · وقت الاسترجاع: <bdi>${esc(date)}</bdi></p>
+    <p>سجّله: ${esc(record.actorName)} · مرجع العملية: <small><bdi>${esc(record.requestId)}</bdi></small></p>
+    <table><thead><tr><th>المعدة</th><th>المستلم والمخزن</th><th>سليم</th><th>تالف</th><th>مفقود</th><th>بانتظار الفحص</th><th>المتبقي لدى العميل</th></tr></thead><tbody>${rows}</tbody></table>
+    ${record.note ? `<p class="note">الملاحظات: ${esc(record.note)}</p>` : ""}
+    <p>تُسوّى مبالغ الإيجار والتأمين عبر الموافقات المالية.</p>
+    <div class="signatures"><p>توقيع العميل __________________</p><p>توقيع المستلم __________________</p></div></main></body></html>`;
+}
+
 export function equipmentRentalPrintHtml(rental: EquipmentRentalDetail, company: { site_name?: string; phone?: string; address?: string }, size: "A4" | "80mm", document: "contract" | "receipt" = "contract") {
   const details = rental.details;
   const thermal = size === "80mm";

@@ -1,6 +1,7 @@
 import {masterClosingReversalOptionsSchema} from "../lib/vehicle-partnership/master-reopen";
 import { revalidateTag, unstable_cache } from "next/cache";
 import { handleEquipmentRentals } from "./equipment-rentals";
+import { lockEquipmentRentalReceiptAllocations } from "./equipment-rental-finance";
 import { loadDailyOperations } from "./booking-daily-operations";
 import { handleVehiclePartnershipRequest } from "./vehicle-partnership/routes";
 import { applyWarehouseDeltas, createWarehouse, listWarehouses, mainWarehouseId, requireActiveWarehouse, rowsOf as warehouseRows, shelfCompany, updateWarehouse, warehouseBreakdowns, WarehouseError } from "./warehouses";
@@ -72964,6 +72965,7 @@ async function handleAccounting(
         await ensureMasterCashBoxTables();
         const updated = await db.transaction(async (tx) => {
           await lockGraduationPaymentSource(tx, allocations);
+          await lockEquipmentRentalReceiptAllocations(tx, allocations, customer);
           // Legacy Kosha records can legitimately lack customer_id. Link them
           // only inside the voucher transaction, after ownership has been
           // validated, so a failed receipt never changes customer history.
@@ -73076,6 +73078,11 @@ async function handleAccounting(
         return json(savedVoucher, 201);
       } catch (err: any) {
         if (err instanceof GraduationOrderWriteConflict) throw err;
+        if (err instanceof FinancialApprovalError) {
+          const requestId = makeRequestId();
+          console.warn("receipt voucher financial validation failed", { requestId, actorId: a.id, status: err.status });
+          return error(err.message, err.status, { requestId });
+        }
         console.error("receipt voucher save failed", {
           message: err?.message,
           code: err?.code,

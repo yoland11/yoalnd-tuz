@@ -29,6 +29,8 @@ export type IndividualCustodyInput = {
   canRecordDamage?: boolean;
   canApproveLoss?: boolean;
   closeCustodyOnLoss?: boolean;
+  /** Rental manager is closing the exact previously recorded lost custody. */
+  finalizeRecordedRentalLoss?: boolean;
 };
 export type IndividualCustodyRow = {
   id: number; productId: number; staffId: number; quantity: number; status: string;
@@ -197,7 +199,11 @@ export async function executeIndividualCustody(
   if (problem === "lost") {
     if (input.canApproveLoss !== true) throw new IndividualCustodyError("ليس لديك صلاحية اعتماد فقدان الأصل", 403);
     if (input.managerApproval !== true) throw new IndividualCustodyError("تسجيل الفقدان يتطلب اعتماد المدير");
-    if (profile?.status === "lost" || metadata.individualCustodyLossId === Number(original.id)) return replay(original);
+    const recordedLoss = metadata.individualCustodyLossId === Number(original.id);
+    const finalizeLoss = input.finalizeRecordedRentalLoss === true && input.closeCustodyOnLoss === true &&
+      source.kind === "linked" && source.entityType === "rental_order";
+    if (finalizeLoss && !recordedLoss) throw new IndividualCustodyError("لا يوجد فقدان معتمد لهذه العهدة الأصلية", 409);
+    if ((profile?.status === "lost" || recordedLoss) && !finalizeLoss) return replay(original);
   }
   const staffName = await readStaff(Number(original.staff_id), false);
   let nextProfile = profile;

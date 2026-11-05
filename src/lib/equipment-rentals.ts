@@ -7,18 +7,21 @@ export const EQUIPMENT_RENTAL_STATUS_LABELS: Record<string, string> = { draft: "
 export const EQUIPMENT_RENTAL_PRICING_TYPES = ["fixed", "daily", "hourly", "custom"] as const;
 export type EquipmentRentalPricingType = (typeof EQUIPMENT_RENTAL_PRICING_TYPES)[number];
 export type EquipmentRentalActor = { id: number; name: string; permissions: string[]; role: string };
-export type EquipmentRentalCapabilities = { view: boolean; create: boolean; edit: boolean; confirm: boolean; dispatch: boolean; return: boolean; cancel: boolean; inspect: boolean; finance: boolean; reports: boolean; settings: boolean; costs?: boolean };
+export type EquipmentRentalCapabilities = { view: boolean; create: boolean; edit: boolean; confirm: boolean; dispatch: boolean; return: boolean; cancel: boolean; inspect: boolean; finance: boolean; reports: boolean; settings: boolean; costs?: boolean; resolveLoss?: boolean };
+export const canApproveEquipmentRentalLoss = (actor: { role?: string; permissions?: string[] }) =>
+  ["admin", "manager", "main_admin", "super_admin", "main_manager"].includes(actor.role ?? "") || actor.permissions?.includes("asset_damage_approve") === true;
 export function equipmentRentalCapabilities(actor: { role?: string; permissions?: string[] }): EquipmentRentalCapabilities {
   const all = actor.role === "admin";
   const p = new Set(actor.permissions ?? []);
   const has = (...keys: string[]) => all || keys.some(key => p.has(key));
+  const canReturn = has("rental_return", "booking_return_confirm", "booking_assets_manage", "warehouse_return", "asset_custody_return", "assets_manage");
   return {
     costs: has("expenses"),
     view: has("rental_payment", "rental_return", "rental_dispatch", "rental_create", "rental_edit", "rental_approve", "rental_inspect", "rental_reports", "rental_view", "bookings", "orders", "booking_view", "booking_create", "booking_edit", "booking_status_change", "booking_operations_view", "assets_view"),
     create: has("rental_create", "booking_create", "bookings", "booking_edit"), edit: has("rental_edit", "booking_edit"),
     confirm: has("rental_approve", "rental_confirm", "booking_status_change"), cancel: has("rental_cancel", "booking_status_change", "booking_edit"),
     dispatch: has("rental_dispatch", "booking_assets_manage", "warehouse_issue", "asset_custody_issue", "assets_manage"),
-    return: has("rental_return", "booking_return_confirm", "booking_assets_manage", "warehouse_return", "asset_custody_return", "assets_manage"),
+    return: canReturn, resolveLoss: canReturn && canApproveEquipmentRentalLoss(actor),
     inspect: has("rental_inspect", "booking_assets_manage", "asset_damage_record", "assets_manage"),
     finance: has("rental_payment", "rental_finance", "accounting", "booking_payment_receive", "booking_payments", "cashbox"),
     reports: has("rental_reports", "accounting", "booking_finance_view"),
@@ -33,12 +36,21 @@ export type EquipmentRentalAssetLine = Partial<QuantityLine> & {
   allocations?: Array<Record<string, unknown>>; [key: string]: unknown;
 };
 export type EquipmentRentalHistory = { requestId: string; action: string; at: string; actorId: number | null; actorName: string; fingerprint?: string; note?: string };
+export type EquipmentRentalReturn = {
+  requestId: string; returnedAt: string; recordedAt: string; actorId: number; actorName: string; note: string;
+  lines: Array<{
+    productId: number; name: string; code: string; warehouseId: number | null; warehouseName: string;
+    receivingEmployeeId: number; receivingEmployeeName: string;
+    dispatched: number; previouslyReturned: number; previouslyMissing: number; outstandingBefore: number; outstandingAfter: number;
+    good: number; damaged: number; missing: number; pending: number; lossApproved: boolean; note?: string;
+  }>;
+};
 export type EquipmentRentalAttachment = { id: string; name: string; url: string; type?: string; createdAt: string };
 export type EquipmentRentalDetails = {
   version: 1; address: string; startTime: string; endTime: string; linkedBooking: { source: "service" | "kosha"; id: number } | null;
   deliveryCharge: number; installationCharge: number; discount: number; depositRequired: number; terms: string;
   assets: EquipmentRentalAssetLine[]; resourceWindow: BookingResourceWindow; history: EquipmentRentalHistory[];
-  attachments: EquipmentRentalAttachment[]; createRequestId: string; [key: string]: unknown;
+  attachments: EquipmentRentalAttachment[]; returns?: EquipmentRentalReturn[]; createRequestId: string; [key: string]: unknown;
 };
 export type EquipmentRentalFinancialSummary = { rentPaid?: number; rentRefunded?: number; paid?: number; remaining?: number; depositHeld?: number; depositCollected?: number; depositRefunded?: number; depositApplied?: number; pending?: unknown[]; [key: string]: unknown };
 export type EquipmentRentalDetail = {

@@ -6,6 +6,7 @@ import { EquipmentRentalFinanceError, assertEquipmentRentalRequestBalance, equip
 import { parseMoney, formatMoney } from "../lib/vehicle-partnership/money";
 import { createSourceFinancialRequest, FinancialApprovalError, type FinancialActor } from "./master-cash-box";
 import { reconcilePaymentState } from "./payment-state";
+import { normalizeIraqiPhone } from "@/lib/phone";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Executor = { execute: (query: any) => Promise<any> };
@@ -29,6 +30,31 @@ export function isEquipmentRentalFinancial(row: { sourceType?: string | null; tr
 export function assertGenericEquipmentRentalInput(input: unknown) {
   if (input && typeof input === "object" && isEquipmentRentalFinancial(input as any)) throw new FinancialApprovalError("حركة الإيجار تُنشأ وتُعدّل من عقد الإيجار الأصلي فقط");
 }
+
+/** Serialize new equipment-rental allocations with rental completion. Other
+ * receipt sources and legacy product rentals keep their original writer. */
+export async function lockEquipmentRentalReceiptAllocations(tx: Executor,
+  allocations: readonly { sourceType: string; sourceId: number; amount: number }[],
+  customer: { id: number; phone: string },
+) {
+  const amounts = new Map<number, number>();
+  for (const allocation of allocations) {
+    if (allocation.sourceType === "rental_order") amounts.set(allocation.sourceId, (amounts.get(allocation.sourceId) ?? 0) + allocation.amount);
+  }
+  if (!amounts.size) return;
+  const ids = sql.join([...amounts.keys()].map(id => sql`${id}`), sql`, `);
+  const rentals = rows(await tx.execute(sql`select id,status,customer_id,phone,remaining_amount from rental_orders r
+    where id in (${ids}) and to_jsonb(r)->>'rental_kind'='equipment' order by id for update`));
+  for (const contract of rentals) {
+    const owns = contract.customer_id != null ? Number(contract.customer_id) === customer.id
+      : normalizeIraqiPhone(contract.phone) === normalizeIraqiPhone(customer.phone);
+    if (!owns || ["draft", "pending_approval", "cancelled", "canceled", "completed", "closed"].includes(contract.status) ||
+      amounts.get(Number(contract.id))! > Number(contract.remaining_amount) + 0.005) {
+      throw new FinancialApprovalError("تغيّرت حالة الإيجار أو رصيده. حدّث بيانات سند القبض قبل الحفظ");
+    }
+  }
+}
+
 /** Original receipt posting/reversal locks these original rental rows before
  * financial and cash rows, matching the source-owned rental lock order. */
 export async function lockEquipmentRentalReceiptSources(tx: Executor, source: { sourceType?: string | null; sourceId?: string | number | null }, options: { requireActive?: boolean } = {}) {

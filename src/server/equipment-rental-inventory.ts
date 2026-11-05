@@ -5,7 +5,9 @@ import { lineOutstanding, normalizeQuantityLine, normalizeBuckets } from "@/lib/
 import { applyWarehouseDeltas, mainWarehouseId, warehouseBreakdowns } from "./warehouses";
 import { bucketsOf, executeQuantityBookingAction, quantityAvailability, quantityProfilesFor, QuantityAssetError, type QuantityBookingInput } from "./quantity-assets";
 import { findBookingPhysicalConflict } from "./booking-resource-availability";
-import { executeIndividualCustody } from "./individual-custody";
+import { executeIndividualCustody, type IndividualCustodyDeps } from "./individual-custody";
+import { hasOpenRentalLoss } from "@/lib/equipment-rental-returns";
+import type { EquipmentRentalDetails } from "@/lib/equipment-rentals";
 import { assetPassportHasCustodyHold } from "./custody-source-safety";
 
 type Executor = Pick<typeof db, "execute">;
@@ -29,6 +31,33 @@ export type EquipmentRentalInventoryInput = RentalReference & {
 const blocked = new Set(["maintenance", "lost", "retired", "locked", "sold", "disposed"]);
 const count = (n: unknown) => Number.isSafeInteger(Number(n)) && Number(n) >= 0 ? Number(n) : NaN;
 const issueNote = (id: number) => `إخراج · عقد تأجير #${id}`;
+const custodySource = (id: number) => ({ kind: "linked" as const, entityType: "rental_order", entityId: id, issueNote: issueNote(id) });
+function custodyDependencies(rentalId: number, actor: Actor): IndividualCustodyDeps {
+  return {
+    isQuantityTracked: async (connection, productId) => (await quantityProfilesFor(connection as Executor, [productId])).has(productId),
+    audit: async (connection, entry) => {
+      await connection.execute(sql`insert into employee_custody_audit(product_id,staff_id,booking_type,booking_id,action,previous_value,new_value,actor_id,actor_name)
+        values(${entry.productId},${entry.staffId},'rental_order',${rentalId},${entry.action},${JSON.stringify(entry.previous)}::jsonb,${JSON.stringify(entry.next)}::jsonb,${actor.id},${actor.name})`);
+    },
+  };
+}
+
+/** Called by the authorized rental transaction with the contract and assets locked. */
+export async function finalizeRecordedEquipmentRentalLosses(tx: Executor, rentalId: number, details: EquipmentRentalDetails, actor: { id: number; name: string }) {
+  const losses = details.assets.filter(hasOpenRentalLoss);
+  if (!losses.length) throw new QuantityAssetError("لا توجد عهدة فقدان معلقة في هذا العقد", 409);
+  for (const line of losses) {
+    const custodyId = Number(line.custodyId);
+    if (!Number.isSafeInteger(custodyId) || custodyId <= 0) throw new QuantityAssetError("تعذر تحديد العهدة الأصلية للمعدة المفقودة", 409);
+    const result = await executeIndividualCustody(tx, {
+      mode: "return", productId: line.productId, actorId: actor.id, custodyId, source: custodySource(rentalId),
+      problem: "lost", canApproveLoss: true, managerApproval: true,
+      closeCustodyOnLoss: true, finalizeRecordedRentalLoss: true,
+    }, custodyDependencies(rentalId, actor));
+    if (result.row.status !== "returned") throw new QuantityAssetError("تعذر إغلاق عهدة الفقدان الأصلية", 409);
+    line.stage = "returned";
+  }
+}
 async function rows(tx: Executor, query: any): Promise<any[]> {
   const result = await tx.execute(query);
   if (!Array.isArray(result?.rows)) throw Error("Invalid equipment rental inventory database response");
@@ -167,14 +196,11 @@ export async function executeEquipmentRentalInventory(tx: Executor, input: Equip
       if (returning && (!line.custodyId || line.stage !== "out")) throw new QuantityAssetError("لا توجد عهدة أصلية مفتوحة للقطعة في العقد", 409);
       const result = await executeIndividualCustody(tx, { mode: returning ? "return" : "checkout", productId: part.productId,
         actorId: input.actor.id, staffId: part.staffId, custodyId: returning ? Number(line.custodyId) : undefined, quantity: 1,
-        source: { kind: "linked", entityType: "rental_order", entityId: input.rentalId, issueNote: issueNote(input.rentalId) },
+        source: custodySource(input.rentalId),
         problem: damaged ? "broken" : missing ? "lost" : "none", note: part.note, managerApproval: part.managerApproval,
+        closeCustodyOnLoss: returning && missing > 0 && part.managerApproval === true,
         canRecordDamage: part.canRecordDamage, canApproveLoss: part.canApproveLoss,
-      }, {
-        isQuantityTracked: async (connection, productId) => (await quantityProfilesFor(connection as Executor, [productId])).has(productId),
-        audit: async (connection, entry) => { await connection.execute(sql`insert into employee_custody_audit(product_id,staff_id,booking_type,booking_id,action,previous_value,new_value,actor_id,actor_name)
-          values(${entry.productId},${entry.staffId},'rental_order',${input.rentalId},${entry.action},${JSON.stringify(entry.previous)}::jsonb,${JSON.stringify(entry.next)}::jsonb,${input.actor.id},${input.actor.name})`); },
-      });
+      }, custodyDependencies(input.rentalId, input.actor));
       if (returning && !missing) {
         const sourceWarehouse = Number(line.warehouseId || await mainWarehouseId(tx));
         const destinationWarehouse = Number(part.warehouseId || sourceWarehouse);
@@ -196,7 +222,7 @@ export async function executeEquipmentRentalInventory(tx: Executor, input: Equip
       }
       details.assets[index] = { ...line, trackingMode: "individual", custodyId: result.row.id, staffId: result.row.staffId,
         checkedOutQty: 1, returnedGoodQty: good, returnedDamagedQty: damaged, missingQty: missing, pendingInspectionQty: pending,
-        stage: returning ? missing ? "out" : pending ? "inspection" : "returned" : "out" };
+        stage: returning ? pending ? "inspection" : "returned" : "out" };
     }
     await persist();
   }

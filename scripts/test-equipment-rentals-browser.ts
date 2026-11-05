@@ -46,6 +46,7 @@ try {
       };
     });
     const writes:any[]=[];
+    let savedReturn: unknown;
     await page.route("**/api/**",async(route:any)=>{
       const request=route.request(),url=new URL(request.url()),path=url.pathname,method=request.method();let data:any={};
       if(path==="/api/settings")data={site_name:"AJN",phone:"07700000000",address:"بغداد"};
@@ -58,7 +59,16 @@ try {
         if(path.endsWith("/equipment")){const priced=calculateEquipmentRental(payload);row={...row,customerName:payload.customerName,phone:payload.phone,status:"draft",total:priced.total,remaining:priced.total,startDate:payload.startDate,endDate:payload.endDate,details:{...row.details,...payload,assets:priced.assets}};data=row;}
         else if(path.endsWith("/confirm")){row.status="confirmed";data=row;}
         else if(path.endsWith("/dispatch")){assert.equal(payload.lines[0].quantity,5);assert.equal(payload.lines[0].staffId,1);row.details.assets[0].checkedOutQty=5;row.status="dispatched";data=row;}
-        else if(path.endsWith("/return")){assert.equal(payload.lines[0].goodQuantity,3);assert.equal(payload.lines[0].pendingInspectionQuantity,2);row.details.assets[0].returnedGoodQty=3;row.details.assets[0].pendingInspectionQty=2;row.status="inspection";data=row;}
+        else if(path.endsWith("/return")){
+          assert.equal(payload.lines[0].goodQuantity,3);assert.equal(payload.lines[0].pendingInspectionQuantity,2);
+          assert.equal(payload.lines[0].warehouseId,2);assert.ok(Number.isFinite(Date.parse(payload.returnedAt)));
+          if (savedReturn) assert.deepEqual(payload,savedReturn,"uncertain return retry must preserve the original request and quantities");
+          const simulateLostResponse = width === 390 && !savedReturn;
+          savedReturn = payload;
+          row.details.assets[0].returnedGoodQty=3;row.details.assets[0].pendingInspectionQty=2;row.status="inspection";
+          row.details.returns=[{requestId:payload.requestId,returnedAt:payload.returnedAt,recordedAt:payload.returnedAt,actorId:1,actorName:"موظف الاختبار",note:"",lines:[{productId:7,name:"كرسي ملكي",code:"CHAIR-7",warehouseId:2,warehouseName:"المخزن الثاني",receivingEmployeeId:1,receivingEmployeeName:"موظف الاختبار",dispatched:5,previouslyReturned:0,previouslyMissing:0,outstandingBefore:5,outstandingAfter:0,good:3,damaged:0,missing:0,pending:2,lossApproved:false}]}];data=row;
+          if (simulateLostResponse) { await route.abort(); return; }
+        }
         else if(path.endsWith("/finance")){assert.equal(payload.kind,"rent_payment");assert.equal(payload.amount,20000);data={...row,financeRequest:{id:100,approvalStatus:"pending"}};}
         else data=row;
       }
@@ -113,18 +123,42 @@ try {
     assert.equal(writes.length,beforeScan);
     await page.screenshot({path:resolve(artifacts,`rental-dispatch-scan-${width}.png`),fullPage:true});
     await dialog.getByLabel("الموظف المسؤول").selectOption("1");await dialog.getByRole("button",{name:"تأكيد",exact:true}).click();
-    await page.getByRole("button",{name:"استلام إرجاع",exact:true}).waitFor();await page.getByRole("button",{name:"استلام إرجاع",exact:true}).click();
-    const returnDialog=page.getByRole("dialog",{name:"استلام الإرجاع",exact:true});
+    await page.getByRole("button",{name:"استرجاع معدات",exact:true}).waitFor({timeout:10000});
+    await page.goto(`${origin}/admin/bookings/rentals`);
+    await page.getByRole("link",{name:"استرجاع معدات",exact:true}).click();
+    const returnDialog=page.getByRole("dialog",{name:"استرجاع معدات",exact:true});
     const beforeReturnScan=writes.length;
     await returnDialog.getByRole("button",{name:"مسح باركود (اختياري)",exact:true}).click();
     await returnDialog.getByLabel("باركود المعدة أو رمز الأصل",{exact:true}).fill("AJN-A000007");await returnDialog.getByRole("button",{name:"تحديد المعدة",exact:true}).click();
-    assert.equal(await returnDialog.getByLabel("جيد",{exact:true}).inputValue(),"0","scanning never classifies an uninspected return as good");
-    assert.ok(await returnDialog.getByLabel("جيد",{exact:true}).evaluate((el:HTMLInputElement)=>el===document.activeElement));
+    assert.equal(await returnDialog.getByLabel("سليم",{exact:true}).inputValue(),"0","scanning never classifies an uninspected return as good");
+    assert.ok(await returnDialog.getByLabel("سليم",{exact:true}).evaluate((el:HTMLInputElement)=>el===document.activeElement));
     assert.equal(writes.length,beforeReturnScan);
-    await page.getByRole("dialog").getByLabel("الموظف المسؤول").selectOption("1");await page.getByRole("dialog").getByLabel("جيد",{exact:true}).fill("3");await page.getByRole("dialog").getByLabel("بانتظار الفحص",{exact:true}).fill("2");await page.getByRole("dialog").getByRole("button",{name:"تأكيد",exact:true}).click();
+    await returnDialog.getByLabel("الموظف المستلم").selectOption("1");
+    await returnDialog.getByLabel("المخزن المستلم",{exact:true}).selectOption("2");
+    assert.ok(await returnDialog.getByLabel("تاريخ ووقت الاسترجاع",{exact:true}).inputValue());
+    await returnDialog.getByLabel("سليم",{exact:true}).fill("6");
+    await returnDialog.getByRole("alert").filter({hasText:"الكمية تتجاوز المتبقي"}).waitFor();
+    assert.equal(await returnDialog.getByRole("button",{name:"حفظ الاسترجاع",exact:true}).isDisabled(),true);
+    await returnDialog.getByLabel("سليم",{exact:true}).fill("3");
+    await returnDialog.getByLabel("بانتظار الفحص",{exact:true}).fill("2");
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`return dialog fits ${width}`);
+    await page.screenshot({path:resolve(artifacts,`rental-return-${width}.png`),fullPage:true});
+    await returnDialog.getByRole("button",{name:"حفظ الاسترجاع",exact:true}).click();
+    if (width === 390) {
+      await returnDialog.getByRole("button",{name:"إعادة المحاولة",exact:true}).waitFor();
+      assert.equal(await returnDialog.getByLabel("سليم",{exact:true}).isDisabled(),true);
+      await returnDialog.getByRole("button",{name:"إعادة المحاولة",exact:true}).click();
+    }
+    await returnDialog.waitFor({state:"hidden"});
+    assert.equal(writes.filter(write=>write.path.endsWith("/return")).length,width === 390 ? 2 : 1);
+    assert.equal(writes.filter(write=>write.path.endsWith("/finance")).length,0);
     await page.getByRole("button",{name:"تسجيل دفعة",exact:true}).click();await page.getByRole("dialog").getByLabel("المبلغ",{exact:true}).fill("20000");await page.getByRole("dialog").getByRole("button",{name:"تأكيد",exact:true}).click();
     await page.getByRole("dialog").waitFor({state:"hidden"});assert.equal(row.paid,0,"pending request never pretends to settle the rental");
     await page.getByRole("tab",{name:"التسليم والإرجاع",exact:true}).click();
+    await page.getByRole("heading",{name:"سجل الاسترجاع",exact:true}).waitFor();
+    await page.getByText("المخزن الثاني",{exact:true}).waitFor();
+    await page.getByRole("button",{name:"طباعة سند الاسترجاع",exact:true}).click();
+    await page.locator('iframe[srcdoc*="سند استرجاع معدات"]').waitFor({state:"attached"});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),`workspace overflow at ${width}`);
     await page.screenshot({path:resolve(artifacts,`rental-workspace-${width}.png`),fullPage:true});
     await page.getByRole("tab",{name:"المعدات",exact:true}).click();
