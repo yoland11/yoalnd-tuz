@@ -3,7 +3,7 @@ import type { QuantityLine } from "./quantity-assets";
 
 export const EQUIPMENT_RENTAL_STATUSES = ["draft", "pending_approval", "confirmed", "partially_dispatched", "dispatched", "partially_returned", "inspection", "returned", "completed", "cancelled"] as const;
 export type EquipmentRentalStatus = (typeof EQUIPMENT_RENTAL_STATUSES)[number];
-export const EQUIPMENT_RENTAL_STATUS_LABELS: Record<string, string> = { draft: "مسودة", pending_approval: "بانتظار الاعتماد", confirmed: "بانتظار التسليم", partially_dispatched: "تسليم جزئي", dispatched: "تم التسليم", partially_returned: "إرجاع جزئي", inspection: "بانتظار الفحص", returned: "تم الإرجاع", completed: "مكتمل", cancelled: "ملغي", active: "نشط" };
+export const EQUIPMENT_RENTAL_STATUS_LABELS: Record<string, string> = { draft: "مسودة", pending_approval: "بانتظار الاعتماد", confirmed: "بانتظار التسليم", partially_dispatched: "قيد التسليم", dispatched: "مؤجر حالياً", partially_returned: "إرجاع جزئي", inspection: "بانتظار الفحص", returned: "تم الإرجاع", completed: "مكتمل", cancelled: "ملغي", active: "نشط" };
 export const EQUIPMENT_RENTAL_PRICING_TYPES = ["fixed", "daily", "hourly", "custom"] as const;
 export type EquipmentRentalPricingType = (typeof EQUIPMENT_RENTAL_PRICING_TYPES)[number];
 export type EquipmentRentalActor = { id: number; name: string; permissions: string[]; role: string };
@@ -33,9 +33,16 @@ export type EquipmentRentalAssetLine = Partial<QuantityLine> & {
   productId: number; name: string; image: string | null; code: string; warehouseId: number | null; quantity: number;
   pricingType: EquipmentRentalPricingType; unitPrice: number; duration: number; discount: number; lineTotal: number;
   trackingMode?: "quantity" | "individual"; staffId?: number | null; pendingInspectionQty?: number;
-  allocations?: Array<Record<string, unknown>>; [key: string]: unknown;
+  allocations?: Array<Record<string, unknown>>; scanCodes?: string[]; [key: string]: unknown;
 };
 export type EquipmentRentalHistory = { requestId: string; action: string; at: string; actorId: number | null; actorName: string; fingerprint?: string; note?: string };
+export type EquipmentRentalDispatch = {
+  requestId: string; dispatchedAt: string; recordedAt: string; actorId: number; actorName: string; note: string;
+  lines: Array<{
+    productId: number; name: string; code: string; employeeId: number; employeeName: string;
+    quantity: number; remaining: number; warehouses: Array<{ warehouseId: number; name: string; quantity: number }>;
+  }>;
+};
 export type EquipmentRentalReturn = {
   requestId: string; returnedAt: string; recordedAt: string; actorId: number; actorName: string; note: string;
   lines: Array<{
@@ -50,7 +57,7 @@ export type EquipmentRentalDetails = {
   version: 1; address: string; startTime: string; endTime: string; linkedBooking: { source: "service" | "kosha"; id: number } | null;
   deliveryCharge: number; installationCharge: number; discount: number; depositRequired: number; terms: string;
   assets: EquipmentRentalAssetLine[]; resourceWindow: BookingResourceWindow; history: EquipmentRentalHistory[];
-  attachments: EquipmentRentalAttachment[]; returns?: EquipmentRentalReturn[]; createRequestId: string; [key: string]: unknown;
+  attachments: EquipmentRentalAttachment[]; returns?: EquipmentRentalReturn[]; dispatches?: EquipmentRentalDispatch[]; createRequestId: string; [key: string]: unknown;
 };
 export type EquipmentRentalFinancialSummary = { rentPaid?: number; rentRefunded?: number; paid?: number; remaining?: number; depositHeld?: number; depositCollected?: number; depositRefunded?: number; depositApplied?: number; pending?: unknown[]; [key: string]: unknown };
 export type EquipmentRentalDetail = {
@@ -62,7 +69,7 @@ export type EquipmentRentalDetail = {
 export type EquipmentRentalSummary = { active: number; awaitingDispatch: number; dueToday: number; overdue: number; outstanding: number; depositHeld: number };
 export type EquipmentRentalList = { data: EquipmentRentalDetail[]; total: number; summary: EquipmentRentalSummary; page: number; pageSize: number };
 export type EquipmentRentalAssetOption = { id: number; name: string; code: string; image: string | null; stock: number; trackingMode: "quantity" | "individual"; settings: EquipmentRentalSettings; category?: string; [key: string]: unknown };
-export type EquipmentRentalOptions = { assets: EquipmentRentalAssetOption[]; warehouses: Array<{ id: number; name: string }>; employees: Array<{ id: number; name: string }>; customers?: Array<{ id: number; name: string; phone: string }> };
+export type EquipmentRentalOptions = { assets: EquipmentRentalAssetOption[]; warehouses: Array<{ id: number; name: string }>; employees: Array<{ id: number; name: string }>; mainWarehouseId?: number; customers?: Array<{ id: number; name: string; phone: string }> };
 
 export class EquipmentRentalValidationError extends Error { status = 422; constructor(message: string) { super(message); this.name = "EquipmentRentalValidationError"; } }
 const fail = (message: string): never => { throw new EquipmentRentalValidationError(message); };

@@ -298,7 +298,7 @@ export const NAV: NavItem[] = [
   },
   { href: "/admin/bookings?new=1", label: "إضافة حجز", icon: Plus, perm: "orders", bookingChild: true },
   { href: "/admin/bookings/rentals", label: "إيجارات المعدات", icon: Boxes, perm: "rental_view", anyPerm: ["orders", "bookings", "rental_view"], bookingChild: true },
-  { href: "/admin/bookings/rentals/returns", label: "التسليم والإرجاع", icon: PackageCheck, perm: "rental_view", anyPerm: ["orders", "rental_view", "rental_dispatch", "rental_return"], bookingChild: true },
+  { href: "/admin/bookings/rentals/returns", label: "التسليم والاستلام", icon: PackageCheck, perm: "rental_view", anyPerm: ["orders", "rental_view", "rental_dispatch", "rental_return"], bookingChild: true },
   { href: "/admin/bookings/rentals/overdue", label: "الإيجارات المتأخرة", icon: Clock, perm: "rental_view", anyPerm: ["orders", "rental_view"], bookingChild: true },
   {
     href: "/admin/preparation",

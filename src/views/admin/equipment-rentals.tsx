@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowRight, Boxes, CalendarDays, Check, Clock, FileText, Loader2, MoreHorizontal, PackageCheck, Plus, Printer, RefreshCw, Search, Settings, Trash2, Truck, Wallet } from "lucide-react";
+import { AlertTriangle, ArrowRight, Boxes, CalendarDays, Check, Clock, FileText, Keyboard, Loader2, MoreHorizontal, PackageCheck, Plus, Printer, RefreshCw, ScanLine, Search, Settings, Trash2, Truck, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,10 +12,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { usePublicSettings } from "@/lib/public-settings";
 import { printStandaloneDocument } from "@/lib/pdf";
-import { calculateEquipmentRental, equipmentRentalCapabilities, EQUIPMENT_RENTAL_STATUS_LABELS, EQUIPMENT_RENTAL_STATUSES, type EquipmentRentalDetail, type EquipmentRentalAssetLine, type EquipmentRentalList, type EquipmentRentalOptions, type EquipmentRentalReturn } from "@/lib/equipment-rentals";
-import { canReturnEquipment, hasOpenRentalLoss, rentalReturnCounts } from "@/lib/equipment-rental-returns";
+import { calculateEquipmentRental, equipmentRentalCapabilities, EQUIPMENT_RENTAL_STATUS_LABELS, EQUIPMENT_RENTAL_STATUSES, type EquipmentRentalDetail, type EquipmentRentalAssetLine, type EquipmentRentalList, type EquipmentRentalOptions, type EquipmentRentalReturn, type EquipmentRentalDispatch } from "@/lib/equipment-rentals";
+import { canDispatchEquipment, canReturnEquipment, hasOpenRentalLoss, rentalDispatchLimit, rentalDispatchSources, rentalReturnCounts } from "@/lib/equipment-rental-returns";
+import { matchesRentalEquipment, rentalAssetCode } from "@/lib/equipment-rental-scan";
+import { consumeOutstanding, lineAllocations } from "@/lib/warehouse-stock";
 import { adminFetch, AjNApiError, apiErrorMessage, formatCurrency, type AdminMe } from "./_lib";
-import { equipmentRentalPrintHtml, equipmentRentalReturnPrintHtml } from "./equipment-rental-print";
+import { equipmentRentalDispatchPrintHtml, equipmentRentalPrintHtml, equipmentRentalReturnPrintHtml } from "./equipment-rental-print";
 import { RentalAssetSettings } from "@/components/equipment-rental-panels";
 import { EquipmentRentalImage } from "@/components/equipment-rental-image";
 import { EquipmentRentalScanner } from "@/components/equipment-rental-scanner";
@@ -37,7 +39,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Status({ row }: { row: EquipmentRentalDetail }) { return <span className="inline-flex flex-wrap gap-1"><span className="rounded-full bg-primary/8 px-2 py-1 text-xs font-semibold text-primary">{statusLabel(row.status)}</span>{row.overdue ? <span className="rounded-full bg-destructive/10 px-2 py-1 text-xs text-destructive">متأخر</span> : null}</span>; }
 function RentalQuickActions({ row }: { row: EquipmentRentalDetail }) {
   const items = [
-    ...(row.capabilities.dispatch && ["confirmed", "partially_dispatched", "partially_returned"].includes(row.status) ? [["dispatch", "تسليم المعدات"]] : []),
+    ...(canDispatchEquipment(row) ? [["dispatch", "تسليم معدات"]] : []),
     ...(row.capabilities.finance ? [["finance", "تسجيل دفعة"]] : []),
   ];
   return <DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`إجراءات ${row.orderNo}`}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">{items.map(([action, label]) => <DropdownMenuItem key={action} asChild><Link href={`${base}/${row.id}?action=${action}`}>{label}</Link></DropdownMenuItem>)}<DropdownMenuItem asChild><Link href={`${base}/${row.id}?print=1`}>طباعة العقد</Link></DropdownMenuItem><DropdownMenuItem asChild><a href={whatsapp(row)} target="_blank" rel="noreferrer">رسالة واتساب للمراجعة</a></DropdownMenuItem></DropdownMenuContent></DropdownMenu>;
@@ -52,8 +54,8 @@ export default function EquipmentRentalsPage({ me }: { me: AdminMe }) {
   const detail = useQuery<EquipmentRentalDetail>({ queryKey: ["equipment-rentals", "detail", id], queryFn: () => adminFetch(`${api}/${id}`), enabled: !!id, refetchOnWindowFocus: "always" });
   return <main dir="rtl" style={{ "--primary": "337 95% 23%", "--ring": "337 95% 23%" } as React.CSSProperties} className="min-w-0 space-y-5 pb-10">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><Link href="/admin/bookings" className="mb-2 inline-flex items-center gap-1 text-xs text-muted-foreground"><ArrowRight className="h-3.5 w-3.5" /> مركز الحجوزات</Link><h1 className="text-2xl font-bold">{segment === "new" ? "إيجار معدات جديد" : id ? detail.data?.orderNo || "مساحة الإيجار" : "إيجارات المعدات"}</h1><p className="mt-1 text-sm text-muted-foreground">إدارة إيجارات المعدات والتسليم والإرجاع والحسابات</p></div><div className="flex flex-wrap gap-2">{segment ? <Button variant="outline" asChild><Link href={base}>جميع الإيجارات</Link></Button> : null}{capabilities.reports ? <Button variant="outline" asChild><Link href={`${base}/reports`}><FileText className="h-4 w-4" /> التقارير</Link></Button> : null}{segment !== "new" && capabilities.create ? <Button asChild><Link href={`${base}/new`}><Plus className="h-4 w-4" /> إيجار معدات</Link></Button> : null}</div></header>
-    <nav className="flex flex-wrap gap-2" aria-label="نوع العملية"><Button variant="outline" size="sm" asChild><Link href="/admin/bookings?new=1"><CalendarDays className="h-4 w-4" /> حجز مناسبة</Link></Button><Button variant="outline" size="sm" asChild><Link href={base}><Boxes className="h-4 w-4" /> إيجار معدات</Link></Button><Button variant="ghost" size="sm" asChild><Link href={`${base}/returns`}>التسليم والإرجاع</Link></Button><Button variant="ghost" size="sm" asChild><Link href={`${base}/overdue`}>الإيجارات المتأخرة</Link></Button></nav>
-    {segment === "new" ? <RentalForm capabilities={capabilities} /> : id ? detail.isLoading ? <Loading /> : detail.error ? <ErrorBox error={detail.error} retry={() => void detail.refetch()} /> : detail.data ? <RentalWorkspace rental={detail.data} /> : null : segment === "reports" ? <RentalReports /> : <RentalDashboard mode={segment} />}
+    <nav className="flex flex-wrap gap-2" aria-label="نوع العملية"><Button variant="outline" size="sm" asChild><Link href="/admin/bookings?new=1"><CalendarDays className="h-4 w-4" /> حجز مناسبة</Link></Button><Button variant="outline" size="sm" asChild><Link href={base}><Boxes className="h-4 w-4" /> إيجار معدات</Link></Button><Button variant="ghost" size="sm" asChild><Link href={`${base}/returns`}>التسليم والاستلام</Link></Button><Button variant="ghost" size="sm" asChild><Link href={`${base}/overdue`}>الإيجارات المتأخرة</Link></Button></nav>
+    {segment === "new" ? <RentalForm capabilities={capabilities} /> : id ? detail.isLoading ? <Loading /> : detail.error ? <ErrorBox error={detail.error} retry={() => void detail.refetch()} /> : detail.data ? <RentalWorkspace key={detail.data.id} rental={detail.data} /> : null : segment === "reports" ? <RentalReports /> : <RentalDashboard mode={segment} />}
   </main>;
 }
 
@@ -65,8 +67,8 @@ function RentalDashboard({ mode }: { mode: string }) {
   const summary = list.data?.summary;
   return <><section className="grid grid-cols-2 gap-2 lg:grid-cols-5" aria-label="ملخص الإيجارات">{[["الإيجارات النشطة", summary?.active, Boxes], ["بانتظار التسليم", summary?.awaitingDispatch, Truck], ["الإرجاعات اليوم", summary?.dueToday, CalendarDays], ["الإيجارات المتأخرة", summary?.overdue, Clock], ["المبالغ المتبقية", summary?.outstanding == null ? undefined : formatCurrency(summary.outstanding), Wallet]].map(([label, value, Icon]: any) => <div key={label} className={`${cardClass} flex items-center gap-3`}><Icon className="h-5 w-5 shrink-0 text-primary" /><div><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-xl font-bold tabular-nums">{list.error ? "—" : value ?? "…"}</p></div></div>)}</section>
     <section className={cardClass}><div className="mb-4 flex flex-wrap gap-3"><div className="min-w-48 flex-1"><Input value={search} onChange={e => setSearch(e.target.value)} placeholder="رقم الإيجار، اسم العميل، الهاتف أو المعدات" aria-label="البحث في الإيجارات" /></div><select className={`${selectClass} sm:w-44`} value={status} onChange={e => { setStatus(e.target.value); setPage(1); }} aria-label="حالة الإيجار"><option value="">كل الحالات</option>{EQUIPMENT_RENTAL_STATUSES.map(value => <option key={value} value={value}>{statusLabel(value)}</option>)}</select><Button variant="outline" size="icon" aria-label="تحديث" onClick={() => void list.refetch()}><RefreshCw className="h-4 w-4" /></Button></div>
-      {list.isLoading ? <Loading /> : list.error ? <ErrorBox error={list.error} retry={() => void list.refetch()} /> : <><div className="overflow-x-auto"><table className="w-full min-w-[850px] text-right text-sm"><thead className="border-b bg-muted/30 text-xs text-muted-foreground"><tr>{["رقم الإيجار", "العميل", "المعدات", "التسليم", "الإرجاع المتوقع", "الإجمالي", "المسدد", "المتبقي", "الحالة", "الإجراءات"].map(label => <th key={label} className="px-2 py-3">{label}</th>)}</tr></thead><tbody>{list.data?.data.map(row => <tr key={row.id} className="border-b last:border-0"><td className="px-2 py-3 font-semibold"><Link href={`${base}/${row.id}`} className="text-primary">{row.orderNo}</Link>{row.rentalKind === "product" ? <small className="block text-muted-foreground">إيجار سابق</small> : null}</td><td className="px-2 py-3">{row.customerName}<small className="block" dir="ltr">{row.phone}</small></td><td className="max-w-56 px-2 py-3"><div className="flex flex-col gap-2">{row.details.assets.map(line => <div key={line.productId} className="flex items-center gap-2"><EquipmentRentalImage image={line.image} name={line.name} className="size-12" /><span className="min-w-0 break-words">{line.name} × {line.quantity}</span></div>)}</div></td><td className="px-2 py-3"><bdi>{row.startDate}<br />{row.details.startTime}</bdi></td><td className="px-2 py-3"><bdi>{row.endDate}<br />{row.details.endTime}</bdi></td><td className="px-2 py-3">{formatCurrency(row.total)}</td><td className="px-2 py-3">{formatCurrency(row.paid)}</td><td className="px-2 py-3 font-semibold text-primary">{formatCurrency(row.remaining)}</td><td className="px-2 py-3"><Status row={row} /></td><td className="px-2 py-3"><div className="flex gap-1"><Button variant="outline" size="sm" asChild><Link href={`${base}/${row.id}`}>فتح</Link></Button>{canReturnEquipment(row) && <Button size="sm" className="whitespace-nowrap" asChild>
-  <Link href={`${base}/${row.id}?action=return`}>استرجاع معدات</Link>
+      {list.isLoading ? <Loading /> : list.error ? <ErrorBox error={list.error} retry={() => void list.refetch()} /> : <><div className="overflow-x-auto"><table className="w-full min-w-[850px] text-right text-sm"><thead className="border-b bg-muted/30 text-xs text-muted-foreground"><tr>{["رقم الإيجار", "العميل", "المعدات", "التسليم", "الإرجاع المتوقع", "الإجمالي", "المسدد", "المتبقي", "الحالة", "الإجراءات"].map(label => <th key={label} className="px-2 py-3">{label}</th>)}</tr></thead><tbody>{list.data?.data.map(row => <tr key={row.id} className="border-b last:border-0"><td className="px-2 py-3 font-semibold"><Link href={`${base}/${row.id}`} className="text-primary">{row.orderNo}</Link>{row.rentalKind === "product" ? <small className="block text-muted-foreground">إيجار سابق</small> : null}</td><td className="px-2 py-3">{row.customerName}<small className="block" dir="ltr">{row.phone}</small></td><td className="max-w-56 px-2 py-3"><div className="flex flex-col gap-2">{row.details.assets.map(line => <div key={line.productId} className="flex items-center gap-2"><EquipmentRentalImage image={line.image} name={line.name} className="size-12" /><span className="min-w-0 break-words">{line.name} × {line.quantity}</span></div>)}</div></td><td className="px-2 py-3"><bdi>{row.startDate}<br />{row.details.startTime}</bdi></td><td className="px-2 py-3"><bdi>{row.endDate}<br />{row.details.endTime}</bdi></td><td className="px-2 py-3">{formatCurrency(row.total)}</td><td className="px-2 py-3">{formatCurrency(row.paid)}</td><td className="px-2 py-3 font-semibold text-primary">{formatCurrency(row.remaining)}</td><td className="px-2 py-3"><Status row={row} /></td><td className="px-2 py-3"><div className="flex gap-1"><Button variant="outline" size="sm" asChild><Link href={`${base}/${row.id}${mode === "returns" ? "?tab=movements" : ""}`}>فتح</Link></Button>{canReturnEquipment(row) && <Button size="sm" className="whitespace-nowrap" asChild>
+  <Link href={`${base}/${row.id}?action=return`}>استلام معدات</Link>
 </Button>}<RentalQuickActions row={row} /></div></td></tr>)}</tbody></table></div>{!list.data?.data.length ? <p className="p-10 text-center text-muted-foreground">لا توجد إيجارات مطابقة للبحث.</p> : null}<div className="mt-4 flex items-center justify-between gap-2 text-sm"><span>{list.data?.total ?? 0} إيجار</span><div className="flex gap-2"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>السابق</Button><Button variant="outline" size="sm" disabled={!list.data || page * list.data.pageSize >= list.data.total} onClick={() => setPage(page + 1)}>التالي</Button></div></div></>}
     </section></>;
 }
@@ -104,20 +106,29 @@ function RentalForm({ rental, onSaved, capabilities = rental?.capabilities }: { 
 }
 
 function RentalWorkspace({ rental }: { rental: EquipmentRentalDetail }) {
-  const [tab, setTab] = useState("details"); const [editing, setEditing] = useState(false);
+  const [tab, setTab] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("tab") === "movements" || ["return", "dispatch"].includes(params.get("action") ?? "") ? "movements" : "details";
+  });
+  const [editing, setEditing] = useState(false);
   const [action, setAction] = useState<string | null>(() => {
     const value = new URLSearchParams(window.location.search).get("action");
     if (value === "return" && canReturnEquipment(rental)) return value;
-    if (value === "dispatch" && rental.capabilities.dispatch) return value;
+    if (value === "dispatch" && canDispatchEquipment(rental)) return value;
     if (value === "finance" && rental.capabilities.finance) return value;
     return null;
   });
+  const movementAction = action === "dispatch" || action === "return";
   useEffect(() => { const url = new URL(window.location.href); if (url.searchParams.has("action")) { url.searchParams.delete("action"); window.history.replaceState(window.history.state, "", url); } }, []);
   const client = useQueryClient(); const { toast } = useToast(); const { data: company } = usePublicSettings(); const [attachment, setAttachment] = useState({ name: "", url: "" });
   const refresh = () => client.invalidateQueries({ queryKey: ["equipment-rentals"] });
   const print = (size: "A4" | "80mm", kind: "contract" | "receipt") => { try { printStandaloneDocument(equipmentRentalPrintHtml(rental, company || {}, size, kind)); } catch (error) { toast({ title: "تعذرت الطباعة", description: apiErrorMessage(error), variant: "destructive" }); } };
   const printReturn = (record: EquipmentRentalReturn) => {
     try { printStandaloneDocument(equipmentRentalReturnPrintHtml(rental, record, company || {})); }
+    catch (error) { toast({ title: "تعذرت الطباعة", description: apiErrorMessage(error), variant: "destructive" }); }
+  };
+  const printDispatch = (record: EquipmentRentalDispatch) => {
+    try { printStandaloneDocument(equipmentRentalDispatchPrintHtml(rental, record, company || {})); }
     catch (error) { toast({ title: "تعذرت الطباعة", description: apiErrorMessage(error), variant: "destructive" }); }
   };
   const printed = useRef(false); useEffect(() => { if (!printed.current && new URLSearchParams(window.location.search).get("print") === "1" && company) { printed.current = true; print("A4", "contract"); } }, [company]);
@@ -127,14 +138,21 @@ function RentalWorkspace({ rental }: { rental: EquipmentRentalDetail }) {
       client.setQueryData(["equipment-rentals", "detail", rental.id], saved);
       void refresh();
       setAction(null);
-      if (["return", "inspection", "resolve-loss"].includes(kind)) setTab("movements");
+      if (["dispatch", "return", "inspection", "resolve-loss"].includes(kind)) setTab("movements");
       toast({ title: kind === "return" ? "تم تسجيل استرجاع المعدات" : "تم تسجيل الإجراء" });
     },
     onError: (error, { kind }) => {
-      if ((kind === "return" || kind === "inspection") && error instanceof AjNApiError && error.status === 409) void refresh();
+      if (["dispatch", "return", "inspection"].includes(kind) && error instanceof AjNApiError && error.status === 409) void refresh();
     },
   });
-  const openAction = (kind: string) => { mutate.reset(); setAction(kind); };
+  const openAction = (kind: string) => {
+    mutate.reset();
+    if (kind === "dispatch" || kind === "return") setTab("movements");
+    setAction(kind);
+  };
+  const actionEditor = action && <RentalActionEditor key={`${rental.id}:${action}`} rental={rental} action={action}
+    onClose={() => { if (movementAction) void refresh(); mutate.reset(); setAction(null); }}
+    onSave={(kind, value) => mutate.mutate({ kind, value })} busy={mutate.isPending} error={mutate.error} />;
   const attachments = useMutation({ mutationFn: () => adminFetch(`${api}/${rental.id}/attachments`, { method: "POST", body: JSON.stringify({ requestId: freshId(), name: attachment.name, url: attachment.url }) }), onSuccess: () => { void refresh(); setAttachment({ name: "", url: "" }); } });
   const confirm = (kind: string) => {
     const prompt = kind === "resolve-loss" ? "إغلاق عهدة المعدات المفقودة المسجلة سابقاً؟"
@@ -143,29 +161,54 @@ function RentalWorkspace({ rental }: { rental: EquipmentRentalDetail }) {
     if (window.confirm(prompt)) mutate.mutate({ kind, value: { requestId: freshId() } });
   };
   if (editing) return <RentalForm rental={rental} onSaved={() => setEditing(false)} />;
-  return <><section className={cardClass}><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-bold">{rental.customerName}</h2><p className="my-2 text-sm text-muted-foreground"><bdi>{rental.phone}</bdi> · {rental.startDate} {rental.details.startTime} ← {rental.endDate} {rental.details.endTime}</p><Status row={rental} /></div><div className="flex flex-wrap gap-2">{rental.capabilities.finance ? <Button size="sm" onClick={() => openAction("finance")}><Wallet className="h-4 w-4" /> تسجيل دفعة</Button> : null}{rental.capabilities.dispatch && ["confirmed", "awaiting_dispatch", "partially_dispatched", "partially_returned"].includes(rental.status) && rental.details.assets.some(line => line.quantity > numeric(line.checkedOutQty)) ? <Button size="sm" variant="outline" onClick={() => openAction("dispatch")}><Truck className="h-4 w-4" /> تسليم المعدات</Button> : null}{canReturnEquipment(rental) && <Button size="sm" disabled={mutate.isPending} onClick={() => openAction("return")}><PackageCheck data-icon="inline-start" /> استرجاع معدات</Button>}{rental.capabilities.inspect && rental.details.assets.some(line => numeric(line.pendingInspectionQty) > 0) ? <Button size="sm" variant="outline" onClick={() => openAction("inspection")}>إكمال الفحص</Button> : null}<Button size="sm" variant="outline" onClick={() => print("A4", "contract")}><Printer className="h-4 w-4" /> العقد A4</Button><Button size="sm" variant="outline" onClick={() => print("80mm", "receipt")}>وصل 80mm</Button><Button size="sm" variant="outline" asChild><a href={whatsapp(rental)} target="_blank" rel="noreferrer">واتساب</a></Button></div></div><div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">{[["إجمالي الإيجار", rental.total], ["المسدد المعتمد", rental.paid], ["المتبقي", rental.remaining], ["التأمين المحتفظ به", rental.finance.depositHeld]].map(([label, value]) => <div key={String(label)} className="rounded-xl bg-muted/35 p-3"><p className="text-xs text-muted-foreground">{label}</p><b className="mt-1 block text-lg">{formatCurrency(numeric(value))}</b></div>)}</div>{rental.rentalKind === "product" ? <p className="mt-4 text-sm text-muted-foreground">سجل إيجار سابق محفوظ بهويته الأصلية. إدارته المالية والمخزنية تبقى عبر مساره السابق.</p> : null}</section>
+  return <><section className={cardClass}><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-bold">{rental.customerName}</h2><p className="my-2 text-sm text-muted-foreground"><bdi>{rental.phone}</bdi> · {rental.startDate} {rental.details.startTime} ← {rental.endDate} {rental.details.endTime}</p><Status row={rental} /></div><div className="flex flex-wrap gap-2">{rental.capabilities.finance ? <Button size="sm" disabled={!!action || mutate.isPending} onClick={() => openAction("finance")}><Wallet className="h-4 w-4" /> تسجيل دفعة</Button> : null}{tab !== "movements" && canDispatchEquipment(rental) ? <Button size="sm" variant="outline" onClick={() => openAction("dispatch")}><Truck className="h-4 w-4" /> تسليم معدات</Button> : null}{tab !== "movements" && canReturnEquipment(rental) && <Button size="sm" disabled={mutate.isPending} onClick={() => openAction("return")}><PackageCheck data-icon="inline-start" /> استلام معدات</Button>}{rental.capabilities.inspect && rental.details.assets.some(line => numeric(line.pendingInspectionQty) > 0) ? <Button size="sm" variant="outline" disabled={!!action || mutate.isPending} onClick={() => openAction("inspection")}>إكمال الفحص</Button> : null}<Button size="sm" variant="outline" onClick={() => print("A4", "contract")}><Printer className="h-4 w-4" /> العقد A4</Button><Button size="sm" variant="outline" onClick={() => print("80mm", "receipt")}>وصل 80mm</Button><Button size="sm" variant="outline" asChild><a href={whatsapp(rental)} target="_blank" rel="noreferrer">واتساب</a></Button></div></div><div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">{[["إجمالي الإيجار", rental.total], ["المسدد المعتمد", rental.paid], ["المتبقي", rental.remaining], ["التأمين المحتفظ به", rental.finance.depositHeld]].map(([label, value]) => <div key={String(label)} className="rounded-xl bg-muted/35 p-3"><p className="text-xs text-muted-foreground">{label}</p><b className="mt-1 block text-lg">{formatCurrency(numeric(value))}</b></div>)}</div>{rental.rentalKind === "product" ? <p className="mt-4 text-sm text-muted-foreground">سجل إيجار سابق محفوظ بهويته الأصلية. إدارته المالية والمخزنية تبقى عبر مساره السابق.</p> : null}</section>
     {!action && mutate.error ? <ErrorBox error={mutate.error} /> : null}
-    <Tabs value={tab} onValueChange={setTab}><div className="max-w-full overflow-x-auto"><TabsList className="h-auto min-w-max justify-start">{[["details", "التفاصيل"], ["equipment", "المعدات"], ["movements", "التسليم والإرجاع"], ["finance", "الحسابات"], ["attachments", "المرفقات"], ["history", "السجل"]].map(([key, label]) => <TabsTrigger key={key} value={key}>{label}</TabsTrigger>)}</TabsList></div>
+    <Tabs dir="rtl" value={tab} onValueChange={setTab}><div className="max-w-full overflow-x-auto"><TabsList className="h-auto min-w-max justify-start">{[["details", "التفاصيل"], ["equipment", "المعدات"], ["movements", "التسليم والاستلام"], ["finance", "الحسابات"], ["attachments", "المرفقات"], ["history", "السجل"]].map(([key, label]) => <TabsTrigger key={key} value={key} disabled={movementAction && key !== "movements"}>{label}</TabsTrigger>)}</TabsList></div>
       <TabsContent value="details" className={cardClass}><div className="grid gap-5 md:grid-cols-2"><div><h3 className="mb-2 font-bold">بيانات العقد</h3><p className="whitespace-pre-wrap text-sm leading-7">العنوان: {rental.details.address || "—"}<br />التأمين المطلوب: {formatCurrency(rental.details.depositRequired)}<br />التوصيل: {formatCurrency(rental.details.deliveryCharge)}<br />التركيب: {formatCurrency(rental.details.installationCharge)}<br />الخصم: {formatCurrency(rental.details.discount)}</p>{rental.details.linkedBooking ? <Button className="mt-3" variant="outline" asChild><Link href={`/admin/bookings/${rental.details.linkedBooking.source}/${rental.details.linkedBooking.id}`}>فتح الحجز المرتبط #{rental.details.linkedBooking.id}</Link></Button> : null}</div><div><h3 className="mb-2 font-bold">شروط العقد</h3><p className="whitespace-pre-wrap text-sm leading-7 text-muted-foreground">{rental.details.terms || "لم تُضف شروط خاصة."}</p></div></div><div className="mt-5 flex flex-wrap gap-2">{rental.capabilities.edit && rental.status === "draft" ? <Button variant="outline" onClick={() => setEditing(true)}>تعديل المسودة</Button> : null}{rental.capabilities.confirm && ["draft", "pending_approval"].includes(rental.status) ? <Button disabled={mutate.isPending} onClick={() => confirm("confirm")}>اعتماد وحجز المعدات</Button> : null}{rental.capabilities.create && rental.status === "draft" && !rental.capabilities.confirm ? <Button disabled={mutate.isPending} onClick={() => mutate.mutate({ kind: "submit", value: { requestId: freshId() } })}>إرسال للاعتماد</Button> : null}{rental.capabilities.cancel && !["returned", "completed", "cancelled"].includes(rental.status) ? <Button variant="outline" disabled={mutate.isPending} onClick={() => confirm("cancel")}>إلغاء الإيجار</Button> : null}{rental.capabilities.confirm && rental.rentalKind === "equipment" && rental.status === "returned" && (
   <Button disabled={mutate.isPending} onClick={() => confirm("complete")}><Check data-icon="inline-start" /> إكمال الإيجار</Button>
 )}{rental.customerId ? <Button variant="ghost" asChild><Link href={`/admin/customers?customer=${rental.customerId}`}>حساب العميل</Link></Button> : null}</div></TabsContent>
       <TabsContent value="equipment" className="space-y-3">{rental.details.assets.map(line => <article key={line.productId} className={`${cardClass} flex flex-wrap items-center gap-4`}><EquipmentRentalImage image={line.image} name={line.name} /><div className="min-w-40 flex-1"><b>{line.name}</b><p className="mt-1 text-sm text-muted-foreground">{line.code} · المخزن #{line.warehouseId} · {line.quantity} وحدة</p><p className="mt-2 text-sm">{line.duration} × {formatCurrency(line.unitPrice)} · الخصم {formatCurrency(line.discount)}</p></div><div className="flex flex-col items-start gap-2"><b className="text-primary">{formatCurrency(line.lineTotal)}</b>{rental.capabilities.settings ? <Button type="button" size="sm" variant="ghost" asChild><a href={`/admin/assets/new?edit=${line.productId}`} target="_blank" rel="noreferrer">إضافة / تعديل صورة الأصل</a></Button> : null}</div></article>)}</TabsContent>
       <TabsContent value="movements" className={cardClass}>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="flex items-center gap-2 font-bold"><Truck className="size-5 text-primary" /> تسليم واستلام المعدات</h3>
+            <p className="mt-1 text-xs text-muted-foreground">اختر العملية ثم استخدم الباركود أو الإدخال اليدوي.</p>
+          </div>
+          {rental.rentalKind === "equipment" && <div className="flex flex-wrap gap-2">
+            <Button disabled={!!action || mutate.isPending || !canDispatchEquipment(rental)} onClick={() => openAction("dispatch")}><Truck /> تسليم معدات</Button>
+            <Button variant="outline" disabled={!!action || mutate.isPending || !canReturnEquipment(rental)} onClick={() => openAction("return")}><PackageCheck /> استلام معدات</Button>
+          </div>}
+        </div>
+        <div className="mb-4 grid grid-cols-2 gap-3 rounded-xl border border-primary/10 bg-primary/5 p-3 text-sm sm:grid-cols-4">
+          <div><p className="text-xs text-muted-foreground">العميل</p><b>{rental.customerName}</b></div>
+          <div><p className="text-xs text-muted-foreground">رقم الإيجار</p><bdi className="font-bold text-primary">{rental.orderNo}</bdi></div>
+          <div><p className="text-xs text-muted-foreground">مدة الإيجار</p><bdi>{rental.startDate} – {rental.endDate}</bdi></div>
+          <div><p className="mb-1 text-xs text-muted-foreground">حالة الإيجار</p><Status row={rental} /></div>
+        </div>
+        {movementAction ? actionEditor : <>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-right text-sm">
-            <thead className="border-b text-muted-foreground"><tr>
+            <thead className="border-b bg-primary/5 text-muted-foreground"><tr>
               {["المعدات", "المؤجر", "المُسلّم", "المرتجع", "سليم", "تالف", "مفقود", "بانتظار الفحص", "المتبقي لدى العميل"].map(label =>
                 <th key={label} scope="col" className="p-2">{label}</th>)}
             </tr></thead>
             <tbody>{rental.details.assets.map(line => {
               const count = rentalReturnCounts(line);
               return <tr key={line.productId} className="border-b">
-                <th scope="row" className="p-2 font-medium">{line.name}</th>
+                <th scope="row" className="p-2 font-medium"><span className="flex items-center gap-2"><EquipmentRentalImage image={line.image} name={line.name} className="size-12" />{line.name}</span></th>
                 {[line.quantity, count.dispatched, count.previouslyReturned, count.good, count.damaged, count.missing, count.pending, count.outstanding].map((quantity, index) =>
                   <td key={index} className="p-2 tabular-nums">{quantity}</td>)}
               </tr>;
             })}</tbody>
           </table>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            { label: "أصناف المعدات", value: rental.details.assets.length, color: "bg-muted/50" },
+            { label: "المُسلّم", value: rental.details.assets.reduce((sum, line) => sum + rentalReturnCounts(line).dispatched, 0), color: "bg-blue-500/10" },
+            { label: "المستلم", value: rental.details.assets.reduce((sum, line) => sum + rentalReturnCounts(line).previouslyReturned, 0), color: "bg-emerald-500/10" },
+            { label: "المتبقي لدى العميل", value: rental.details.assets.reduce((sum, line) => sum + rentalReturnCounts(line).outstanding, 0), color: "bg-primary/10" },
+          ].map(item => <div key={item.label} className={`rounded-xl p-3 text-sm ${item.color}`}><p className="text-xs">{item.label}</p><b className="mt-1 block text-lg tabular-nums">{item.value}</b></div>)}
         </div>
         <p className="mt-4 text-xs text-muted-foreground">تعود الكميات السليمة المقبولة فقط إلى المخزون المتاح. يُكمل العقد بعد الإرجاع والفحص وتسوية الحساب.</p>
         {rental.rentalKind === "equipment" && rental.details.assets.some(hasOpenRentalLoss) && <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm">
@@ -177,14 +220,37 @@ function RentalWorkspace({ rental }: { rental: EquipmentRentalDetail }) {
           <Button size="sm" variant="outline" onClick={() => setTab("finance")}>مراجعة الحسابات</Button>
           {rental.capabilities.confirm && <Button size="sm" disabled={mutate.isPending} onClick={() => confirm("complete")}>إكمال الإيجار</Button>}
         </div>}
-        {rental.rentalKind === "equipment" && <RentalReturnHistory records={rental.details.returns ?? []} onPrint={printReturn} />}
+        {rental.rentalKind === "equipment" && <>
+          <RentalDispatchHistory records={rental.details.dispatches ?? []} onPrint={printDispatch} />
+          <RentalReturnHistory records={rental.details.returns ?? []} onPrint={printReturn} />
+        </>}
+        </>}
       </TabsContent>
       <TabsContent value="finance" className={cardClass}><div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">{[["التأمين المستلم", rental.finance.depositCollected], ["التأمين المعاد", rental.finance.depositRefunded], ["المطبق على الإيجار", rental.finance.depositApplied], ["التأمين المتبقي", rental.finance.depositHeld]].map(([label, amount]) => <div key={String(label)} className="rounded-xl border p-3"><p className="text-xs text-muted-foreground">{label}</p><b className="mt-1 block">{formatCurrency(numeric(amount))}</b></div>)}</div>{rental.capabilities.reports ? <div className="mb-4 rounded-xl border p-3 text-sm">التكاليف المباشرة المعتمدة: {formatCurrency(numeric(rental.finance.directCosts))} · المساهمة المباشرة: {formatCurrency(numeric(rental.finance.directContribution))}<p className="mt-1 text-xs text-muted-foreground">مساهمة مباشرة قبل التكاليف العامة والإهلاك، وليست صافي الربح المحاسبي.</p></div> : null}<p className="mb-4 text-sm text-muted-foreground">طلبات الدفعات والتأمين والرسوم تمر عبر صندوق AJN والموافقة المالية. لا يدخل المعلق في المسدد المعتمد.</p>{rental.capabilities.finance ? <Button onClick={() => openAction("finance")}>طلب دفعة / تأمين / تسوية أو رسوم</Button> : null}{rental.capabilities.costs ? <Button variant="outline" className="ms-2" onClick={() => openAction("cost-link")}>ربط مصروف موجود</Button> : null}<Button variant="outline" className="ms-2" onClick={() => print("A4", "receipt")}>طباعة كشف الحساب</Button><div className="mt-4 space-y-2">{([...(rental.finance.payments as any[] || []), ...(rental.finance.charges as any[] || [])].sort((a, b) => numeric(b.id) - numeric(a.id))).map((entry: any, i) => <div key={entry.id ?? i} className="flex flex-wrap justify-between gap-2 rounded-lg border p-3 text-sm"><span>{financeLabel(entry.transactionType || entry.transaction_type || entry.kind || "حركة مالية")}<small className="block text-xs text-muted-foreground">{entry.transactionNo || entry.transaction_no}</small></span><b>{formatCurrency(numeric(entry.amount))}</b><span>{approvalLabels[entry.approvalStatus || entry.approval_status || entry.status] || entry.approvalStatus || entry.approval_status || entry.status}</span></div>)}</div></TabsContent>
       <TabsContent value="attachments" className={cardClass}><h3 className="mb-3 font-bold">مرفقات العقد</h3><div className="grid gap-3 sm:grid-cols-2">{rental.details.attachments.map(file => <a key={file.id} href={file.url} target="_blank" rel="noreferrer" className="rounded-xl border p-4 text-sm text-primary">{file.name}</a>)}</div>{rental.capabilities.edit ? <div className="mt-4 flex flex-wrap gap-2"><Input className="sm:w-52" placeholder="اسم المرفق" aria-label="اسم المرفق" value={attachment.name} onChange={e => setAttachment({ ...attachment, name: e.target.value })} /><Input className="min-w-52 flex-1" dir="ltr" placeholder="رابط الملف من مركز المستندات" aria-label="رابط المرفق المحمي" value={attachment.url} onChange={e => setAttachment({ ...attachment, url: e.target.value })} /><Button disabled={attachments.isPending || !attachment.name || !attachment.url} onClick={() => attachments.mutate()}>ربط المرفق</Button><Button variant="outline" asChild><Link href="/admin/documents">مركز المستندات والرفع</Link></Button></div> : null}{attachments.error ? <ErrorBox error={attachments.error} /> : null}</TabsContent>
       <TabsContent value="history" className={cardClass}><ol className="space-y-3">{rental.history.map((entry, index) => <li key={`${entry.requestId}:${index}`} className="border-s-2 border-primary/20 ps-4"><p className="text-sm font-semibold">{actionLabels[entry.action] || entry.action} · {entry.actorName}</p><time className="text-xs text-muted-foreground">{new Date(entry.at).toLocaleString("ar-IQ", { timeZone: "Asia/Baghdad" })}</time>{entry.note ? <p className="text-sm">{entry.note}</p> : null}</li>)}</ol></TabsContent>
     </Tabs>
-    <RentalActionDialog key={`${rental.id}:${action}`} rental={rental} action={action} onClose={() => { if (action === "return") void refresh(); mutate.reset(); setAction(null); }} onSave={(kind, value) => mutate.mutate({ kind, value })} busy={mutate.isPending} error={mutate.error} />
+    {!movementAction && actionEditor}
   </>;
+}
+
+function RentalDispatchHistory({ records, onPrint }: { records: EquipmentRentalDispatch[]; onPrint: (record: EquipmentRentalDispatch) => void }) {
+  return <section className="mt-5 flex flex-col gap-3 border-t pt-4">
+    <h3 className="font-bold">سجل التسليم</h3>
+    {!records.length && <p className="text-sm text-muted-foreground">تظهر سندات التسليم الجديدة هنا. العمليات السابقة موجودة في تبويب السجل.</p>}
+    {[...records].reverse().map(record => <article key={record.requestId} className="rounded-xl border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div><time dateTime={record.dispatchedAt} className="text-sm font-semibold">{new Date(record.dispatchedAt).toLocaleString("ar-IQ", { timeZone: "Asia/Baghdad" })}</time>
+          <p className="text-xs text-muted-foreground">سجّله {record.actorName}</p></div>
+        <Button size="sm" variant="outline" onClick={() => onPrint(record)}><Printer /> طباعة سند التسليم</Button>
+      </div>
+      <ul className="mt-3 divide-y text-sm">{record.lines.map(line => <li key={line.productId} className="py-2">
+        <b className="break-words">{line.name} × {line.quantity}</b>
+        <p className="text-muted-foreground">{line.employeeName} · {line.warehouses.map(source => `${source.name} × ${source.quantity}`).join("، ")}</p>
+      </li>)}</ul>
+      {record.note && <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">{record.note}</p>}
+    </article>)}
+  </section>;
 }
 
 function RentalReturnHistory({ records, onPrint }: { records: EquipmentRentalReturn[]; onPrint: (record: EquipmentRentalReturn) => void }) {
@@ -220,8 +286,8 @@ type RentalQuantityDraft = {
 type RentalQuantityField = "quantity" | "good" | "damaged" | "missing" | "inspection";
 const baghdadInputTime = () => new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 16);
 
-function RentalActionDialog({ rental, action, onClose, onSave, busy, error }: {
-  rental: EquipmentRentalDetail; action: string | null; onClose: () => void;
+function RentalActionEditor({ rental, action, onClose, onSave, busy, error }: {
+  rental: EquipmentRentalDetail; action: string; onClose: () => void;
   onSave: (kind: string, value: unknown) => void; busy: boolean; error: unknown;
 }) {
   const [requestId] = useState(freshId);
@@ -233,18 +299,22 @@ function RentalActionDialog({ rental, action, onClose, onSave, busy, error }: {
   const [employeeId, setEmployeeId] = useState("");
   const [proof, setProof] = useState("");
   const [approveLoss, setApproveLoss] = useState(false);
-  const [returnDate, setReturnDate] = useState(baghdadInputTime);
-  const [submittedReturn, setSubmittedReturn] = useState<object | null>(null);
-  const [scannedProductId, setScannedProductId] = useState<number | null>(null);
-  const quantityInputs = useRef(new Map<number, HTMLInputElement>());
+  const [movementDate, setMovementDate] = useState(baghdadInputTime);
+  const [submitted, setSubmitted] = useState<object | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const [entryMethod, setEntryMethod] = useState<"manual" | "scan">("manual");
+  const [search, setSearch] = useState("");
+  const [scanned, setScanned] = useState<number[]>([]);
   const returning = action === "return";
   const dispatching = action === "dispatch";
   const inspecting = action === "inspection";
-  const inventoryAction = returning || dispatching || inspecting;
+  const movementAction = returning || dispatching;
+  const inventoryAction = movementAction || inspecting;
+  const dateLabel = dispatching ? "تاريخ ووقت التسليم" : "تاريخ ووقت الاسترجاع";
   const [lines, setLines] = useState<RentalQuantityDraft[]>(() => rental.details.assets.map(line => ({
     productId: line.productId,
-    warehouseId: line.warehouseId,
-    quantity: dispatching ? Math.max(0, line.quantity - rentalReturnCounts(line).dispatched) : 0,
+    warehouseId: null,
+    quantity: 0,
     good: 0, damaged: 0, missing: 0, inspection: 0,
   })));
   const options = useQuery<EquipmentRentalOptions>({
@@ -257,45 +327,41 @@ function RentalActionDialog({ rental, action, onClose, onSave, busy, error }: {
   });
   const update = (id: number, key: keyof Omit<RentalQuantityDraft, "productId">, value: number | null) =>
     setLines(old => old.map(line => line.productId === id ? { ...line, [key]: value } : line));
-  const focusScanned = (id: number) => {
-    setScannedProductId(id);
-    const input = quantityInputs.current.get(id);
-    input?.scrollIntoView({ block: "center" });
-    input?.focus({ preventScroll: true });
-    input?.select();
-  };
-
   const fields: Array<[RentalQuantityField, string]> = dispatching ? [["quantity", "الكمية المسلمة"]]
     : inspecting ? [["good", "سليم"], ["damaged", "تالف"]]
     : [["good", "سليم"], ["damaged", "تالف"], ["missing", "مفقود"], ["inspection", "بانتظار الفحص"]];
-  const focusedField = dispatching ? "quantity" : returning && !rental.capabilities.inspect ? "inspection" : "good";
+  const home = options.data?.mainWarehouseId ?? options.data?.warehouses[0]?.id ?? 0;
+  const warehouseName = (id: number) => options.data?.warehouses.find(w => Number(w.id) === id)?.name ?? `مخزن #${id}`;
   const inventoryLines = lines.flatMap(line => {
     const asset = rental.details.assets.find(item => item.productId === line.productId);
     if (!asset) return [];
     const count = rentalReturnCounts(asset);
-    const limit = dispatching ? Math.max(0, asset.quantity - count.dispatched) : inspecting ? count.pending : count.outstanding;
+    const sources = dispatching ? rentalDispatchSources(asset, home) : [];
+    const reserved = sources.reduce((sum, source) => sum + (!line.warehouseId || line.warehouseId === source.warehouseId ? source.available : 0), 0);
+    const limit = dispatching ? Math.min(rentalDispatchLimit(asset), reserved) : inspecting ? count.pending : count.outstanding;
     const entered = fields.reduce((sum, [key]) => sum + line[key], 0);
     const invalid = fields.some(([key]) => !Number.isSafeInteger(line[key]) || line[key] < 0) || entered > limit;
-    return [{ line, asset, count, limit, entered, invalid }];
+    return [{ line, asset, count, limit, entered, invalid, sources }];
   });
   const selected = inventoryLines.filter(item => item.entered > 0);
   const hasMissing = selected.some(({ line }) => line.missing > 0);
   const needsNote = selected.some(({ line }) => line.missing > 0 || line.damaged > 0);
-  const returnedAt = returning && returnDate ? Date.parse(returnDate + ":00+03:00") : NaN;
-  const uncertain = returning && submittedReturn != null && !!error &&
+  const movementAt = movementDate ? Date.parse(movementDate + ":00+03:00") : NaN;
+  const earliest = Math.floor(Date.parse(rental.createdAt ?? "") / 60000) * 60000;
+  const uncertain = movementAction && submitted != null && !!error &&
     (!(error instanceof AjNApiError) || error.status === 0 || error.status >= 500);
   const invalidInventory = !employeeId || !options.data || !!options.error || !selected.length ||
     inventoryLines.some(item => item.invalid) || (needsNote && !note.trim()) || (hasMissing && !approveLoss) ||
-    (returning && (!Number.isFinite(returnedAt) || returnedAt > Date.now()));
+    (movementAction && (!Number.isFinite(movementAt) || movementAt > Date.now() || movementAt < earliest));
   const canSave = !!action && !busy && (uncertain || (inventoryAction ? !invalidInventory : numeric(amount) > 0));
   const save = () => {
     if (!action || !canSave) return;
-    if (uncertain) { onSave(action, submittedReturn); return; }
+    if (uncertain) { onSave(action, submitted); return; }
     if (action === "cost-link") { onSave(action, { requestId, expenseId: numeric(amount), note }); return; }
     if (action === "finance") { onSave(action, { requestId, kind, amount: numeric(amount), method, note, chargeType, attachments: proof ? [proof] : [] }); return; }
     const payload = {
       requestId, note, employeeId: Number(employeeId), staffId: Number(employeeId),
-      ...(returning ? { returnedAt: new Date(returnedAt).toISOString() } : {}),
+      ...(movementAction ? { [returning ? "returnedAt" : "dispatchedAt"]: new Date(movementAt).toISOString() } : {}),
       lines: selected.map(({ line }) => ({
         productId: line.productId, warehouseId: inspecting ? undefined : line.warehouseId,
         quantity: line.quantity, goodQuantity: line.good, damagedQuantity: line.damaged,
@@ -304,18 +370,50 @@ function RentalActionDialog({ rental, action, onClose, onSave, busy, error }: {
         staffId: Number(employeeId), note, description: note,
       })),
     };
-    if (returning) setSubmittedReturn(payload);
+    if (movementAction) setSubmitted(payload);
     onSave(action, payload);
   };
 
-  return <Dialog open={!!action} onOpenChange={value => !value && !busy && onClose()}>
-    <DialogContent dir="rtl" style={{ "--primary": "337 95% 23%", "--ring": "337 95% 23%" } as React.CSSProperties} className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl">
-      <DialogHeader>
-        <DialogTitle>{action === "cost-link" ? "ربط مصروف بالإيجار" : action === "finance" ? "طلب حركة مالية للإيجار"
-          : dispatching ? "تسليم المعدات" : inspecting ? "فحص المعدات المرتجعة" : "استرجاع معدات"}</DialogTitle>
-      </DialogHeader>
-      <p className="text-sm text-muted-foreground"><bdi>{rental.orderNo}</bdi> · {rental.customerName}</p>
-      <fieldset disabled={busy || uncertain} className="flex min-w-0 flex-col gap-4">
+  const title = action === "cost-link" ? "ربط مصروف بالإيجار" : action === "finance" ? "طلب حركة مالية للإيجار"
+    : dispatching ? "تسليم معدات" : inspecting ? "فحص المعدات المرتجعة" : "استلام معدات";
+  const visibleLines = inventoryLines.filter(({ line, asset, limit, entered }) => entered > 0 || (limit > 0 &&
+    (!movementAction || (entryMethod === "scan" ? scanned.includes(line.productId) : matchesRentalEquipment(search, asset)))));
+  const warehouseReview = ({ line, asset, sources }: (typeof selected)[number]) => {
+    if (dispatching) {
+      let left = line.quantity;
+      return sources.filter(source => !line.warehouseId || source.warehouseId === line.warehouseId).flatMap(source => {
+        const quantity = Math.min(left, source.available);
+        left -= quantity;
+        return quantity ? [`${warehouseName(source.warehouseId)} × ${quantity}`] : [];
+      }).join("، ");
+    }
+    const physical = line.good + line.damaged + line.inspection;
+    if (!physical) return "فقدان · لا يوجد استلام مخزني";
+    if (line.warehouseId) return warehouseName(line.warehouseId);
+    if (asset.trackingMode !== "quantity") return warehouseName(asset.warehouseId || home);
+    return consumeOutstanding(lineAllocations(asset, home), physical)
+      .map(source => `${warehouseName(source.warehouseId)} × ${source.quantity}`).join("، ");
+  };
+  const content = <>
+      {!movementAction && <p className="text-sm text-muted-foreground"><bdi>{rental.orderNo}</bdi> · {rental.customerName}</p>}
+      {reviewing ? <section className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-4" aria-label="مراجعة العملية">
+        <h4 className="font-bold">مراجعة {dispatching ? "التسليم" : "الاستلام"}</h4>
+        <dl className="grid gap-2 text-sm sm:grid-cols-2">
+          <div><dt className="text-muted-foreground">الموظف</dt><dd className="font-medium">{options.data?.employees.find(employee => String(employee.id) === employeeId)?.name}</dd></div>
+          <div><dt className="text-muted-foreground">{dateLabel} · بغداد</dt><dd className="font-medium"><bdi>{movementDate.replace("T", " ")}</bdi></dd></div>
+        </dl>
+        <ul className="divide-y rounded-xl border bg-card px-3">
+          {selected.map(item => <li key={item.asset.productId} className="flex flex-wrap items-start justify-between gap-2 py-3 text-sm">
+            <div><b>{item.asset.name}</b><p className="mt-1 text-xs text-muted-foreground">{warehouseReview(item)}</p></div>
+            <div className="font-semibold text-primary">
+              {item.entered} وحدة
+              {returning && <p className="text-xs">{fields.filter(([key]) => item.line[key] > 0).map(([key, label]) => `${label} ${item.line[key]}`).join(" · ")}</p>}
+            </div>
+          </li>)}
+        </ul>
+        {note && <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">{note}</p>}
+        {!uncertain && invalidInventory && <p role="alert" className="text-sm text-destructive">راجع الكميات والبيانات المحدثة قبل الحفظ.</p>}
+      </section> : <fieldset disabled={busy || uncertain} className="flex min-w-0 flex-col gap-4">
         {action === "cost-link" ? <div className="space-y-3"><p className="text-sm text-muted-foreground">اربط رقم مصروف من إدارة المصاريف. التحليل يقرأ نفس الحركة المعتمدة، ولا ينشئ مصروفاً أو حركة مالية أخرى.</p><Field label="اختر مصروفاً موجوداً"><select className={selectClass} value={amount} onChange={e => setAmount(e.target.value)}><option value="">اختر من آخر المصاريف</option>{costOptions.data?.data.map(expense => <option key={expense.id} value={expense.id}>#{expense.id} · {expense.name} · {formatCurrency(expense.amount)}</option>)}</select></Field>{costOptions.error ? <ErrorBox error={costOptions.error} /> : null}<Field label="أو أدخل رقم المصروف"><Input type="number" min="1" value={amount} onChange={e => setAmount(e.target.value)} /></Field><Button variant="outline" asChild><a href="/admin/expenses" target="_blank" rel="noreferrer">إدارة المصاريف</a></Button></div> : action === "finance" ? <div className="grid gap-4 sm:grid-cols-2"><Field label="نوع الحركة"><select className={selectClass} value={kind} onChange={e => setKind(e.target.value)}>{[["rent_payment", "دفعة من قيمة الإيجار"], ["rent_refund", "استرجاع دفعة إيجار"], ["deposit_collect", "استلام تأمين مسترد"], ["deposit_refund", "إعادة تأمين"], ["deposit_apply", "تطبيق تأمين على الرصيد (بدون حركة نقدية)"], ["charge", "رسوم تحتاج اعتماد"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field><Field label="المبلغ"><Input type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} /></Field>{kind === "charge" ? <Field label="نوع الرسوم"><select className={selectClass} value={chargeType} onChange={e => setChargeType(e.target.value)}><option value="damage">تلف / صيانة</option><option value="missing">فقدان</option><option value="late">تأخير</option><option value="other">تنظيف أو رسوم أخرى</option></select></Field> : <Field label="طريقة الدفع"><select className={selectClass} disabled={kind === "deposit_apply"} value={method} onChange={e => setMethod(e.target.value)}><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="card">بطاقة</option></select></Field>}<p className="text-xs text-muted-foreground">تُرسل للموافقة المالية. لا تُفرض الرسوم ولا تتحرك أموال الصندوق قبل الاعتماد والتنفيذ.</p></div> : <>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label={returning ? "الموظف المستلم" : "الموظف المسؤول"}>
@@ -324,23 +422,36 @@ function RentalActionDialog({ rental, action, onClose, onSave, busy, error }: {
                 {options.data?.employees.map(employee => <option key={employee.id} value={employee.id}>{employee.name}</option>)}
               </select>
             </Field>
-            {returning && <Field label="تاريخ ووقت الاسترجاع">
-              <Input type="datetime-local" aria-label="تاريخ ووقت الاسترجاع" value={returnDate} max={baghdadInputTime()} onChange={e => setReturnDate(e.target.value)} />
+            {movementAction && <Field label={dateLabel}>
+              <Input type="datetime-local" aria-label={dateLabel} value={movementDate} max={baghdadInputTime()} onChange={e => setMovementDate(e.target.value)} />
             </Field>}
           </div>
           {options.isLoading && <Loading />}
           {options.error && <ErrorBox error={options.error} retry={() => void options.refetch()} />}
           {returning && <p className="text-xs text-muted-foreground">الوقت بتوقيت بغداد. سجّل المعدات المفحوصة والمقبولة «سليم»، وبقية المعدات غير المفحوصة «بانتظار الفحص».</p>}
-          {(dispatching || returning) && <EquipmentRentalScanner assets={rental.details.assets} action={dispatching ? "dispatch" : "return"} busy={busy || uncertain} onSelect={focusScanned} />}
-          <div className="flex flex-col gap-3">
-            {inventoryLines.filter(({ limit, entered }) => limit > 0 || entered > 0).map(({ line, asset, count, limit, entered, invalid }) =>
+          <div className={movementAction ? "grid items-start gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]" : ""}>
+          {movementAction && <section className="min-w-0 space-y-3 lg:order-2" aria-label="طريقة إدخال المعدات">
+            <div className="grid grid-cols-2 gap-2 rounded-xl bg-primary/5 p-2">
+              <Button type="button" size="sm" variant={entryMethod === "scan" ? "default" : "outline"} aria-pressed={entryMethod === "scan"} onClick={() => setEntryMethod("scan")}><ScanLine /> مسح باركود / QR</Button>
+              <Button type="button" size="sm" variant={entryMethod === "manual" ? "default" : "outline"} aria-pressed={entryMethod === "manual"} onClick={() => setEntryMethod("manual")}><Keyboard /> إدخال يدوي</Button>
+            </div>
+            {entryMethod === "scan"
+              ? <EquipmentRentalScanner assets={rental.details.assets} action={dispatching ? "dispatch" : "return"} busy={busy || uncertain}
+                  onSelect={id => setScanned(previous => previous.includes(id) ? previous : [...previous, id])} />
+              : <Field label="ابحث عن معدة بالاسم أو الرمز">
+                  <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="اسم المعدة أو رمزها" />
+                </Field>}
+            {selected.length > 0 && <p className="rounded-xl border border-primary/10 bg-primary/5 p-3 text-sm">الكميات المحددة للمراجعة: <bdi className="font-bold">{selected.reduce((sum, item) => sum + item.entered, 0)}</bdi></p>}
+          </section>}
+          <div className="flex min-w-0 flex-col gap-3">
+            {visibleLines.map(({ line, asset, count, limit, entered, invalid, sources }) =>
               <article key={line.productId} data-rental-product-id={line.productId}
-                className={"rounded-xl border p-3 " + (scannedProductId === line.productId ? "border-primary ring-1 ring-primary/20" : "")}>
+                className={"rounded-xl border p-3 " + (entryMethod === "scan" && scanned.includes(line.productId) ? "border-primary/40 bg-primary/5" : "")}>
                 <div className="mb-3 flex items-center gap-3">
                   <EquipmentRentalImage image={asset.image} name={asset.name} className="size-16" />
                   <div className="min-w-0">
                     <b className="break-words">{asset.name}</b>
-                    <p className="break-all text-xs text-muted-foreground" dir="ltr">{asset.code || "AJN-A" + String(asset.productId).padStart(6, "0")}</p>
+                    <p className="break-all text-xs text-muted-foreground" dir="ltr">{asset.code || rentalAssetCode(asset.productId)}</p>
                   </div>
                 </div>
                 <dl className="mb-3 grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-2 text-xs sm:grid-cols-4">
@@ -353,47 +464,65 @@ function RentalActionDialog({ rental, action, onClose, onSave, busy, error }: {
                   </div>)}
                 </dl>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  {!inspecting && <Field label={dispatching ? "المخزن المصدر" : "المخزن المستلم"}>
+                  {dispatching && <Field label="المخزن المصدر">
+                    <select aria-label="المخزن المصدر" className={selectClass} value={line.warehouseId ?? ""}
+                      onChange={e => update(line.productId, "warehouseId", e.target.value ? Number(e.target.value) : null)}>
+                      <option value="">{sources.length === 1 ? warehouseName(sources[0].warehouseId) : "حسب حجز كل مخزن"}</option>
+                      {sources.length > 1 && sources.map(source => <option key={source.warehouseId} value={source.warehouseId}>{warehouseName(source.warehouseId)} · {source.available}</option>)}
+                    </select>
+                  </Field>}
+                  {returning && <Field label="المخزن المستلم">
                     <select aria-label={dispatching ? "المخزن المصدر" : "المخزن المستلم"} className={selectClass} value={line.warehouseId ?? ""}
                       onChange={e => update(line.productId, "warehouseId", e.target.value ? Number(e.target.value) : null)}>
-                      <option value="">{returning ? "العودة إلى مخزن التسليم" : "المخزن المعتمد في العقد"}</option>
+                      <option value="">العودة إلى مخزن التسليم</option>
                       {options.data?.warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
                     </select>
                   </Field>}
                   {fields.map(([key, label]) => <Field key={key} label={label}>
-                    <Input ref={node => {
-                      if (key !== focusedField) return;
-                      if (node) quantityInputs.current.set(line.productId, node);
-                      else quantityInputs.current.delete(line.productId);
-                    }} type="number" min="0" max={limit} step="1" aria-invalid={invalid || undefined}
-                      disabled={returning && key === "good" && !rental.capabilities.inspect}
+                    <Input type="number" min="0" max={limit} step="1" aria-invalid={invalid || undefined}
+                      disabled={returning && ((key === "good" && !rental.capabilities.inspect) || (key === "missing" && !rental.capabilities.resolveLoss))}
                       value={line[key]} onChange={e => update(line.productId, key, Number(e.target.value))} />
                   </Field>)}
                 </div>
+                {dispatching && <p className="mt-2 text-xs text-muted-foreground">المتاح للتسليم من الحجز: <bdi>{limit}</bdi></p>}
                 {invalid ? <p role="alert" className="mt-2 text-sm text-destructive">{entered > limit ? "الكمية تتجاوز المتبقي (" + limit + ")." : "أدخل كميات صحيحة غير سالبة."}</p>
                   : returning && entered > 0 && <p className="mt-2 text-sm font-medium text-primary">المتبقي لدى العميل بعد الحفظ <bdi>{limit - entered}</bdi></p>}
               </article>)}
             {!inventoryLines.some(({ limit }) => limit > 0) && <p className="text-sm text-muted-foreground">لا توجد كميات متبقية لهذا الإجراء.</p>}
+            {inventoryLines.some(({ limit }) => limit > 0) && !visibleLines.length && <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+              {entryMethod === "scan" ? "امسح رمز معدة لإظهار صورتها وكمياتها هنا." : "لا توجد معدات مطابقة للبحث."}
+            </p>}
+          </div>
           </div>
         </>}
         <Field label="صورة / مستند من مركز المستندات (اختياري)"><Input dir="ltr" value={proof} onChange={e => setProof(e.target.value)} placeholder="https://… أو رابط /api/…" /></Field>
-        <Button variant="ghost" className="self-start" asChild><a href="/admin/documents" target="_blank" rel="noreferrer">فتح مركز المستندات والرفع</a></Button>
+        <Button variant="ghost" size="sm" className="self-start" asChild><a href="/admin/documents" target="_blank" rel="noreferrer">فتح مركز المستندات والرفع</a></Button>
         {hasMissing && <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={approveLoss} onChange={e => setApproveLoss(e.target.checked)} /> تأكيد اعتماد الفقدان وفق صلاحية المدير
         </label>}
         <Field label={needsNote ? "وصف التلف أو الفقدان (مطلوب)" : "ملاحظات"}>
           <Textarea value={note} onChange={e => setNote(e.target.value)} maxLength={3000} />
         </Field>
-      </fieldset>
+      </fieldset>}
       {error ? <ErrorBox error={error} /> : null}
       {uncertain && <p className="text-sm text-muted-foreground">أعد إرسال نفس العملية للتحقق من تسجيلها ومواصلة العمل.</p>}
-      <div className="flex flex-wrap justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2 border-t pt-3">
         <Button variant="outline" disabled={busy} onClick={onClose}>{uncertain ? "إغلاق ومراجعة السجل" : "إلغاء"}</Button>
-        <Button disabled={!canSave} onClick={save}>
+        {reviewing && !uncertain && <Button variant="outline" disabled={busy} onClick={() => setReviewing(false)}>تعديل الكميات</Button>}
+        <Button disabled={!canSave} onClick={() => movementAction && !reviewing ? setReviewing(true) : save()}>
           {busy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Check data-icon="inline-start" />}
-          {uncertain ? "إعادة المحاولة" : returning ? "حفظ الاسترجاع" : "تأكيد"}
+          {uncertain ? "إعادة المحاولة" : movementAction ? reviewing ? dispatching ? "تأكيد التسليم" : "تأكيد الاستلام" : "مراجعة العملية" : "تأكيد"}
         </Button>
       </div>
+  </>;
+  if (movementAction) return <section aria-label={title} className="space-y-4">
+    <h4 className="font-bold text-primary">{title}</h4>
+    {content}
+  </section>;
+  return <Dialog open onOpenChange={value => !value && !busy && onClose()}>
+    <DialogContent dir="rtl" style={{ "--primary": "337 95% 23%", "--ring": "337 95% 23%" } as React.CSSProperties} className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl">
+      <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
+      {content}
     </DialogContent>
   </Dialog>;
 }

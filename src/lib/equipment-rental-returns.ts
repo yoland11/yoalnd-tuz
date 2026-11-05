@@ -1,4 +1,5 @@
 import { normalizeQuantityLine } from "./quantity-assets";
+import { lineAllocations } from "./warehouse-stock";
 import type { EquipmentRentalAssetLine, EquipmentRentalDetail, EquipmentRentalDetails } from "./equipment-rentals";
 
 /** Equipment rentals persist explicit counters even for individual assets. Use
@@ -20,6 +21,23 @@ export function canReturnEquipment(rental: EquipmentRentalDetail) {
   return rental.rentalKind === "equipment" && rental.capabilities.return &&
     !["draft", "pending_approval", "completed", "cancelled", "canceled", "closed"].includes(rental.status) &&
     rental.details.assets.some(line => rentalReturnCounts(line).outstanding > 0);
+}
+
+export function rentalDispatchLimit(line: EquipmentRentalAssetLine) {
+  return Math.max(0, Math.min(line.quantity, line.reservedQty ?? line.quantity) - rentalReturnCounts(line).dispatched);
+}
+
+export function rentalDispatchSources(line: EquipmentRentalAssetLine, home: number) {
+  if (line.trackingMode !== "quantity") return [{ warehouseId: Number(line.warehouseId || home), available: rentalDispatchLimit(line) }];
+  return Object.entries(lineAllocations(line, home)).map(([id, allocation]) => ({
+    warehouseId: Number(id), available: Math.max(0, allocation.reserved - allocation.checkedOut),
+  })).filter(source => source.available > 0);
+}
+
+export function canDispatchEquipment(rental: EquipmentRentalDetail) {
+  return rental.rentalKind === "equipment" && rental.capabilities.dispatch &&
+    ["confirmed", "awaiting_dispatch", "active", "partially_dispatched", "partially_returned", "inspection"].includes(rental.status) &&
+    rental.details.assets.some(line => rentalDispatchLimit(line) > 0);
 }
 
 /** Older rentals recorded approved individual losses without closing custody. */

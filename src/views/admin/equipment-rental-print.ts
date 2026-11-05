@@ -1,9 +1,40 @@
-import type { EquipmentRentalDetail, EquipmentRentalReturn } from "@/lib/equipment-rentals";
+import type { EquipmentRentalDetail, EquipmentRentalDispatch, EquipmentRentalReturn } from "@/lib/equipment-rentals";
 import { EQUIPMENT_RENTAL_STATUS_LABELS } from "@/lib/equipment-rentals";
 import { thermalReceiptCss } from "./print-helpers";
 
 const esc = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const cash = (value: unknown) => `${Number(value ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} د.ع`;
+const movementReceiptCss = `
+  @page{size:A4;margin:14mm}*{box-sizing:border-box}
+  body{font:12px/1.6 Cairo,Tahoma,Arial,sans-serif;color:#21191c;max-width:180mm;margin:auto}
+  header{border-bottom:2px solid #70032c;padding-bottom:12px;text-align:center}h1{font-size:24px;color:#70032c;margin:4px 0}
+  table{width:100%;border-collapse:collapse;margin:16px 0}thead{display:table-header-group}
+  th,td{padding:7px 5px;border-bottom:1px solid #eadde1;text-align:start;overflow-wrap:anywhere;vertical-align:top}
+  th{background:#fbf5f7}tr{break-inside:avoid}small{display:block;color:#666}bdi{unicode-bidi:isolate}
+  .note{white-space:pre-wrap;overflow-wrap:anywhere}.signatures{display:flex;justify-content:space-between;gap:24px;break-inside:avoid;margin-top:28px}
+`;
+
+export function equipmentRentalDispatchPrintHtml(
+  rental: Pick<EquipmentRentalDetail, "orderNo" | "customerName">,
+  record: EquipmentRentalDispatch,
+  company: { site_name?: string },
+) {
+  const date = new Date(record.dispatchedAt).toLocaleString("ar-IQ", { timeZone: "Asia/Baghdad" });
+  const rows = record.lines.map(line => `<tr>
+    <td><b>${esc(line.name)}</b><small><bdi>${esc(line.code)}</bdi></small></td>
+    <td>${esc(line.employeeName)}</td>
+    <td>${line.warehouses.map(source => `<div>${esc(source.name)} × <bdi>${esc(source.quantity)}</bdi></div>`).join("")}</td>
+    <td><bdi>${esc(line.quantity)}</bdi></td><td><bdi>${esc(line.remaining)}</bdi></td>
+  </tr>`).join("");
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+    <title>سند تسليم معدات · ${esc(rental.orderNo)}</title><style>${movementReceiptCss}</style></head><body><main>
+    <header><b>${esc(company.site_name || "AJN")}</b><h1>سند تسليم معدات</h1><bdi>${esc(rental.orderNo)}</bdi></header>
+    <p>العميل: <b>${esc(rental.customerName)}</b> · وقت التسليم: <bdi>${esc(date)}</bdi></p>
+    <p>سجّله: ${esc(record.actorName)} · مرجع العملية: <small><bdi>${esc(record.requestId)}</bdi></small></p>
+    <table><thead><tr><th>المعدة</th><th>مسؤول التسليم</th><th>مخزن المصدر</th><th>المُسلّم</th><th>باقي التسليم</th></tr></thead><tbody>${rows}</tbody></table>
+    ${record.note ? `<p class="note">الملاحظات: ${esc(record.note)}</p>` : ""}
+    <div class="signatures"><p>توقيع العميل __________________</p><p>توقيع مسؤول التسليم __________________</p></div></main></body></html>`;
+}
 
 export function equipmentRentalReturnPrintHtml(
   rental: Pick<EquipmentRentalDetail, "orderNo" | "customerName">,
@@ -17,15 +48,7 @@ export function equipmentRentalReturnPrintHtml(
     ${[line.good, line.damaged, line.missing, line.pending, line.outstandingAfter].map(quantity => `<td><bdi>${esc(quantity)}</bdi></td>`).join("")}
   </tr>`).join("");
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
-    <title>سند استرجاع معدات · ${esc(rental.orderNo)}</title><style>
-      @page{size:A4;margin:14mm}*{box-sizing:border-box}
-      body{font:12px/1.6 Cairo,Tahoma,Arial,sans-serif;color:#21191c;max-width:180mm;margin:auto}
-      header{border-bottom:2px solid #70032c;padding-bottom:12px;text-align:center}h1{font-size:24px;color:#70032c;margin:4px 0}
-      table{width:100%;border-collapse:collapse;margin:16px 0}thead{display:table-header-group}
-      th,td{padding:7px 5px;border-bottom:1px solid #eadde1;text-align:start;overflow-wrap:anywhere;vertical-align:top}
-      th{background:#fbf5f7}tr{break-inside:avoid}small{display:block;color:#666}bdi{unicode-bidi:isolate}
-      .note{white-space:pre-wrap;overflow-wrap:anywhere}.signatures{display:flex;justify-content:space-between;gap:24px;break-inside:avoid;margin-top:28px}
-    </style></head><body><main><header><b>${esc(company.site_name || "AJN")}</b><h1>سند استرجاع معدات</h1><bdi>${esc(rental.orderNo)}</bdi></header>
+    <title>سند استرجاع معدات · ${esc(rental.orderNo)}</title><style>${movementReceiptCss}</style></head><body><main><header><b>${esc(company.site_name || "AJN")}</b><h1>سند استرجاع معدات</h1><bdi>${esc(rental.orderNo)}</bdi></header>
     <p>العميل: <b>${esc(rental.customerName)}</b> · وقت الاسترجاع: <bdi>${esc(date)}</bdi></p>
     <p>سجّله: ${esc(record.actorName)} · مرجع العملية: <small><bdi>${esc(record.requestId)}</bdi></small></p>
     <table><thead><tr><th>المعدة</th><th>المستلم والمخزن</th><th>سليم</th><th>تالف</th><th>مفقود</th><th>بانتظار الفحص</th><th>المتبقي لدى العميل</th></tr></thead><tbody>${rows}</tbody></table>

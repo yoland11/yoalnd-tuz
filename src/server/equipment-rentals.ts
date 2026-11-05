@@ -4,12 +4,12 @@ import { sql, type SQL } from "drizzle-orm";
 import { NextResponse, type NextRequest } from "next/server";
 import { parseBookingResourceWindow } from "@/lib/booking-resource-window";
 import { iraqiPhoneVariants, normalizeIraqiPhone } from "@/lib/phone";
-import { rentalEquipmentStatus, rentalReturnCounts } from "@/lib/equipment-rental-returns";
+import { rentalDispatchLimit, rentalDispatchSources, rentalEquipmentStatus, rentalReturnCounts } from "@/lib/equipment-rental-returns";
 import {
   calculateEquipmentRental, canApproveEquipmentRentalLoss, equipmentRentalCapabilities, normalizeEquipmentRentalSettings,
   EquipmentRentalValidationError, rentalDateTime,
   type EquipmentRentalActor, type EquipmentRentalDetails, type EquipmentRentalDetail,
-  type EquipmentRentalHistory, type EquipmentRentalCapabilities, type EquipmentRentalReturn,
+  type EquipmentRentalHistory, type EquipmentRentalCapabilities, type EquipmentRentalReturn, type EquipmentRentalDispatch,
 } from "@/lib/equipment-rentals";
 import { createApiErrorPayload, makeRequestId, mapWriteError } from "./write-safety";
 import { readRequestBody, InvalidJsonBodyError, RequestBodyTooLargeError } from "./request-body";
@@ -94,10 +94,24 @@ async function rentalPictures(executor: Executor, rentals: any[]): Promise<Map<n
 async function detail(executor: Executor, row: any, actor: EquipmentRentalActor, pictures?: Map<number, string | null>): Promise<EquipmentRentalDetail> {
   const saved = readDetails(row);
   const images = pictures ?? await rentalPictures(executor, [row]);
-  const details = { ...saved, assets: saved.assets.map(line => ({ ...line, image: images.has(line.productId) ? images.get(line.productId)! : line.image })) };
   const equipment = row.rental_kind === "equipment";
-  const finance = equipment ? await equipmentRentalFinancialSummary(executor, Number(row.id)) : { total: Number(row.total_amount), paid: Number(row.paid_amount), remaining: Number(row.remaining_amount), depositHeld: 0 };
   const capabilities = equipmentRentalCapabilities(actor);
+  const scanCodes = new Map<number, string[]>();
+  if (!pictures && equipment && (capabilities.dispatch || capabilities.return) && images.size) {
+    const aliases = rows(await executor.execute(sql`select p.id, p.barcode, ap.qr_token, ap.serial_number, a.serial_number as profile_serial,
+      (select array_agg(q.token) from qr_tokens q where q.entity_type='asset' and q.entity_id=p.id) as qr_tokens
+      from products p left join asset_passports ap on ap.product_id=p.id
+      left join asset_profiles a on a.product_id=p.id where p.id in (${idsSql([...images.keys()])})`));
+    for (const alias of aliases) {
+      const values = [alias.barcode, alias.qr_token, alias.serial_number, alias.profile_serial, ...(alias.qr_tokens ?? [])];
+      scanCodes.set(Number(alias.id), [...new Set(values.filter((value): value is string => typeof value === "string" && !!value.trim()))]);
+    }
+  }
+  const details = { ...saved, assets: saved.assets.map(({ scanCodes: _codes, ...line }) => ({
+    ...line, image: images.has(line.productId) ? images.get(line.productId)! : line.image,
+    ...(scanCodes.has(line.productId) ? { scanCodes: scanCodes.get(line.productId) } : {}),
+  })) };
+  const finance = equipment ? await equipmentRentalFinancialSummary(executor, Number(row.id)) : { total: Number(row.total_amount), paid: Number(row.paid_amount), remaining: Number(row.remaining_amount), depositHeld: 0 };
   const customerOutstanding = details.assets.some(line => rentalReturnCounts(line).outstanding > 0);
   if (equipment && capabilities.reports) {
     const cost = rows(await executor.execute(sql`select coalesce(sum(case when f.direction='expense' then f.amount::numeric else -f.amount::numeric end),0)::text as amount
@@ -125,7 +139,7 @@ function filterSql(params: URLSearchParams) {
   const mode = params.get("mode");
   if (mode === "due" || mode === "dueToday") filters.push(sql`${activeSql} and r.end_date=${today()}::date`);
   if (mode === "overdue") filters.push(sql`${overdueSql}`);
-  if (mode === "returns") filters.push(sql`r.status in ('active','partially_dispatched','dispatched','partially_returned','inspection')`);
+  if (mode === "returns") filters.push(sql`r.status in ('confirmed','awaiting_dispatch','active','partially_dispatched','dispatched','partially_returned','inspection','returned')`);
   return sql.join(filters.map(f => sql`(${f})`), sql` and `);
 }
 
@@ -152,7 +166,7 @@ async function options(req: NextRequest, actor: EquipmentRentalActor) {
   const warehouses = rows(await db.execute(sql`select id,name from warehouses where is_active=1 order by id`));
   const employees = rows(await db.execute(sql`select id,coalesce(nullif(full_name,''),username) as name from staff where is_active=true order by full_name,id limit 500`));
   const customers = q ? rows(await db.execute(sql`select id,coalesce(nullif(full_name,''),name) as name,phone from customers where name ilike ${pattern} or full_name ilike ${pattern} or phone ilike ${pattern} order by id desc limit 20`)) : [];
-  return json({ assets: result.map(p => ({ id: Number(p.id), name: p.name, code: p.barcode ?? "", image: assetPicture(p), stock: Number(p.stock), trackingMode: p.tracking_mode, settings: { ...normalizeEquipmentRentalSettings(p.rental_settings, { pricePerDay: p.price_per_day, isRental: p.is_rental }), allowCustomPrice: normalizeEquipmentRentalSettings(p.rental_settings).allowCustomPrice && (equipmentRentalCapabilities(actor).edit || equipmentRentalCapabilities(actor).settings) }, category: p.category ?? "" })), warehouses, employees, customers });
+  return json({ assets: result.map(p => ({ id: Number(p.id), name: p.name, code: p.barcode ?? "", image: assetPicture(p), stock: Number(p.stock), trackingMode: p.tracking_mode, settings: { ...normalizeEquipmentRentalSettings(p.rental_settings, { pricePerDay: p.price_per_day, isRental: p.is_rental }), allowCustomPrice: normalizeEquipmentRentalSettings(p.rental_settings).allowCustomPrice && (equipmentRentalCapabilities(actor).edit || equipmentRentalCapabilities(actor).settings) }, category: p.category ?? "" })), warehouses, mainWarehouseId: warehouses[0] ? await mainWarehouseId(db) : undefined, employees, customers });
 }
 
 async function lockProducts(executor: Executor, ids: number[]) {
@@ -235,17 +249,60 @@ async function inventory(executor: Executor, row: any, details: EquipmentRentalD
   return executeEquipmentRentalInventory(executor, { rentalId: Number(row.id), details, startDate: dateText(row.start_date), status: row.status, customerName: row.customer_name, actor, requestId, action, lines, saveDetails: async next => saveDetails(executor, Number(row.id), next as EquipmentRentalDetails) });
 }
 
-async function prepareReturn(tx: Executor, details: EquipmentRentalDetails, input: any, requestId: string,
-  actor: EquipmentRentalActor, caps: EquipmentRentalCapabilities, employees: Map<number, string>, createdAt: unknown) {
+function movementTime(timestamp: unknown, createdAt: unknown, label: string) {
   const recordedAt = new Date().toISOString();
-  const timestamp = input.returnedAt ?? recordedAt;
-  // Accept the original callers' omitted timestamp and UTC ISO from the new UI.
+  timestamp ??= recordedAt;
   const date = typeof timestamp === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(timestamp) ? new Date(timestamp) : null;
   const createdMinute = Math.floor(new Date(String(createdAt)).getTime() / 60000) * 60000;
-  if (!date || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 19) !== timestamp.slice(0, 19) ||
+  if (!date || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 19) !== String(timestamp).slice(0, 19) ||
     date.getTime() > Date.now() || (Number.isFinite(createdMinute) && date.getTime() < createdMinute)) {
-    throw new RentalError("أدخل تاريخ استرجاع صحيحاً بين إنشاء العقد والوقت الحالي");
+    throw new RentalError(`أدخل تاريخ ${label} صحيحاً بين إنشاء العقد والوقت الحالي`);
   }
+  return { date: date.toISOString(), recordedAt };
+}
+
+async function prepareDispatch(tx: Executor, details: EquipmentRentalDetails, input: any, requestId: string,
+  actor: EquipmentRentalActor, employees: Map<number, string>, createdAt: unknown) {
+  const { date, recordedAt } = movementTime(input.dispatchedAt, createdAt, "تسليم");
+  const home = await mainWarehouseId(tx);
+  const note = text(input.note, 3000);
+  const record: EquipmentRentalDispatch = { requestId, dispatchedAt: date, recordedAt, actorId: actor.id, actorName: actor.name, note, lines: [] };
+  const inventoryLines: EquipmentRentalInventoryLine[] = [];
+  const warehouseNames = new Map<number, string>();
+  for (const line of input.lines) {
+    const productId = positiveId(line.productId);
+    const asset = details.assets.find(item => item.productId === productId);
+    if (!asset) throw new RentalError("الأصل غير موجود ضمن العقد");
+    const quantity = Number(line.quantity);
+    const limit = rentalDispatchLimit(asset);
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new RentalError("أدخل كمية تسليم صحيحة وموجبة");
+    if (quantity > limit) throw new RentalError(`كمية التسليم تتجاوز المتبقي المحجوز (${limit})`, 409);
+    const warehouseId = line.warehouseId == null ? undefined : positiveId(line.warehouseId);
+    const warehouses: EquipmentRentalDispatch["lines"][number]["warehouses"] = [];
+    let left = quantity;
+    for (const source of rentalDispatchSources(asset, home)) {
+      if (warehouseId && source.warehouseId !== warehouseId) continue;
+      const take = Math.min(left, source.available);
+      if (!take) continue;
+      if (!warehouseNames.has(source.warehouseId)) {
+        const warehouse = rows(await tx.execute(sql`select name,is_active from warehouses where id=${source.warehouseId} for share`))[0];
+        if (!warehouse || Number(warehouse.is_active) !== 1) throw new RentalError("مخزن التسليم غير موجود أو غير نشط", 409);
+        warehouseNames.set(source.warehouseId, String(warehouse.name));
+      }
+      warehouses.push({ warehouseId: source.warehouseId, name: warehouseNames.get(source.warehouseId)!, quantity: take });
+      left -= take;
+    }
+    if (left) throw new RentalError("كمية التسليم تتجاوز الحجز في المخزن المصدر", 409);
+    const staffId = positiveId(line.staffId);
+    inventoryLines.push({ productId, quantity, warehouseId, staffId, note, photoUrls: line.photoUrls });
+    record.lines.push({ productId, name: asset.name, code: asset.code, employeeId: staffId, employeeName: employees.get(staffId)!, quantity, remaining: limit - quantity, warehouses });
+  }
+  return { record, inventoryLines };
+}
+
+async function prepareReturn(tx: Executor, details: EquipmentRentalDetails, input: any, requestId: string,
+  actor: EquipmentRentalActor, caps: EquipmentRentalCapabilities, employees: Map<number, string>, createdAt: unknown) {
+  const { date, recordedAt } = movementTime(input.returnedAt, createdAt, "استرجاع");
   const note = text(input.note, 3000);
   const home = await mainWarehouseId(tx);
   const lines: EquipmentRentalReturn["lines"] = [];
@@ -298,7 +355,7 @@ async function prepareReturn(tx: Executor, details: EquipmentRentalDetails, inpu
       outstandingBefore: before.outstanding, outstandingAfter: before.outstanding - total,
       good, damaged, missing, pending, lossApproved: missing > 0 && line.managerApproval === true, note: description });
   }
-  const record: EquipmentRentalReturn = { requestId, returnedAt: date.toISOString(), recordedAt, actorId: actor.id, actorName: actor.name, note, lines };
+  const record: EquipmentRentalReturn = { requestId, returnedAt: date, recordedAt, actorId: actor.id, actorName: actor.name, note, lines };
   return { record, inventoryLines };
 }
 
@@ -348,7 +405,7 @@ async function mutate(req: NextRequest, id: number, action: string, input: any, 
     if (row.rental_kind !== "equipment") throw new RentalError("عقود الإيجار السابقة تعرض من سجلها الأصلي؛ استخدم إجراءاتها الأصلية", 409);
     let details = readDetails(row);
     const replay = details.history.find(entry => entry.requestId === requestId);
-    if (replay) { if (replay.action !== action || replay.fingerprint !== requestFingerprint(input) || (["return", "complete", "resolve-loss"].includes(action) && replay.actorId !== actor.id)) throw new RentalError("معرف الطلب مستخدم لإجراء آخر", 409); return; }
+    if (replay) { if (replay.action !== action || replay.fingerprint !== requestFingerprint(input) || (["dispatch", "return", "complete", "resolve-loss"].includes(action) && replay.actorId !== actor.id)) throw new RentalError("معرف الطلب مستخدم لإجراء آخر", 409); return; }
     // Existing event writers lock their booking before its assets. Preserve that
     // same order when a rental also needs to inspect the linked booking.
     if (action === "confirm" && details.linkedBooking) {
@@ -366,14 +423,18 @@ async function mutate(req: NextRequest, id: number, action: string, input: any, 
       if (Number(balance.paid) > 0.005 || Number(balance.depositHeld) > 0.005 || Number(charge.amount) > 0.005 || (balance.pendingRequests as unknown[]).length) throw new RentalError("سوِّ الدفعات والتأمين والرسوم والطلبات المعلقة من مصادرها الأصلية قبل إلغاء العقد",409);
     }
     let returnOperation: Awaited<ReturnType<typeof prepareReturn>> | undefined;
+    let dispatchOperation: Awaited<ReturnType<typeof prepareDispatch>> | undefined;
     if (["dispatch","return","inspection"].includes(action)) {
       if (["draft", "pending_approval", "cancelled", "canceled", "completed", "closed"].includes(row.status)) throw new RentalError("حالة العقد لا تسمح بهذه العملية", 409);
       if (!Array.isArray(input.lines) || !input.lines.length || input.lines.length > details.assets.length || input.lines.some((line: unknown) => !line || typeof line !== "object")) throw new RentalError("حدد معدات الإجراء وكمياتها");
+      if (new Set(input.lines.map((line: any) => positiveId(line.productId))).size !== input.lines.length) throw new RentalError("معدات الإجراء مكررة");
       const staffIds = [...new Set<number>(input.lines.map((line: any) => positiveId(line.staffId)))];
       const employees = rows(await tx.execute(sql`select id,coalesce(nullif(full_name,''),username) as name from staff where id in (${idsSql(staffIds)}) and is_active=true for share`));
       if (employees.length !== staffIds.length) throw new RentalError("الموظف المسؤول غير موجود أو غير نشط",422);
       if (actor.role !== "admin" && !actor.permissions.includes("booking_staff_assign") && staffIds.some(id => id !== actor.id)) throw new RentalError("يلزم امتلاك صلاحية إسناد الموظفين لتسجيل مسؤول آخر",403);
-      if (action === "return") returnOperation = await prepareReturn(tx, details, input, requestId, actor, caps, new Map(employees.map(employee => [Number(employee.id), employee.name])), row.created_at);
+      const employeeNames = new Map<number, string>(employees.map(employee => [Number(employee.id), employee.name]));
+      if (action === "return") returnOperation = await prepareReturn(tx, details, input, requestId, actor, caps, employeeNames, row.created_at);
+      if (action === "dispatch") dispatchOperation = await prepareDispatch(tx, details, input, requestId, actor, employeeNames, row.created_at);
       details.responsibilityHistory = [...(Array.isArray(details.responsibilityHistory) ? details.responsibilityHistory : []), { requestId, action, staffIds, actorId: actor.id, at: new Date().toISOString() }];
     }
     if (action === "complete") {
@@ -422,9 +483,11 @@ async function mutate(req: NextRequest, id: number, action: string, input: any, 
     } else {
       if (action === "confirm" && !["draft", "pending_approval"].includes(row.status)) throw new RentalError("العقد مؤكد أو مغلق مسبقاً", 409);
       if (action === "cancel" && ["cancelled", "returned", "completed"].includes(row.status)) throw new RentalError("العقد مغلق مسبقاً", 409);
-      const inventoryInput = returnOperation ? { ...input, lines: returnOperation.inventoryLines } : input;
+      const movement = returnOperation ?? dispatchOperation;
+      const inventoryInput = movement ? { ...input, lines: movement.inventoryLines } : input;
       const changed = await inventory(tx, row, details, actor, requestId, action as "confirm" | "cancel" | "dispatch" | "return" | "inspection", inventoryInput); details = changed.details as EquipmentRentalDetails;
       if (returnOperation) details.returns = [...(details.returns ?? []), returnOperation.record];
+      if (dispatchOperation) details.dispatches = [...(details.dispatches ?? []), dispatchOperation.record];
       const status = action === "confirm" ? "confirmed" : action === "cancel" ? "cancelled" : rentalEquipmentStatus(details);
       const returnedAt = details.returns?.reduce((latest, record) => record.returnedAt > latest ? record.returnedAt : latest, "") || null;
       await tx.execute(sql`update rental_orders set status=${status},stock_applied=0,

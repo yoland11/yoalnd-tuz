@@ -26,7 +26,15 @@ const browser = await chromium.launch({ executablePath: process.env.AJN_BROWSER_
 const assetImage = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect x="25" y="35" width="70" height="70" rx="10" fill="#750331"/></svg>')}`;
 const capabilities = { view:true,create:true,edit:true,confirm:true,dispatch:true,return:true,cancel:true,inspect:true,finance:true,reports:true,settings:true,costs:true };
 const settings = { enabled:true,pricingType:"fixed",fixedPrice:10000,dailyPrice:5000,hourlyPrice:1000,minimumDuration:1,deposit:50000,allowCustomPrice:true,terms:"شروط عقد الاختبار" };
-const options = { assets:[{id:7,name:"كرسي ملكي",code:"CHAIR-7",image:assetImage,stock:50,trackingMode:"quantity",settings}],warehouses:[{id:1,name:"المخزن الرئيسي"},{id:2,name:"المخزن الثاني"}],employees:[{id:1,name:"موظف الاختبار"}] };
+const options = {
+  assets: [
+    { id: 7, name: "كرسي ملكي", code: "CHAIR-7", image: assetImage, stock: 50, trackingMode: "quantity", settings },
+    { id: 8, name: "سماعة حفلات", code: "SPEAKER-8", image: assetImage, stock: 10, trackingMode: "quantity", settings },
+  ],
+  warehouses: [{ id: 1, name: "المخزن الرئيسي" }, { id: 2, name: "المخزن الثاني" }],
+  mainWarehouseId: 1, employees: [{ id: 1, name: "موظف الاختبار" }],
+};
+const speakerToken = "b".repeat(64);
 try {
   for (const width of [390,768,1440]) {
     const context = await browser.newContext({ viewport:{width,height:960} }); const page = await context.newPage();
@@ -47,25 +55,43 @@ try {
     });
     const writes:any[]=[];
     let savedReturn: unknown;
+    let savedDispatch: unknown;
     await page.route("**/api/**",async(route:any)=>{
       const request=route.request(),url=new URL(request.url()),path=url.pathname,method=request.method();let data:any={};
       if(path==="/api/settings")data={site_name:"AJN",phone:"07700000000",address:"بغداد"};
       else if(path.endsWith("/options"))data=options;
-      else if(path.endsWith("/availability"))data={assets:[{productId:7,available:50,status:"available"}]};
+      else if(path.endsWith("/availability"))data={assets:[{productId:7,available:50,status:"available"},{productId:8,available:10,status:"available"}]};
       else if(method==="GET" && path.endsWith("/51"))data=row;
       else if(method==="GET" && path.includes("/rental-orders/equipment"))data={data:[row],total:1,page:1,pageSize:30,summary:{active:1,awaitingDispatch:1,dueToday:0,overdue:0,outstanding:50000}};
       else if(method!=="GET"){
         const payload=request.postDataJSON();writes.push({path,payload});
         if(path.endsWith("/equipment")){const priced=calculateEquipmentRental(payload);row={...row,customerName:payload.customerName,phone:payload.phone,status:"draft",total:priced.total,remaining:priced.total,startDate:payload.startDate,endDate:payload.endDate,details:{...row.details,...payload,assets:priced.assets}};data=row;}
-        else if(path.endsWith("/confirm")){row.status="confirmed";data=row;}
-        else if(path.endsWith("/dispatch")){assert.equal(payload.lines[0].quantity,5);assert.equal(payload.lines[0].staffId,1);row.details.assets[0].checkedOutQty=5;row.status="dispatched";data=row;}
+        else if(path.endsWith("/confirm")){
+          row.status="confirmed";
+          row.details.assets = row.details.assets.map((asset: any) => ({ ...asset, stage: "reserved", reservedQty: asset.quantity, checkedOutQty: 0, scanCodes: asset.productId === 8 ? [speakerToken] : [] }));
+          data=row;
+        }
+        else if(path.endsWith("/dispatch")){
+          assert.deepEqual(payload.lines.map((line: any) => [line.productId, line.quantity, line.staffId]), [[7, 5, 1], [8, 1, 1]]);
+          assert.ok(Number.isFinite(Date.parse(payload.dispatchedAt)));
+          if (savedDispatch) assert.deepEqual(payload, savedDispatch, "uncertain dispatch retry must preserve original operation");
+          const simulateLostResponse = width === 390 && !savedDispatch;
+          savedDispatch = payload;
+          row.details.assets[0].checkedOutQty=5;row.details.assets[1].checkedOutQty=1;row.status="partially_dispatched";
+          row.details.dispatches=[{
+            requestId:payload.requestId,dispatchedAt:payload.dispatchedAt,recordedAt:payload.dispatchedAt,actorId:1,actorName:"موظف الاختبار",note:"",
+            lines:row.details.assets.map((asset:any)=>({productId:asset.productId,name:asset.name,code:asset.code,employeeId:1,employeeName:"موظف الاختبار",
+              quantity:asset.checkedOutQty,remaining:asset.quantity-asset.checkedOutQty,warehouses:[{warehouseId:1,name:"المخزن الرئيسي",quantity:asset.checkedOutQty}]})),
+          }];data=row;
+          if (simulateLostResponse) { await route.abort(); return; }
+        }
         else if(path.endsWith("/return")){
           assert.equal(payload.lines[0].goodQuantity,3);assert.equal(payload.lines[0].pendingInspectionQuantity,2);
           assert.equal(payload.lines[0].warehouseId,2);assert.ok(Number.isFinite(Date.parse(payload.returnedAt)));
           if (savedReturn) assert.deepEqual(payload,savedReturn,"uncertain return retry must preserve the original request and quantities");
           const simulateLostResponse = width === 390 && !savedReturn;
           savedReturn = payload;
-          row.details.assets[0].returnedGoodQty=3;row.details.assets[0].pendingInspectionQty=2;row.status="inspection";
+          row.details.assets[0].returnedGoodQty=3;row.details.assets[0].pendingInspectionQty=2;row.status="partially_returned";
           row.details.returns=[{requestId:payload.requestId,returnedAt:payload.returnedAt,recordedAt:payload.returnedAt,actorId:1,actorName:"موظف الاختبار",note:"",lines:[{productId:7,name:"كرسي ملكي",code:"CHAIR-7",warehouseId:2,warehouseName:"المخزن الثاني",receivingEmployeeId:1,receivingEmployeeName:"موظف الاختبار",dispatched:5,previouslyReturned:0,previouslyMissing:0,outstandingBefore:5,outstandingAfter:0,good:3,damaged:0,missing:0,pending:2,lossApproved:false}]}];data=row;
           if (simulateLostResponse) { await route.abort(); return; }
         }
@@ -86,67 +112,100 @@ try {
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`image preview fits ${width}`);
     await page.keyboard.press("Escape");await preview.waitFor({state:"hidden"});assert.equal(writes.length,0,"photo preview cannot submit rental form");
     await page.getByText("المتاح للفترة: 50",{exact:true}).waitFor();
+    await page.getByRole("button",{name:/سماعة حفلات.*SPEAKER-8/}).click();
+    await page.getByLabel("الكمية",{exact:true}).nth(1).fill("2");
     assert.equal(await page.locator('main[dir="rtl"]').count(),1);
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),`form overflow at ${width}`);
     await page.screenshot({path:resolve(artifacts,`rental-form-${width}.png`),fullPage:true});
     await page.getByRole("button",{name:"تأكيد الإيجار",exact:true}).click();await page.waitForURL(/\/rentals\/51$/);
-    await page.getByRole("button",{name:"تسليم المعدات",exact:true}).click();
-    const dialog=page.getByRole("dialog",{name:"تسليم المعدات",exact:true});
+    await page.getByRole("button",{name:"تسليم معدات",exact:true}).click();
+    const dialog=page.getByRole("region",{name:"تسليم معدات",exact:true});
     const beforeScan=writes.length;
-    await dialog.getByRole("button",{name:"مسح باركود (اختياري)",exact:true}).click();
+    const manual = dialog.getByLabel("ابحث عن معدة بالاسم أو الرمز");
+    await manual.fill("SPEAKER-8");
+    await dialog.getByText("سماعة حفلات", {exact:true}).waitFor();
+    assert.equal(await dialog.getByText("كرسي ملكي", {exact:true}).count(),0,"manual code search filters current rental lines");
+    await manual.fill("كرسي");
+    await dialog.getByText("كرسي ملكي", {exact:true}).waitFor();
+    assert.equal(await dialog.getByText("سماعة حفلات", {exact:true}).count(),0,"manual name search filters current rental lines");
+    await dialog.getByRole("button",{name:"مسح باركود / QR",exact:true}).click();
     assert.equal(await page.evaluate(()=>(window as any).rentalCameraCalls),0,"keyboard scanning never requests camera permission");
     await dialog.getByLabel("باركود المعدة أو رمز الأصل",{exact:true}).fill("AJN-A999999");await dialog.getByRole("button",{name:"تحديد المعدة",exact:true}).click();
     await dialog.getByRole("alert").filter({hasText:"هذه المعدة غير موجودة"}).waitFor();
     assert.equal(writes.length,beforeScan,"unknown scans never post or add equipment");
     await dialog.getByLabel("باركود المعدة أو رمز الأصل",{exact:true}).fill("CHAIR-7");await page.keyboard.press("Enter");
     await dialog.getByRole("status").filter({hasText:"تم تحديد كرسي ملكي"}).waitFor();
-    assert.equal(await dialog.getByLabel("الكمية المسلمة",{exact:true}).inputValue(),"5","scanning preserves reviewed quantity");
-    assert.ok(await dialog.getByLabel("الكمية المسلمة",{exact:true}).evaluate((el:HTMLInputElement)=>el===document.activeElement),"scan focuses the matching line");
+    assert.equal(await dialog.getByLabel("الكمية المسلمة",{exact:true}).inputValue(),"0","scanning never preselects quantities");
+    await dialog.getByLabel("الكمية المسلمة",{exact:true}).fill("5");
+    await dialog.getByLabel("باركود المعدة أو رمز الأصل",{exact:true}).fill("CHAIR-7");await page.keyboard.press("Enter");
+    assert.equal(await dialog.getByLabel("الكمية المسلمة",{exact:true}).inputValue(),"5","duplicate scan preserves explicit quantity");
     assert.equal(writes.length,beforeScan,"successful scan waits for original confirmation");
-    // Camera only opens on request, and stops after selection.
-    await dialog.getByRole("button",{name:"مسح باركود (اختياري)",exact:true}).click();await dialog.getByRole("button",{name:"تشغيل الكاميرا",exact:true}).click();
+    await dialog.getByRole("button",{name:"تشغيل الكاميرا",exact:true}).click();
     await page.waitForFunction(()=>{const video=document.querySelector("video");return video&&video.readyState>=2;});
     await page.evaluate(()=>(window as any).rentalDelayNextScan=true);
     await page.waitForFunction(()=>Boolean((window as any).rentalResolveOldScan));
     await dialog.getByRole("button",{name:"إيقاف الكاميرا",exact:true}).click();
     await dialog.getByRole("button",{name:"تشغيل الكاميرا",exact:true}).click();
     await page.waitForFunction(()=>{const video=document.querySelector("video");return video&&video.readyState>=2;});
-    await page.evaluate(async()=>{(window as any).rentalResolveOldScan([{rawValue:"CHAIR-7"}]);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
-    assert.equal(await dialog.locator("video").count(),1,"late detection from previous camera session must not close the new scanner");
+    await page.evaluate(async token=>{(window as any).rentalResolveOldScan([{rawValue:"/api/qr/"+token}]);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));},speakerToken);
+    assert.equal(await dialog.getByText("سماعة حفلات",{exact:true}).count(),0,"late detection from previous camera session is ignored");
     await page.evaluate(()=>(window as any).rentalCameraCode="https://ajn.example/assets/AJN-A000007");
-    await dialog.locator("video").waitFor({state:"detached"});assert.ok(await page.evaluate(()=>(window as any).rentalCameraStops>0),"camera tracks stop after identification");
+    await page.waitForFunction(() => !(window as any).rentalCameraCode);
+    await page.evaluate(token=>(window as any).rentalCameraCode="https://ajn.example/api/qr/"+token,speakerToken);
+    await dialog.getByText("سماعة حفلات",{exact:true}).waitFor();
+    assert.equal(await dialog.locator("video").count(),1,"scanner remains active after different equipment");
+    await dialog.locator('[data-rental-product-id="8"]').getByLabel("الكمية المسلمة",{exact:true}).fill("1");
+    assert.equal(await dialog.evaluate((node:HTMLElement)=>getComputedStyle(node).direction),"rtl","movement editor retains RTL within the tabs");
+    if (width === 1440) {
+      const scanPanel = await dialog.getByRole("region",{name:"طريقة إدخال المعدات"}).boundingBox();
+      const equipment = await dialog.locator('[data-rental-product-id="8"]').boundingBox();
+      assert.ok(scanPanel && equipment && scanPanel.x < equipment.x,"desktop shows scanner left and equipment right");
+    }
+    await page.screenshot({path:resolve(artifacts,`rental-dispatch-scan-${width}.png`),fullPage:true});
+    await dialog.getByRole("button",{name:"إيقاف الكاميرا",exact:true}).click();
+    await dialog.locator("video").waitFor({state:"detached"});assert.ok(await page.evaluate(()=>(window as any).rentalCameraStops>0),"camera stops on request");
     // Denial still offers a manual/USB path and preserves all draft quantities.
     await page.evaluate(()=>(window as any).rentalDenyCamera=true);
-    await dialog.getByRole("button",{name:"مسح باركود (اختياري)",exact:true}).click();await dialog.getByRole("button",{name:"تشغيل الكاميرا",exact:true}).click();
+    await dialog.getByRole("button",{name:"تشغيل الكاميرا",exact:true}).click();
     await dialog.getByText(/رفض إذن الكاميرا/).waitFor();
-    await dialog.getByLabel("باركود المعدة أو رمز الأصل",{exact:true}).fill("CHAIR-7");await dialog.getByRole("button",{name:"تحديد المعدة",exact:true}).click();
+    await dialog.getByPlaceholder("إدخال يدوي / ماسح Bluetooth أو USB").fill("CHAIR-7");
+    await dialog.getByRole("button",{name:"إدخال",exact:true}).click();
     assert.equal(writes.length,beforeScan);
-    await page.screenshot({path:resolve(artifacts,`rental-dispatch-scan-${width}.png`),fullPage:true});
-    await dialog.getByLabel("الموظف المسؤول").selectOption("1");await dialog.getByRole("button",{name:"تأكيد",exact:true}).click();
-    await page.getByRole("button",{name:"استرجاع معدات",exact:true}).waitFor({timeout:10000});
+    await dialog.getByLabel("الموظف المسؤول").selectOption("1");
+    await dialog.getByRole("button",{name:"مراجعة العملية",exact:true}).click();
+    await dialog.getByRole("region",{name:"مراجعة العملية"}).getByText("موظف الاختبار",{exact:true}).waitFor();
+    assert.equal(writes.length,beforeScan,"review still makes no inventory write");
+    assert.equal(await dialog.locator("video").count(),0);
+    await dialog.getByRole("button",{name:"تأكيد التسليم",exact:true}).click();
+    if (width === 390) await dialog.getByRole("button",{name:"إعادة المحاولة",exact:true}).click();
+    await dialog.waitFor({state:"hidden"});
+    await page.getByRole("button",{name:"طباعة سند التسليم",exact:true}).click();
+    await page.locator('iframe[srcdoc*="سند تسليم معدات"]').waitFor({state:"attached"});
     await page.goto(`${origin}/admin/bookings/rentals`);
-    await page.getByRole("link",{name:"استرجاع معدات",exact:true}).click();
-    const returnDialog=page.getByRole("dialog",{name:"استرجاع معدات",exact:true});
+    await page.getByRole("link",{name:"استلام معدات",exact:true}).click();
+    const returnDialog=page.getByRole("region",{name:"استلام معدات",exact:true});
     const beforeReturnScan=writes.length;
-    await returnDialog.getByRole("button",{name:"مسح باركود (اختياري)",exact:true}).click();
+    await returnDialog.getByRole("button",{name:"مسح باركود / QR",exact:true}).click();
     await returnDialog.getByLabel("باركود المعدة أو رمز الأصل",{exact:true}).fill("AJN-A000007");await returnDialog.getByRole("button",{name:"تحديد المعدة",exact:true}).click();
     assert.equal(await returnDialog.getByLabel("سليم",{exact:true}).inputValue(),"0","scanning never classifies an uninspected return as good");
-    assert.ok(await returnDialog.getByLabel("سليم",{exact:true}).evaluate((el:HTMLInputElement)=>el===document.activeElement));
     assert.equal(writes.length,beforeReturnScan);
     await returnDialog.getByLabel("الموظف المستلم").selectOption("1");
     await returnDialog.getByLabel("المخزن المستلم",{exact:true}).selectOption("2");
     assert.ok(await returnDialog.getByLabel("تاريخ ووقت الاسترجاع",{exact:true}).inputValue());
     await returnDialog.getByLabel("سليم",{exact:true}).fill("6");
     await returnDialog.getByRole("alert").filter({hasText:"الكمية تتجاوز المتبقي"}).waitFor();
-    assert.equal(await returnDialog.getByRole("button",{name:"حفظ الاسترجاع",exact:true}).isDisabled(),true);
+    assert.equal(await returnDialog.getByRole("button",{name:"مراجعة العملية",exact:true}).isDisabled(),true);
     await returnDialog.getByLabel("سليم",{exact:true}).fill("3");
     await returnDialog.getByLabel("بانتظار الفحص",{exact:true}).fill("2");
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`return dialog fits ${width}`);
     await page.screenshot({path:resolve(artifacts,`rental-return-${width}.png`),fullPage:true});
-    await returnDialog.getByRole("button",{name:"حفظ الاسترجاع",exact:true}).click();
+    await returnDialog.getByRole("button",{name:"مراجعة العملية",exact:true}).click();
+    await returnDialog.getByRole("region",{name:"مراجعة العملية"}).getByText("المخزن الثاني",{exact:true}).waitFor();
+    assert.equal(writes.length,beforeReturnScan,"reviewing a return does not touch stock or cash");
+    await returnDialog.getByRole("button",{name:"تأكيد الاستلام",exact:true}).click();
     if (width === 390) {
       await returnDialog.getByRole("button",{name:"إعادة المحاولة",exact:true}).waitFor();
-      assert.equal(await returnDialog.getByLabel("سليم",{exact:true}).isDisabled(),true);
+      assert.equal(await returnDialog.getByRole("button",{name:"تعديل الكميات",exact:true}).count(),0);
       await returnDialog.getByRole("button",{name:"إعادة المحاولة",exact:true}).click();
     }
     await returnDialog.waitFor({state:"hidden"});
@@ -154,7 +213,7 @@ try {
     assert.equal(writes.filter(write=>write.path.endsWith("/finance")).length,0);
     await page.getByRole("button",{name:"تسجيل دفعة",exact:true}).click();await page.getByRole("dialog").getByLabel("المبلغ",{exact:true}).fill("20000");await page.getByRole("dialog").getByRole("button",{name:"تأكيد",exact:true}).click();
     await page.getByRole("dialog").waitFor({state:"hidden"});assert.equal(row.paid,0,"pending request never pretends to settle the rental");
-    await page.getByRole("tab",{name:"التسليم والإرجاع",exact:true}).click();
+    await page.getByRole("tab",{name:"التسليم والاستلام",exact:true}).click();
     await page.getByRole("heading",{name:"سجل الاسترجاع",exact:true}).waitFor();
     await page.getByText("المخزن الثاني",{exact:true}).waitFor();
     await page.getByRole("button",{name:"طباعة سند الاسترجاع",exact:true}).click();
