@@ -31,11 +31,18 @@ const position = { latitude: 33.3, longitude: 44.4, accuracy: 10 };
 const shift = { shiftId: 6, startMs: now - 1800000, endMs: now + 27000000, kind: "fixed", title: null, bookingSource: null, bookingId: null, locationName: "المكتب الرئيسي" };
 try {
   for (const width of [1440, 390]) {
-    const context = await browser.newContext({ viewport: { width, height: 900 } });
+    const context = await browser.newContext({ viewport: { width, height: 900 }, timezoneId: "America/Los_Angeles" });
     const page = await context.newPage(); page.setDefaultTimeout(10000);
     const errors: string[] = [], unexpected: string[] = [], writes: any[] = [], reads: string[] = [];
     page.on("pageerror", (error: Error) => errors.push(error.message));
     let failMe = true, checkedIn = false, checkedOut = false, enabled = true, manager = true, rejectPunch = false, failDashboard = false, signedIn = true;
+    let canViewGeofence = true, failGeofence = false, consented = false;
+    const geofenceWrites: unknown[] = [];
+    const visits = [
+      { id: 44, staffId: 8, staffName: "أحمد محمد", workplace: "المكتب الرئيسي", exitAt: now, returnAt: null, endedAt: now + 600_000, outsideSeconds: 510, verification: "interrupted", reviewStatus: "pending" },
+      { id: 45, staffId: 9, staffName: "مريم علي", workplace: "المكتب الرئيسي", exitAt: now, returnAt: null, endedAt: null, outsideSeconds: 300, verification: "interrupted", reviewStatus: "pending" },
+    ];
+    const exceptions: Array<{ id: number; staffId: number; staffName: string; kind: string; startsAt: number; endsAt: number; reason: string; revokedAt: number | null }> = [];
     let mode: "any" | "qr" | "gps" | "manual" = "any";
     const leaveTimestamp = Date.parse("2026-11-02T12:00:00Z");
     const recent = [{ id: 12, name: "أحمد محمد", checkInMs: now - 86400000, checkOutMs: now - 86400000 + 28800000, workedMinutes: 480, method: "qr", status: "out", locationName: "المكتب الرئيسي" }, { id: 11, name: "أحمد محمد", checkInMs: leaveTimestamp, checkOutMs: leaveTimestamp, workedMinutes: 0, method: null, status: "paid_leave", locationName: null }];
@@ -49,6 +56,7 @@ try {
       Object.defineProperty(navigator, "geolocation", {
         configurable: true,
         value: {
+          watchPosition() { throw new Error("Employee web must never track location continuously"); },
           getCurrentPosition(success: PositionCallback, failure: PositionErrorCallback) {
             gps.__gpsReads++;
             if (gps.__gpsAllowed) success({ coords } as GeolocationPosition);
@@ -88,7 +96,46 @@ try {
         const { recent: _recent, corrections: _corrections, ...today } = employee();
         return route.fulfill({ json: { action: input.action, atMs: now, locationName: "المكتب الرئيسي", today } });
       }
-      if (path === "/api/admin/attendance/options") return route.fulfill({ json: { locations: [], staff: [{ id: 8, fullName: "أحمد محمد", department: "فريق الكوشات" }], capabilities: { canManage: manager, canApprove: manager, canManagePolicy: manager, canViewLocation: false }, policy: {} } });
+      if (path === "/api/admin/attendance/geofence") return failGeofence
+        ? route.fulfill({ status: 503, json: { code: "DATABASE_ERROR", message: "تعذر تحميل حالة الموقع", requestId: "REQ-geofence" } })
+        : route.fulfill({ json: { recordId: checkedIn ? 20 : null, eligible: checkedIn && !checkedOut, consented, status: consented ? "unavailable" : "inactive", workplace: checkedIn ? shift.locationName : null, startsAt: now, endsAt: shift.endMs } });
+      if (path === "/api/admin/attendance/geofence/consent") {
+        const input = req.postDataJSON();
+        assert.equal(req.method(), "POST");
+        assert.deepEqual(input, { recordId: 20, consent: false });
+        geofenceWrites.push(input);
+        consented = false;
+        return route.fulfill({ json: { recordId: 20, eligible: true, consented, status: "inactive", workplace: shift.locationName, startsAt: now, endsAt: shift.endMs } });
+      }
+      if (path === "/api/admin/attendance/geofence/dashboard") {
+        assert.ok(canViewGeofence, "dashboard location data is never requested without permission");
+        assert.ok(url.searchParams.get("date"));
+        return failGeofence
+          ? route.fulfill({ status: 503, json: { code: "DATABASE_ERROR", message: "تعذر تحميل حالة الموقع", requestId: "REQ-geofence" } })
+          : route.fulfill({ json: { statuses: [{ staffId: 8, recordId: 20, status: "outside", workplace: shift.locationName }], visits, exceptions } });
+      }
+      if (path === "/api/admin/attendance/geofence/visits/44/review") {
+        assert.equal(req.method(), "POST");
+        const input = req.postDataJSON();
+        assert.deepEqual(input, { approved: true, note: "راجعت سجل الوردية" });
+        geofenceWrites.push(input);
+        visits[0].reviewStatus = "approved";
+        return route.fulfill({ json: { success: true } });
+      }
+      if (path === "/api/admin/attendance/geofence/exceptions") {
+        assert.equal(req.method(), "POST");
+        const input = req.postDataJSON();
+        assert.deepEqual(input, { staffId: 8, kind: "delivery", startsAt: Date.parse("2026-11-04T09:00:00Z"), endsAt: Date.parse("2026-11-04T10:00:00Z"), reason: "تسليم طلب" });
+        geofenceWrites.push(input);
+        exceptions.push({ ...input, id: 91, staffName: "أحمد محمد", revokedAt: null });
+        return route.fulfill({ json: { success: true } });
+      }
+      if (path === "/api/admin/attendance/geofence/exceptions/91/revoke") {
+        assert.equal(req.method(), "POST");
+        exceptions[0].revokedAt = now;
+        return route.fulfill({ json: { success: true } });
+      }
+      if (path === "/api/admin/attendance/options") return route.fulfill({ json: { locations: [], staff: [{ id: 8, fullName: "أحمد محمد", department: "فريق الكوشات" }], capabilities: { canManage: manager, canApprove: manager, canManagePolicy: manager, canViewLocation: false, canViewGeofence, canManageGeofence: manager, canReviewGeofence: manager }, policy: {} } });
       if (path === "/api/admin/attendance/dashboard") return failDashboard ? route.fulfill({ status: 503, json: { code: "DATABASE_ERROR", message: "تعذر تحميل حضور الموظفين" } }) : route.fulfill({ json: { date: url.searchParams.get("date"), serverTime: now, summary: { total: 1, presentNow: 1, late: 0, absent: 0, out: 0, mission: 0, onLeave: 0, scheduled: 1 }, rows: url.searchParams.get("search") === "لا يوجد" ? [] : rows, departments: ["فريق الكوشات"], locations: [] } });
       unexpected.push(path); return route.fulfill({ status: 403, json: { code: "FORBIDDEN", message: "Unconfigured endpoint" } });
     });
@@ -161,10 +208,31 @@ try {
     await page.getByRole("button", { name: "طلب تصحيح", exact: true }).click();
     await page.getByRole("dialog", { name: "طلب تصحيح حضور" }).waitFor();
     await page.getByRole("button", { name: "إلغاء", exact: true }).click();
+    enabled = true; checkedIn = true; checkedOut = false; consented = true; failGeofence = true;
+    await page.reload();
+    await page.getByRole("alert").filter({ hasText: "تعذر تحميل حالة الموقع" }).waitFor();
+    assert.ok(await page.getByRole("button", { name: "تسجيل انصراف", exact: true }).isEnabled(), "geofence failure leaves ordinary checkout available");
+    failGeofence = false;
+    await page.getByRole("alert").filter({ hasText: "تعذر تحميل حالة الموقع" }).getByRole("button", { name: "إعادة المحاولة" }).click();
+    await page.getByText("تعذر التحقق من الموقع", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "إيقاف متابعة موقعي" }).click();
+    await page.getByText("أوقفت متابعة موقعك", { exact: true }).waitFor();
+    assert.deepEqual(geofenceWrites, [{ recordId: 20, consent: false }]);
+    assert.equal(await page.evaluate(() => (window as any).__gpsReads), 0, "geofence notice and revocation never request GPS");
     await page.goto(`${origin}/admin/attendance`);
     await page.getByRole("heading", { name: "الحضور والانصراف", exact: true }).waitFor();
     const list = width < 768 ? page.getByRole("list", { name: "حضور الموظفين" }) : page.getByRole("table").first();
     await list.getByText("أحمد محمد", { exact: true }).waitFor();
+    await list.getByText("خارج نطاق العمل", { exact: true }).waitFor();
+    failGeofence = true;
+    await page.getByRole("button", { name: "تحديث الحضور", exact: true }).click();
+    const geofenceError = page.getByRole("alert").filter({ hasText: "تعذر تحميل حالة الموقع" });
+    await geofenceError.waitFor();
+    await list.getByText("أحمد محمد", { exact: true }).waitFor();
+    assert.equal(await list.getByText("خارج نطاق العمل", { exact: true }).count(), 0, "stale location is not shown when verification fails");
+    failGeofence = false;
+    await geofenceError.getByRole("button", { name: "إعادة المحاولة" }).click();
+    await list.getByText("خارج نطاق العمل", { exact: true }).waitFor();
     await page.getByRole("button", { name: "تصفية إضافية", exact: true }).click();
     await page.getByLabel("طريقة التحقق", { exact: true }).waitFor();
     await page.getByRole("button", { name: "تحديث الحضور", exact: true }).click();
@@ -181,10 +249,56 @@ try {
     failDashboard = false;
     await page.getByRole("button", { name: "إعادة المحاولة", exact: true }).click();
     await list.getByText("أحمد محمد", { exact: true }).waitFor();
+    const dayPicker = page.getByLabel("التاريخ", { exact: true });
+    await dayPicker.fill("2026/11/04");
+    await dayPicker.press("Tab");
+    await page.getByRole("tab", { name: "نطاق العمل" }).click();
+    assert.equal(await page.getByRole("tabpanel").locator('input[type="date"]').inputValue(), date, "geofence history uses the date selected on the daily dashboard");
+    const visitHistory = page.getByRole("region", { name: "سجل الخروج والعودة" });
+    const closedVisit = visitHistory.getByRole("listitem").filter({ hasText: "أحمد محمد" });
+    const openVisit = visitHistory.getByRole("listitem").filter({ hasText: "مريم علي" });
+    await closedVisit.getByText("وقت العودة غير معروف", { exact: true }).waitFor();
+    await closedVisit.getByText("المدة المتحقق منها", { exact: true }).waitFor();
+    await closedVisit.getByText("8 د 30 ث", { exact: true }).waitFor();
+    await openVisit.getByText("تعذر التحقق من الموقع", { exact: true }).waitFor();
+    await openVisit.getByText("وقت العودة غير معروف", { exact: true }).waitFor();
+    await openVisit.getByText("5 د", { exact: true }).waitFor();
+    assert.equal(await openVisit.getByText("خروج جارٍ", { exact: true }).count(), 0, "stale evidence does not confirm ongoing outside presence");
+    await page.getByRole("button", { name: "مراجعة الخروج" }).click();
+    const reviewDialog = page.getByRole("dialog", { name: "مراجعة الخروج" });
+    await reviewDialog.getByLabel("ملاحظة المراجعة").fill("راجعت سجل الوردية");
+    await reviewDialog.getByRole("button", { name: "اعتماد السجل" }).click();
+    await page.getByText("معتمد في التقرير", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "إضافة إذن خروج" }).click();
+    const exceptionDialog = page.getByRole("dialog", { name: "إضافة إذن خروج" });
+    await exceptionDialog.getByLabel("الموظف", { exact: true }).selectOption("8");
+    await exceptionDialog.getByLabel("نوع الإذن", { exact: true }).selectOption("delivery");
+    await exceptionDialog.getByLabel("تاريخ البداية").fill("2026/11/04");
+    await exceptionDialog.getByRole("group", { name: "بداية الإذن" }).getByLabel("الوقت").fill("12:00");
+    await exceptionDialog.getByLabel("تاريخ النهاية").fill("2026/11/04");
+    await exceptionDialog.getByRole("group", { name: "نهاية الإذن" }).getByLabel("الوقت").fill("13:00");
+    await exceptionDialog.getByLabel("سبب الإذن").fill("تسليم طلب");
+    await exceptionDialog.getByRole("button", { name: "حفظ الإذن" }).click();
+    await page.getByText("تسليم طلب", { exact: true }).waitFor();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "geofence history has no horizontal overflow");
+    await page.screenshot({ path: `.next/cache/attendance-interface-review/geofence-${width}.png`, fullPage: true, animations: "disabled" });
+    await page.getByRole("button", { name: "إلغاء الإذن", exact: true }).click();
+    await page.getByRole("dialog", { name: "إلغاء الإذن" }).getByRole("button", { name: "تأكيد الإلغاء" }).click();
+    await page.getByText("إذن ملغى", { exact: true }).waitFor();
     manager = false;
+    visits[0].reviewStatus = "pending";
     await page.reload();
     await page.getByRole("heading", { name: "الحضور والانصراف", exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "إعدادات أحمد محمد", exact: true }).count(), 0, "read-only viewer gets no employee settings action");
+    await page.getByRole("tab", { name: "نطاق العمل" }).click();
+    await closedVisit.getByText("بانتظار المراجعة", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "إضافة إذن خروج" }).count(), 0, "read-only geofence viewer cannot manage exceptions");
+    assert.equal(await page.getByRole("button", { name: "مراجعة الخروج" }).count(), 0, "read-only geofence viewer cannot review visits");
+    canViewGeofence = false;
+    await page.reload();
+    await page.getByRole("heading", { name: "الحضور والانصراف", exact: true }).waitFor();
+    assert.equal(await page.getByRole("tab", { name: "نطاق العمل" }).count(), 0, "ordinary attendance access does not grant geofence visibility");
     signedIn = false;
     await page.goto(`${origin}/staff?tab=attendance`);
     await page.getByPlaceholder("اسم المستخدم", { exact: true }).waitFor();
@@ -203,7 +317,7 @@ try {
     await page.getByRole("region", { name: "سجل حضوري", exact: true }).waitFor();
     assert.equal(await page.getByRole("region", { name: "سجل حضوري", exact: true }).count(), 1);
     assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
-    console.log(`PASS attendance ${width}: self scope, server punches, QR rejection/retry, GPS denied/allowed, manual approval, disabled state, history, management filters/error, read-only role, mobile clearance, RTL overflow`);
+    console.log(`PASS attendance ${width}: self scope, punches, geofence failure/retry and revocation, visits and review, Baghdad exception times, read-only permissions, mobile clearance, RTL overflow`);
     await context.close();
   }
 } finally { await browser.close(); await new Promise<void>(done => server.close(() => done())); }

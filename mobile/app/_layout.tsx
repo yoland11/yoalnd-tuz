@@ -1,4 +1,5 @@
 import "../global.css";
+import "@/infrastructure/attendance-location-task";
 import { I18nManager } from "react-native";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -6,6 +7,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "@/application/query-client";
 import { AuthProvider } from "@/application/auth-context";
+import { AttendanceLocationSync } from "@/application/attendance-location-sync";
 import { DepartmentProvider } from "@/application/department-context";
 
 // Arabic-first: force a right-to-left layout for the whole app.
@@ -19,6 +21,7 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
+          <AttendanceLocationSync />
           <DepartmentProvider>
             <StatusBar style="auto" />
             <Stack screenOptions={{ headerShown: false }}>

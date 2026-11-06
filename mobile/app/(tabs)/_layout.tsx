@@ -25,6 +25,7 @@ export default function TabsLayout() {
     >
       <Tabs.Screen name="index" options={{ title: "الرئيسية" }} />
       <Tabs.Screen name="tasks" options={{ title: "المهام" }} />
+      <Tabs.Screen name="attendance" options={{ title: "الدوام" }} />
     </Tabs>
   );
 }

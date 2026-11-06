@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AttendanceSettingsPanel } from "@/components/attendance-settings-panel";
+import { AttendanceGeofenceHistory, GeofenceLoadError, GeofenceStatusBadge, useAttendanceGeofenceDashboard } from "@/components/attendance-geofence-dashboard";
 import { EmployeeAvatar } from "@/components/employee-avatar";
 import { useToast } from "@/hooks/use-toast";
 import { ATTENDANCE_METHODS, ATTENDANCE_METHOD_LABELS, CORRECTION_TYPES, DAY_LABELS, DAY_STATUS_LABELS, LOCATION_KIND_LABELS, SHIFT_KIND_LABELS, addDays, baghdadDate, baghdadTime } from "@/lib/attendance-rules";
@@ -14,7 +15,15 @@ import { adminFetch, apiErrorMessage } from "./_lib";
 import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { attendanceTimestamp } from "@/lib/attendance-client";
 
-type Capabilities = { canManage: boolean; canApprove: boolean; canManagePolicy: boolean; canViewLocation: boolean };
+type Capabilities = {
+  canManage: boolean;
+  canApprove: boolean;
+  canManagePolicy: boolean;
+  canViewLocation: boolean;
+  canViewGeofence?: boolean;
+  canManageGeofence?: boolean;
+  canReviewGeofence?: boolean;
+};
 type LocationRow = { id: number; name: string; kind: string; address: string | null; latitude: number | null; longitude: number | null; radiusMeters: number; maxAccuracyMeters: number; requiredMethod: string; warehouseId: number | null; warehouseName: string | null; isActive: boolean };
 type StaffOption = { id: number; fullName: string; department: string | null };
 type Policy = Record<string, any>;
@@ -66,13 +75,26 @@ function Stat({ label, value, note, icon: Icon, tone = "text-primary" }: { label
   );
 }
 
-function DashboardTab({ options, onSettings }: { options: Options; onSettings: (staffId: number, name: string) => void }) {
-  const [filters, setFilters] = useState({ date: baghdadDate(), search: "", department: "", locationId: "", status: "", method: "" });
+function DashboardTab({ options, date, onDateChange, onSettings }: { options: Options; date: string; onDateChange: (date: string) => void; onSettings: (staffId: number, name: string) => void }) {
+  const [filters, setFilters] = useState({ search: "", department: "", locationId: "", status: "", method: "" });
   const [expandedFilters, setExpandedFilters] = useState(false);
-  const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value));
+  const params = new URLSearchParams(Object.entries({ date, ...filters }).filter(([, value]) => value));
   const dashboard = useQuery<Dashboard>({ queryKey: ["admin", "attendance", "dashboard", params.toString()], queryFn: () => adminFetch(`/admin/attendance/dashboard?${params}`), refetchInterval: 60_000 });
+  const canViewGeofence = Boolean(options.capabilities.canViewGeofence);
+  const geofence = useAttendanceGeofenceDashboard(date, canViewGeofence);
+  const geofenceStatuses = canViewGeofence && !geofence.isError ? geofence.data?.statuses : undefined;
+  const statusByStaff = useMemo(() => new Map(geofenceStatuses?.map((item) => [item.staffId, item])), [geofenceStatuses]);
   const set = (patch: Partial<typeof filters>) => setFilters((current) => ({ ...current, ...patch }));
   const summary = dashboard.data?.summary;
+  function refresh() {
+    void dashboard.refetch();
+    if (canViewGeofence && date) void geofence.refetch();
+  }
+  function workplaceStatus(row: DashboardRow) {
+    const location = statusByStaff.get(row.staffId);
+    if (!location) return <span className="text-muted-foreground">—</span>;
+    return <><GeofenceStatusBadge status={location.status} />{location.workplace && location.workplace !== row.locationName ? <span className="mt-1 block text-xs text-muted-foreground">{location.workplace}</span> : null}</>;
+  }
   return (
     <div className="space-y-4">
       {dashboard.isError ? <Failed error={dashboard.error} retry={() => void dashboard.refetch()} /> : summary ? (
@@ -87,13 +109,13 @@ function DashboardTab({ options, onSettings }: { options: Options; onSettings: (
       ) : <div className="grid gap-3 [grid-template-columns:repeat(2,minmax(0,1fr))] lg:[grid-template-columns:repeat(6,minmax(0,1fr))]">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-24" />)}</div>}
       <div className="space-y-3 rounded-xl border border-border bg-card p-3 sm:p-4">
       <div className="flex flex-wrap items-end gap-2">
-        <label className="flex flex-col gap-1 text-xs font-medium">التاريخ<Input type="date" className="w-40" value={filters.date} onChange={(event) => set({ date: event.target.value })} /></label>
-        <Button type="button" variant={filters.date === baghdadDate() ? "secondary" : "ghost"} className="min-h-10" onClick={() => set({ date: baghdadDate() })}>اليوم</Button>
-        <Button type="button" variant={filters.date === addDays(baghdadDate(), -1) ? "secondary" : "ghost"} className="min-h-10" onClick={() => set({ date: addDays(baghdadDate(), -1) })}>أمس</Button>
+        <div className="flex flex-col gap-1 text-xs font-medium"><label htmlFor="attendance-dashboard-date">التاريخ</label><Input id="attendance-dashboard-date" type="date" className="w-40" value={date} onChange={(event) => onDateChange(event.target.value)} /></div>
+        <Button type="button" variant={date === baghdadDate() ? "secondary" : "ghost"} className="min-h-10" onClick={() => onDateChange(baghdadDate())}>اليوم</Button>
+        <Button type="button" variant={date === addDays(baghdadDate(), -1) ? "secondary" : "ghost"} className="min-h-10" onClick={() => onDateChange(addDays(baghdadDate(), -1))}>أمس</Button>
         <div className="relative min-w-40 flex-1 basis-60"><Search className="pointer-events-none absolute start-3 top-3 h-4 w-4 text-muted-foreground" aria-hidden /><Input type="search" aria-label="ابحث عن موظف" placeholder="ابحث باسم الموظف…" className="ps-9" value={filters.search} onChange={(event) => set({ search: event.target.value })} /></div>
         <select aria-label="الحالة" className={`${control} min-h-10`} value={filters.status} onChange={(event) => set({ status: event.target.value })}><option value="">كل الحالات</option>{Object.entries(DAY_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
         <Button type="button" variant="outline" className="min-h-10" aria-expanded={expandedFilters} aria-controls="attendance-daily-filters" onClick={() => setExpandedFilters(current => !current)}><SlidersHorizontal className="h-4 w-4" aria-hidden />تصفية إضافية{[filters.department, filters.locationId, filters.method].filter(Boolean).length ? <span className="rounded-full bg-primary/10 px-1.5 text-primary">{[filters.department, filters.locationId, filters.method].filter(Boolean).length}</span> : null}</Button>
-        <Button type="button" variant="ghost" className="min-h-10" aria-label="تحديث الحضور" disabled={dashboard.isFetching} onClick={() => void dashboard.refetch()}><RefreshCw className={`h-4 w-4 ${dashboard.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden />تحديث</Button>
+        <Button type="button" variant="ghost" className="min-h-10" aria-label="تحديث الحضور" disabled={dashboard.isFetching} onClick={refresh}><RefreshCw className={`h-4 w-4 ${dashboard.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden />تحديث</Button>
       </div>
       {expandedFilters ? <div id="attendance-daily-filters" className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
         <select aria-label="القسم" className={control} value={filters.department} onChange={(event) => set({ department: event.target.value })}><option value="">كل الأقسام</option>{(dashboard.data?.departments ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select>
@@ -103,6 +125,7 @@ function DashboardTab({ options, onSettings }: { options: Options; onSettings: (
       </div> : null}
       {dashboard.data && !dashboard.isError ? <p className="text-xs text-muted-foreground">{number(dashboard.data.rows.length)} موظف في العرض{dashboard.data.serverTime != null ? ` · آخر تحديث ${baghdadTime(dashboard.data.serverTime)} بتوقيت بغداد` : ""}</p> : null}
       </div>
+      {canViewGeofence && geofence.isError ? <GeofenceLoadError error={geofence.error} busy={geofence.isFetching} retry={() => void geofence.refetch()} /> : null}
       {dashboard.isPending ? <Skeleton className="h-48 w-full" /> : dashboard.isError ? null : !dashboard.data.rows.length ? <Empty>لا يوجد موظفون يطابقون التصفية.</Empty> : (
         <>
         <ul aria-label="حضور الموظفين" className="space-y-3 md:hidden">
@@ -110,13 +133,14 @@ function DashboardTab({ options, onSettings }: { options: Options; onSettings: (
             <div className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-center gap-2.5"><EmployeeAvatar name={row.name} photoUrl={row.photoUrl} size={40} /><div className="min-w-0"><h3 className="break-words text-sm font-bold">{row.name}</h3><p className="mt-1 break-words text-xs text-muted-foreground">{row.department ?? "القسم غير محدد"}</p></div></div><span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_TONE[row.status] ?? "bg-muted text-muted-foreground"}`}>{row.statusLabel}</span></div>
             <dl className="mt-4 grid grid-cols-3 gap-2 text-sm"><div><dt className="text-xs text-muted-foreground">الحضور</dt><dd className="mt-1 font-semibold tabular-nums">{baghdadTime(row.checkInMs)}</dd></div><div><dt className="text-xs text-muted-foreground">الانصراف</dt><dd className="mt-1 font-semibold tabular-nums">{baghdadTime(row.checkOutMs)}</dd></div><div><dt className="text-xs text-muted-foreground">الساعات المسجلة</dt><dd className="mt-1 font-semibold tabular-nums">{row.checkInMs != null ? hours(row.workedMinutes) : "—"}</dd></div></dl>
             <div className="mt-3 space-y-1 text-xs text-muted-foreground"><p className="flex items-start gap-1.5"><MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden /><span className="break-words">{row.locationName ?? "الموقع غير محدد"}</span></p><p>الوردية: {row.shiftStartMs != null ? <bdi dir="ltr">{baghdadTime(row.shiftStartMs)}–{baghdadTime(row.shiftEndMs)}</bdi> : "غير محددة"} · {methodLabel(row.method)}</p></div>
+            {statusByStaff.has(row.staffId) ? <div className="mt-3">{workplaceStatus(row)}</div> : null}
             {row.isLate || row.missingCheckOut ? <p className="mt-3 text-xs font-semibold text-amber-800 dark:text-amber-300">{[row.isLate ? "حضور متأخر" : "", row.missingCheckOut ? "تسجيل انصراف مفقود" : ""].filter(Boolean).join(" · ")}</p> : null}
             {row.bookingId || options.capabilities.canManage ? <div className="mt-3 flex items-center justify-end gap-2 border-t border-border pt-2">{row.bookingId ? <Button type="button" size="sm" variant="ghost" className="min-h-11" asChild><a href={`/admin/bookings/${row.bookingSource}/${row.bookingId}`}><ExternalLink className="h-4 w-4" aria-hidden />الحجز</a></Button> : null}{options.capabilities.canManage ? <Button type="button" variant="ghost" size="sm" className="min-h-11" aria-label={`إعدادات ${row.name}`} onClick={() => onSettings(row.staffId, row.name)}><Settings2 className="h-4 w-4" aria-hidden />إعدادات الموظف</Button> : null}</div> : null}
           </li>)}
         </ul>
         <div className="hidden md:block">
-        <TableShell wide={820}>
-          <thead><tr>{["الموظف والقسم", "موقع العمل", "الوردية", "الحضور", "الانصراف", "الساعات", "الطريقة", "الحالة", ""].map((label, index) => <th key={index} className={th}>{label}</th>)}</tr></thead>
+        <TableShell wide={canViewGeofence ? 940 : 820}>
+          <thead><tr>{["الموظف والقسم", "موقع العمل", "الوردية", "الحضور", "الانصراف", "الساعات", "الطريقة", "الحالة", ...(canViewGeofence ? ["نطاق العمل"] : []), ""].map((label, index) => <th key={index} scope="col" className={th}>{label}</th>)}</tr></thead>
           <tbody>{dashboard.data.rows.map((row) => (
             <tr key={row.staffId}>
               <td className={`${td} font-medium`}><div className="flex items-center gap-2.5"><EmployeeAvatar name={row.name} photoUrl={row.photoUrl} size={32} /><div><span>{row.name}</span><span className="block text-xs font-normal text-muted-foreground">{row.department ?? "—"}</span></div></div></td>
@@ -127,6 +151,7 @@ function DashboardTab({ options, onSettings }: { options: Options; onSettings: (
               <td className={`${td} whitespace-nowrap tabular-nums`}>{row.checkInMs != null ? hours(row.workedMinutes) : "—"}</td>
               <td className={`${td} text-xs`}>{methodLabel(row.method)}</td>
               <td className={td}><span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_TONE[row.status] ?? "bg-muted text-muted-foreground"}`}>{row.statusLabel}</span></td>
+              {canViewGeofence ? <td className={td}>{workplaceStatus(row)}</td> : null}
               <td className={td}>
                 <div className="flex flex-wrap gap-1">
                   {row.bookingId ? <Button type="button" size="sm" variant="ghost" asChild><a href={`/admin/bookings/${row.bookingSource}/${row.bookingId}`}><ExternalLink className="h-3.5 w-3.5" />الحجز</a></Button> : null}
@@ -562,6 +587,7 @@ function SettingsTab({ options, policyEditor, onSettings }: { options: Options; 
 export function AttendanceCenter({ policyEditor }: { policyEditor: ReactNode }) {
   const options = useQuery<Options>({ queryKey: ["admin", "attendance", "options"], queryFn: () => adminFetch("/admin/attendance/options") });
   const [tab, setTab] = useState("dashboard");
+  const [date, setDate] = useState(() => baghdadDate());
   const [employee, setEmployee] = useState<{ id: number; name: string } | null>(null);
   const openSettings = (id: number, name: string) => setEmployee({ id, name });
   if (options.isError) return <Failed error={options.error} retry={() => void options.refetch()} />;
@@ -576,12 +602,13 @@ export function AttendanceCenter({ policyEditor }: { policyEditor: ReactNode }) 
         </div>
         <Button type="button" variant="outline" className="min-h-11" asChild><a href="/staff?tab=attendance"><UserCheck className="h-4 w-4" aria-hidden />فتح حضوري</a></Button>
       </div>
-      <Tabs dir="rtl" value={tab} onValueChange={setTab}>
+      <Tabs dir="rtl" value={tab === "geofence" && !data.capabilities.canViewGeofence ? "dashboard" : tab} onValueChange={setTab}>
         <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
-          {[["dashboard", "لوحة الحضور"], ["records", "سجل الدوام"], ["shifts", "الورديات"], ["locations", "مواقع العمل"], ["kiosk", "شاشة QR"], ["corrections", "طلبات التصحيح"], ["reports", "التقارير"], ["settings", "الإعدادات"]].map(([value, label]) => <TabsTrigger key={value} value={value}>{label}</TabsTrigger>)}
+          {[["dashboard", "لوحة الحضور"], ["records", "سجل الدوام"], ...(data.capabilities.canViewGeofence ? [["geofence", "نطاق العمل"]] : []), ["shifts", "الورديات"], ["locations", "مواقع العمل"], ["kiosk", "شاشة QR"], ["corrections", "طلبات التصحيح"], ["reports", "التقارير"], ["settings", "الإعدادات"]].map(([value, label]) => <TabsTrigger key={value} value={value}>{label}</TabsTrigger>)}
         </TabsList>
-        <TabsContent value="dashboard" className="mt-3"><DashboardTab options={data} onSettings={openSettings} /></TabsContent>
+        <TabsContent value="dashboard" className="mt-3"><DashboardTab options={data} date={date} onDateChange={setDate} onSettings={openSettings} /></TabsContent>
         <TabsContent value="records" className="mt-3"><RecordsTab options={data} /></TabsContent>
+        {data.capabilities.canViewGeofence ? <TabsContent value="geofence" className="mt-3"><AttendanceGeofenceHistory date={date} onDateChange={setDate} staff={data.staff} canManage={Boolean(data.capabilities.canManageGeofence)} canReview={Boolean(data.capabilities.canReviewGeofence)} /></TabsContent> : null}
         <TabsContent value="shifts" className="mt-3"><ShiftsTab options={data} /></TabsContent>
         <TabsContent value="locations" className="mt-3"><LocationsTab options={data} /></TabsContent>
         <TabsContent value="kiosk" className="mt-3"><KioskTab options={data} /></TabsContent>

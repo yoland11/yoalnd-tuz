@@ -10,12 +10,9 @@ import Constants from "expo-constants";
  */
 function resolveBaseUrl(): string {
   const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
-  if (fromEnv) return fromEnv.replace(/\/+$/, "");
-
   const extra = (Constants.expoConfig?.extra ?? {}) as { apiBaseUrl?: string };
-  if (extra.apiBaseUrl) return extra.apiBaseUrl.replace(/\/+$/, "");
-
-  return "http://localhost:3000";
+  const server = (fromEnv || extra.apiBaseUrl || "http://localhost:3000").replace(/\/+$/, "");
+  return server.endsWith("/api") ? server : server + "/api";
 }
 
 export const env = {

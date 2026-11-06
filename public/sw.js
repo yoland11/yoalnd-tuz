@@ -94,13 +94,7 @@ function isCacheable(response) {
   return !/(?:no-store|private)/i.test(cacheControl);
 }
 
-self.addEventListener("push", (event) => {
-  let data = {};
-  try {
-    data = event.data ? event.data.json() : {};
-  } catch {
-    data = { title: "AJN", body: event.data ? event.data.text() : "" };
-  }
+function showPush(data) {
   const title = data.title || "AJN";
   const options = {
     body: data.body || "",
@@ -117,7 +111,27 @@ self.addEventListener("push", (event) => {
     vibrate: [120, 60, 120],
     requireInteraction: Boolean(data.requireInteraction),
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+  return self.registration.showNotification(title, options);
+}
+
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { title: "AJN", body: event.data ? event.data.text() : "" };
+  }
+  if (data.type === "attendance_geofence_exit") {
+    if (!Number.isSafeInteger(data.id) || data.id <= 0) return;
+    event.waitUntil(fetch(`/api/admin/notifications/attendance-exit/${data.id}`, {
+      credentials: "same-origin",
+      cache: "no-store",
+    }).then(async (response) => {
+      if (response.ok) await showPush(await response.json());
+    }));
+    return;
+  }
+  event.waitUntil(showPush(data));
 });
 
 self.addEventListener("notificationclick", (event) => {

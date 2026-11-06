@@ -21,7 +21,24 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-localization"
+      "expo-localization",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "يستخدم AJN Staff الكاميرا لمسح رمز الحضور والانصراف.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "يستخدم AJN Staff موقعك للتحقق عند تسجيل الحضور أو الانصراف حسب طريقة ورديتك.",
+          "locationAlwaysAndWhenInUsePermission": "بعد موافقتك على وردية محددة، يستخدم AJN Staff موقعك للتحقق من وجودك في موقع العمل حتى عند إغلاق الشاشة.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

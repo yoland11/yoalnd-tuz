@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { EmployeeGeofenceNotice } from "@/components/attendance-geofence-dashboard";
 import { useToast } from "@/hooks/use-toast";
 import { ATTENDANCE_METHOD_LABELS, CORRECTION_TYPES, DAY_STATUS_LABELS, baghdadDate, baghdadTime, type AttendanceMethod } from "@/lib/attendance-rules";
 import { fileToDataUrl } from "@/lib/image-tools";
@@ -206,7 +207,7 @@ export function AttendanceTodayCard({ detailed = false, onOpenHistory }: { detai
         <div className="min-w-0"><dt className="flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3 w-3" aria-hidden />موقع العمل</dt><dd className="mt-0.5 truncate font-semibold">{shift?.locationName ?? "—"}</dd></div>
         <div className="min-w-0"><dt className="flex items-center gap-1 text-xs text-muted-foreground"><Timer className="h-3 w-3" aria-hidden />ساعات اليوم</dt><dd className="mt-0.5 font-semibold tabular-nums">{hours(data.workedMinutes)}</dd></div>
       </dl>
-      {shift ? <p className="mt-3 text-xs text-muted-foreground">طريقة التسجيل: <b className="text-foreground">{ATTENDANCE_METHOD_LABELS[shift.method]}</b>{shift.needsGps ? " · نقرأ موقعك مرة واحدة عند التسجيل فقط" : ""}</p> : null}
+      {shift ? <p className="mt-3 text-xs text-muted-foreground">طريقة التسجيل: <b className="text-foreground">{ATTENDANCE_METHOD_LABELS[shift.method]}</b>{shift.needsGps ? " · يقرأ المتصفح موقعك مرة واحدة عند التسجيل" : ""}</p> : null}
       {shift?.manualOnly ? <p className="mt-2 text-sm text-muted-foreground">دوامك يحتاج موافقة المدير. استخدم «طلب تصحيح» لإرسال وقت الحضور أو الانصراف.</p> : data.enabled && !data.canCheckIn && !data.canCheckOut ? <p className="mt-2 text-sm text-muted-foreground">التسجيل غير متاح حالياً حسب حالة دوامك. يمكنك مراجعة سجلك أو إرسال طلب تصحيح.</p> : null}
       {scannedCode ? <p className="mt-3 rounded-lg bg-primary/5 p-2.5 text-sm"><QrCode className="me-1 inline h-4 w-4 text-primary" aria-hidden />تمت قراءة رمز الحضور. اختر حضور أو انصراف.</p> : null}
       {data.shifts.filter((row) => row.bookingId).map((row) => (
@@ -225,6 +226,7 @@ export function AttendanceTodayCard({ detailed = false, onOpenHistory }: { detai
       </div>
       {data.corrections.filter((row) => row.status === "pending").length ? <p className="mt-2 text-xs text-muted-foreground">لديك {data.corrections.filter((row) => row.status === "pending").length} طلب {CORRECTION_STATUS.pending}.</p> : null}
       {locating ? <p role="status" className="mt-3 text-sm text-muted-foreground">جارٍ التحقق من موقعك الحالي…</p> : null}
+      <EmployeeGeofenceNotice enabled={data.enabled || Boolean(data.open)} />
       {!detailed && onOpenHistory ? <Button type="button" variant="link" className="mt-2 min-h-11 px-0" onClick={onOpenHistory}><History className="h-4 w-4" aria-hidden />سجل حضوري وطلبات التصحيح</Button> : null}
       {detailed ? <div className="mt-6 space-y-5 border-t border-border pt-5">
         <section aria-label="سجل حضوري">

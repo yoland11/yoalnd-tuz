@@ -13,6 +13,28 @@ import { bookingCashSummary, bookingTransactionCondition, bookingVoucherShares }
 import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence, rowsOf as attendanceDatabaseRows } from "./attendance";
 import { QR_ROTATION_SECONDS, baghdadDate, addDays as attendanceAddDays } from "@/lib/attendance-rules";
 import { attendancePunchSchema } from "@/lib/attendance-submission";
+import {
+  attendanceGeofenceCapabilities,
+  formatGeofenceExitAlert,
+  geofenceConsentInput,
+  geofenceExceptionInput,
+  geofenceReviewInput,
+  geofenceSampleInput,
+  geofenceUnavailableInput,
+  isGeofencePushRecipient,
+} from "@/lib/attendance-geofence-contract";
+import {
+  approveGeofenceException,
+  closeGeofenceForCheckout,
+  geofenceDashboard,
+  geofenceMe,
+  markGeofenceUnavailable,
+  recordGeofenceSample,
+  reviewGeofenceVisit,
+  revokeGeofenceException,
+  setGeofenceConsent,
+  sweepGeofenceHistory,
+} from "./attendance-geofence";
 import { approveWarehouseCount, createWarehouseCount, listWarehouseCounts, rejectWarehouseCount, warehouseCountDetail } from "./warehouse-counts";
 import { warehouseDiscrepancies, warehouseMovementRows, warehouseStockRows, warehouseTotals, warehouseTransferRows } from "./warehouse-reports";
 import { SalesReturnError, salesInvoiceReturnCredits, salesInvoiceReturnCreditsSql, salesReturnsForInvoice } from "./sales-returns";
@@ -3232,6 +3254,7 @@ function configureWebPush() {
 async function sendPushToSubscriptions(
   subscriptions: any[],
   payload: Record<string, unknown>,
+  options?: webpush.RequestOptions,
 ) {
   if (!configureWebPush()) return "unavailable" as const;
   if (subscriptions.length === 0) return "no_subscriptions" as const;
@@ -3245,6 +3268,7 @@ async function sendPushToSubscriptions(
             keys: { p256dh: sub.p256dh, auth: sub.auth },
           },
           JSON.stringify(payload),
+          options,
         );
       } catch (err: any) {
         const status = Number(err?.statusCode ?? err?.status);
@@ -3379,6 +3403,87 @@ async function createNotificationOnce(
     if (existing) return existing;
   }
   return createNotification(input);
+}
+
+const ATTENDANCE_EXIT_NOTIFICATION = "attendance_geofence_exit";
+
+/** A visit and its inbox rows commit together. Claim each push attempt once. */
+async function deliverAttendanceExitAlerts(requestId: string, scope?: { ids: number[] } | { sourceStaffId: number }) {
+  if (scope && "ids" in scope && scope.ids.length === 0) return;
+  const leaseCutoff = Date.now() - 120_000;
+  const rows = await db.query.notificationsTable.findMany({
+    where: and(
+      eq(notificationsTable.type, ATTENDANCE_EXIT_NOTIFICATION),
+      isNull(notificationsTable.archivedAt),
+      scope && "ids" in scope ? inArray(notificationsTable.id, scope.ids) : undefined,
+      scope && "sourceStaffId" in scope ? sql`exists (
+        select 1 from attendance_geofence_visits v where v.id = ${notificationsTable.entityId}
+          and v.staff_id = ${scope.sourceStaffId} and v.ended_at is null
+      )` : undefined,
+      gte(notificationsTable.createdAt, new Date(Date.now() - 15 * 60_000)),
+      sql`coalesce((${notificationsTable.metadata}->>'pushAttempts')::int, 0) < 3`,
+      sql`(${notificationsTable.metadata}->>'pushStatus' = 'pending' or (
+        ${notificationsTable.metadata}->>'pushStatus' in ('sending', 'unavailable')
+        and coalesce((${notificationsTable.metadata}->>'pushAttemptMs')::bigint, 0) <= ${leaseCutoff}
+      ))`,
+    ),
+    orderBy: [asc(notificationsTable.id)],
+    limit: 60,
+  });
+  if (!rows.length) return;
+  const settings = await getGlobalNotificationSettings();
+  await Promise.all(rows.map(async (row) => {
+    const metadata = {
+      ...row.metadata,
+      pushStatus: "sending",
+      pushAttempts: Number(row.metadata.pushAttempts ?? 0) + 1,
+      pushAttemptMs: Date.now(),
+    };
+    const claimed = await db.update(notificationsTable).set({ metadata }).where(and(
+      eq(notificationsTable.id, row.id),
+      isNull(notificationsTable.archivedAt),
+      sql`${notificationsTable.metadata} = ${JSON.stringify(row.metadata)}::jsonb`,
+    )).returning({ id: notificationsTable.id });
+    if (!claimed.length) return;
+
+    let pushStatus: string;
+    try {
+      const recipient = row.staffId ? await db.query.staffTable.findFirst({
+        columns: { role: true, isActive: true },
+        where: eq(staffTable.id, row.staffId),
+      }) : null;
+      if (!recipient || !isGeofencePushRecipient(recipient)) {
+        pushStatus = "not_authorized";
+      } else if (!notificationTypeEnabled(settings, row.type, row.audienceType)) {
+        pushStatus = "disabled";
+      } else {
+        const subscriptions = await db.query.notificationSubscriptionsTable.findMany({
+          where: and(
+            eq(notificationSubscriptionsTable.ownerType, "staff"),
+            eq(notificationSubscriptionsTable.staffId, row.staffId!),
+            eq(notificationSubscriptionsTable.isActive, 1),
+          ),
+        });
+        pushStatus = subscriptions.length ? await sendPushToSubscriptions(subscriptions, {
+          id: row.id,
+          type: row.type,
+        }, { TTL: 300, timeout: 6_000 }) : "no_subscriptions";
+      }
+    } catch (cause) {
+      pushStatus = "unavailable";
+      console.warn("Attendance exit push deferred", {
+        requestId,
+        notificationId: row.id,
+        errorType: cause instanceof Error ? cause.name : "UnknownError",
+      });
+    }
+    await db.update(notificationsTable).set({
+      metadata: { ...metadata, pushStatus },
+    }).where(and(
+      eq(notificationsTable.id, row.id),
+      sql`${notificationsTable.metadata} = ${JSON.stringify(metadata)}::jsonb`,
+    ));
+  }));
 }
 
 async function notifyOrderNeedsFollowup(input: {
@@ -40519,6 +40624,37 @@ async function handleAdmin(
           eq(notificationsTable.staffId, auth.id),
         )
       : eq(notificationsTable.staffId, auth.id);
+    const geofenceInbox = or(
+      ne(notificationsTable.type, ATTENDANCE_EXIT_NOTIFICATION),
+      isGeofencePushRecipient(auth) ? eq(notificationsTable.staffId, auth.id) : undefined,
+    );
+
+    if (method === "GET" && parts[2] === "attendance-exit" && parts.length === 4) {
+      const id = optionalPositiveId(parts[3]);
+      if (!id || !isGeofencePushRecipient(auth)) return error("الإشعار غير متاح", 404);
+      const row = await db.query.notificationsTable.findFirst({
+        columns: { id: true, title: true, type: true, href: true, entityId: true },
+        where: and(
+          eq(notificationsTable.id, id),
+          eq(notificationsTable.type, ATTENDANCE_EXIT_NOTIFICATION),
+          eq(notificationsTable.audienceType, "admin"),
+          eq(notificationsTable.staffId, auth.id),
+          isNull(notificationsTable.archivedAt),
+          gte(notificationsTable.createdAt, new Date(Date.now() - 20 * 60_000)),
+        ),
+      });
+      if (!row?.entityId) return error("الإشعار غير متاح", 404);
+      const [visit] = attendanceDatabaseRows(await db.execute(sql`
+        select v.exit_at, coalesce(nullif(s.full_name, ''), s.username) as staff_name
+        from attendance_geofence_visits v join staff s on s.id = v.staff_id
+        where v.id = ${row.entityId}
+      `));
+      if (!visit) return error("الإشعار غير متاح", 404);
+      const message = formatGeofenceExitAlert(String(visit.staff_name), new Date(visit.exit_at).getTime());
+      const response = json({ id: row.id, title: row.title, body: message, type: row.type, href: row.href, tag: `attendance-geofence-visit-${row.entityId}` });
+      response.headers.set("Cache-Control", "private, no-store");
+      return response;
+    }
 
     if (parts[2] === "settings") {
       const settingsAuth = await requirePermission(req, "settings");
@@ -40562,6 +40698,7 @@ async function handleAdmin(
         eq(notificationsTable.audienceType, "admin"),
         sql`${notificationsTable.archivedAt} is null`,
         visibleInbox,
+        geofenceInbox,
       ];
       const status = params.get("status")?.trim();
       const type = params.get("type")?.trim();
@@ -40597,6 +40734,7 @@ async function handleAdmin(
               sql`${notificationsTable.archivedAt} is null`,
               sql`${notificationsTable.readAt} is null`,
               visibleInbox,
+              geofenceInbox,
             ),
           ),
       ]);
@@ -40623,6 +40761,7 @@ async function handleAdmin(
             eq(notificationsTable.id, id),
             eq(notificationsTable.audienceType, "admin"),
             visibleInbox,
+            geofenceInbox,
           ),
         )
         .returning();
@@ -40640,6 +40779,7 @@ async function handleAdmin(
             sql`${notificationsTable.archivedAt} is null`,
             sql`${notificationsTable.readAt} is null`,
             visibleInbox,
+            geofenceInbox,
           ),
         );
       return json({ message: "تم تحديد الكل كمقروء" });
@@ -40655,6 +40795,7 @@ async function handleAdmin(
             eq(notificationsTable.id, id),
             eq(notificationsTable.audienceType, "admin"),
             visibleInbox,
+            geofenceInbox,
           ),
         );
       return json({ message: "تم حذف الإشعار" });
@@ -47457,8 +47598,9 @@ async function handleAdmin(
   }
 
   if (section === "attendance") {
-    const auth = await getAdminUser(req);
-    if (!auth) return error("غير مخول", 401);
+    const attendanceSession = await resolveAdminSession(req);
+    if (!attendanceSession) return error("غير مخول", 401);
+    const auth = attendanceSession.user;
     await ensureAdminExtensionsTables();
     const canManageAll = ["admin", "manager"].includes(auth.role) || hasPermission(auth, "staff");
     const attendanceActor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
@@ -47471,6 +47613,101 @@ async function handleAdmin(
     const attendanceParams = req.nextUrl.searchParams;
     const attendanceResource = parts[2] ?? "";
     const noStoreJson = (data: unknown) => { const response = json(data); response.headers.set("Cache-Control", "private, no-store"); return response; };
+    const geofenceAccess = attendanceGeofenceCapabilities(auth);
+    if (attendanceResource === "geofence") {
+      const action = parts[3];
+      const nativeSessionId = attendanceSession.session.portal === "staff" &&
+        bearer(req) && !req.cookies.get(COOKIE_NAME)?.value
+        ? String(attendanceSession.session.id)
+        : null;
+      if (method === "GET" && !action) {
+        return noStoreJson(await geofenceMe(db, auth.id, nativeSessionId));
+      }
+      if (method === "GET" && action === "dashboard" && parts.length === 4) {
+        if (!geofenceAccess.canViewGeofence) return error("ليس لديك صلاحية عرض سجل نطاق العمل", 403);
+        return noStoreJson(await geofenceDashboard(db, {
+          date: attendanceParams.get("date") ?? baghdadDate(),
+          staffId: optionalPositiveId(attendanceParams.get("staffId")) ?? undefined,
+        }));
+      }
+      if (method === "POST" && action === "consent" && parts.length === 4) {
+        const parsed = geofenceConsentInput.safeParse(await body(req));
+        if (!parsed.success) return validationError("attendance.geofence.consent", parsed);
+        if (parsed.data.consent && !nativeSessionId) return error("فعّل التحقق من تطبيق AJN Staff الأصلي", 403);
+        const result = await db.transaction(tx => setGeofenceConsent(tx, {
+          ...parsed.data, staffId: auth.id, authSessionId: nativeSessionId,
+        }));
+        void logAdminActivity(req, parsed.data.consent ? "attendance_geofence_consented" : "attendance_geofence_revoked", "attendance", parsed.data.recordId);
+        return noStoreJson(result);
+      }
+      if (method === "POST" && action === "unavailable" && parts.length === 4) {
+        if (!nativeSessionId) return error("هذا الإجراء متاح من تطبيق AJN Staff الأصلي", 403);
+        const parsed = geofenceUnavailableInput.safeParse(await body(req));
+        if (!parsed.success) return validationError("attendance.geofence.unavailable", parsed);
+        return noStoreJson(await db.transaction(tx => markGeofenceUnavailable(tx, {
+          ...parsed.data, staffId: auth.id, authSessionId: nativeSessionId,
+        })));
+      }
+      if (method === "POST" && action === "sample" && parts.length === 4) {
+        if (!nativeSessionId) return error("هذا الإجراء متاح من تطبيق AJN Staff الأصلي", 403);
+        const limit = await consumeRateLimit({ action: "attendance-geofence-sample", keyParts: [String(auth.id)], limit: 16, windowMs: 60_000 });
+        if (!limit.allowed) return rateLimitError(limit);
+        const parsed = geofenceSampleInput.safeParse(await body(req));
+        if (!parsed.success) return validationError("attendance.geofence.sample", parsed);
+        const alertIds: number[] = [];
+        const result = await db.transaction(tx => recordGeofenceSample(tx, {
+          ...parsed.data, staffId: auth.id, authSessionId: nativeSessionId,
+        }, async (_executor, visit) => {
+          const recipients = await tx.select({ id: staffTable.id }).from(staffTable).where(and(
+            eq(staffTable.isActive, true),
+            inArray(staffTable.role, ["admin", "manager"]),
+          ));
+          if (!recipients.length) return;
+          const notices = await tx.insert(notificationsTable).values(recipients.map(recipient => ({
+            audienceType: "admin",
+            staffId: recipient.id,
+            type: ATTENDANCE_EXIT_NOTIFICATION,
+            title: "خروج من نطاق العمل",
+            entityType: "attendance_geofence_visit",
+            entityId: visit.id,
+            href: "/admin/attendance",
+            metadata: { pushStatus: "pending" },
+          }))).returning({ id: notificationsTable.id });
+          alertIds.push(...notices.map(notice => notice.id));
+        }));
+        const requestId = makeRequestId(req.headers.get("x-request-id"));
+        if (alertIds.length) await deliverAttendanceExitAlerts(requestId, { ids: alertIds });
+        else if (result.status === "outside") await deliverAttendanceExitAlerts(requestId, { sourceStaffId: auth.id });
+        return noStoreJson(result);
+      }
+      if (method === "POST" && action === "exceptions") {
+        if (!geofenceAccess.canManageGeofence) return error("ليس لديك صلاحية اعتماد الاستثناءات", 403);
+        if (parts.length === 4) {
+          const parsed = geofenceExceptionInput.safeParse(await body(req));
+          if (!parsed.success) return validationError("attendance.geofence.exception", parsed);
+          const result = await db.transaction(tx => approveGeofenceException(tx, parsed.data, attendanceWho));
+          void logAdminActivity(req, "attendance_geofence_exception_approved", "attendance_geofence_exception", result.id);
+          return noStoreJson(result);
+        }
+        const id = optionalPositiveId(parts[4]);
+        if (id && parts[5] === "revoke" && parts.length === 6) {
+          const result = await db.transaction(tx => revokeGeofenceException(tx, id, attendanceWho));
+          void logAdminActivity(req, "attendance_geofence_exception_revoked", "attendance_geofence_exception", id);
+          return noStoreJson(result);
+        }
+      }
+      if (method === "POST" && action === "visits" && parts[5] === "review" && parts.length === 6) {
+        if (!geofenceAccess.canReviewGeofence) return error("ليس لديك صلاحية مراجعة سجل الخروج", 403);
+        const id = optionalPositiveId(parts[4]);
+        if (!id) return error("معرّف الخروج غير صالح", 422);
+        const parsed = geofenceReviewInput.safeParse(await body(req));
+        if (!parsed.success) return validationError("attendance.geofence.review", parsed);
+        const result = await db.transaction(tx => reviewGeofenceVisit(tx, id, parsed.data, attendanceWho));
+        void logAdminActivity(req, "attendance_geofence_visit_reviewed", "attendance_geofence_visit", id, { approved: parsed.data.approved });
+        return noStoreJson(result);
+      }
+      return error("الطلب غير مدعوم", 405);
+    }
     if (attendanceResource === "me" && method === "GET") {
       const today = await attendanceToday(db as any, auth.id);
       const [mine, corrections] = await Promise.all([attendanceRecords(db as any, { staffId: auth.id, from: attendanceAddDays(baghdadDate(), -6), to: baghdadDate(), pageSize: 20 }), listCorrections(db as any, { staffId: auth.id })]);
@@ -47482,7 +47719,11 @@ async function handleAdmin(
       const parsed = attendancePunchSchema.safeParse(await body(req));
       if (!parsed.success) return validationError("attendance.punch", parsed);
       const { action } = parsed.data;
-      const result = await db.transaction((tx) => recordAttendance(tx as any, auth.id, parsed.data));
+      const result = await db.transaction(async tx => {
+        const punch = await recordAttendance(tx, auth.id, parsed.data);
+        if (action === "check_out") await closeGeofenceForCheckout(tx, auth.id, punch.recordId, punch.atMs);
+        return punch;
+      });
       void logAdminActivity(req, action === "check_in" ? "attendance_checkin" : "attendance_checkout", "attendance", result.recordId, { method: result.method });
       if (result.status === "late") void createNotificationOnce({ audienceType: "admin", type: "attendance_abnormal", title: "حضور متأخر", body: `${attendanceWho.name} سجل حضوراً متأخراً`, entityType: "attendance", entityId: result.recordId } as any);
       return json({ ...result, today: await attendanceToday(db as any, auth.id) }, action === "check_in" ? 201 : 200);
@@ -47533,7 +47774,7 @@ async function handleAdmin(
       }
       if (attendanceResource === "options" && method === "GET") {
         const [locations, staffRows] = await Promise.all([listLocations(db as any), db.execute(sql`select id, full_name, username, department, job_title, photo_url from staff where is_active = true order by coalesce(nullif(full_name, ''), username)`)]);
-        return noStoreJson({ locations, staff: attendanceRows<any>(staffRows).map((row) => ({ id: Number(row.id), fullName: row.full_name || row.username, username: row.username, department: row.department ?? null, jobTitle: row.job_title ?? null, photoUrl: row.photo_url ?? null })), capabilities: { canManage: attendanceManager, canApprove: attendanceApprover, canManagePolicy: canManageAll, canViewLocation: canManageAll || hasPermission(auth, "attendance_location_view") }, policy: await getPolicy() });
+        return noStoreJson({ locations, staff: attendanceRows<any>(staffRows).map((row) => ({ id: Number(row.id), fullName: row.full_name || row.username, username: row.username, department: row.department ?? null, jobTitle: row.job_title ?? null, photoUrl: row.photo_url ?? null })), capabilities: { canManage: attendanceManager, canApprove: attendanceApprover, canManagePolicy: canManageAll, canViewLocation: canManageAll || hasPermission(auth, "attendance_location_view"), ...geofenceAccess }, policy: await getPolicy() });
       }
       if (attendanceResource === "dashboard" && method === "GET") {
         return noStoreJson(await attendanceDashboard(db as any, { date: attendanceParams.get("date"), search: attendanceParams.get("search"), department: attendanceParams.get("department"), locationId: optionalPositiveId(attendanceParams.get("locationId")), status: attendanceParams.get("status"), method: attendanceParams.get("method"), staffId: optionalPositiveId(attendanceParams.get("staffId")) }));
@@ -47716,7 +47957,9 @@ async function handleAdmin(
           if (!open) return null;
           const now = new Date();
           if (now.getTime() < new Date(open.check_in_at).getTime()) throw new Error("وقت الانصراف لا يمكن أن يسبق الحضور");
-          return attendanceRows<any>(await tx.execute(sql`update attendance_records set check_out_at=${now},status='out',notes=concat_ws(E'\n',notes,'source:fingerprint'),updated_at=now() where id=${open.id} and check_out_at is null returning *`))[0] ?? null;
+          const saved = attendanceRows<any>(await tx.execute(sql`update attendance_records set check_out_at=${now},status='out',notes=concat_ws(E'\n',notes,'source:fingerprint'),updated_at=now() where id=${open.id} and check_out_at is null returning *`))[0] ?? null;
+          if (saved && (open.method === "qr" || open.method === "qr_gps")) await closeGeofenceForCheckout(tx, auth.id, Number(saved.id), now.getTime());
+          return saved;
         });
         if (!row) return error("لا يوجد حضور مفتوح لتسجيل الانصراف", 409);
         void logAdminActivity(req, "attendance_checkout", "attendance", row.id);
@@ -48123,6 +48366,7 @@ async function handleAdmin(
             eq(notificationsTable.audienceType, "admin"),
             sql`${notificationsTable.readAt} is null`,
             sql`${notificationsTable.archivedAt} is null`,
+            ne(notificationsTable.type, ATTENDANCE_EXIT_NOTIFICATION),
           ),
         ),
       db
@@ -68223,7 +68467,7 @@ async function handleStaffPortal(
           );
         }
       }
-      const { token, expiresAt } = await createSession(user.id, req);
+      const { token, expiresAt } = await createSession(user.id, req, "staff");
       await ensureStaffActivityColumn();
       await db
         .update(staffTable)
@@ -68236,7 +68480,7 @@ async function handleStaffPortal(
         user.id,
         {
           username: userKey,
-          portal: portalHeader(req),
+          portal: "staff",
         },
       );
       return json({
@@ -74782,7 +75026,9 @@ async function buildBackupPayload(): Promise<BackupPayload> {
     any,
   ][]) {
     try {
-      const rows = await db.select().from(table);
+      const rows = name === "notifications"
+        ? await db.select().from(notificationsTable).where(ne(notificationsTable.type, ATTENDANCE_EXIT_NOTIFICATION))
+        : await db.select().from(table);
       data[name] = rows;
       for (const url of collectBackupMedia(rows)) media.add(url);
     } catch (err: any) {
@@ -74945,6 +75191,10 @@ async function importBackupPayload(payload: any) {
     const table = BACKUP_ENTITIES[name] as any;
     const stats = { inserted: 0, skipped: 0, errors: 0 };
     for (const row of rows) {
+      if (name === "notifications" && row?.type === ATTENDANCE_EXIT_NOTIFICATION) {
+        stats.skipped++;
+        continue;
+      }
       try {
         const inserted = await db
           .insert(table)
@@ -75045,7 +75295,9 @@ async function handleBackup(
     ).toLowerCase();
     const table = BACKUP_ENTITIES[entity];
     if (!table) return error("كيان غير معروف", 404);
-    const rows = await db.select().from(table as any);
+    const rows = entity === "notifications"
+      ? await db.select().from(notificationsTable).where(ne(notificationsTable.type, ATTENDANCE_EXIT_NOTIFICATION))
+      : await db.select().from(table as any);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     if (fmt === "csv") {
       return text(toCsv(rows), 200, {
@@ -76653,13 +76905,26 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       if (!secret) return error("خدمة Cron غير مهيأة", 503);
       const auth = req.headers.get("authorization") ?? "";
       if (auth !== `Bearer ${secret}`) return error("غير مصرح", 401);
-      const [summary, rateLimitCleanup, workOrderDeadlines, attendanceEvidence] = await Promise.all([
+      const [summary, rateLimitCleanup, workOrderDeadlines, attendance] = await Promise.all([
         runSmartNotificationsSweep(),
         cleanupExpiredRateLimits(),
         sweepWorkOrderDeadlines(db, (notice) => createNotification(notice), { force: true }),
-        readAttendancePolicy(db as any).then((policy) => sweepLocationEvidence(db as any, policy.locationRetentionDays)),
+        readAttendancePolicy(db as any).then(async (policy) => {
+          const attendanceEvidence = await sweepLocationEvidence(db as any, policy.locationRetentionDays);
+          const days = Math.max(1, Math.min(3650, Math.round(policy.locationRetentionDays)));
+          const attendanceGeofence = await db.transaction(async (tx) => {
+            const history = await sweepGeofenceHistory(tx, days);
+            await tx.delete(notificationsTable).where(and(
+              eq(notificationsTable.type, ATTENDANCE_EXIT_NOTIFICATION),
+              lt(notificationsTable.createdAt, new Date(Date.now() - days * 86_400_000)),
+            ));
+            return history;
+          });
+          await deliverAttendanceExitAlerts(makeRequestId(req.headers.get("x-request-id")));
+          return { attendanceEvidence, attendanceGeofence };
+        }),
       ]);
-      return json({ ok: true, summary, rateLimitCleanup, workOrderDeadlines, attendanceEvidence });
+      return json({ ok: true, summary, rateLimitCleanup, workOrderDeadlines, ...attendance });
     }
     if (
       req.method === "GET" &&
@@ -76930,6 +77195,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     if(err instanceof AttendanceError){
       const requestId=makeRequestId(req.headers.get("x-request-id"));
       console.warn("AJN attendance operation rejected",{requestId,path:req.nextUrl.pathname,status:err.status,code:err.code});
+      if (err.status === 503) return error(err.message, 503, { requestId, code: "DATABASE_ERROR", retryable: true });
       return error(err.message,err.status,{requestId,code:err.status===403?"PERMISSION_DENIED":err.status===404?"NOT_FOUND":err.status===409?"CONFLICT":"VALIDATION_ERROR",retryable:false});
     }
     if(err instanceof WarehouseError){

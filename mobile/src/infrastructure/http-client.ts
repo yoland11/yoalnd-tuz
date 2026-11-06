@@ -28,15 +28,15 @@ export class ApiError extends Error {
 }
 
 export interface HttpClient {
-  get<T>(path: string, query?: QueryParams): Promise<T>;
-  post<T>(path: string, jsonBody?: unknown): Promise<T>;
+  get<T>(path: string, query?: QueryParams, signal?: AbortSignal): Promise<T>;
+  post<T>(path: string, jsonBody?: unknown, signal?: AbortSignal): Promise<T>;
 }
 
 type QueryParams = Record<string, string | number | boolean | null | undefined>;
 
 export interface HttpClientDeps {
   baseUrl?: string;
-  tokens: TokenStore;
+  tokens: Pick<TokenStore, "get">;
   /** Invoked when any request returns 401/403, so the app can sign the user out. */
   onUnauthorized?: () => void;
 }
@@ -84,7 +84,7 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
   async function request<T>(
     method: "GET" | "POST",
     path: string,
-    opts: { query?: QueryParams; jsonBody?: unknown } = {},
+    opts: { query?: QueryParams; jsonBody?: unknown; signal?: AbortSignal } = {},
   ): Promise<T> {
     const token = await deps.tokens.get();
     const headers: Record<string, string> = {
@@ -98,6 +98,7 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
       res = await fetch(buildUrl(baseUrl, path, opts.query), {
         method,
         headers,
+        signal: opts.signal,
         body: opts.jsonBody !== undefined ? JSON.stringify(opts.jsonBody) : undefined,
       });
     } catch (cause) {
@@ -116,7 +117,7 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
   }
 
   return {
-    get: (path, query) => request("GET", path, { query }),
-    post: (path, jsonBody) => request("POST", path, { jsonBody }),
+    get: (path, query, signal) => request("GET", path, { query, signal }),
+    post: (path, jsonBody, signal) => request("POST", path, { jsonBody, signal }),
   };
 }

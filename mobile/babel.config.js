@@ -1,12 +1,21 @@
 /** Expo + NativeWind. */
+const nativeWind = require("nativewind/babel");
+
+function nativeWindForSdk53() {
+  const preset = nativeWind();
+  return {
+    ...preset,
+    // Expo SDK 53 uses Reanimated 3, whose plugin is added by babel-preset-expo.
+    plugins: preset.plugins.filter((plugin) => plugin !== "react-native-worklets/plugin"),
+  };
+}
+
 module.exports = function (api) {
   api.cache(true);
   return {
     presets: [
-      // reanimated is only a transitive/optional peer of NativeWind and is not
-      // used by the app; disabling it avoids pulling react-native-worklets.
-      ["babel-preset-expo", { jsxImportSource: "nativewind", reanimated: false }],
-      "nativewind/babel",
+      ["babel-preset-expo", { jsxImportSource: "nativewind" }],
+      nativeWindForSdk53,
     ],
   };
 };

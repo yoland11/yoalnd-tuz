@@ -11,10 +11,12 @@
     },
     "preview": {
       "distribution": "internal",
+      "env": { "EXPO_PUBLIC_API_BASE_URL": "https://alijan-koshat.vercel.app" },
       "android": { "buildType": "apk" }
     },
     "production": {
       "autoIncrement": true,
+      "env": { "EXPO_PUBLIC_API_BASE_URL": "https://alijan-koshat.vercel.app" },
       "android": { "buildType": "app-bundle" }
     }
   },

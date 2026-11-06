@@ -36,20 +36,38 @@ app/               Expo Router screens (login, tabs: home/tasks, task/[id])
 
 ## Configure the server URL
 
-Copy `.env.example` → `.env` and set the reachable AJN base URL. On a **physical
+Create `mobile/.env` and set the reachable AJN base URL. On a **physical
 device** use your machine's LAN IP (not `localhost`):
 
 ```
 EXPO_PUBLIC_API_BASE_URL=http://192.168.1.20:3000
 ```
 
+EAS preview and production profiles use the AJN hosted API. Development builds
+can target a local or staging server using the variable above.
+
 ## Run in development
 
 ```bash
+pnpm install --frozen-lockfile --config.node-linker=hoisted  # from the repo root
 cd mobile
-pnpm install          # from repo root also works (workspace)
-pnpm start            # Expo dev server; open in Expo Go or a dev build
+NODE_PATH="$PWD/node_modules" pnpm start
 ```
+
+## QR attendance and workplace verification
+
+Open **دوامي** in an installed AJN Staff development or standalone build. Scan
+and confirm your QR check-in, then opt in for the current shift. Grant precise
+location and background location access. On iOS this needs **Always** access.
+On Android this may require **Allow all the time** in system settings. Sign in
+again after upgrading from an older AJN Staff build to use the updated session.
+
+Use **إيقاف مشاركة الموقع لهذه الوردية** to stop sharing even if the phone is
+offline. Checkout also stops tracking. Verify background exit and return on
+physical Android and iOS devices with the display locked and check manager
+alerts after granting browser push notifications. Expo Go and web do not
+support this background workflow. When the OS stops supplying usable location,
+the attendance status shows **تعذر التحقق من الموقع**.
 
 ## Build an installable APK (local)
 
@@ -59,7 +77,6 @@ and `ANDROID_HOME` set.
 **Option A — EAS local build (recommended, produces a signed APK):**
 ```bash
 cd mobile
-pnpm install
 npm i -g eas-cli
 eas build -p android --profile preview --local   # outputs an .apk in the folder
 ```
@@ -67,7 +84,6 @@ eas build -p android --profile preview --local   # outputs an .apk in the folder
 **Option B — bare Expo run (debug APK on a connected device/emulator):**
 ```bash
 cd mobile
-pnpm install
 npx expo run:android
 # debug APK at: android/app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -77,18 +93,18 @@ npx expo run:android
 
 ## Verify
 
-Both of these are known-green in this repo:
-
 ```bash
 cd mobile
-pnpm typecheck                              # tsc --noEmit → no errors
-npx expo export --platform android --clear  # Metro/NativeWind bundle → success
+pnpm typecheck
+NODE_PATH="$PWD/node_modules" pnpm exec expo export --platform android --platform ios --clear
 ```
 
-> Toolchain note: NativeWind 4.2.x requires **Tailwind CSS v3** (pinned here),
-> and `react-native-worklets` + `react-native-css-interop` are direct deps so
-> the Reanimated babel plugin and the `nativewind` jsx-runtime resolve under
-> pnpm's strict node_modules.
+The SDK 53 bundler uses the hoisted install described above. The mobile
+workspace pins Tailwind CSS v3 and the SDK-compatible Reanimated 3 runtime
+for NativeWind. Set `$env:NODE_PATH = (Resolve-Path node_modules).Path` in
+PowerShell from `mobile` before running Expo. This lets the hoisted Expo CLI
+resolve packages installed in the mobile workspace. See
+[Expo's pnpm monorepo guidance](https://docs.expo.dev/guides/monorepos/#package-managers-with-isolated-dependencies).
 
 ## Backend touchpoints (already in the main app)
 

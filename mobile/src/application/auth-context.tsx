@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { AuthUser } from "@/domain/entities";
+import { stopAttendanceLocation } from "@/infrastructure/attendance-location-task";
 import { authApi, setUnauthorizedHandler, tokens } from "./container";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated";
@@ -22,6 +23,10 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function stopAttendanceForSignOut() {
+  return stopAttendanceLocation().catch(() => console.warn("[attendance] local shutdown failed"));
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -31,6 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setStatus("unauthenticated");
     queryClient.clear();
+    await stopAttendanceForSignOut();
   }, [queryClient]);
 
   // Any request that comes back 401/403 forces a clean sign-out.
@@ -48,6 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (async () => {
       const token = await tokens.get();
       if (!token) {
+        void stopAttendanceForSignOut();
         if (active) setStatus("unauthenticated");
         return;
       }
@@ -59,6 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       } catch {
         await tokens.clear();
+        void stopAttendanceForSignOut();
         if (active) setStatus("unauthenticated");
       }
     })();
@@ -74,8 +82,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await authApi.logout();
-    await signOut();
+    await stopAttendanceForSignOut();
+    try {
+      await authApi.logout();
+    } finally {
+      await signOut();
+    }
   }, [signOut]);
 
   const value = useMemo<AuthContextValue>(
