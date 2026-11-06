@@ -32,26 +32,27 @@ const renderForm = (fixture = data, error?: unknown) => renderToStaticMarkup(<Bo
 const html = renderForm();
 const advanced = html.match(/<details\b[^>]*>[\s\S]*?<\/details>/g) ?? [];
 assert.equal(advanced.length, 1, "one advanced disclosure keeps secondary trip controls together");
-assert.match(advanced[0], /<summary\b[^>]*>[\s\S]*?تفاصيل متقدمة/, "secondary trip controls have a clear advanced entry point");
+assert.match(advanced[0], /<summary\b[^>]*>[\s\S]*?تفاصيل الرحلة/, "secondary trip controls have a clear entry point");
 assert.doesNotMatch(advanced[0].slice(0, advanced[0].indexOf(">")), /\bopen(?:=|\s|$)/, "advanced trip controls start collapsed");
 const primary = html.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, "");
-for (const label of ["المركبة", "السائق", "موقع الانطلاق", "موقع الوصول", "تاريخ النقل", "وقت الانطلاق", "أجرة النقل الكلية للحجز", "حفظ خطة النقل"]) {
+for (const label of ["السيارة", "السائق", "الأجرة — د.ع", "حفظ النقل"]) {
   assert.ok(primary.includes(label), `${label} is available without opening advanced details`);
 }
-for (const label of ["نوع النقل", "الوصول المتوقع", "هاتف السائق", "أعمال النقل المكلّف بها", "ملاحظات النقل", "بداية انشغال المورد", "نهاية الانشغال والإرجاع"]) {
+for (const label of ["موقع الانطلاق", "موقع الوصول", "تاريخ النقل", "وقت الانطلاق", "نوع النقل", "الوصول المتوقع", "هاتف السائق", "أعمال النقل المكلّف بها", "ملاحظات النقل", "يبدأ من", "ينتهي ويرجع"]) {
   assert.ok(advanced[0].includes(label), `${label} remains reachable in advanced details`);
   assert.ok(!primary.includes(label), `${label} does not crowd the daily controls`);
 }
 const summary = advanced[0].match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)![1];
 assert.match(summary, /فترة مخصصة/, "a stored resource interval is visible while advanced details are closed");
 assert.match(summary, /بيانات إضافية/, "stored receipt and secondary trip values are indicated while closed");
-for (const value of ["تجهيزات", "09:15", "07700000000", "إرجاع التجهيزات", "ملاحظة الوصل", "2026-11-04T08:00", "2026-11-04T12:00"]) {
+assert.match(summary, /مكان ووقت/, "a saved place or time is visible while the details are closed");
+for (const value of ["مخزن بغداد", "قاعة النور", "تجهيزات", "09:15", "07700000000", "إرجاع التجهيزات", "ملاحظة الوصل", "2026-11-04T08:00", "2026-11-04T12:00"]) {
   assert.ok(advanced[0].includes(value), `collapsed advanced controls retain ${value}`);
 }
 
-const plain = renderForm({ ...data, transportPlan: { ...data.transportPlan, trips: [{ ...data.transportPlan.trips[0], transportType: null, expectedArrivalTime: null, driverPhone: null, assignedWork: null, notes: null, resourceOccupancy: null }] } });
+const plain = renderForm({ ...data, transportPlan: { ...data.transportPlan, trips: [{ ...data.transportPlan.trips[0], origin: null, destination: null, transportDate: null, departureTime: null, transportType: null, expectedArrivalTime: null, driverPhone: null, assignedWork: null, notes: null, resourceOccupancy: null }] } });
 const plainSummary = plain.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)![1];
-assert.doesNotMatch(plainSummary, /فترة مخصصة|بيانات إضافية/, "an empty advanced section does not imply configured settings");
+assert.doesNotMatch(plainSummary, /فترة مخصصة|بيانات إضافية|مكان ووقت/, "an empty details section does not imply configured settings");
 
 // Legacy plans must expose the same daily controls and print entry point immediately.
 const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -60,7 +61,8 @@ client.setQueryData(["admin", "enterprise", "vehicles", "booking-editor"], { dat
 client.setQueryData(["admin", "staff", "booking-editor"], drivers);
 const editor = renderToStaticMarkup(<QueryClientProvider client={client}><BookingTransportPlanEditor reference={{ source: "service", id: 7 }} onPrint={() => {}}/></QueryClientProvider>);
 const editorPrimary = editor.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, "");
-assert.match(editorPrimary, /حفظ خطة النقل/, "legacy primary editor is visible without expanding a multi-trip section");
+assert.match(editorPrimary, /حفظ النقل/, "legacy primary editor is visible without expanding a multi-trip section");
+assert.match(editor, /role="radiogroup" aria-label="منو يتكفل بالنقل"/, "a booking without a saved trip plan first says who transports");
 assert.match(editorPrimary, /وصل رحلة 1/, "existing saved-trip print action stays visible");
 
 const perTrip = renderForm({ ...data, transportPlan: { ...data.transportPlan, feeMode: "per_trip", overallCharge: null, trips: [
@@ -68,9 +70,9 @@ const perTrip = renderForm({ ...data, transportPlan: { ...data.transportPlan, fe
   { ...data.transportPlan.trips[0], id: "trip-8", sequence: 2, vehicleId: 6, driverId: 9, customerCharge: 20000 },
 ] } });
 const perTripPrimary = perTrip.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, "");
-assert.equal((perTripPrimary.match(/أجرة هذه الرحلة — د.ع/g) ?? []).length, 2, "each trip keeps its independent fee visible");
+assert.equal((perTripPrimary.match(/الأجرة — د.ع/g) ?? []).length, 2, "each trip keeps its independent fee visible");
 assert.match(perTripPrimary, /50,000/, "independent fees retain the existing total");
-assert.match(perTripPrimary, /إضافة رحلة نقل/, "multiple trips remain a primary action");
+assert.match(perTripPrimary, /إضافة رحلة/, "multiple trips remain a primary action");
 
 const failure = renderForm(data, new Error("تغيّر إصدار الحجز؛ حدّث الصفحة"));
 const failurePrimary = failure.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, "");
@@ -79,4 +81,16 @@ const readonly = renderForm({ ...data, capabilities: { canEdit: false, canPrintF
 assert.doesNotMatch(readonly, /type="submit"/, "disclosure changes cannot grant save permission");
 assert.match(readonly, /<fieldset\b[^>]*disabled=""/, "read-only secondary and primary trip controls stay disabled");
 
-console.log("PASS simple transport UI: daily controls and legacy editor visible, advanced values/configuration retained, multiple trip fees, print/save actions, errors and read-only access");
+// A second trip on a one-price plan: that price stays on the first trip, nothing is split.
+const { addTransportTrip } = await import("../src/components/booking-transport-plan-editor");
+const two = addTransportTrip(data.transportPlan);
+assert.equal(two.feeMode, "per_trip");
+assert.equal(two.overallCharge, null);
+assert.equal(two.trips[0].customerCharge, 50000, "the saved price moves to the first trip unchanged");
+assert.equal(two.trips[1].customerCharge, null, "the new trip's price is left for the user");
+assert.equal(two.trips[1].sequence, 2);
+const multiOverall = { ...data.transportPlan, trips: [data.transportPlan.trips[0], { ...data.transportPlan.trips[0], id: "trip-9", sequence: 2 }] };
+assert.equal(addTransportTrip(multiOverall).feeMode, "overall", "a saved multi-trip whole price is never split automatically");
+const first = addTransportTrip({ ...data.transportPlan, trips: [], overallCharge: 0 }, 5);
+assert.deepEqual([first.feeMode, first.overallCharge, first.trips[0].vehicleId], ["per_trip", null, 5], "the first trip may start with the dispatched vehicle");
+console.log("PASS simple transport UI: car, driver and fee first, trip details closed but kept, who-transports choice, multiple trip fees without invented splits, print/save actions, errors and read-only access");

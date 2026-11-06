@@ -68,6 +68,7 @@ import { readTransportPlan,validateTransportPlan,prepareTransportPlanSave,Transp
 import { reconcilePaymentState } from "./payment-state";
 import { readTransportReceipt,projectVehicleTransportBooking } from "./booking-transport-receipt";
 import { readVehicleTransportPlans,addPlanVehicleStats,assertPlanFitsPartnershipLedger,type VehicleTransportFinancialTrip } from "./vehicle-transport-plans";
+import { PartnerShareError, assertPayoutFits, buildPartnerMonths, isMonth, lastDayOfMonth, monthRange, partnerBalance, percentToBasisPoints, termForMonth, toFils, fromFils, type PartnerTerm } from "@/lib/vehicle-partner-share";
 import { normalizeTransportReceiptSettings,DEFAULT_TRANSPORT_RECEIPT_SETTINGS } from "@/lib/transport-receipt";
 import { executedTransportRevenue, transportTotalDelta } from "@/lib/booking-transport";
 import { LoadingError } from "@/lib/booking-loading";
@@ -23737,6 +23738,69 @@ async function enterpriseDispatchSuggestions(
   };
 }
 
+// Simple vehicle profit split (migration 0136): the company and one partner.
+let vehiclePartnersTableReady = false;
+async function vehiclePartnersReady() {
+  if (vehiclePartnersTableReady) return true;
+  const result: any = await db.execute(sql`select to_regclass('public.vehicle_partners') is not null as ready`);
+  vehiclePartnersTableReady = result?.rows?.[0]?.ready === true;
+  return vehiclePartnersTableReady;
+}
+
+const VehiclePartnerTermSchema = z.object({
+  partnerName: z.string().trim().min(1, "اكتب اسم الشريك").max(200),
+  partnerPhone: z.string().trim().max(30).regex(/^[+0-9\u0660-\u0669\s()-]*$/, "رقم الهاتف غير صالح").optional().nullable(),
+  sharePercent: z.union([z.string(), z.number()]),
+  startsMonth: z.string().refine(isMonth, "اختر الشهر"),
+}).strict();
+
+const VehiclePartnerPayoutSchema = z.object({
+  amount: z.coerce.number().positive("مبلغ الصرف يجب أن يكون أكبر من صفر").max(999_999_999_999),
+  payoutDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "اختر تاريخ الصرف"),
+  paymentMethod: z.enum(["cash", "transfer", "pos"]).default("cash"),
+  note: z.string().trim().max(500).optional().nullable(),
+  idempotencyKey: z.string().trim().min(12).max(160),
+}).strict();
+
+type VehiclePartnerExecutor = { execute: (query: any) => Promise<any> };
+
+/** Payout requests are main-cash rows of source 'vehicle_partner_share'. Paid is
+ * what was executed minus executed reversals; nothing else is a payment. */
+async function vehiclePartnerPayouts(executor: VehiclePartnerExecutor, vehicleId: number) {
+  const result: any = await executor.execute(sql`
+    select f.id, f.transaction_no, f.transaction_date::text as transaction_date, f.amount::text as amount,
+           f.approval_status, f.payment_method, f.customer_name, f.notes, f.requested_by_name,
+           coalesce((select sum(r.amount) from financial_transactions r
+                     where r.reversed_transaction_id = f.id and r.approval_status = 'executed'), 0)::text as reversed
+    from financial_transactions f
+    where f.source_type = 'vehicle_partner_share' and f.source_id = ${String(vehicleId)}
+      and f.reversed_transaction_id is null
+    order by f.id desc
+    limit 1001
+  `);
+  if (!Array.isArray(result?.rows)) throw new Error("Invalid vehicle partner payout response");
+  if (result.rows.length > 1000) throw new PartnerShareError("سجل صرف حصة الشريك تجاوز حد العرض", 422);
+  let paid = 0, pending = 0;
+  const rows = result.rows.map((row: any) => {
+    const amount = toFils(Number(row.amount)), reversed = toFils(Number(row.reversed));
+    if (row.approval_status === "executed") paid += Math.max(0, amount - reversed);
+    else if (row.approval_status === "pending") pending += amount;
+    return {
+      id: Number(row.id),
+      transactionNo: row.transaction_no ?? null,
+      date: row.transaction_date,
+      amount: fromFils(amount),
+      reversed: fromFils(reversed),
+      status: row.approval_status === "executed" && reversed > 0 ? (reversed >= amount ? "reversed" : "partially_reversed") : String(row.approval_status),
+      paymentMethod: row.payment_method ?? null,
+      partnerName: row.customer_name ?? null,
+      note: row.notes ?? null,
+      requestedBy: row.requested_by_name ?? null,
+    };
+  });
+  return { rows, paid: fromFils(paid), pending: fromFils(pending) };
+}
+
 async function handleEnterpriseAdmin(
   req: NextRequest,
   parts: string[],
@@ -23826,179 +23890,349 @@ async function handleEnterpriseAdmin(
     if (!vehicle) return error("السيارة غير موجودة", 404);
     const from = req.nextUrl.searchParams.get("from")?.trim() || null;
     const to = req.nextUrl.searchParams.get("to")?.trim() || null;
-    const bookingRows = await db.query.koshaBookingsTable.findMany({
-      where: and(
-        eq(koshaBookingsTable.transportationVehicleId, vehicleId),
-        eq(koshaBookingsTable.transportationMode, "ajn"),
-        sql`${koshaBookingsTable.bookingDetails}->'bookingOperations'->'transportPlan' is null`,
-        sql`${koshaBookingsTable.archivedAt} is null`,
-        sql`${koshaBookingsTable.status} <> 'cancelled'`,
-        from ? gte(koshaBookingsTable.eventDate, from) : undefined,
-        to ? lte(koshaBookingsTable.eventDate, to) : undefined,
-      ),
-      orderBy: [desc(koshaBookingsTable.eventDate), desc(koshaBookingsTable.id)],
-      limit: 501,
-    });
-    const serviceTripRows: any[] = ((await db.execute(sql`
-      select s.id, s.tracking_code, s.customer_name, s.event_date::text as event_date, s.total_amount, s.deposit_amount, s.payment_status,
-             ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")} as transportation
-      from service_orders s
-      where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId' = ${String(vehicleId)}
-        and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode' = 'ajn'
-        and s.custom_fields->'bookingOperations'->'transportPlan' is null
-        and s.archived_at is null and s.status not in ('cancelled', 'canceled')
-        ${from ? sql`and s.event_date::text >= ${from}` : sql``}
-        ${to ? sql`and s.event_date::text <= ${to}` : sql``}
-      order by s.event_date desc nulls last, s.id desc
-      limit 501
-    `)) as any)?.rows ?? [];
-    const planBookings = await readVehicleTransportPlans(db,{vehicleId,from,to});
-    if(bookingRows.length>500||serviceTripRows.length>500)throw new TransportPlanError("تجاوزت الرحلات حد التقرير؛ اختر نطاق تاريخ أدق",422);
-    const driverIds = [
-      ...bookingRows.map((row) => row.transportationDriverId),
-      ...serviceTripRows.map((row) => Number(row.transportation?.driverId)),
-      ...planBookings.flatMap(row=>row.plan.trips.map(trip=>trip.driverId)),
-    ].filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value > 0);
-    const drivers = driverIds.length ? await db.query.staffTable.findMany({ where: inArray(staffTable.id, [...new Set(driverIds)]) }) : [];
-    const driverById = new Map(drivers.map((row) => [row.id, row]));
-    const expenseRows = await db.query.vehicleExpensesTable.findMany({
-      where: and(
-        eq(vehicleExpensesTable.vehicleId, vehicleId),
-        from ? gte(vehicleExpensesTable.expenseDate, new Date(`${from}T00:00:00`)) : undefined,
-        to ? lte(vehicleExpensesTable.expenseDate, new Date(`${to}T23:59:59`)) : undefined,
-      ),
-      orderBy: [desc(vehicleExpensesTable.expenseDate), desc(vehicleExpensesTable.id)],
-      limit: 501,
-    });
-    if(expenseRows.length>500)throw new TransportPlanError("تجاوزت المصاريف حد التقرير؛ اختر نطاق تاريخ أدق",422);
-    const executedTransactionIds = expenseRows
-      .filter((row) => ["executed", "partially_reversed", "reversed"].includes(row.status) && Number.isInteger(row.financialTransactionId))
-      .map((row) => Number(row.financialTransactionId));
-    const reversals = executedTransactionIds.length ? await db.query.financialTransactionsTable.findMany({
-      where: and(inArray(financialTransactionsTable.reversedTransactionId, executedTransactionIds), eq(financialTransactionsTable.approvalStatus, "executed")),
-    }) : [];
-    const reversedByTransaction = new Map<number, number>();
-    for (const reversal of reversals) {
-      const originalId = Number(reversal.reversedTransactionId);
-      reversedByTransaction.set(originalId, money(reversedByTransaction.get(originalId) ?? 0) + money(reversal.amount));
-    }
-    const bookingById = new Map(bookingRows.map((row) => [row.id, row]));
-    const serviceExpenseLink = await vehicleExpenseServiceLinkReady();
-    const serviceOrderByExpense = new Map<number, number>();
-    if (serviceExpenseLink && expenseRows.length) {
-      const linked: any[] = ((await db.execute(sql`
-        select id, service_order_id from vehicle_expenses
-        where id in (${sql.join(expenseRows.map((row) => sql`${row.id}`), sql`, `)}) and service_order_id is not null
-      `)) as any)?.rows ?? [];
-      for (const row of linked) serviceOrderByExpense.set(Number(row.id), Number(row.service_order_id));
-    }
-    const linkedServiceIds = [...new Set(serviceOrderByExpense.values())];
-    const serviceCodes = new Map<number, string>();
-    if (linkedServiceIds.length) {
-      const codes: any[] = ((await db.execute(sql`
-        select id, tracking_code from service_orders where id in (${sql.join(linkedServiceIds.map((value) => sql`${value}`), sql`, `)})
-      `)) as any)?.rows ?? [];
-      for (const row of codes) serviceCodes.set(Number(row.id), row.tracking_code ?? `S-${row.id}`);
-    }
-    // Same rule as «مصاريف السيارة المنفذة»: only executed expenses, net of executed
-    // reversals (a request awaiting approval has a transaction but moved no money).
-    const tripExpenseOf = (matches: (expense: (typeof expenseRows)[number]) => boolean) => expenseRows.reduce((sum, expense) => {
-      if (!matches(expense) || !expense.financialTransactionId || !["executed", "partially_reversed", "reversed"].includes(expense.status)) return sum;
-      const reversed = money(reversedByTransaction.get(expense.financialTransactionId) ?? 0);
-      return sum + Math.max(0, money(expense.amount) - reversed);
-    }, 0);
-    const trips:VehicleTransportFinancialTrip[] = bookingRows.map((booking) => {
-      const total = money(booking.totalAmount);
-      const paid = money(booking.paidAmount);
-      const fee = money(booking.transportationFee);
-      // Keep the legacy collection attribution separate from the recorded fee.
-      // Vehicle income uses the full fee; neither value posts a cash movement.
-      const executedTransportationRevenue = total > 0 ? money(fee * Math.min(1, Math.max(0, paid / total))) : 0;
-      const tripExpenses = tripExpenseOf((expense) => expense.bookingId === booking.id);
-      const driver = booking.transportationDriverId ? driverById.get(booking.transportationDriverId) : null;
-      return {
-        source: "kosha" as const,
-        bookingId: booking.id,
-        bookingNo: booking.trackingCode ?? `KB-${booking.id}`,
-        customerName: booking.customerName,
-        eventDate: booking.eventDate,
-        transportationFee: fee,
-        executedTransportationRevenue,
-        paymentStatus: booking.paymentStatus,
-        executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
-        driverName: driver?.fullName || driver?.username || null,
-        tripExpense: money(tripExpenses),
-        tripProfit: fee - tripExpenses,
-      };
-    });
-    // Booking-centre transport on service orders, with expenses linked to them (0128).
-    for (const order of serviceTripRows) {
-      const total = money(order.total_amount);
-      const paid = money(order.deposit_amount);
-      const fee = money(order.transportation?.fee);
-      const executedTransportationRevenue = executedTransportRevenue(fee, paid, total);
-      const driver = Number(order.transportation?.driverId) > 0 ? driverById.get(Number(order.transportation.driverId)) : null;
-      trips.push({
-        source: "service" as any,
-        bookingId: Number(order.id),
-        bookingNo: order.tracking_code ?? `S-${order.id}`,
-        customerName: order.customer_name,
-        eventDate: order.event_date,
-        transportationFee: fee,
-        executedTransportationRevenue,
-        paymentStatus: order.payment_status,
-        executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
-        driverName: driver?.fullName || driver?.username || null,
-        tripExpense: money(tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id))),
-        tripProfit: fee - tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id)),
+    return json(await vehicleFinancialReport(vehicle, from, to));
+  }
+
+  // Declared here (hoisted) so the financial route, its reader and the partner
+  // split below share one report body with the route's own contract tests.
+  /**
+   * One vehicle's transport fees, expenses and net for an event-date range. The
+   * vehicle page and the simple partner split (0136) read the same numbers.
+   */
+  async function vehicleFinancialReport(vehicle: typeof fleetVehiclesTable.$inferSelect, from: string | null, to: string | null) {
+      const vehicleId = vehicle.id;
+      const bookingRows = await db.query.koshaBookingsTable.findMany({
+        where: and(
+          eq(koshaBookingsTable.transportationVehicleId, vehicleId),
+          eq(koshaBookingsTable.transportationMode, "ajn"),
+          sql`${koshaBookingsTable.bookingDetails}->'bookingOperations'->'transportPlan' is null`,
+          sql`${koshaBookingsTable.archivedAt} is null`,
+          sql`${koshaBookingsTable.status} <> 'cancelled'`,
+          from ? gte(koshaBookingsTable.eventDate, from) : undefined,
+          to ? lte(koshaBookingsTable.eventDate, to) : undefined,
+        ),
+        orderBy: [desc(koshaBookingsTable.eventDate), desc(koshaBookingsTable.id)],
+        limit: 501,
       });
-    }
-    trips.sort((a, b) => String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? "")) || b.bookingId - a.bookingId);
-    for(const booking of planBookings){
-      const expense=tripExpenseOf(row=>booking.source==="kosha"?row.bookingId===booking.id:serviceOrderByExpense.get(row.id)===booking.id);
-      const value=projectVehicleTransportBooking(booking.plan,vehicleId,{paid:booking.paid,total:booking.total,approvedExpense:expense});
-      const operations=value.operations.map(trip=>({id:trip.id,sequence:trip.sequence,destination:trip.destination,driverName:trip.driverId?(driverById.get(trip.driverId)?.fullName||driverById.get(trip.driverId)?.username||null):null}));
-      trips.push({source:booking.source,bookingId:booking.id,bookingNo:booking.bookingNo,customerName:booking.customerName,eventDate:booking.eventDate,transportationFee:value.customerCharge,executedTransportationRevenue:value.transportRevenue,paymentStatus:booking.paymentStatus,executionStatus:value.transportRevenue==null?"unallocated":value.transportRevenue>0?"executed":"pending",driverName:[...new Set(operations.map(trip=>trip.driverName).filter(Boolean))].join("، ")||null,tripExpense:value.expense,tripProfit:value.profit,operations});
-    }
-    trips.sort((a,b)=>String(b.eventDate??"").localeCompare(String(a.eventDate??""))||b.bookingId-a.bookingId);
-    const expenses = expenseRows.map((expense) => {
-      const reversed = expense.financialTransactionId ? money(reversedByTransaction.get(expense.financialTransactionId) ?? 0) : 0;
-      const effectiveAmount = ["executed", "partially_reversed", "reversed"].includes(expense.status)
-        ? money(Math.max(0, money(expense.amount) - reversed))
-        : 0;
-      const booking = expense.bookingId ? bookingById.get(expense.bookingId) : null;
-      const serviceOrderId = serviceOrderByExpense.get(expense.id) ?? null;
+      const serviceTripRows: any[] = ((await db.execute(sql`
+        select s.id, s.tracking_code, s.customer_name, s.event_date::text as event_date, s.total_amount, s.deposit_amount, s.payment_status,
+               ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")} as transportation
+        from service_orders s
+        where ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'vehicleId' = ${String(vehicleId)}
+          and ${sql.raw("s.custom_fields->'bookingOperations'->'transportation'")}->>'mode' = 'ajn'
+          and s.custom_fields->'bookingOperations'->'transportPlan' is null
+          and s.archived_at is null and s.status not in ('cancelled', 'canceled')
+          ${from ? sql`and s.event_date::text >= ${from}` : sql``}
+          ${to ? sql`and s.event_date::text <= ${to}` : sql``}
+        order by s.event_date desc nulls last, s.id desc
+        limit 501
+      `)) as any)?.rows ?? [];
+      const planBookings = await readVehicleTransportPlans(db,{vehicleId,from,to});
+      if(bookingRows.length>500||serviceTripRows.length>500)throw new TransportPlanError("تجاوزت الرحلات حد التقرير؛ اختر نطاق تاريخ أدق",422);
+      const driverIds = [
+        ...bookingRows.map((row) => row.transportationDriverId),
+        ...serviceTripRows.map((row) => Number(row.transportation?.driverId)),
+        ...planBookings.flatMap(row=>row.plan.trips.map(trip=>trip.driverId)),
+      ].filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value > 0);
+      const drivers = driverIds.length ? await db.query.staffTable.findMany({ where: inArray(staffTable.id, [...new Set(driverIds)]) }) : [];
+      const driverById = new Map(drivers.map((row) => [row.id, row]));
+      const expenseRows = await db.query.vehicleExpensesTable.findMany({
+        where: and(
+          eq(vehicleExpensesTable.vehicleId, vehicleId),
+          from ? gte(vehicleExpensesTable.expenseDate, new Date(`${from}T00:00:00`)) : undefined,
+          to ? lte(vehicleExpensesTable.expenseDate, new Date(`${to}T23:59:59`)) : undefined,
+        ),
+        orderBy: [desc(vehicleExpensesTable.expenseDate), desc(vehicleExpensesTable.id)],
+        limit: 501,
+      });
+      if(expenseRows.length>500)throw new TransportPlanError("تجاوزت المصاريف حد التقرير؛ اختر نطاق تاريخ أدق",422);
+      const executedTransactionIds = expenseRows
+        .filter((row) => ["executed", "partially_reversed", "reversed"].includes(row.status) && Number.isInteger(row.financialTransactionId))
+        .map((row) => Number(row.financialTransactionId));
+      const reversals = executedTransactionIds.length ? await db.query.financialTransactionsTable.findMany({
+        where: and(inArray(financialTransactionsTable.reversedTransactionId, executedTransactionIds), eq(financialTransactionsTable.approvalStatus, "executed")),
+      }) : [];
+      const reversedByTransaction = new Map<number, number>();
+      for (const reversal of reversals) {
+        const originalId = Number(reversal.reversedTransactionId);
+        reversedByTransaction.set(originalId, money(reversedByTransaction.get(originalId) ?? 0) + money(reversal.amount));
+      }
+      const bookingById = new Map(bookingRows.map((row) => [row.id, row]));
+      const serviceExpenseLink = await vehicleExpenseServiceLinkReady();
+      const serviceOrderByExpense = new Map<number, number>();
+      if (serviceExpenseLink && expenseRows.length) {
+        const linked: any[] = ((await db.execute(sql`
+          select id, service_order_id from vehicle_expenses
+          where id in (${sql.join(expenseRows.map((row) => sql`${row.id}`), sql`, `)}) and service_order_id is not null
+        `)) as any)?.rows ?? [];
+        for (const row of linked) serviceOrderByExpense.set(Number(row.id), Number(row.service_order_id));
+      }
+      const linkedServiceIds = [...new Set(serviceOrderByExpense.values())];
+      const serviceCodes = new Map<number, string>();
+      if (linkedServiceIds.length) {
+        const codes: any[] = ((await db.execute(sql`
+          select id, tracking_code from service_orders where id in (${sql.join(linkedServiceIds.map((value) => sql`${value}`), sql`, `)})
+        `)) as any)?.rows ?? [];
+        for (const row of codes) serviceCodes.set(Number(row.id), row.tracking_code ?? `S-${row.id}`);
+      }
+      // Same rule as «مصاريف السيارة المنفذة»: only executed expenses, net of executed
+      // reversals (a request awaiting approval has a transaction but moved no money).
+      const tripExpenseOf = (matches: (expense: (typeof expenseRows)[number]) => boolean) => expenseRows.reduce((sum, expense) => {
+        if (!matches(expense) || !expense.financialTransactionId || !["executed", "partially_reversed", "reversed"].includes(expense.status)) return sum;
+        const reversed = money(reversedByTransaction.get(expense.financialTransactionId) ?? 0);
+        return sum + Math.max(0, money(expense.amount) - reversed);
+      }, 0);
+      const trips:VehicleTransportFinancialTrip[] = bookingRows.map((booking) => {
+        const total = money(booking.totalAmount);
+        const paid = money(booking.paidAmount);
+        const fee = money(booking.transportationFee);
+        // Keep the legacy collection attribution separate from the recorded fee.
+        // Vehicle income uses the full fee; neither value posts a cash movement.
+        const executedTransportationRevenue = total > 0 ? money(fee * Math.min(1, Math.max(0, paid / total))) : 0;
+        const tripExpenses = tripExpenseOf((expense) => expense.bookingId === booking.id);
+        const driver = booking.transportationDriverId ? driverById.get(booking.transportationDriverId) : null;
+        return {
+          source: "kosha" as const,
+          bookingId: booking.id,
+          bookingNo: booking.trackingCode ?? `KB-${booking.id}`,
+          customerName: booking.customerName,
+          eventDate: booking.eventDate,
+          transportationFee: fee,
+          executedTransportationRevenue,
+          paymentStatus: booking.paymentStatus,
+          executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
+          driverName: driver?.fullName || driver?.username || null,
+          tripExpense: money(tripExpenses),
+          tripProfit: fee - tripExpenses,
+        };
+      });
+      // Booking-centre transport on service orders, with expenses linked to them (0128).
+      for (const order of serviceTripRows) {
+        const total = money(order.total_amount);
+        const paid = money(order.deposit_amount);
+        const fee = money(order.transportation?.fee);
+        const executedTransportationRevenue = executedTransportRevenue(fee, paid, total);
+        const driver = Number(order.transportation?.driverId) > 0 ? driverById.get(Number(order.transportation.driverId)) : null;
+        trips.push({
+          source: "service" as any,
+          bookingId: Number(order.id),
+          bookingNo: order.tracking_code ?? `S-${order.id}`,
+          customerName: order.customer_name,
+          eventDate: order.event_date,
+          transportationFee: fee,
+          executedTransportationRevenue,
+          paymentStatus: order.payment_status,
+          executionStatus: executedTransportationRevenue > 0 ? "executed" : "pending",
+          driverName: driver?.fullName || driver?.username || null,
+          tripExpense: money(tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id))),
+          tripProfit: fee - tripExpenseOf((expense) => serviceOrderByExpense.get(expense.id) === Number(order.id)),
+        });
+      }
+      trips.sort((a, b) => String(b.eventDate ?? "").localeCompare(String(a.eventDate ?? "")) || b.bookingId - a.bookingId);
+      for(const booking of planBookings){
+        const expense=tripExpenseOf(row=>booking.source==="kosha"?row.bookingId===booking.id:serviceOrderByExpense.get(row.id)===booking.id);
+        const value=projectVehicleTransportBooking(booking.plan,vehicleId,{paid:booking.paid,total:booking.total,approvedExpense:expense});
+        const operations=value.operations.map(trip=>({id:trip.id,sequence:trip.sequence,destination:trip.destination,driverName:trip.driverId?(driverById.get(trip.driverId)?.fullName||driverById.get(trip.driverId)?.username||null):null}));
+        trips.push({source:booking.source,bookingId:booking.id,bookingNo:booking.bookingNo,customerName:booking.customerName,eventDate:booking.eventDate,transportationFee:value.customerCharge,executedTransportationRevenue:value.transportRevenue,paymentStatus:booking.paymentStatus,executionStatus:value.transportRevenue==null?"unallocated":value.transportRevenue>0?"executed":"pending",driverName:[...new Set(operations.map(trip=>trip.driverName).filter(Boolean))].join("، ")||null,tripExpense:value.expense,tripProfit:value.profit,operations});
+      }
+      trips.sort((a,b)=>String(b.eventDate??"").localeCompare(String(a.eventDate??""))||b.bookingId-a.bookingId);
+      const expenses = expenseRows.map((expense) => {
+        const reversed = expense.financialTransactionId ? money(reversedByTransaction.get(expense.financialTransactionId) ?? 0) : 0;
+        const effectiveAmount = ["executed", "partially_reversed", "reversed"].includes(expense.status)
+          ? money(Math.max(0, money(expense.amount) - reversed))
+          : 0;
+        const booking = expense.bookingId ? bookingById.get(expense.bookingId) : null;
+        const serviceOrderId = serviceOrderByExpense.get(expense.id) ?? null;
+        return {
+          id: expense.id,
+          date: expense.expenseDate.toISOString(),
+          expenseType: expense.expenseType,
+          expenseTypeLabel: VEHICLE_EXPENSE_LABELS[expense.expenseType as keyof typeof VEHICLE_EXPENSE_LABELS] ?? expense.expenseType,
+          amount: money(expense.amount),
+          effectiveAmount,
+          source: serviceOrderId ? "service" : "kosha",
+          bookingId: serviceOrderId ?? expense.bookingId,
+          bookingNo: serviceOrderId
+            ? serviceCodes.get(serviceOrderId) ?? `S-${serviceOrderId}`
+            : booking?.trackingCode ?? (expense.bookingId ? `KB-${expense.bookingId}` : null),
+          cashbox: expense.cashAccountCode === "MASTER" ? "الصندوق الرئيسي" : expense.cashAccountCode,
+          description: expense.description,
+          status: expense.status,
+          financialTransactionId: expense.financialTransactionId,
+          paymentMethod: expense.paymentMethod,
+        };
+      });
+      const unallocatedBookings=trips.filter(row=>row.transportationFee==null).length;
+      const allocatedTransportationRevenue = money(trips.reduce((sum, row) => sum + (row.transportationFee??0), 0));
+      const transportationRevenue = unallocatedBookings?null:allocatedTransportationRevenue;
+      const vehicleExpenses = money(expenses.reduce((sum, row) => sum + row.effectiveAmount, 0));
+      const categories = Object.fromEntries(VEHICLE_EXPENSE_TYPES.map((type) => [type, money(expenses.filter((row) => row.expenseType === type).reduce((sum, row) => sum + row.effectiveAmount, 0))]));
       return {
-        id: expense.id,
-        date: expense.expenseDate.toISOString(),
-        expenseType: expense.expenseType,
-        expenseTypeLabel: VEHICLE_EXPENSE_LABELS[expense.expenseType as keyof typeof VEHICLE_EXPENSE_LABELS] ?? expense.expenseType,
-        amount: money(expense.amount),
-        effectiveAmount,
-        source: serviceOrderId ? "service" : "kosha",
-        bookingId: serviceOrderId ?? expense.bookingId,
-        bookingNo: serviceOrderId
-          ? serviceCodes.get(serviceOrderId) ?? `S-${serviceOrderId}`
-          : booking?.trackingCode ?? (expense.bookingId ? `KB-${expense.bookingId}` : null),
-        cashbox: expense.cashAccountCode === "MASTER" ? "الصندوق الرئيسي" : expense.cashAccountCode,
-        description: expense.description,
-        status: expense.status,
-        financialTransactionId: expense.financialTransactionId,
-        paymentMethod: expense.paymentMethod,
+        vehicle: { id: vehicle.id, name: vehicle.name, plateNumber: vehicle.plateNumber, status: vehicle.status },
+        summary: { transportationRevenue, allocatedTransportationRevenue, unallocatedBookings, vehicleExpenses, netProfit: transportationRevenue==null?null:transportationRevenue - vehicleExpenses, tripCount: trips.reduce((sum,row)=>sum+(row.operations?.length??1),0), categories },
+        trips,
+        expenses,
+        capabilities: { serviceExpenseLink },
       };
-    });
-    const unallocatedBookings=trips.filter(row=>row.transportationFee==null).length;
-    const allocatedTransportationRevenue = money(trips.reduce((sum, row) => sum + (row.transportationFee??0), 0));
-    const transportationRevenue = unallocatedBookings?null:allocatedTransportationRevenue;
-    const vehicleExpenses = money(expenses.reduce((sum, row) => sum + row.effectiveAmount, 0));
-    const categories = Object.fromEntries(VEHICLE_EXPENSE_TYPES.map((type) => [type, money(expenses.filter((row) => row.expenseType === type).reduce((sum, row) => sum + row.effectiveAmount, 0))]));
-    return json({
-      vehicle: { id: vehicle.id, name: vehicle.name, plateNumber: vehicle.plateNumber, status: vehicle.status },
-      summary: { transportationRevenue, allocatedTransportationRevenue, unallocatedBookings, vehicleExpenses, netProfit: transportationRevenue==null?null:transportationRevenue - vehicleExpenses, tripCount: trips.reduce((sum,row)=>sum+(row.operations?.length??1),0), categories },
-      trips,
-      expenses,
-      capabilities: { serviceExpenseLink },
-    });
+  }
+
+  /** The vehicle's partner terms, every month since the first term, and the balance. */
+  async function vehiclePartnerState(vehicle: typeof fleetVehiclesTable.$inferSelect) {
+    const termRows: any = await db.execute(sql`
+      select partner_name, partner_phone, share_basis_points, to_char(starts_month, 'YYYY-MM') as starts_month,
+             created_by_name, updated_at
+      from vehicle_partners where vehicle_id = ${vehicle.id}
+      order by starts_month
+    `);
+    if (!Array.isArray(termRows?.rows)) throw new Error("Invalid vehicle partner terms response");
+    const terms: Array<PartnerTerm & { setBy: string | null; updatedAt: string | null }> = termRows.rows.map((row: any) => ({
+      startsMonth: String(row.starts_month),
+      partnerName: String(row.partner_name),
+      partnerPhone: row.partner_phone ?? null,
+      shareBasisPoints: Number(row.share_basis_points),
+      setBy: row.created_by_name ?? null,
+      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    }));
+    const thisMonth = baghdadToday().slice(0, 7);
+    if (!terms.length) return { ready: true as const, thisMonth, partner: null, terms, months: [], balance: null, payouts: [] };
+    const first = terms[0].startsMonth;
+    const trips: Array<{ eventDate: string | null; fee: number | null; count?: number }> = [];
+    const expenses: Array<{ date: string; amount: number; status: string }> = [];
+    const collect = (report: Awaited<ReturnType<typeof vehicleFinancialReport>>) => {
+      for (const trip of report.trips) trips.push({ eventDate: trip.eventDate ?? null, fee: trip.transportationFee, count: trip.operations?.length });
+      for (const expense of report.expenses) expenses.push({ date: expense.date, amount: expense.effectiveAmount, status: expense.status });
+    };
+    if (first <= thisMonth) {
+      const months = monthRange(first, thisMonth);
+      // Half-year reads stay well under the report's row limit; a busy half-year
+      // falls back to one read per month instead of failing the whole account.
+      for (let index = 0; index < months.length; index += 6) {
+        const chunk = months.slice(index, index + 6);
+        try {
+          collect(await vehicleFinancialReport(vehicle, `${chunk[0]}-01`, lastDayOfMonth(chunk[chunk.length - 1])));
+        } catch (cause) {
+          if (!(cause instanceof TransportPlanError) || chunk.length === 1) throw cause;
+          for (const month of chunk) collect(await vehicleFinancialReport(vehicle, `${month}-01`, lastDayOfMonth(month)));
+        }
+      }
+    }
+    const months = buildPartnerMonths({ terms, trips, expenses, throughMonth: thisMonth });
+    const cash = await vehiclePartnerPayouts(db, vehicle.id);
+    const current = termForMonth(terms, thisMonth);
+    const upcoming = terms.find((term) => term.startsMonth > thisMonth) ?? null;
+    return {
+      ready: true as const,
+      thisMonth,
+      partner: current && current.shareBasisPoints > 0 ? current : null,
+      upcoming,
+      terms,
+      months: [...months].reverse(),
+      balance: partnerBalance(months, cash.paid, cash.pending),
+      payouts: cash.rows,
+    };
+  }
+
+  if (section === "vehicles" && parts[1] && parts[2] === "partner" && (!parts[3] || (parts[3] === "payouts" && !parts[4]))) {
+    const vehicleId = int(parts[1]);
+    if (!vehicleId) return error("معرف السيارة غير صحيح", 400);
+    const vehicle = await db.query.fleetVehiclesTable.findFirst({ where: eq(fleetVehiclesTable.id, vehicleId) });
+    if (!vehicle) return error("السيارة غير موجودة", 404, { code: "NOT_FOUND" });
+    if (!(await vehiclePartnersReady()))
+      return error("حساب شريك السيارة يحتاج تطبيق ترقية قاعدة البيانات 0136 أولاً", 409, { code: "CONFLICT" });
+    const canManage = hasPermission(auth, "accounting");
+    try {
+      if (!parts[3] && method === "GET") {
+        const response = json({ ...(await vehiclePartnerState(vehicle)), canManage });
+        response.headers.set("Cache-Control", "private, no-store");
+        return response;
+      }
+      if (!parts[3] && method === "POST") {
+        const financeAuth = await requirePermission(req, "accounting");
+        if (isResponse(financeAuth)) return financeAuth;
+        const parsed = VehiclePartnerTermSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("enterprise.vehicle-partner.term", parsed);
+        const d = parsed.data;
+        const points = percentToBasisPoints(d.sharePercent);
+        const [before] = ((await db.execute(sql`
+          select partner_name, share_basis_points, to_char(starts_month, 'YYYY-MM') as starts_month
+          from vehicle_partners where vehicle_id = ${vehicleId} and starts_month = ${`${d.startsMonth}-01`}::date
+        `)) as any)?.rows ?? [];
+        if (!points && !before) {
+          const [anyTerm] = ((await db.execute(sql`select 1 from vehicle_partners where vehicle_id = ${vehicleId} limit 1`)) as any)?.rows ?? [];
+          if (!anyTerm) return error("لا يوجد شريك لإيقافه؛ اكتب نسبة أكبر من صفر", 422, { code: "VALIDATION_ERROR" });
+        }
+        await db.execute(sql`
+          insert into vehicle_partners (vehicle_id, partner_name, partner_phone, share_basis_points, starts_month, created_by, created_by_name)
+          values (${vehicleId}, ${d.partnerName}, ${d.partnerPhone || null}, ${points}, ${`${d.startsMonth}-01`}::date, ${financeAuth.id}, ${financeAuth.fullName || financeAuth.username})
+          on conflict (vehicle_id, starts_month) do update set
+            partner_name = excluded.partner_name, partner_phone = excluded.partner_phone,
+            share_basis_points = excluded.share_basis_points, created_by = excluded.created_by,
+            created_by_name = excluded.created_by_name, updated_at = now()
+        `);
+        await recordEnterpriseMutation(req, financeAuth, "vehicle_partner_set", "fleet_vehicle", vehicleId,
+          points ? `شريك السيارة: ${d.partnerName} بنسبة ${points / 100}% من ${d.startsMonth}` : `إيقاف شراكة السيارة من ${d.startsMonth}`,
+          { partnerName: d.partnerName, shareBasisPoints: points, startsMonth: d.startsMonth, before: before ?? null });
+        return json({ ...(await vehiclePartnerState(vehicle)), canManage: true }, before ? 200 : 201);
+      }
+      if (parts[3] === "payouts" && method === "POST") {
+        const financeAuth = await requirePermission(req, "accounting");
+        if (isResponse(financeAuth)) return financeAuth;
+        const parsed = VehiclePartnerPayoutSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("enterprise.vehicle-partner.payout", parsed);
+        const d = parsed.data;
+        // Shares come from the bookings and expenses; read them before taking the
+        // vehicle lock, because nothing may use the global pool inside the transaction.
+        const state = await vehiclePartnerState(vehicle);
+        // A partnership that ended still pays out what the partner earned before it.
+        const partner = state.partner ?? [...state.terms].reverse().find((term) => term.shareBasisPoints > 0 && term.startsMonth <= state.thisMonth) ?? null;
+        if (!partner) return error("لا يوجد شريك لهذه السيارة", 409, { code: "CONFLICT" });
+        const idempotencyKey = `vehicle-partner-share:${d.idempotencyKey}`;
+        const result = await db.transaction(async (tx) => {
+          await tx.execute(sql`select id from fleet_vehicles where id = ${vehicleId} for update`);
+          const [existing] = ((await tx.execute(sql`
+            select id, source_type, source_id, amount::text as amount from financial_transactions where idempotency_key = ${idempotencyKey}
+          `)) as any)?.rows ?? [];
+          if (existing) {
+            if (existing.source_type !== "vehicle_partner_share" || existing.source_id !== String(vehicleId) || toFils(Number(existing.amount)) !== toFils(d.amount))
+              throw new PartnerShareError("مرجع الطلب مستخدم لطلب صرف مختلف؛ حدّث الصفحة", 409);
+            return { id: Number(existing.id), duplicate: true };
+          }
+          // Paid and waiting requests are re-read under the lock: two requests at
+          // once cannot both take the same remaining share.
+          const cash = await vehiclePartnerPayouts(tx, vehicleId);
+          const amount = assertPayoutFits(d.amount, partnerBalance([...state.months], cash.paid, cash.pending));
+          const financial = await createAndExecuteSourceFinancialTransaction(tx, {
+            transactionDate: d.payoutDate,
+            direction: "expense",
+            amount,
+            department: "koshas",
+            transactionType: "vehicle_partner_share",
+            referenceNo: `VPS-${vehicleId}`,
+            description: `حصة الشريك ${partner.partnerName} من أرباح ${vehicle.name}`,
+            paymentMethod: d.paymentMethod,
+            sourceType: "vehicle_partner_share",
+            sourceId: vehicleId,
+            sourceEvent: "partner_share",
+            idempotencyKey,
+            customerName: partner.partnerName,
+            customerPhone: partner.partnerPhone,
+            notes: d.note || null,
+          }, financialActor(financeAuth));
+          return { id: financial.id, duplicate: false };
+        });
+        if (!result.duplicate)
+          await recordEnterpriseMutation(req, financeAuth, "vehicle_partner_payout_requested", "fleet_vehicle", vehicleId,
+            "طلب صرف حصة شريك السيارة بانتظار الاعتماد", { financialTransactionId: result.id, amount: d.amount, partnerName: partner.partnerName });
+        return json({ financialTransactionId: result.id, duplicate: result.duplicate, ...(await vehiclePartnerState(vehicle)), canManage: true }, result.duplicate ? 200 : 201);
+      }
+    } catch (cause) {
+      // Only this feature's own rule errors become a clear 4xx; anything else
+      // keeps going to the AJN error boundary with its request ID.
+      if (cause instanceof PartnerShareError)
+        return error(cause.message, cause.status, { code: cause.status === 409 ? "CONFLICT" : "VALIDATION_ERROR" });
+      throw cause;
+    }
+    return error("الإجراء غير مدعوم لشريك السيارة", 405);
   }
 
   if (section === "vehicles" && parts[1] && parts[2] === "expenses" && method === "POST" && !parts[3]) {

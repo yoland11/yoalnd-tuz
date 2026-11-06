@@ -8,9 +8,9 @@ const plan=readTransportPlan({source:"service",id:7,bookingNumber:"B-7",legacy:{
 const resourceOccupancy={start:"2026-10-24T00:00:00+03:00",end:"2026-10-25T00:00:00+03:00"};
 const data={transportation:null,transportPlan:plan,resourceOccupancy,capabilities:{canEdit:true,canPrintFinancial:true}};
 let html=renderToStaticMarkup(<BookingTransportPlanForm data={data} vehicles={[{id:5,name:"مركبة 5",isActive:true}]} drivers={[{id:8,fullName:"سائق عربي",isActive:true}]} onSave={async()=>{}} busy={false}/>);
-assert.match(html,/أجرة كلية لجميع الرحلات/);assert.match(html,/أجرة مستقلة لكل رحلة/);
-for(const label of ["نوع النقل","موقع الانطلاق","موقع الوصول","تاريخ النقل","وقت الانطلاق","الوصول المتوقع","هاتف السائق","ملاحظات النقل","بداية انشغال المورد","نهاية الانشغال والإرجاع"])assert.ok(html.includes(label),label);
-assert.match(html,/50,000/);assert.match(html,/حفظ خطة النقل/);assert.match(html,/المجموع قبل الحفظ/);
+assert.match(html,/الأجرة — د.ع/,"one trip has one plain fee field");assert.doesNotMatch(html,/أجرة واحدة لكل الرحلات/,"no price-mode choice for a single trip");
+for(const label of ["نوع النقل","موقع الانطلاق","موقع الوصول","تاريخ النقل","وقت الانطلاق","الوصول المتوقع","هاتف السائق","ملاحظات النقل","يبدأ من","ينتهي ويرجع"])assert.ok(html.includes(label),label);
+assert.match(html,/50,000/);assert.match(html,/حفظ النقل/);assert.match(html,/مجموع أجرة النقل/);
 const per=changeTransportFeeMode(plan,"per_trip");
 assert.equal(per.overallCharge,null);assert.equal(per.trips[0].customerCharge,null,"mode switch does not invent an allocation");
 const overall=changeTransportFeeMode({...per,trips:[{...per.trips[0],customerCharge:30000},{...per.trips[0],id:"t2",sequence:2,vehicleId:6,driverId:9,customerCharge:20000}]},"overall");

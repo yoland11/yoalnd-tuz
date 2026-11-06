@@ -72,6 +72,7 @@ const steps = [
   ["Booking transport reaches the vehicle accounts", "pnpm", ["run", "test:booking-transport"]],
   ["Vehicle transportation and actual signed result contracts", "pnpm", ["run", "test:vehicle-transportation"]],
   ["Single-vehicle partnership domain and schema contracts", "pnpm", ["run", "test:vehicle-partnership"]],
+  ["Simple vehicle partner split and payout ceiling", "pnpm", ["run", "test:vehicle-partner-share"]],
   ["Vehicle partnership PostgreSQL integration (isolated TEST only)", "pnpm", ["run", "test:vehicle-partnership-db"]],
   ["Booking multi-trip transportation and 80mm receipt safety", "pnpm", ["run", "test:booking-transport-receipts"]],
   ["Standalone preparation requests", "pnpm", ["run", "test:preparation-requests"]],

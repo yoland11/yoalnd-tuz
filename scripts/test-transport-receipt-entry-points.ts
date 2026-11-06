@@ -8,6 +8,7 @@ for(const [name,source] of [["workspace",workspace],["center",center]]){
   assert.match(source,/setTransportReceipt\(/);
 }
 assert.match(workspace,/<BookingTransportPlanEditor\s/);
-assert.match(workspace,/transportation\.data\?\.transportPlan\?\.legacy/);
+assert.match(workspace,/<TabsContent value="transport"><BookingTransportPlanEditor /,"one transport card for old and new bookings");
+assert.doesNotMatch(workspace,/TransportationCard/,"no second transport card");
 assert.match(workspace,/onSelect=\{\(\) => window\.print\(\)\}/,"A4 behavior preserved");
 console.log("PASS transport receipt entry points: booking card and workspace share exact-source dialog; plan editor and original A4 retained");

@@ -86,13 +86,15 @@ assert.match(vehicleDetail, /const serviceTripRows/);
 assert.match(vehicleDetail, /source: "service" as any/);
 assert.match(vehicleDetail, /executedTransportRevenue\(fee, paid, total\)/);
 
-// 6. The card: vehicle + driver, kosha saved on the kosha booking, legacy fee explained.
-const card = between(ui, "function TransportationCard(", "function OperationsSummary(");
-assert.match(card, /<select value=\{vehicleId\}/);
-assert.match(card, /السائق \(اختياري\)/);
+// 6. The one transport card: vehicle + driver per trip, kosha saved on the kosha booking, legacy fee explained.
+const card = readFileSync("src/components/booking-transport-plan-editor.tsx", "utf8");
+assert.match(ui, /<TabsContent value="transport"><BookingTransportPlanEditor /, "the booking has a single transport card");
+assert.doesNotMatch(ui, /function TransportationCard\(/, "the older single-trip card is gone");
+assert.match(card, /<FieldLabel htmlFor=\{`\$\{id\}-\$\{trip\.id\}-vehicle`\}>السيارة<\/FieldLabel>/);
+assert.match(card, /emptyLabel="بدون سائق محدد"/, "the driver stays optional");
 assert.match(card, /هذه الأجرة مسجّلة للعلم فقط/);
 assert.doesNotMatch(card, /للعلم\)/, "the fee is no longer labelled informational");
-assert.match(ui, /booking\.source === "kosha"\s*\? adminFetch\(`\/admin\/kosha-bookings\/\$\{booking\.id\}\?source=kosha`, \{ method: "PATCH"/);
+assert.match(card, /reference\.source === "kosha"\s*\? adminFetch\(`\/admin\/kosha-bookings\/\$\{reference\.id\}\?source=kosha`, \{ method: "PATCH"/);
 for (const page of ["src/views/admin/enterprise.tsx", "src/views/admin/vehicles.tsx"])
   assert.match(readFileSync(page, "utf8"), /\/admin\/bookings\/\$\{(trip|row)\.source \?\? "kosha"\}\//, `${page} opens the trip's own booking`);
 
@@ -119,8 +121,7 @@ assert.match(enterprise, /\(trip\.source \?\? "kosha"\) === "kosha" \|\| data\.c
 
 // 8. The card offers the vehicle «إسناد موارد النقل» already sent.
 assert.match(endpoint, /dispatchVehicle: dispatched \?/);
-assert.match(card, /السيارة المسندة لهذا الحجز من «إسناد موارد النقل»/);
-assert.match(card, /value\.mode === "ajn" && dispatchVehicle \? String\(dispatchVehicle\.id\)/);
+assert.match(card, /suggestedVehicleId=\{data\.dispatchVehicle\?\.id \?\? null\}/, "a new first trip starts with the dispatched vehicle");
 
 // 9. The operating period is optional: without one the booking holds its event day.
 assert.doesNotMatch(card, /periodMissing|فترة تشغيل/, "the transport card never demands an operating period");
@@ -168,7 +169,7 @@ assert.match(a4, /@page \{ size: A4 portrait/);
 assert.match(a4, /توقيع السائق/);
 assert.match(thermal, /@page \{ size: 80mm auto/);
 assert.match(buildBookingTransportHtml({ ...slip, inTotal: false }, "80mm"), /للعلم — غير مضافة إلى مبلغ الحجز/);
-assert.match(card, /value\.mode === "ajn" \? <Button size="sm" variant="outline" disabled=\{busy \|\| touched\} title=\{touched \? "احفظ التعديلات أولاً" : undefined\} onClick=\{print\}><Printer className="h-4 w-4" \/> طباعة النقل<\/Button>/, "prints only the saved transport");
+assert.match(card, /savedMode === "ajn" && data\.transportPlan\.trips\.length \? <div className="flex flex-wrap gap-2">\{data\.transportPlan\.trips\.map\(trip => <Button/, "receipts print only the saved trips");
 
 console.log("PASS  booking transport: fee in total once, vehicle required, kosha via its booking, vehicle accounts include service orders");
 console.log("PASS  vehicle expenses link service-order trips after migration 0128; the card offers the dispatched vehicle");

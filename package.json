@@ -84,6 +84,7 @@
     "test:company-loans": "node ./scripts/test-company-loans-approval.mjs",
     "test:booking-transport": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-transport-vehicle.ts",
     "test:vehicle-partnership": "node ./scripts/test-vehicle-partnership.mjs",
+    "test:vehicle-partner-share": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-vehicle-partner-share.ts",
     "test:vehicle-partnership-db": "node ./scripts/test-vehicle-partnership-db.mjs",
     "test:booking-transport-receipts": "node ./scripts/test-booking-transport-receipts.mjs",
     "test:work-commands": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-work-commands.ts && node ./scripts/test-work-commands-wiring.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-work-commands-ui.tsx",

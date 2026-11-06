@@ -8,11 +8,15 @@ const {QueryClient,QueryClientProvider}=createRequire(import.meta.url)("@tanstac
 const {default:VehiclesPage}=await import("../src/views/admin/vehicles");
 const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:0}}});
 client.setQueryData(["admin","vehicle",12,"detail"],{vehicle:{id:12,name:"مركبة الشراكة",plateNumber:"بغداد123",odometerKm:0,purchasePrice:0,status:"available"},maintenance:[],odometerHistory:[]});
-client.setQueryData(["admin","vehicle",12,"financial"],{summary:{tripCount:0,transportationRevenue:0,vehicleExpenses:0,netProfit:0},trips:[],expenses:[]});
+const parts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Baghdad",year:"numeric",month:"2-digit"}).formatToParts(new Date());
+const thisMonth=`${parts.find(p=>p.type==="year")!.value}-${parts.find(p=>p.type==="month")!.value}`;
+client.setQueryData(["admin","vehicle",12,"financial",thisMonth],{summary:{tripCount:0,transportationRevenue:0,vehicleExpenses:0,netProfit:0},trips:[],expenses:[]});
 client.setQueryData(["vehicle-partnership",12,"setup"],{vehicle:{name:"مركبة الشراكة",plate_number:"بغداد123"},partnership:null,configuredElsewhere:false,canApprove:true});
 const render=(url:string)=>renderToStaticMarkup(<Router ssrPath={url}><QueryClientProvider client={client}><VehiclesPage/></QueryClientProvider></Router>);
 assert.ok(render("/admin/vehicles/12?tab=partnership").includes("الاتفاق والشريكان"),"real Wouter pathname-only useLocation must still open requested partnership tab");
-assert.ok(render("/admin/vehicles/12").includes("سجل الرحلات وأجور النقل"),"ordinary vehicle link starts with daily transport work");
+const daily=render("/admin/vehicles/12");
+assert.ok(daily.includes("ما اكو رحلات بهذه الفترة"),"ordinary vehicle link starts with this month's trips");
+assert.ok(daily.includes("إضافة مصروف"),"an expense is added from the vehicle page itself");
 assert.ok(render("/admin/vehicles/12?tab=overview").includes("تحديث العداد"),"the original overview remains available by explicit deep link");
 client.clear();
 console.log("PASS real vehicle Wouter SSR query behavior: partnership setup, daily transport default and explicit original overview link.");

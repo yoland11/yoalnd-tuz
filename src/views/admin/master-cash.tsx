@@ -181,6 +181,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   payroll_run: "دورة رواتب",
   expense: "مصروف",
   vehicle_expense: "مصروف سيارة",
+  vehicle_partner_share: "حصة شريك سيارة",
   vehicle_partnership_activity: "دخل نشاط شراكة المركبة",
   vehicle_partnership_cost: "تكلفة شراكة المركبة",
   vehicle_partnership_right: "رأس مال الشراكة",
@@ -204,6 +205,7 @@ const SOURCE_TYPE_TONES: Record<string, string> = {
   payment_voucher: "bg-amber-100 text-amber-800 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-500/30",
   expense: "bg-rose-100 text-rose-800 ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-500/30",
   vehicle_expense: "bg-indigo-100 text-indigo-800 ring-indigo-200 dark:bg-indigo-500/15 dark:text-indigo-300 dark:ring-indigo-500/30",
+  vehicle_partner_share: "bg-sky-100 text-sky-800 ring-sky-200 dark:bg-sky-500/15 dark:text-sky-300 dark:ring-sky-500/30",
   payroll_run: "bg-purple-100 text-purple-800 ring-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:ring-purple-500/30",
 };
 const sourceTypeTone = (sourceType: string | null | undefined) =>
@@ -274,6 +276,8 @@ function sourceHref(
       return `/admin/hr?tab=payroll&focus=${id}`;
     case "expense":
       return `/admin/finance/expenses?focus=${id}`;
+    case "vehicle_partner_share":
+      return `/admin/vehicles/${id}?tab=partner`;
     case "vehicle_expense": {
       const vehicleId = /^VE-(\d+)-/.exec(String(referenceNo ?? ""))?.[1];
       return `/admin/command-center?tab=vehicle-profitability${vehicleId ? `&vehicle=${encodeURIComponent(vehicleId)}` : ""}`;

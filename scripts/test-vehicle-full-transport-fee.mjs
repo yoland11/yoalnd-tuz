@@ -111,8 +111,9 @@ assert.ok(vehicleHtml.includes("15,000"));
 assert.ok(!vehicleHtml.includes("11,538.46"), "vehicle trip table must not present collection share as income");
 assert.ok(!vehicleHtml.includes(">المنفذ<"));
 assert.match(vehicleHtml, /<article/, "trip data and receipt remain grouped on mobile");
-for (const label of ["المناسبة", "السائق", "الأجرة", "ربح الرحلة"]) assert.ok(vehicleHtml.includes(label));
-assert.ok(renderFragment(`${tripsNode.getText(vehicleAst)}; exports.Render=()=> <VehicleTrips rows={rows}/>;`, { rows: [], transportMoney: value => value == null ? "غير موزّع" : formatter.exports.formatCurrency(value), TransportReceiptAction: () => null }).includes('لا توجد رحلات نقل مسجلة.'));
+assert.ok(vehicleHtml.includes(trip.driverName || "بدون سائق"), "each trip names its driver or says there is none");
+assert.ok(vehicleHtml.includes(trip.eventDate ? String(trip.eventDate).slice(0, 10) : "بدون تاريخ"), "each trip shows its event date");
+assert.ok(renderFragment(`${tripsNode.getText(vehicleAst)}; exports.Render=()=> <VehicleTrips rows={rows}/>;`, { rows: [], transportMoney: value => value == null ? "غير موزّع" : formatter.exports.formatCurrency(value), TransportReceiptAction: () => null }).includes('ما اكو رحلات بهذه الفترة.'));
 
 const enterpriseText = read("src/views/admin/enterprise.tsx"), enterpriseAst = ts.createSourceFile("enterprise.tsx", enterpriseText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = enterpriseAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "VehicleProfitabilityTab");
