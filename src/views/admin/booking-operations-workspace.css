@@ -823,3 +823,78 @@
 .ajn-op-cash-aside { margin-top: .6rem; color: var(--op-muted); font-size: .74rem; }
 .ajn-op-cash-ref { color: var(--op-rose); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 .ajn-op-cash-ref:focus-visible { border-radius: .2rem; outline: 2px solid var(--op-rose); outline-offset: 2px; }
+
+/* ── Workspace header: who, when, where, the money, and the next actions ── */
+.ajn-op-head { border: 1px solid var(--op-border); border-radius: .9rem; background: var(--op-surface); box-shadow: 0 1px 2px rgba(32, 39, 51, .04), 0 8px 22px rgba(32, 39, 51, .04); }
+.ajn-op-head-top { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 1rem 1.5rem; padding: 1.15rem 1.25rem .95rem; }
+.ajn-op-head-identity { min-width: 0; flex: 1 1 18rem; }
+.ajn-op-head-tags { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; }
+.ajn-op-number { padding: .18rem .55rem; border-radius: .45rem; background: var(--op-elevated); color: var(--op-muted); font-size: .74rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ajn-op-head h1 { margin-top: .5rem; font-size: 1.4rem; font-weight: 850; line-height: 1.35; overflow-wrap: anywhere; text-wrap: balance; }
+.ajn-op-head-meta { display: flex; flex-wrap: wrap; gap: .4rem 1.15rem; margin-top: .45rem; color: var(--op-muted); font-size: .82rem; }
+.ajn-op-head-meta span { display: inline-flex; min-width: 0; align-items: center; gap: .35rem; }
+.ajn-op-head-meta svg { color: var(--op-rose); }
+.ajn-op-head .ajn-op-header-actions { flex: 0 1 auto; justify-content: flex-end; }
+.ajn-op-head-bottom { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem 1rem; padding: .75rem 1.25rem; border-top: 1px solid var(--op-border); border-radius: 0 0 .9rem .9rem; background: color-mix(in srgb, var(--op-elevated) 55%, var(--op-surface)); }
+.ajn-op-money { display: flex !important; height: auto !important; flex-wrap: wrap; align-items: center; gap: .45rem 1.9rem; padding: .25rem .4rem !important; border-radius: .6rem; text-align: start; white-space: normal; }
+.ajn-op-money:hover { background: color-mix(in srgb, var(--op-rose-soft) 45%, transparent) !important; }
+.ajn-op-money:focus-visible { outline: 2px solid var(--op-rose); outline-offset: 2px; }
+.ajn-op-money > span { display: grid; gap: .12rem; }
+.ajn-op-money small { color: var(--op-muted); font-size: .72rem; font-weight: 600; }
+.ajn-op-money b { color: var(--op-ink); font-size: 1.08rem; font-weight: 850; font-variant-numeric: tabular-nums; }
+.ajn-op-money b.is-positive { color: var(--op-green); }
+.ajn-op-money b.is-negative { color: var(--op-red); }
+.ajn-op-money-status { min-width: 8.5rem; }
+.ajn-op-money-status small { color: var(--op-ink); }
+.ajn-op-money-status i { display: block; height: .38rem; overflow: hidden; border-radius: 999px; background: var(--op-border); }
+.ajn-op-money-status em { display: block; height: 100%; border-radius: inherit; background: var(--op-green); transition: width 300ms cubic-bezier(.23, 1, .32, 1); }
+.ajn-op-head-bottom .ajn-op-header-assign { display: flex; flex-wrap: wrap; gap: .4rem; }
+.ajn-op-sidebar { top: 5.25rem; }
+
+/* ── What this booking includes ── */
+.ajn-op-services { margin-top: .75rem; padding: 1rem 1.25rem 1.05rem; border: 1px solid var(--op-border); border-radius: .9rem; background: var(--op-surface); }
+.ajn-op-services-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.ajn-op-services-head h2 { display: flex; align-items: center; gap: .5rem; font-size: .98rem; font-weight: 850; }
+.ajn-op-services-head h2 span { min-width: 1.45rem; padding: 0 .4rem; border-radius: 999px; background: var(--op-rose-soft); color: var(--op-rose); font-size: .74rem; text-align: center; font-variant-numeric: tabular-nums; }
+.ajn-op-service-list { margin-top: .55rem; }
+.ajn-op-service-list li { display: flex; min-height: 3.2rem; align-items: center; gap: .8rem; padding: .55rem 0; border-top: 1px solid var(--op-border); }
+.ajn-op-service-list li:first-child { border-top: 0; }
+.ajn-op-service-icon { display: grid; width: 2.15rem; height: 2.15rem; flex: none; place-items: center; border-radius: .6rem; background: var(--op-rose-soft); color: var(--op-rose); }
+.ajn-op-service-text { display: grid; min-width: 0; flex: 1; gap: .12rem; }
+.ajn-op-service-text b { font-size: .88rem; font-weight: 800; }
+.ajn-op-service-text small { overflow: hidden; color: var(--op-muted); font-size: .76rem; white-space: nowrap; text-overflow: ellipsis; }
+.ajn-op-service-amount { font-size: .84rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+.ajn-op-services-empty { margin-top: .6rem; color: var(--op-muted); font-size: .82rem; }
+.ajn-op-services > section { margin-top: .85rem; }
+
+/* ── Tabs: the daily ones in view, the rest under «المزيد» ── */
+.ajn-op-tabs-bar { display: flex; align-items: stretch; gap: .4rem; }
+.ajn-op-tabs-bar > [role="tablist"] { display: flex; min-width: 0; height: auto; flex: 1; justify-content: start; overflow-x: auto; padding: .35rem; border: 1px solid var(--op-border); border-radius: .75rem; background: var(--op-surface); box-shadow: 0 4px 14px rgba(32, 39, 51, .025); }
+.ajn-op-tabs-bar > [role="tablist"] button { display: inline-flex; min-height: 2.45rem; flex: none; gap: .35rem; padding-inline: .75rem; border-radius: .5rem; color: var(--op-muted); font-size: .76rem; }
+.ajn-op-tabs-bar > [role="tablist"] button[data-state="active"] { background: var(--op-rose-soft); color: var(--op-rose); box-shadow: none; }
+.ajn-op-tabs-bar > [role="tablist"] em { display: grid; min-width: 1.15rem; height: 1.15rem; place-items: center; border-radius: 999px; background: var(--op-elevated); font-style: normal; font-size: .6rem; }
+.ajn-op-tabs-more { height: auto !important; flex: none; gap: .35rem; padding-inline: .85rem !important; border: 1px solid var(--op-border) !important; border-radius: .75rem !important; background: var(--op-surface) !important; color: var(--op-muted) !important; font-size: .76rem; }
+.ajn-op-tabs-more[data-state="open"] { border-color: var(--op-rose) !important; color: var(--op-rose) !important; }
+.ajn-op-tab-stack { display: grid; gap: .75rem; }
+
+@media (max-width: 640px) {
+  .ajn-op-head-top { padding: .95rem .95rem .8rem; }
+  .ajn-op-head h1 { font-size: 1.18rem; }
+  .ajn-op-head .ajn-op-header-actions { width: 100%; justify-content: flex-start; }
+  .ajn-op-head-bottom { padding: .7rem .95rem; }
+  .ajn-op-money { gap: .5rem 1.3rem; }
+  .ajn-op-money-status { flex-basis: 100%; }
+  .ajn-op-services { padding: .85rem .95rem; }
+}
+@media print {
+  .ajn-op-tabs-bar,
+  .ajn-op-services-head > button { display: none !important; }
+  .ajn-op-head { box-shadow: none; }
+}
+
+/* One column: the header already carries the customer, date, place and team. */
+.ajn-op-workspace-grid { grid-template-columns: minmax(0, 1fr) !important; }
+.ajn-op-head-meta a { display: inline-flex; align-items: center; gap: .35rem; color: inherit; font-variant-numeric: tabular-nums; text-decoration: none; }
+.ajn-op-head-meta a:hover { color: var(--op-rose); }
+.ajn-op-head-meta a:focus-visible { border-radius: .25rem; outline: 2px solid var(--op-rose); outline-offset: 2px; }
+.ajn-op-command-summary { grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)) !important; margin-bottom: .65rem; }

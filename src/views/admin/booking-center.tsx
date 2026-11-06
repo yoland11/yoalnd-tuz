@@ -1242,7 +1242,12 @@ function BookingCustomerSelector({ value, onChange, error }: { value: Customer |
   );
 }
 
-export function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryServices, customers, onCancel, onCreated, followup = null }: { services: AdminService[]; servicesLoading: boolean; servicesError: string; onRetryServices: () => void; customers: Customer[]; onCancel: () => void; onCreated: () => void; followup?: FollowupRow | null }) {
+export function UnifiedBookingForm({ services, servicesLoading, servicesError, onRetryServices, customers, onCancel, onCreated, followup = null, addTo = null }: { services: AdminService[]; servicesLoading: boolean; servicesError: string; onRetryServices: () => void; customers: Customer[]; onCancel: () => void; onCreated: () => void; followup?: FollowupRow | null; addTo?: ServiceOrder | null }) {
+  // With addTo the same form adds services to a saved booking: customer, date and deposit stay as they are.
+  const adding = Boolean(addTo);
+  const existingServices = addTo ? bookingServices(addTo).map((service) => service.type) : [];
+  const existingTotal = Number(addTo?.totalAmount ?? 0);
+  const existingPaid = Number(addTo?.depositAmount ?? 0);
   const { toast } = useToast();
   const [customer, setCustomer] = useState<Customer | null>(() => followup ? followupBookingPreset(followup).customer : null);
   const [recoveryBooking, setRecoveryBooking] = useState<FollowupBooking | null>(null);
@@ -1257,7 +1262,7 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
   const [replacePhotoIndex, setReplacePhotoIndex] = useState<number | null>(null);
   const [imageUploading, setImageUploading] = useState(false);
   const [notes, setNotes] = useState("");
-  const [selected, setSelected] = useState<ServiceKey[]>(() => followup ? followupBookingPreset(followup).departments : ["kosha"]);
+  const [selected, setSelected] = useState<ServiceKey[]>(() => addTo ? [] : followup ? followupBookingPreset(followup).departments : ["kosha"]);
   // Session, video and aerial photography are independent choices on the same booking.
   const [photoSessionOn, setPhotoSessionOn] = useState(true);
   const [videoOn, setVideoOn] = useState(false);
@@ -1345,18 +1350,19 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
       setFieldErrors({});
       if (recoveryBooking) throw new Error("المتابعة مرتبطة بحجز محفوظ؛ افتح الحجز الأصلي");
       const selectedCustomer = customer;
-      if (!selectedCustomer) {
+      if (adding && !selected.length) failField("serviceId", "اختر خدمة واحدة على الأقل لإضافتها");
+      if (!adding && !selectedCustomer) {
         setFieldErrors({ customer: "اختر العميل أولاً" });
         focusField("customer");
         throw new Error("اختر العميل أولاً");
       }
-      if (!eventDate) failField("eventDate", "حدد تاريخ المناسبة");
-      if (!selected.length) failField("serviceId", "اختر خدمة واحدة على الأقل");
-      if (servicesLoading) failField("serviceId", "قائمة الخدمات ما زالت قيد التحميل. انتظر قليلاً ثم أعد المحاولة.");
-      if (servicesError) failField("serviceId", `تعذر تحميل قائمة الخدمات: ${servicesError}`);
-      if (!services.length) failField("serviceId", "لا توجد خدمة فعالة في النظام. افتح إدارة الخدمات وأضف أو فعّل خدمة قبل حفظ الحجز.");
-      const primary = resolveUnifiedBookingService(selected, services);
-      if (!primary) failField("serviceId", "لم يتم العثور على خدمة صالحة لهذا الحجز. تحقق من تفعيل خدمة في إدارة الخدمات.");
+      if (!adding && !eventDate) failField("eventDate", "حدد تاريخ المناسبة");
+      if (!adding && !selected.length) failField("serviceId", "اختر خدمة واحدة على الأقل");
+      if (!adding && servicesLoading) failField("serviceId", "قائمة الخدمات ما زالت قيد التحميل. انتظر قليلاً ثم أعد المحاولة.");
+      if (!adding && servicesError) failField("serviceId", `تعذر تحميل قائمة الخدمات: ${servicesError}`);
+      if (!adding && !services.length) failField("serviceId", "لا توجد خدمة فعالة في النظام. افتح إدارة الخدمات وأضف أو فعّل خدمة قبل حفظ الحجز.");
+      const primary = adding ? null : resolveUnifiedBookingService(selected, services);
+      if (!adding && !primary) failField("serviceId", "لم يتم العثور على خدمة صالحة لهذا الحجز. تحقق من تفعيل خدمة في إدارة الخدمات.");
       const photographyChosen = selected.includes("photography");
       if (photographyChosen && !photoSessionOn && !videoOn && !aerialOn) failField("photography", "اختر جلسة تصوير أو تصوير فيديو أو تصوير جوي");
       if (photographyChosen && videoOn && !videoItems.length) failField("videoItems", "اختر منتج تصوير الفيديو من المتجر");
@@ -1378,36 +1384,8 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
       ].filter(Boolean).join(" | ");
       const serviceLinesTotal = photographyServiceItems.reduce((sum, item) => sum + Math.max(0, item.quantity * item.unitPrice - item.discount), 0);
       const grandTotal = baseTotal + serviceLinesTotal;
-      return adminFetch("/admin/service-orders", {
-        method: "POST",
-        body: JSON.stringify({
-          serviceId: primary.id,
-          customerName: selectedCustomer.fullName || selectedCustomer.name,
-          phone: selectedCustomer.phone,
-          eventDate,
-          eventLocation: hallName,
-          totalAmount: grandTotal,
-          baseTotalAmount: baseTotal,
-          serviceItems: photographyServiceItems.map(({ productId, quantity, discount }) => ({ productId, quantity, discount })),
-          depositAmount: Math.min(num(depositAmount), grandTotal),
-          paymentStatus:
-            num(depositAmount) <= 0
-              ? "unpaid"
-              : num(depositAmount) >= grandTotal && grandTotal > 0
-                ? "paid"
-                : "partial",
-          notes,
-          customFields: {
-            bookingCenterVersion: 1,
-            customerId: selectedCustomer.id,
-            ...(followup ? followupBookingMetadata(followup, selectedCustomer.id) : {}),
-            eventTime,
-            hallName,
-            mapUrl,
-            contractNumber,
-            ...fieldsWithBookingPhotos({}, bookingPhotos),
-            departments: selected,
-            bookingCenterServices: selected.map((type) =>
+      // The same service fields a new booking gets, so an added service looks exactly like one chosen at the start.
+      const serviceEntries = selected.map((type) =>
               type === "transportation"
                 ? {
                     type,
@@ -1424,7 +1402,8 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
                       : type === "gifts" && giftItems.length
                         ? { type, status: "waiting", amount: giftsTotal, notes: storeItemsSummary(giftItems) }
                         : { type, status: "waiting", amount: 0 },
-            ),
+            );
+      const serviceDetails = {
             ...(selected.includes("flowers") && flowerItems.length
               ? { flowerItems: flowerItems.map(({ key: _key, ...item }) => item) }
               : {}),
@@ -1459,6 +1438,68 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
                   ...(videoOn && videoItems.length ? { videoItems: videoItems.map(({ key: _key, ...item }) => item) } : {}),
                 }
               : {}),
+      };
+      if (adding && addTo) {
+        const fields = (addTo.customFields ?? {}) as Record<string, any>;
+        const savedEntries = Array.isArray(fields.bookingCenterServices) && fields.bookingCenterServices.length
+          ? fields.bookingCenterServices
+          : bookingServices(addTo).map((service) => ({ type: service.type, status: service.status, amount: service.amount ?? 0, ...(service.notes ? { notes: service.notes } : {}) }));
+        const savedItems = addTo.serviceItems ?? [];
+        if (photographyServiceItems.length && savedItems.some((item) => !item.productId)) throw new Error("بنود التصوير القديمة بهذا الحجز بلا منتج؛ أضفها من نافذة التعديل");
+        const savedItemsTotal = savedItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity) * Number(item.unitPrice) - Number(item.discount ?? 0)), 0);
+        return adminFetch(`/admin/service-orders/${addTo.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            // Paid stays as it is; only the total grows, so the remaining grows by the same amount.
+            totalAmount: existingTotal + grandTotal,
+            ...(photographyServiceItems.length
+              ? {
+                  serviceItems: [...savedItems.map(({ productId, quantity, discount }) => ({ productId, quantity, discount })), ...photographyServiceItems.map(({ productId, quantity, discount }) => ({ productId, quantity, discount }))],
+                  baseTotalAmount: existingTotal - savedItemsTotal + baseTotal,
+                }
+              : {}),
+            customFields: {
+              ...fields,
+              bookingCenterVersion: fields.bookingCenterVersion ?? 1,
+              departments: [...new Set([...(Array.isArray(fields.departments) ? fields.departments : existingServices), ...selected])],
+              bookingCenterServices: [...savedEntries, ...serviceEntries],
+              ...serviceDetails,
+            },
+          }),
+        });
+      }
+      if (!selectedCustomer) throw new Error("اختر العميل أولاً");
+      return adminFetch("/admin/service-orders", {
+        method: "POST",
+        body: JSON.stringify({
+          serviceId: primary!.id,
+          customerName: selectedCustomer.fullName || selectedCustomer.name,
+          phone: selectedCustomer.phone,
+          eventDate,
+          eventLocation: hallName,
+          totalAmount: grandTotal,
+          baseTotalAmount: baseTotal,
+          serviceItems: photographyServiceItems.map(({ productId, quantity, discount }) => ({ productId, quantity, discount })),
+          depositAmount: Math.min(num(depositAmount), grandTotal),
+          paymentStatus:
+            num(depositAmount) <= 0
+              ? "unpaid"
+              : num(depositAmount) >= grandTotal && grandTotal > 0
+                ? "paid"
+                : "partial",
+          notes,
+          customFields: {
+            bookingCenterVersion: 1,
+            customerId: selectedCustomer.id,
+            ...(followup ? followupBookingMetadata(followup, selectedCustomer.id) : {}),
+            eventTime,
+            hallName,
+            mapUrl,
+            contractNumber,
+            ...fieldsWithBookingPhotos({}, bookingPhotos),
+            departments: selected,
+            bookingCenterServices: serviceEntries,
+            ...serviceDetails,
           },
         }),
       });
@@ -1471,7 +1512,7 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
         setFieldErrors(returnedErrors);
         focusField(Object.keys(returnedErrors)[0]);
       }
-      toast({ title: "تعذر حفظ الحجز", description: apiErrorMessage(error, "تحقق من البيانات وحاول مرة أخرى."), variant: "destructive" });
+      toast({ title: adding ? "تعذّرت إضافة الخدمات" : "تعذر حفظ الحجز", description: apiErrorMessage(error, "تحقق من البيانات وحاول مرة أخرى."), variant: "destructive" });
     },
   });
   // النقل بواسطة AJN جزء من إجمالي الحجز: تُضاف أجرته تلقائياً إلى المبلغ الكلي.
@@ -1497,7 +1538,7 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
         ? "مدفوع بالكامل"
         : "مدفوع جزئياً";
   const removeService = (type: ServiceKey) => {
-    if (selected.length <= 1) {
+    if (!adding && selected.length <= 1) {
       toast({ title: "يلزم اختيار خدمة واحدة على الأقل", description: "لا يمكن إزالة آخر خدمة من الحجز.", variant: "destructive" });
       return;
     }
@@ -1510,6 +1551,7 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
     if (type === "gifts") setGiftItems([]);
   };
   const toggle = (type: ServiceKey) => {
+    if (existingServices.includes(type)) return;
     if (selected.includes(type)) {
       removeService(type);
       return;
@@ -1535,10 +1577,18 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
   const photographySelected = selected.includes("photography");
   return (
     <section id="booking-create-form" className="ajn-unified-form" tabIndex={-1}>
-      <div className="ajn-section-heading"><div><span>إدخال سريع</span><h2>إنشاء حجز متعدد الخدمات</h2><p>لن تُنشأ فاتورة أو حركة صندوق حتى تنفيذ الإجراء من وحدته المالية الحالية.</p></div><Button variant="ghost" onClick={onCancel}>إغلاق</Button></div>
+      <div className="ajn-section-heading"><div>{adding ? <><h2>إضافة خدمات للحجز</h2><p>نفس اختيارات بداية الحجز. الخدمات الموجودة تبقى مثل ما هي، والإضافة ما تسجّل أي دفعة.</p></> : <><span>إدخال سريع</span><h2>إنشاء حجز متعدد الخدمات</h2><p>لن تُنشأ فاتورة أو حركة صندوق حتى تنفيذ الإجراء من وحدته المالية الحالية.</p></>}</div>{adding ? null : <Button variant="ghost" onClick={onCancel}>إغلاق</Button>}</div>
       {recoveryBooking ? <div role="alert" className="m-5 rounded-xl border border-border bg-card p-4 text-sm"><p>تم حفظ حجز لهذه المتابعة؛ لن يُنشأ طلب مكرر.</p><Button variant="outline" asChild><Link href={recoveryBooking.href}>فتح الحجز المحفوظ {recoveryBooking.number}</Link></Button></div> : null}
       <div className="grid gap-4 p-5 lg:grid-cols-[1.15fr_.85fr]">
-        <div className="space-y-4">
+        {adding ? <div className="space-y-4"><section className="space-y-3 rounded-xl border border-border/60 bg-background/70 p-4" aria-label="مبلغ الإضافة">
+          <div className="space-y-2"><Label htmlFor="booking-total">مبلغ الخدمات المضافة</Label><Input id="booking-total" inputMode="decimal" value={totalAmount} onChange={(event) => setTotalAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0" dir="ltr" className="tabular-nums" /><p className="text-xs leading-5 text-muted-foreground">اكتب سعر الكوشة أو الصوت أو التصوير. الهدايا والورد والفيديو والتصوير الجوي والنقل تنحسب تلقائياً.</p></div>
+          <dl className="space-y-1.5 border-t border-border/50 pt-3 text-sm">
+            <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">إجمالي الحجز الحالي</dt><dd className="tabular-nums">{formatCurrency(existingTotal)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">الإضافة</dt><dd className="tabular-nums text-primary">+ {formatCurrency(totalValue)}</dd></div>
+            <div className="flex items-center justify-between gap-3 font-bold"><dt>الإجمالي بعد الإضافة</dt><dd className="tabular-nums">{formatCurrency(existingTotal + totalValue)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">المتبقي بعد الإضافة</dt><dd className="tabular-nums">{formatCurrency(Math.max(0, existingTotal + totalValue - existingPaid))}</dd></div>
+          </dl>
+        </section></div> : <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             {followup ? <div className="space-y-2 rounded-xl border border-border bg-card p-3"><Label>العميل المرتبط بالمتابعة</Label><p className="font-semibold">{customer?.name}</p><p className="text-sm tabular-nums" dir="ltr">{customer?.phone}</p><p className="text-xs text-muted-foreground">{FOLLOWUP_SERVICES.find(service => service.key === followup.serviceKey)?.label} · يبقى العميل نفسه عند التحويل. اختر الخدمات الفعلية وراجع تفاصيل الحجز.</p></div> : <BookingCustomerSelector value={customer} onChange={setCustomer} error={fieldErrors.customer || fieldErrors.phone} />}
             <div className="space-y-2"><Label htmlFor="booking-contract">رقم العقد</Label><Input id="booking-contract" value={contractNumber} onChange={(event) => setContractNumber(event.target.value)} placeholder="يُترك فارغاً عند عدم وجود عقد" /></div>
@@ -1573,13 +1623,13 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
             {replacePhotoIndex != null ? <Button type="button" variant="ghost" size="sm" onClick={() => setReplacePhotoIndex(null)}>إلغاء الاستبدال</Button> : null}
           </div>
           <div className="space-y-2"><Label htmlFor="booking-notes">ملاحظات</Label><Textarea id="booking-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="تفاصيل خاصة بالمناسبة أو العميل" /></div>
-        </div>
+        </div>}
         <div id="booking-service-picker" tabIndex={-1} className={`ajn-service-picker ${fieldErrors.serviceId ? "ring-1 ring-destructive" : ""}`}>
           {servicesLoading ? <p className="mb-3 rounded-lg border border-border/60 bg-muted/30 p-3 text-sm text-muted-foreground" role="status">جارٍ تحميل قائمة الخدمات اللازمة لإنشاء الحجز…</p> : null}
           {servicesError ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><span>تعذر تحميل قائمة الخدمات: {servicesError}</span><Button type="button" variant="outline" size="sm" onClick={onRetryServices}>إعادة المحاولة</Button></div> : null}
-          {!servicesLoading && !servicesError && services.length === 0 ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-300/50 bg-amber-50 p-3 text-sm text-amber-900"><span>لا توجد خدمة مفعّلة حالياً؛ يجب تفعيل خدمة قبل حفظ الحجز.</span><Button type="button" variant="outline" size="sm" asChild><Link href="/admin/services">إدارة الخدمات</Link></Button></div> : null}
+          {!adding && !servicesLoading && !servicesError && services.length === 0 ? <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-300/50 bg-amber-50 p-3 text-sm text-amber-900"><span>لا توجد خدمة مفعّلة حالياً؛ يجب تفعيل خدمة قبل حفظ الحجز.</span><Button type="button" variant="outline" size="sm" asChild><Link href="/admin/services">إدارة الخدمات</Link></Button></div> : null}
           <div><span>الخدمات المطلوبة</span><strong>{selected.length} خدمات محددة</strong></div>
-          <div className="grid grid-cols-2 gap-2">{SERVICE_META.map((meta) => { const Icon = meta.icon; const checked = selected.includes(meta.key); return <Button variant="ghost" type="button" key={meta.key} className={checked ? "is-selected" : ""} onClick={() => toggle(meta.key)} aria-pressed={checked}><Icon /><span>{meta.short}</span>{checked && <CheckCircle2 />}</Button>; })}</div>
+          <div className="grid grid-cols-2 gap-2">{SERVICE_META.map((meta) => { const Icon = meta.icon; const already = existingServices.includes(meta.key); const checked = selected.includes(meta.key); return <Button variant="ghost" type="button" key={meta.key} className={checked ? "is-selected" : already ? "is-existing" : ""} onClick={() => toggle(meta.key)} aria-pressed={checked} disabled={already} title={already ? "موجودة بالحجز" : undefined}><Icon /><span>{meta.short}</span>{already ? <small>موجودة</small> : checked && <CheckCircle2 />}</Button>; })}</div>
           {fieldErrors.serviceId ? <p className="text-xs text-destructive">{fieldErrors.serviceId}</p> : null}
           {selected.length ? <section className="mt-4 space-y-2 rounded-xl border border-border/60 bg-background/70 p-3" aria-label="الخدمات المختارة">
             <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold text-foreground">الخدمات المختارة</h3><span className="text-xs text-muted-foreground">يمكنك تعديل الإعدادات أو إزالة الخدمة من هذا الحجز</span></div>
@@ -1695,7 +1745,7 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
             </div>
             {transportationMode === "ajn" ? <div className="space-y-1.5"><Label htmlFor="booking-transport-fee">أجرة النقل</Label><Input id="booking-transport-fee" inputMode="decimal" value={transportationFee} onChange={(event) => setTransportationFee(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" /><p className="text-xs text-muted-foreground">تُضاف أجرة النقل تلقائياً إلى المبلغ الكلي للحجز. يمكن تحديد السيارة والسائق لاحقاً من مساحة تنفيذ الحجز.</p></div> : null}
           </section> : null}
-          <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={Boolean(recoveryBooking) || mutation.isPending || imageUploading || depositTooHigh || servicesLoading || !!servicesError || services.length === 0} className="ajn-rose-button flex-1">{imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : servicesLoading ? "جارٍ تحميل الخدمات..." : "حفظ الحجز"}</Button></div>
+          <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={adding ? mutation.isPending || !selected.length : Boolean(recoveryBooking) || mutation.isPending || imageUploading || depositTooHigh || servicesLoading || !!servicesError || services.length === 0} className="ajn-rose-button flex-1">{adding ? (mutation.isPending ? "جارٍ الإضافة..." : "إضافة للحجز") : imageUploading ? "جارٍ رفع الصور..." : mutation.isPending ? "جارٍ الحفظ..." : servicesLoading ? "جارٍ تحميل الخدمات..." : "حفظ الحجز"}</Button></div>
         </div>
       </div>
     </section>
@@ -2228,9 +2278,22 @@ export function bookingWorkspacePath(source: "service" | "kosha", id: number) {
   return source === "service" ? `/admin/booking-center/service/${id}` : `/admin/kosha-bookings/${id}`;
 }
 
+/** Adds services to a saved booking through the same form a booking starts with. */
+function AddBookingServicesDialog({ order, onClose, onSaved }: { order: ServiceOrder; onClose: () => void; onSaved: () => void }) {
+  return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+    <DialogContent dir="rtl" className="ajn-add-services-dialog max-h-[92dvh] w-[min(calc(100%-1.5rem),64rem)] max-w-none overflow-y-auto p-0">
+      <DialogTitle className="sr-only">إضافة خدمات للحجز</DialogTitle>
+      <DialogDescription className="sr-only">اختر الخدمات الجديدة وتفاصيلها بنفس طريقة بداية الحجز.</DialogDescription>
+      <UnifiedBookingForm addTo={order} services={[]} servicesLoading={false} servicesError="" onRetryServices={() => undefined} customers={[]} onCancel={onClose} onCreated={onSaved} />
+    </DialogContent>
+  </Dialog>;
+}
+
 function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: number }) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("edit") === "1");
+  const [addingServices, setAddingServices] = useState(false);
+  const { toast } = useToast();
   const activeQuery = useQuery({
     queryKey: ["admin", "booking-workspace", source, id],
     queryFn: () => adminFetch<ServiceOrder | KoshaBooking>(bookingWorkspacePath(source, id)),
@@ -2257,7 +2320,12 @@ function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: num
     closeEditor();
   };
   return <>
-    <BookingOperationsWorkspace booking={data as any} onEdit={() => setEditing(true)} />
+    <BookingOperationsWorkspace booking={data as any} onEdit={() => setEditing(true)} onAddServices={source === "service" ? () => setAddingServices(true) : undefined} />
+    {addingServices && source === "service" ? <AddBookingServicesDialog order={data.raw as any} onClose={() => setAddingServices(false)} onSaved={() => {
+      setAddingServices(false);
+      for (const queryKey of [["admin", "booking-workspace"], ["admin", "booking-center"], ["admin", "booking-operations"]]) queryClient.invalidateQueries({ queryKey });
+      toast({ title: "أُضيفت الخدمات للحجز", description: "زاد إجمالي الحجز بمبلغ الإضافة، والمدفوع بقى مثل ما هو." });
+    }} /> : null}
     {editing && source === "service" ? <EditServiceOrderModal order={data.raw as any} onClose={closeEditor} onSaved={saved} /> : null}
     {editing && source === "kosha" ? <EditKoshaBookingModal booking={data.raw as any} onClose={closeEditor} onSaved={saved} /> : null}
   </>;

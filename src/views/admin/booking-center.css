@@ -361,3 +361,8 @@
   .ajn-service-card,
   .ajn-booking-preview { transition: none; }
 }
+
+/* Add mode: services already on the booking stay visible but cannot be picked again. */
+.ajn-service-picker button.is-existing { border-color: hsl(var(--border)); background: hsl(var(--muted) / .55); color: hsl(var(--muted-foreground)); opacity: 1; cursor: default; }
+.ajn-service-picker button.is-existing small { position: absolute; inset: .35rem auto auto .45rem; font-size: .62rem; font-weight: 700; }
+.ajn-add-services-dialog .ajn-unified-form { border: 0; box-shadow: none; }

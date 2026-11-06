@@ -156,6 +156,7 @@
     "test:booking-finance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-finance.ts",
     "test:calendar-event-target": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-calendar-event-target.ts",
     "test:booking-center-delete": "node ./scripts/verify-booking-center-delete.mjs",
+    "test:booking-add-services": "node ./scripts/test-booking-add-services.mjs",
     "test:booking-center-read": "node ./scripts/test-booking-center-read-preflight.mjs",
     "test:calendar-read": "node ./scripts/test-calendar-read-preflight.mjs",
     "test:expense-voucher": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-expense-voucher-print.tsx",
