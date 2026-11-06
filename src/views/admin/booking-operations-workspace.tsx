@@ -336,8 +336,20 @@ function ledgerTypeLabel(row: any): string {
   if (row?.sourceType === "booking_penalty") return "غرامة";
   if (row?.sourceType === "group_photo") return "لقطات جماعية";
   if (row?.sourceType === "receipt_voucher") return "سند قبض";
+  if (row?.sourceType === "sales_invoice") return "دفعة الفاتورة";
+  if (row?.sourceType === "installment_payment" || row?.sourceType === "installment_contract") return "قسط الفاتورة";
   if (row?.direction === "revenue") return row?.sourceEvent === "payment" ? "دفعة / قبض" : "قبض";
   return "صرف";
+}
+
+/** A sound booking made from a sales invoice: its money and services follow the invoice. */
+export function bookingSalesInvoice(booking: Pick<BookingOperationsBooking, "source" | "raw">): { id: number; reference: string } | null {
+  if (booking.source !== "service") return null;
+  const fields = booking.raw?.customFields ?? {};
+  if (fields.sourceType !== "sales_invoice" && fields.bookingSource !== "sales_invoice") return null;
+  const id = Number(fields.salesInvoiceId ?? fields.sourceId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return { id, reference: String(fields.salesInvoiceReference || fields.originalOrderReference || `#${id}`) };
 }
 
 function bookingPaymentLabel(booking: Pick<BookingOperationsBooking, "total" | "paid" | "remaining">) {
@@ -453,7 +465,7 @@ function BookingServicesSection({ booking, onAdd, children }: { booking: Booking
   return <section className="ajn-op-services" aria-labelledby="ajn-op-services-title">
     <div className="ajn-op-services-head">
       <h2 id="ajn-op-services-title">خدمات الحجز <span>{booking.services.length}</span></h2>
-      {onAdd ? <Button variant="outline" size="sm" onClick={onAdd}><Plus /> إضافة خدمة</Button> : null}
+      {onAdd ? <Button variant="outline" size="sm" onClick={onAdd}><Plus /> إضافة خدمة</Button> : bookingSalesInvoice(booking) ? <small className="ajn-op-services-source">من فاتورة المبيعات <span dir="ltr">{bookingSalesInvoice(booking)!.reference}</span></small> : null}
     </div>
     {booking.services.length ? <ul className="ajn-op-service-list">{booking.services.map((service) => {
       const Icon = SERVICE_ICONS[service.type] ?? Sparkles;
@@ -1477,7 +1489,7 @@ function PenaltyDetailsDialog({ base, penalty, onClose, onChanged }: { base: str
   );
 }
 
-type BookingCash = { approved: number; waiting: number; recorded: number; penalties: number; groupPhotos: number; state: string; difference: number; overpaid: number };
+type BookingCash = { approved: number; waiting: number; recorded: number; penalties: number; groupPhotos: number; state: string; difference: number; overpaid: number; invoice?: { id: number; invoiceNo: string | null; total: number; approved: number; share: number } | null };
 
 function bookingCashNote(cash: BookingCash): { tone: "ok" | "warn" | "muted"; text: React.ReactNode } {
   switch (cash.state) {
@@ -1503,6 +1515,9 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
   const lastPayment = lastPaymentRow ? { amount: Number(lastPaymentRow.bookingShare ?? lastPaymentRow.amount), date: String(lastPaymentRow.transactionDate ?? ""), method: String(lastPaymentRow.paymentMethod ?? ""), status: String(lastPaymentRow.approvalStatus), transactionNo: lastPaymentRow.transactionNo } : null;
   const cash: BookingCash | null = data?.cash ?? null;
   const note = cash ? bookingCashNote(cash) : null;
+  // A booking made from a sales invoice is paid on the invoice; paying it here would split the money.
+  const salesInvoice = bookingSalesInvoice(booking);
+  const invoiceHref = salesInvoice ? `/admin/sales?invoice=${salesInvoice.id}` : null;
   // One booking = one payment source. The inline collector posts an
   // approval-first receipt against it — no duplicate ledger, no navigating away.
   const sourceType = booking.source === "kosha" ? "kosha_booking" : "service_order";
@@ -1515,7 +1530,7 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
   return <div className="ajn-op-tab-panel"><div className="ajn-op-section-head"><div><CircleDollarSign /><span><small>مصدر واحد للحقيقة المالية · هذا الحجز وحساب العميل</small><h2>الملخص المالي</h2></span></div><div className="ajn-op-actions"><Button variant="outline" asChild><Link href={invoiceUrl}><Printer /> الفاتورة</Link></Button></div></div>
     <div className="ajn-op-finance-body">
     {/* 1) Booking summary + inline approval-first "تسجيل دفعة". */}
-    <AccountSummaryCard sourceType={sourceType} sourceId={booking.id} total={booking.total} discount={discount} paid={booking.paid} remaining={booking.remaining} paymentStatus={booking.paymentStatus} lastPayment={lastPayment} onCollected={refetchFinance} />
+    <AccountSummaryCard sourceType={sourceType} sourceId={booking.id} total={booking.total} discount={discount} paid={booking.paid} remaining={booking.remaining} paymentStatus={booking.paymentStatus} lastPayment={lastPayment} onCollected={refetchFinance} collectOn={invoiceHref ? { href: invoiceHref, label: "تسجيل الدفعة على الفاتورة" } : undefined} />
     <QueryState loading={query.isLoading} error={query.error}>
       {breakdown.some(([, value]) => value > 0) ? <dl className="ajn-op-finance-breakdown">{breakdown.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{money(value)}</dd></div>)}</dl> : null}
       {/* 2) The booking against the main cash box: what arrived, what waits, whether they agree. */}
@@ -1529,6 +1544,7 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
           <div><dt>بانتظار الاعتماد</dt><dd>{money(cash.waiting)}</dd></div>
           <div><dt>مسجّل على الحجز</dt><dd>{money(cash.recorded)}</dd></div>
         </dl>
+        {cash.invoice ? <p className="ajn-op-cash-aside">هذا الحجز من فاتورة المبيعات {invoiceHref ? <Link href={invoiceHref} className="font-bold underline underline-offset-4" dir="ltr">{cash.invoice.invoiceNo || `#${cash.invoice.id}`}</Link> : <b dir="ltr">{cash.invoice.invoiceNo || `#${cash.invoice.id}`}</b>}، فدفعاته تُسجَّل على الفاتورة. دخل الصندوق للفاتورة {money(cash.invoice.approved)} من {money(cash.invoice.total)}، ونصيب هذا الحجز منها {money(cash.invoice.share)}.</p> : null}
         <p className={`ajn-op-cash-note is-${note.tone}`}>{note.tone === "ok" ? <CheckCircle2 /> : note.tone === "warn" ? <TriangleAlert /> : <CircleDollarSign />}<span>{note.text}</span></p>
         {cash.waiting > 0 ? <p role="status" className="ajn-op-cash-note is-waiting"><CalendarClock /><span><b>دفعة بانتظار الاعتماد: {money(cash.waiting)}</b> — لا تظهر في الصندوق الرئيسي حتى يعتمدها المدير الرئيسي من <Link href="/admin/approvals" className="font-bold underline underline-offset-4">الموافقات</Link>.</span></p> : null}
         {cash.penalties > 0 || cash.groupPhotos > 0 ? <p className="ajn-op-cash-aside">دخلت الصندوق أيضاً خارج مبلغ الحجز:{cash.penalties > 0 ? <> غرامات {money(cash.penalties)}</> : null}{cash.penalties > 0 && cash.groupPhotos > 0 ? " ·" : null}{cash.groupPhotos > 0 ? <> لقطات جماعية {money(cash.groupPhotos)}</> : null}</p> : null}
@@ -1546,7 +1562,7 @@ function FinanceTab({ base, queryKey, booking, invoiceUrl }: { base: string; que
                 {data.transactions.map((row: any) => <tr key={row.id} className="border-t border-border/20">
                   <td className="p-2 font-semibold">{ledgerTypeLabel(row)}</td>
                   <td className="p-2 tabular-nums" dir="ltr">{canOpenCash ? <Link href={`/admin/finance/master-cash?transaction=${row.id}`} className="ajn-op-cash-ref">{row.transactionNo || row.referenceNo || `#${row.id}`}</Link> : row.transactionNo || row.referenceNo || `#${row.id}`}</td>
-                  <td className="p-2">{money(Number(row.bookingShare ?? row.amount))}{row.bookingShare != null && Number(row.bookingShare) !== Number(row.amount) ? <small className="block text-muted-foreground">من سند {money(Number(row.amount))}</small> : null}</td>
+                  <td className="p-2">{money(Number(row.bookingShare ?? row.amount))}{row.bookingShare != null && Number(row.bookingShare) !== Number(row.amount) ? <small className="block text-muted-foreground">{row.bookingShareFrom === "sales_invoice" ? "من فاتورة" : "من سند"} {money(Number(row.amount))}</small> : null}</td>
                   <td className="p-2"><OperationStatus value={row.approvalStatus} label={FINANCIAL_STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus} />{["pending", "draft"].includes(row.approvalStatus) ? <small className="mt-1 block text-muted-foreground">لم تُرحّل بعد</small> : null}</td>
                   <td className="p-2">{readableDate(row.transactionDate ?? row.transactionTime)}</td>
                   <td className="p-2">{row.requestedByName || "—"}{row.approvedByName || row.executedByName ? <small className="mt-1 block text-muted-foreground">اعتمد: {row.approvedByName || row.executedByName}</small> : null}</td>

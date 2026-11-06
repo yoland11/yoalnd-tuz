@@ -25,7 +25,7 @@ if (process.env.AJN_ENV !== "test" || process.env.ALLOW_TEST_WRITES !== "true" |
 if (url === process.env.DATABASE_URL) throw new Error("TEST_DATABASE_URL must be a separate database");
 
 const { financialTransactionsTable } = await import("@workspace/db");
-const { attachBookingLinks, bookingCashSummary, bookingTransactionCondition, bookingVoucherShares } = await import("../src/server/booking-cash-link");
+const { attachBookingLinks, bookingCashSummary, bookingRowShares, bookingTransactionCondition, bookingVoucherShares } = await import("../src/server/booking-cash-link");
 const { reconcilePaymentState } = await import("../src/server/payment-state");
 
 const pool = new pg.Pool({ connectionString: url });
@@ -112,6 +112,62 @@ try {
   assert.deepEqual(unlinked.bookings, [], "a movement with no booking has none");
   const [gone] = await attachBookingLinks(db, [{ sourceType: "kosha_booking", sourceId: "2147483000" }]);
   assert.deepEqual(gone.bookings, [], "a booking that no longer exists has nothing to open");
+
+  // A sound booking made from a sales invoice is paid on the invoice: the invoice sync stores
+  // total × invoice paid ÷ invoice total on the booking, and the cash moves under the invoice.
+  const [service] = await rows(sql`insert into services (name, name_ar, type) values ('sound', 'صوتيات', 'sound') returning id`);
+  const invoiceOf = async (total: number) => Number((await rows(sql`insert into sales_invoices (invoice_no, date, customer_name, total) values (${`INV-${stamp}-${(serial += 1)}`}, '2039-05-05', 'فحص', ${String(total)}) returning id`))[0].id);
+  const soundBooking = async (fields: Record<string, unknown>, total: number, recorded: number) => Number((await rows(sql`
+    insert into service_orders (service_id, customer_name, phone, total_amount, deposit_amount, remaining_amount, custom_fields)
+    values (${service.id}, 'زبون فاتورة مبيعات', 'غير مسجل', ${String(total)}, ${String(recorded)}, ${String(total - recorded)}, ${JSON.stringify(fields)}::jsonb) returning id
+  `))[0].id);
+  const paidInvoice = await invoiceOf(250000);
+  const invoiceCash = await move({ sourceType: "sales_invoice", sourceId: String(paidInvoice), amount: 200000 });
+  const invoiceVoucherRow = await rows(sql`insert into receipt_vouchers (voucher_no, payer_name, amount, approval_status) values (${`RV-${stamp}-${(serial += 1)}`}, 'فحص', '50000', 'executed') returning id`);
+  await db.execute(sql`insert into receipt_voucher_allocations (receipt_voucher_id, customer_id, source_type, source_id, amount, reversed_amount, posted_at) values (${invoiceVoucherRow[0].id}, ${customer.id}, 'sales_invoice', ${paidInvoice}, '50000', '0', now())`);
+  const invoiceVoucherMove = await move({ sourceType: "receipt_voucher", sourceId: String(invoiceVoucherRow[0].id), amount: 50000 });
+  const invoicePending = await move({ sourceType: "sales_invoice", sourceId: String(paidInvoice), amount: 25000, status: "pending" });
+  const fromPaid = await soundBooking({ sourceType: "sales_invoice", bookingSource: "sales_invoice", salesInvoiceId: paidInvoice, sourceId: paidInvoice, salesInvoiceReference: "INV-X" }, 100000, 100000);
+  const invoiceCanonical = await reconcilePaymentState(db, { sourceType: "sales_invoice", sourceId: paidInvoice });
+  const full = await bookingCashSummary(db, { entityType: "service_order", id: fromPaid, total: 100000, recorded: 100000 });
+  assert.equal(full.invoice?.approved, Number(invoiceCanonical!.approvedPaidAmount), "the invoice's cash by the reconcilePaymentState rule");
+  assert.equal(full.invoice?.share, 100000, "a fully paid invoice pays the whole booking");
+  assert.equal(full.approved, 100000);
+  assert.equal(full.state, "matched", "an invoice-paid booking is not reported as missing from the cash box");
+  assert.equal(full.waiting, 10000, "its share of a waiting invoice payment (25k × 100k ÷ 250k)");
+
+  const halfInvoice = await invoiceOf(250000);
+  const halfCash = await move({ sourceType: "sales_invoice", sourceId: String(halfInvoice), amount: 100000 });
+  const fromHalf = await soundBooking({ sourceType: "sales_invoice", salesInvoiceId: halfInvoice }, 100000, 40000);
+  const half = await bookingCashSummary(db, { entityType: "service_order", id: fromHalf, total: 100000, recorded: 40000 });
+  assert.equal(half.approved, 40000, "the same share the invoice sync stores");
+  assert.equal(half.state, "matched");
+  assert.equal((await bookingCashSummary(db, { entityType: "service_order", id: fromHalf, total: 100000, recorded: 100000 })).state, "mismatch", "a booking that claims more than its share is still flagged");
+  const thirdInvoice = await invoiceOf(300000);
+  await move({ sourceType: "sales_invoice", sourceId: String(thirdInvoice), amount: 100000 });
+  const fromThird = await soundBooking({ sourceType: "sales_invoice", salesInvoiceId: thirdInvoice }, 100000, 33333.33);
+  assert.equal((await bookingCashSummary(db, { entityType: "service_order", id: fromThird, total: 100000, recorded: 33333.33 })).state, "matched", "rounded like the stored numeric(10,2) share");
+
+  // Only a booking the invoice made is linked; another source's id is not an invoice.
+  const lookalike = await soundBooking({ sourceType: "rental_order", sourceId: paidInvoice }, 100000, 0);
+  const plain = await bookingCashSummary(db, { entityType: "service_order", id: lookalike, total: 100000, recorded: 0 });
+  assert.equal(plain.invoice, null);
+  assert.equal(plain.approved, 0);
+
+  const invoiceCondition = await bookingTransactionCondition(db, "service_order", fromPaid);
+  const invoiceScoped = new Set((await db.select().from(financialTransactionsTable).where(and(invoiceCondition, sql`${financialTransactionsTable.transactionNo} like ${`T-${stamp}-%`}`))).map((row: any) => Number(row.id)));
+  for (const id of [invoiceCash, invoiceVoucherMove, invoicePending]) assert.ok(invoiceScoped.has(id), `invoice movement ${id} is listed with its booking`);
+  assert.ok(!invoiceScoped.has(halfCash), "another invoice's cash stays out");
+  const lookalikeScoped = new Set((await db.select().from(financialTransactionsTable).where(and(await bookingTransactionCondition(db, "service_order", lookalike), sql`${financialTransactionsTable.transactionNo} like ${`T-${stamp}-%`}`))).map((row: any) => Number(row.id)));
+  assert.ok(!lookalikeScoped.has(invoiceCash), "a booking the invoice did not make lists none of its cash");
+
+  const halfShares = await bookingRowShares(db, "service_order", fromHalf, 100000);
+  assert.deepEqual(halfShares.shareOf({ sourceType: "sales_invoice", sourceId: String(halfInvoice), amount: "100000" }), { share: 40000, from: "sales_invoice" });
+  const paidShares = await bookingRowShares(db, "service_order", fromPaid, 100000);
+  assert.deepEqual(paidShares.shareOf({ sourceType: "receipt_voucher", sourceId: String(invoiceVoucherRow[0].id), amount: "50000" }), { share: 20000, from: "sales_invoice" }, "a voucher paid to the invoice counts at the booking's ratio");
+  const kosha = await bookingRowShares(db, entity, booking, 500000);
+  assert.deepEqual(kosha.shareOf({ sourceType: "receipt_voucher", sourceId: String(postedVoucher), amount: "100000" }), { share: 40000, from: "receipt_voucher" }, "a split voucher still shows the booking's part");
+  assert.equal(kosha.shareOf({ sourceType: entity, sourceId: String(booking), amount: "100000" }), null, "a direct payment is the booking's in full");
   throw new Rollback();
 } catch (cause) {
   await db.execute(sql`rollback`);
@@ -119,4 +175,4 @@ try {
 }
 client.release();
 await pool.end();
-console.log("PASS booking cash link on real PostgreSQL: same rule as reconcilePaymentState, shares, separate money, one definition of a booking's movements; rolled back");
+console.log("PASS booking cash link on real PostgreSQL: same rule as reconcilePaymentState, shares, separate money, invoice-made bookings paid on their invoice, one definition of a booking's movements; rolled back");

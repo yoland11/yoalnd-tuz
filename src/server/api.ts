@@ -9,7 +9,7 @@ import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTrans
 import { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest, warehouseApprovalDocument } from "./warehouse-approvals";
 import { approvalRecordHref } from "@/lib/approval-records";
 import { ApprovalRequestError, OPEN_APPROVAL_STATUSES, WAREHOUSE_APPROVAL_TYPES, approvalDecisionNotice, approvalTypeCategory, approvalTypeNeedsMainManager, runApprovalDecision, type ApprovalExecution, type ApprovalExecutionPlan } from "./approval-requests";
-import { bookingCashSummary, bookingTransactionCondition, bookingVoucherShares } from "./booking-cash-link";
+import { bookingCashSummary, bookingRowShares, bookingTransactionCondition } from "./booking-cash-link";
 import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence, rowsOf as attendanceDatabaseRows } from "./attendance";
 import { QR_ROTATION_SECONDS, baghdadDate, addDays as attendanceAddDays } from "@/lib/attendance-rules";
 import { attendancePunchSchema } from "@/lib/attendance-submission";
@@ -35355,7 +35355,8 @@ async function handleBookingOperations(
     );
     // The stored total already includes product charges; damage is a separate due.
     const finalAmount = total;
-    const voucherShares = await bookingVoucherShares(db as any, reference.entityType, reference.id);
+    // A voucher can pay several documents, and an invoice-made booking holds a share of its invoice.
+    const shares = await bookingRowShares(db as any, reference.entityType, reference.id, total);
     const estimatedCost = assets.reduce(
       (sum: number, item: any) =>
         sum + Math.max(0, item.purchaseValue - item.currentValue),
@@ -35370,7 +35371,7 @@ async function handleBookingOperations(
       finalAmount,
       estimatedCost,
       estimatedProfit: finalAmount - estimatedCost,
-      transactions: transactions.map((row) => ({ ...row, bookingShare: row.sourceType === "receipt_voucher" ? voucherShares.get(String(row.sourceId)) ?? null : null })),
+      transactions: transactions.map((row) => { const part = shares.shareOf(row); return { ...row, bookingShare: part?.share ?? null, bookingShareFrom: part?.from ?? null }; }),
       ledger,
       customerId: reference.customerId,
       cash: await bookingCashSummary(db as any, { entityType: reference.entityType, id: reference.id, total, recorded: paid }),

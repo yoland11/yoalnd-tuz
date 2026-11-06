@@ -21,7 +21,7 @@ const post = center.slice(center.indexOf('return adminFetch("/admin/service-orde
 assert.match(post.slice(0, 4000), /bookingCenterServices: serviceEntries,\s+\.\.\.serviceDetails,/, "creating and adding share one definition");
 assert.match(center, /const already = existingServices\.includes\(meta\.key\);[\s\S]{0,300}disabled=\{already\}/, "a service already on the booking cannot be added twice");
 assert.match(center, /if \(existingServices\.includes\(type\)\) return;/);
-assert.match(center, /onAddServices=\{source === "service" \? \(\) => setAddingServices\(true\) : undefined\}/, "the workspace opens the add window for service bookings");
+assert.match(center, /onAddServices=\{source === "service" && !bookingSalesInvoice\(data as any\) \? \(\) => setAddingServices\(true\) : undefined\}/, "the workspace opens the add window for service bookings, not for ones a sales invoice owns (its sync rewrites their services)");
 
 // The workspace shows departments by name and keeps every panel reachable.
 assert.doesNotMatch(workspace, /booking\.services\.map\(\(service\) => service\.type\)/, "no raw department keys in the header or the receipt");

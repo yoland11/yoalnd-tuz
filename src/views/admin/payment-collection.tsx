@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Banknote, CalendarClock, CheckCircle2, RefreshCw, Upload, WalletCards, X } from "lucide-react";
+import { Link } from "wouter";
+import { Banknote, CalendarClock, CheckCircle2, ExternalLink, RefreshCw, Upload, WalletCards, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -68,6 +69,8 @@ type Props = {
   onCollected?: () => void;
   onRepairInvoiceStatus?: () => void;
   compact?: boolean;
+  /** The money is collected on another document (a booking made from a sales invoice is paid on the invoice). */
+  collectOn?: { href: string; label: string };
 };
 
 type CustomerLinkCandidate = {
@@ -98,6 +101,7 @@ export function AccountSummaryCard({
   onCollected,
   onRepairInvoiceStatus,
   compact = false,
+  collectOn,
 }: Props) {
   const [open, setOpen] = useState(false);
   const admin = useQuery({
@@ -133,7 +137,11 @@ export function AccountSummaryCard({
               <RefreshCw className="h-4 w-4" /> تحديث حالة الفاتورة
             </Button>
           ) : null}
-          {remaining > 0 && canCollect ? (
+          {remaining > 0 && collectOn ? (
+            <Button size="sm" variant="outline" className="gap-1.5" asChild>
+              <Link href={collectOn.href}><ExternalLink className="h-4 w-4" /> {collectOn.label}</Link>
+            </Button>
+          ) : remaining > 0 && canCollect ? (
             <Button size="sm" className="gap-1.5" onClick={() => setOpen(true)}>
               <Banknote className="h-4 w-4" /> تسجيل دفعة
             </Button>

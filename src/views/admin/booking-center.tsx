@@ -69,7 +69,7 @@ import { shortBookingNumber } from "@/lib/booking-number";
 import { aerialPhotographyCharge } from "@/lib/booking-aerial-photography";
 import { formatIraqiPhone } from "@/lib/phone";
 import { CustomerQuickAddDialog } from "./customer-quick-add";
-import { BookingOperationsWorkspace } from "./booking-operations-workspace";
+import { BookingOperationsWorkspace, bookingSalesInvoice } from "./booking-operations-workspace";
 import {BookingReadinessPanel,readinessText,type ReadinessDisplay} from "@/components/booking-readiness-panel";
 import type {BookingReadinessSummary} from "@/lib/booking-operational-readiness";
 import { EditServiceOrderModal } from "./orders";
@@ -2320,7 +2320,7 @@ function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: num
     closeEditor();
   };
   return <>
-    <BookingOperationsWorkspace booking={data as any} onEdit={() => setEditing(true)} onAddServices={source === "service" ? () => setAddingServices(true) : undefined} />
+    <BookingOperationsWorkspace booking={data as any} onEdit={() => setEditing(true)} onAddServices={source === "service" && !bookingSalesInvoice(data as any) ? () => setAddingServices(true) : undefined} />
     {addingServices && source === "service" ? <AddBookingServicesDialog order={data.raw as any} onClose={() => setAddingServices(false)} onSaved={() => {
       setAddingServices(false);
       for (const queryKey of [["admin", "booking-workspace"], ["admin", "booking-center"], ["admin", "booking-operations"]]) queryClient.invalidateQueries({ queryKey });

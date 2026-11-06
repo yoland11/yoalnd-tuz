@@ -856,6 +856,7 @@
 .ajn-op-services-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .ajn-op-services-head h2 { display: flex; align-items: center; gap: .5rem; font-size: .98rem; font-weight: 850; }
 .ajn-op-services-head h2 span { min-width: 1.45rem; padding: 0 .4rem; border-radius: 999px; background: var(--op-rose-soft); color: var(--op-rose); font-size: .74rem; text-align: center; font-variant-numeric: tabular-nums; }
+.ajn-op-services-source { color: var(--op-muted, #6b7280); font-size: .78rem; font-weight: 650; }
 .ajn-op-service-list { margin-top: .55rem; }
 .ajn-op-service-list li { display: flex; min-height: 3.2rem; align-items: center; gap: .8rem; padding: .55rem 0; border-top: 1px solid var(--op-border); }
 .ajn-op-service-list li:first-child { border-top: 0; }
