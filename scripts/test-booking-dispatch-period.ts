@@ -39,7 +39,7 @@ function fixture(options: { conflict?: boolean; failVehicle?: boolean; noTiming?
     EnterpriseDispatchSchema: { safeParse: (value: any) => ({ success: true, data: { score: 0, suggestions: {}, ...value } }) },
     recordEnterpriseMutation: async () => { state.activity++; }, createNotification: async () => { state.notices++; }, json: (data: any, status = 200) => ({ status, data }) };
   vm.createContext(context); vm.runInContext(code, context);
-  return { get state() { return state; }, queries, run: () => context.run({ method: "POST", payload: { entityType: "service_order", entityId: 7, vehicleId: 4, crewId: 5 } }, { id: 1, fullName: "مدير", username: "manager" }) };
+  return { get state() { return state; }, queries, run: (resources: { vehicleId?: number; crewId?: number } = { vehicleId: 4, crewId: 5 }) => context.run({ method: "POST", payload: { entityType: "service_order", entityId: 7, ...resources } }, { id: 1, fullName: "مدير", username: "manager" }) };
 }
 const normal = fixture(); await normal.run(); assert.equal(normal.state.assignment.id, 21); assert.equal(normal.state.vehicle, "outside"); assert.equal(normal.state.crew, "busy");
 assert.equal(normal.state.audit, 1); await normal.run(); assert.equal(normal.state.audit, 1); assert.equal(normal.state.notices, 1, "same assignment retry creates no duplicate notification");
@@ -47,7 +47,10 @@ const conflict = fixture({ conflict: true }); await assert.rejects(() => conflic
 const rollback = fixture({ failVehicle: true }); await assert.rejects(() => rollback.run(), /vehicle write unavailable/); assert.equal(rollback.state.assignment, null); assert.equal(rollback.state.crew, "available"); assert.equal(rollback.state.audit, 0);
 // The period is optional: without one the booking holds its whole event day.
 const dayOnly = fixture({ noTiming: true }); await dayOnly.run(); assert.equal(dayOnly.state.assignment.id, 21, "no operating period still assigns on the event day");
-const sameDay = fixture({ noTiming: true, conflict: true }); await assert.rejects(() => sameDay.run(), /مشغول/, "a day-only booking still refuses a vehicle busy that day"); assert.equal(sameDay.state.assignment, null);
+const sameDay = fixture({ noTiming: true, conflict: true }); await assert.rejects(() => sameDay.run(), /فريق التركيب مشغول/, "a day-only booking still refuses a crew busy that day"); assert.equal(sameDay.state.assignment, null);
+// Owner's rule 2026-11-07: a car serving another booking the same day is allowed.
+const sharedCar = fixture({ noTiming: true, conflict: true }); await sharedCar.run({ vehicleId: 4 }); assert.equal(sharedCar.state.assignment.id, 21, "a car on another booking the same day is still assigned"); assert.equal(sharedCar.state.vehicle, "outside");
+const sharedCarPeriod = fixture({ conflict: true }); await sharedCarPeriod.run({ vehicleId: 4 }); assert.equal(sharedCarPeriod.state.assignment.id, 21, "even inside the same operating period");
 const unknown = fixture({ noTiming: true, noDate: true }); await assert.rejects(() => unknown.run(), /تاريخ الحجز/); assert.equal(unknown.state.assignment, null);
 assert.match(normal.queries[0], /service_orders.*FOR UPDATE/, "original source booking is locked before dispatch/resource locks");
 console.log("PASS actual dispatch handler/store: original source lock, full-period vehicle/crew checks, atomic status/audit rollback and duplicate retry (controlled IO)");

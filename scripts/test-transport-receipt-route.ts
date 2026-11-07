@@ -26,7 +26,7 @@ async function run(variant:string,financial:boolean,options:{action?:string;meth
   const env={sql,eq,resource:"transportation",method:options.method??"GET",reference:{source:"service",id:7,entityType:"service_order",row:{},details:{bookingOperations:operations},operations},serviceOrderTransportation,auth:{id:1,role:options.manager?"admin":"employee",fullName:"مدير"},
     req:{headers:new Map(),nextUrl:new URL(`https://example.test/api/admin/booking-operations/service/7/transportation?receipt=${options.ordinary?0:1}&tripId=legacy-1&variant=${variant}&canViewCustomerCharge=true${options.action?`&transportAction=${options.action}`:""}`)},
     db,can:()=>true,hasPermission:(_auth:any,permission:string)=>permission==="booking_finance_view"&&financial,canEditOrderFinancials:()=>financial,
-    getCachedPublicSettings:async()=>({site_name:"شركة محددة",phone:"07720000000",logo_url:""}),readTransportReceipt,readTransportPlan,bookingResourceSpan,
+    getCachedPublicSettings:async()=>({site_name:"شركة محددة",phone:"07720000000",logo_url:""}),readTransportReceipt,readTransportPlan,bookingResourceSpan,transportClashWarnings:async()=>[],
     normalizeTransportReceiptSettings,DEFAULT_TRANSPORT_RECEIPT_SETTINGS,settingsTable:{key:"key"},TransportPlanError:class extends Error{constructor(message:string,public status:number){super(message)}},body:async()=>options.payload,
     addEntityTimeline:async()=>{if(options.failAudit)throw Error("print audit unavailable");writes++},erpActorFromAdmin:()=>({id:1,name:"مدير"}),makeRequestId:()=>"receipt-test",
     json:(data:any)=>({status:200,data,headers:new Map()}),error:(message:string,status:number)=>({status,message}),

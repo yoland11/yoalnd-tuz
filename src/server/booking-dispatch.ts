@@ -2,7 +2,7 @@ import { db, dispatchAssignmentsTable, crewsTable, fleetVehiclesTable } from "@w
 import { and, eq, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import { readResourceBooking } from "./booking-resource-period";
-import { BookingResourceConflictError, resourceTimingProblem, findBookingVehicleConflict, findBookingCrewConflict, resourceRows } from "./booking-resource-availability";
+import { BookingResourceConflictError, resourceTimingProblem, findBookingCrewConflict, resourceRows } from "./booking-resource-availability";
 
 type DispatchInput = {
   entityType: string; entityId: number; branchId?: number | null;
@@ -47,7 +47,9 @@ export async function saveBookingDispatch(database: Pick<typeof db, "transaction
         AND status IN ('assigned','en_route','active') AND NOT(entity_type=${input.entityType} AND entity_id=${input.entityId})
         ${reference ? sql`AND entity_type NOT IN ('kosha_booking','service_order')` : sql``} LIMIT 1`));
       if (other.length) throw new BookingResourceConflictError("المورد مشغول بإسناد آخر لم تُوثق فترة تشغيله؛ راجع الإسناد قبل الحفظ", 409);
-      if (reference && await (kind === "vehicle" ? findBookingVehicleConflict(reference, id, tx) : findBookingCrewConflict(reference, id, tx))) throw new BookingResourceConflictError(kind === "vehicle" ? "المركبة مشغولة خلال فترة التجهيز والنقل والإرجاع أو مواعيدها غير مكتملة" : "فريق التركيب مشغول خلال فترة التشغيل أو مواعيده غير مكتملة", 409);
+      // A car may serve another booking the same day (owner's rule 2026-11-07);
+      // the booking's transport card names that booking as a warning.
+      if (reference && kind === "crew" && await findBookingCrewConflict(reference, id, tx)) throw new BookingResourceConflictError("فريق التركيب مشغول خلال فترة التشغيل أو مواعيده غير مكتملة", 409);
     }
     const values = { ...snapshot(input), score: String(input.score), assignedBy: actor.id, assignedByName: actor.name };
     const [row] = await tx.insert(dispatchAssignmentsTable).values(values).onConflictDoUpdate({ target: [dispatchAssignmentsTable.entityType, dispatchAssignmentsTable.entityId], set: { ...values, status: "assigned", updatedAt: new Date() } }).returning();

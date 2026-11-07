@@ -61,7 +61,11 @@ assert.match(endpoint, /reference\.source === "kosha"\)\s*return error\("نقل 
 assert.match(endpoint, /if \(fee <= 0\) return error\("أجرة النقل مطلوبة/);
 assert.match(endpoint, /if \(!d\.vehicleId\) return error\("اختر سيارة للنقل بواسطة AJN"/);
 assert.match(endpoint, /from service_orders where id = \$\{reference\.id\} for update/);
-assert.match(endpoint, /const clash = await transportVehicleClash\(tx, d\.vehicleId, live\);/);
+// Owner's rule 2026-11-07 («خلي يحجز مهما كان موجود حجز نفس يوم»): a car or driver on
+// another booking the same day never blocks the save; the card's GET names it as a warning.
+assert.doesNotMatch(endpoint, /transportVehicleClash|throw new CheckoutError\(clash, 409\)/, "the transport save never refuses a same-day car");
+assert.match(endpoint, /const warnings=await transportClashWarnings\(db,reference,plan\.trips,/);
+assert.match(endpoint, /transportPlan: plan,\s*warnings,/);
 assert.match(endpoint, /const liveTransport=serviceOrderTransportation\(live\.details\);/, "the save reads the transport the booking form saved too");
 assert.match(endpoint, /const delta = transportTotalDelta\(liveTransport as Parameters<typeof transportTotalDelta>\[0\], fee\);/);
 assert.match(endpoint, /const opsTransport = reference\.source === "service" \? serviceOrderTransportation\(reference\.details\)/);
@@ -73,15 +77,27 @@ assert.match(endpoint, /columnMode\s*\?\s*\{/, "kosha bookings read their own tr
 
 // 4. Kosha booking form: one period-aware vehicle clash check; the old card copy is cleared.
 const koshaPatch = between(api, "const transportationRequested = [", "const sameStringList = ");
-assert.match(koshaPatch, /await transportVehicleClash\(db, vehicle\.id, \{\s*source: "kosha",\s*id,\s*eventDate: eventDateForConflict,/);
-assert.doesNotMatch(koshaPatch, /eq\(koshaBookingsTable\.eventDate, eventDateForConflict\)/, "no date-only kosha clash check");
+assert.doesNotMatch(koshaPatch, /transportVehicleClash|eventDateForConflict|return error\(clash, 409\)/, "the kosha transport save never refuses a same-day car");
+const koshaCreate = between(api, "const transportationMode = data.transportationMode ?? null;", "transportationVehicleId = vehicle.id;");
+assert.doesNotMatch(koshaCreate, /conflictingBooking|مرتبطة بحجز آخر/, "a new kosha booking may use a car booked the same day");
 // Only the type and fee touch money: the vehicle, driver and notes stay editable after payments.
 assert.match(koshaPatch, /const financialChange = nextMode !== currentMode \|\| requestedFee !== currentFee;\s*if \(financialChange\) \{/);
-const clashFn = between(api, "async function transportVehicleClash(", "// Group photography:");
-assert.match(clashFn, /if \(!resourceInterval\(reference\)\) return null;/, "unknown own timing is the guard's to explain");
+const clashFn = between(api, "async function transportClashWarnings(", "// Group photography:");
+assert.match(clashFn, /if \(!resourceInterval\(reference\)\) return \[\];/, "unknown own timing is the guard's to explain");
 assert.match(clashFn, /await findBookingVehicleConflict\(reference, vehicleId, executor\)/, "same interval rule as the resource guard");
-assert.match(clashFn, /clash\.timingIncomplete\s*\?\s*`[^`]*في نفس اليوم\. إذا كانت تكفي الحجزين، حدّد فترة التشغيل لكليهما\.`/);
-assert.match(clashFn, /خلال نفس فترة التشغيل\./);
+assert.match(clashFn, /await findBookingStaffConflict\(reference, \[driverId\], executor\)/, "the driver is named too");
+assert.match(clashFn, /عليها حجز ثاني \(\$\{label\(clash\)\}\) \$\{when\(clash\)\}\. النقل ينحفظ عادي/, "the warning names the other booking");
+assert.match(clashFn, /clash\.timingIncomplete \? "بنفس اليوم" : "بنفس فترة التشغيل"/);
+assert.match(clashFn, /catch \(cause\) \{\s*console\.error\("transport clash warning read failed", \{ requestId,[^}]*safeServerError\(cause\) \}\);\s*warnings\.push\(`تعذر فحص/, "a failed read is a visible warning with a request id, never «no clash»");
+const guard = readFileSync("src/server/booking-resource-period.ts", "utf8");
+assert.match(guard, /if\(outside\.length\|\|kind==="crew"&&await findBookingCrewConflict\(next,resourceId,tx\)\)throw/, "the guard keeps crew and non-booking assignments, not same-day cars");
+assert.doesNotMatch(guard, /findBookingVehicleConflict/);
+assert.match(guard, /const team=groups\.checked\.filter\(value=>!\(next\.transportDriverIds\?\?\[\]\)\.includes\(value\)\);\s*if\(await findBookingStaffConflict\(next,team,tx\)\)throw/, "team members are still checked; transport-only drivers follow the car");
+const dispatch = readFileSync("src/server/booking-dispatch.ts", "utf8");
+assert.match(dispatch, /if \(reference && kind === "crew" && await findBookingCrewConflict\(reference, id, tx\)\) throw/);
+assert.doesNotMatch(dispatch, /findBookingVehicleConflict/, "dispatch may give a car that serves another booking the same day");
+const warningCard = readFileSync("src/components/booking-transport-plan-editor.tsx", "utf8");
+assert.match(warningCard, /savedMode === "ajn" && data\.warnings\?\.length \? <div role="status" aria-label="تنبيهات النقل"/);
 
 // A transport-only kosha edit keeps the amount actually paid: the cash "paid in full"
 // default (pricing.paymentMethod missing → "cash") must never settle the booking.

@@ -52,4 +52,25 @@ const saved=await readResourceBooking(tx,{source:"kosha",id:7});
 assert.deepEqual(saved.staffIds,[8,9]);
 assert.deepEqual((saved as any).vehicleIds,[5,6]);
 assert.deepEqual(lockedIds,[5,6],"secondary trip vehicles locked in stable order before confirmation");
+// Owner's rule 2026-11-07 («خلي يحجز مهما كان موجود حجز نفس يوم»): the car and its
+// transport-only driver may serve S-149 the same day; a busy team member still blocks.
+const sharedDay=async(teamId:number|null)=>{
+  const other={source:"service",id:149,event_date:"2026-10-24",details:{bookingOperations:{transportation:{mode:"ajn",vehicleId:5,driverId:8}}},transport_plan_only:false};
+  let kosha:any={id:7,status:"confirmed",event_date:"2026-10-24",details:{},assigned_staff_id:teamId,kosha_id:null,transportation_mode:"ajn",transportation_vehicle_id:null,transportation_driver_id:null};
+  const busy:string[]=[];
+  const guardTx={execute:async(statement:any)=>{
+    const q=dialect.sqlToQuery(statement),sql=q.sql.replace(/\s+/g," ").trim();
+    if(sql.startsWith("SELECT id,status,event_date"))return {rows:[structuredClone(kosha)]};
+    if(sql.startsWith("SELECT vehicle_id,crew_id")||sql.startsWith("SELECT m.staff_id"))return {rows:[]};
+    if(sql.startsWith("SELECT id,is_active FROM staff"))return {rows:q.params.filter((v:any)=>typeof v==="number").map((v:number)=>({id:v,is_active:true}))};
+    if(sql.startsWith("SELECT id,is_active,status FROM fleet_vehicles"))return {rows:[{id:Number(q.params[0]),is_active:true,status:"available"}]};
+    if(sql.startsWith("SELECT entity_type,entity_id"))return {rows:[]};
+    if(sql.startsWith("WITH bookings")){busy.push(sql.includes("staff_bookings")?"staff":"vehicle");return {rows:[other]};}
+    throw Error("unexpected shared-day guard query "+sql);
+  }};
+  await guardBookingResourceWrite(guardTx,{source:"kosha",id:7},async()=>{kosha={...kosha,transportation_vehicle_id:5,transportation_driver_id:8}});
+  return busy;
+};
+assert.deepEqual(await sharedDay(null),[],"car 5 and driver 8 on S-149 the same day: saved, no blocking clash read");
+await assert.rejects(()=>sharedDay(3),/أحد أفراد الفريق مشغول/,"a team member busy on another booking still blocks");
 console.log("PASS transport plan resources: sequential reuse, missing release, secondary trip conflicts, malformed data, original source guard and ordered vehicle locks");

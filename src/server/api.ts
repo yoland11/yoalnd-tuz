@@ -15677,17 +15677,8 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
           where: and(eq(fleetVehiclesTable.id, vehicleId), eq(fleetVehiclesTable.isActive, true)),
         });
         if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
-        const conflictingBooking = data.eventDate ? await db.query.koshaBookingsTable.findFirst({
-          where: and(
-            eq(koshaBookingsTable.transportationVehicleId, vehicle.id),
-            eq(koshaBookingsTable.transportationMode, "ajn"),
-            eq(koshaBookingsTable.eventDate, data.eventDate),
-            sql`${koshaBookingsTable.archivedAt} is null`,
-            sql`${koshaBookingsTable.status} <> 'cancelled'`,
-          ),
-        }) : null;
-        if (conflictingBooking)
-          return error("هذه السيارة مرتبطة بحجز آخر في نفس الوقت.", 409);
+        // Another booking with this car the same day is allowed (owner's rule
+        // 2026-11-07); the booking's transport card shows it as a warning.
         transportationVehicleId = vehicle.id;
         if (data.transportationDriverId) {
           const driver = await db.query.staffTable.findFirst({
@@ -22671,16 +22662,8 @@ async function handleAdminKoshas(
               where: and(eq(fleetVehiclesTable.id, requestedVehicleId), eq(fleetVehiclesTable.isActive, true)),
             });
             if (!vehicle) return error("السيارة المختارة غير متاحة", 404);
-            const eventDateForConflict = String((update as any).eventDate ?? (existing as any).eventDate ?? "");
-            const clash = eventDateForConflict
-              ? await transportVehicleClash(db, vehicle.id, {
-                  source: "kosha",
-                  id,
-                  eventDate: eventDateForConflict,
-                  operations: (((update.bookingDetails ?? existing.bookingDetails) as any)?.bookingOperations ?? {}) as Record<string, unknown>,
-                })
-              : null;
-            if (clash) return error(clash, 409);
+            // A car on another booking the same day is a warning on the transport
+            // card, never a block (owner's rule 2026-11-07).
             if (requestedDriverId) {
               const driver = await db.query.staffTable.findFirst({ where: eq(staffTable.id, requestedDriverId) });
               if (!driver) return error("السائق المختار غير موجود", 404);
@@ -32298,23 +32281,39 @@ const SERVICE_TRANSPORT_EFFECTIVE = sql.raw(`(case
 end)`);
 
 /**
- * Another active booking that holds the vehicle while this one needs it: during
- * its operating period, or its whole event day when no period is set (the same
- * rule as the resource guard). Returns a message naming it ("K-12" / "S-34").
+ * Other active bookings that use this booking's transport cars or drivers during
+ * the same operating period, or the same event day when a period is missing (the
+ * resource guard's interval rule). The owner allows that (2026-11-07), so each is
+ * a warning naming the other booking ("K-12" / "S-34"), never a block. A failed
+ * read is its own visible warning with a request id, never "no clash".
  */
-async function transportVehicleClash(
+async function transportClashWarnings(
   executor: { execute: (query: any) => Promise<any> },
-  vehicleId: number,
   reference: TimedBookingRef,
-): Promise<string | null> {
+  trips: Array<{ vehicleId: number | null; driverId: number | null }>,
+  names: { vehicles: Map<number, string>; drivers: Map<number, string> },
+  requestId: string,
+): Promise<string[]> {
   // Unknown own timing is the guard's to explain (date or period), not a clash.
-  if (!resourceInterval(reference)) return null;
-  const clash = await findBookingVehicleConflict(reference, vehicleId, executor);
-  if (!clash) return null;
-  const ref = `${clash.source === "kosha" ? "K" : "S"}-${clash.id}`;
-  return clash.timingIncomplete
-    ? `هذه السيارة مرتبطة بحجز آخر (${ref}) في نفس اليوم. إذا كانت تكفي الحجزين، حدّد فترة التشغيل لكليهما.`
-    : `هذه السيارة مرتبطة بحجز آخر (${ref}) خلال نفس فترة التشغيل.`;
+  if (!resourceInterval(reference)) return [];
+  const label = (clash: { source: string; id: unknown }) => clash.source === "photography" ? `تصوير ${clash.id}` : `${clash.source === "kosha" ? "K" : clash.source === "service" ? "S" : "R"}-${clash.id}`;
+  const when = (clash: { timingIncomplete?: boolean }) => clash.timingIncomplete ? "بنفس اليوم" : "بنفس فترة التشغيل";
+  const unique = (values: Array<number | null>) => [...new Set(values.filter((value): value is number => value != null))];
+  const warnings: string[] = [];
+  try {
+    for (const vehicleId of unique(trips.map((trip) => trip.vehicleId))) {
+      const clash = await findBookingVehicleConflict(reference, vehicleId, executor);
+      if (clash) warnings.push(`السيارة «${names.vehicles.get(vehicleId) ?? `#${vehicleId}`}» عليها حجز ثاني (${label(clash)}) ${when(clash)}. النقل ينحفظ عادي، بس تأكد إنها تلحق على الحجزين.`);
+    }
+    for (const driverId of unique(trips.map((trip) => trip.driverId))) {
+      const clash = await findBookingStaffConflict(reference, [driverId], executor);
+      if (clash) warnings.push(`السائق «${names.drivers.get(driverId) ?? `#${driverId}`}» عنده حجز ثاني (${label(clash)}) ${when(clash)}. النقل ينحفظ عادي، بس تأكد إنه يلحق على الحجزين.`);
+    }
+  } catch (cause) {
+    console.error("transport clash warning read failed", { requestId, source: reference.source, id: reference.id, error: safeServerError(cause) });
+    warnings.push(`تعذر فحص حجوزات السيارة والسائق الثانية بنفس اليوم (رمز الطلب ${requestId}). النقل ينحفظ عادي.`);
+  }
+  return warnings;
 }
 // Group photography: many individuals under ONE event booking, each a participant
 // with their own receipt. Stored additively in bookingOperations.groupAttendees;
@@ -34787,9 +34786,11 @@ async function handleBookingOperations(
       const assignedVehicles=vehicleIds.length?((await db.execute(sql`select id,name,plate_number from fleet_vehicles where id in (${sql.join(vehicleIds.map(value=>sql`${value}`),sql`, `)})`)) as any).rows:[];
       const assignedDrivers=driverIds.length?((await db.execute(sql`select id,full_name,username from staff where id in (${sql.join(driverIds.map(value=>sql`${value}`),sql`, `)})`)) as any).rows:[];
       if(!Array.isArray(assignedVehicles)||!Array.isArray(assignedDrivers))throw new Error("Invalid transport assignment query response");
+      const warnings=await transportClashWarnings(db,reference,plan.trips,{vehicles:new Map(assignedVehicles.map((value:any)=>[Number(value.id),`${value.name}${value.plate_number?` · ${value.plate_number}`:""}`])),drivers:new Map(assignedDrivers.map((value:any)=>[Number(value.id),String(value.full_name??value.username??"")]))},makeRequestId(req.headers.get("x-request-id")));
       return json({
         transportation: current,
         transportPlan: plan,
+        warnings,
         assignmentOptions:{vehicles:assignedVehicles.map((value:any)=>({id:Number(value.id),name:String(value.name),plateNumber:value.plate_number??null})),drivers:assignedDrivers.map((value:any)=>({id:Number(value.id),fullName:value.full_name??value.username??null}))},
         resourceOccupancy: bookingResourceSpan(reference.operations,reference.eventDate),
         capabilities:{canEdit:can("booking_edit","orders","bookings")&&canEditOrderFinancials(auth)&&!(reference.source==="kosha"&&Number(row?.paidAmount??row?.paid_amount??0)>0),canPrintFinancial:canEditOrderFinancials(auth)||hasPermission(auth,"booking_finance_view")},
@@ -34843,10 +34844,8 @@ async function handleBookingOperations(
             select total_amount, deposit_amount, event_date::text as event_date from service_orders where id = ${reference.id} for update
           `)) as any)?.rows ?? [];
           if (!order) throw new CheckoutError("الحجز غير موجود", 404);
-          if (d.mode === "ajn" && d.vehicleId && order.event_date) {
-            const clash = await transportVehicleClash(tx, d.vehicleId, live);
-            if (clash) throw new CheckoutError(clash, 409);
-          }
+          // A car or driver on another booking the same day is allowed (owner's
+          // rule 2026-11-07); the card's GET names that booking as a warning.
           // The AJN fee is part of the booking total, added exactly once: a fee saved
           // before this rule («للعلم») was never in the total, so it counts as zero.
           const delta = transportTotalDelta(liveTransport as Parameters<typeof transportTotalDelta>[0], fee);

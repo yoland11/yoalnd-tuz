@@ -3,11 +3,11 @@ import { isDeepStrictEqual } from "node:util";
 import { parseBookingResourceWindow,readBookingResourceWindow,resourceWindowCalendar,bookingResourceSpan } from "@/lib/booking-resource-window";
 import { validateTransportPlan,transportResourceUses,type TransportResourceUse } from "@/lib/booking-transport-plan";
 import { dailyAssignedStaffIds } from "@/lib/booking-daily-operations";
-import { BookingResourceConflictError,resourceTimingProblem,findBookingPhysicalConflict,findBookingStaffConflict,findBookingVehicleConflict,findBookingCrewConflict,findBookingKoshaConflict,resourceRows,staffConflictGroups,photographyEventLinkIds,resolvePhotographyBookingId,KOSHA_RESOURCE_STATUSES,type ResourceExecutor,type TimedBookingRef } from "./booking-resource-availability";
+import { BookingResourceConflictError,resourceTimingProblem,findBookingPhysicalConflict,findBookingStaffConflict,findBookingCrewConflict,findBookingKoshaConflict,resourceRows,staffConflictGroups,photographyEventLinkIds,resolvePhotographyBookingId,KOSHA_RESOURCE_STATUSES,type ResourceExecutor,type TimedBookingRef } from "./booking-resource-availability";
 
 type Ref={source:"kosha"|"service";id:number};
 type Database=ResourceExecutor&{transaction<T>(run:(tx:ResourceExecutor)=>Promise<T>):Promise<T>};
-export type ResourceBooking=Omit<TimedBookingRef,"source">&{source:"kosha"|"service";details:Record<string,any>;status:string;archivedAt?:unknown;assignedStaffId:number|null;staffIds:number[];vehicleId:number|null;vehicleIds:number[];transportUses:TransportResourceUse[];driverId:number|null;crewId:number|null;koshaId:number|null;assets:any[];eventTime:string|null;eventEndTime?:string|null};
+export type ResourceBooking=Omit<TimedBookingRef,"source">&{source:"kosha"|"service";details:Record<string,any>;status:string;archivedAt?:unknown;assignedStaffId:number|null;staffIds:number[];transportDriverIds:number[];vehicleId:number|null;vehicleIds:number[];transportUses:TransportResourceUse[];driverId:number|null;crewId:number|null;koshaId:number|null;assets:any[];eventTime:string|null;eventEndTime?:string|null};
 export type ResourceWindowSaveOptions={eventDate?:unknown;expectedEventDate?:unknown;afterSave?:(tx:ResourceExecutor,next:ResourceBooking)=>Promise<void>};
 const id=(v:any)=>Number.isSafeInteger(Number(v))&&Number(v)>0?Number(v):null;
 const object=(v:any):Record<string,any>=>{if(v==null)return {};if(typeof v!=="object"||Array.isArray(v))throw new BookingResourceConflictError("بيانات موارد الحجز غير صالحة؛ راجع المسؤول",422);return v};
@@ -55,11 +55,15 @@ export async function readResourceBooking(tx:ResourceExecutor,ref:Ref,lock=false
       .flatMap(entry=>[id(entry?.employeeId),id(entry?.staffId),id(entry?.id)]),
   ]:[];
   const executionIds=[...members.map(m=>id(m.staff_id)),id(details.assignedStaffId),...photographerIds].filter((v):v is number=>v!==null);
-  const staffIds=[...new Set([...dailyAssignedStaffIds({details,assignedStaffId:id(b.assigned_staff_id),executionStaffIds:executionIds}),...(driverId?[driverId]:[]),...transportUses.map(t=>t.driverId).filter((v):v is number=>v!==null)])].sort((a,b)=>a-b);
+  const teamIds=dailyAssignedStaffIds({details,assignedStaffId:id(b.assigned_staff_id),executionStaffIds:executionIds});
+  const driverIds=[...(driverId?[driverId]:[]),...transportUses.map(t=>t.driverId).filter((v):v is number=>v!==null)];
+  const staffIds=[...new Set([...teamIds,...driverIds])].sort((a,b)=>a-b);
+  // Drivers who only drive here (not in this booking's team) follow the car's rule.
+  const transportDriverIds=[...new Set(driverIds.filter(value=>!teamIds.includes(value)))].sort((a,b)=>a-b);
   const assets=new Map<number,any>();
   for(const line of [...list(details.linkedAssets),...list(operations.assets)]){const productId=id(line?.productId);if(!productId)throw new BookingResourceConflictError("مرجع إحدى المعدات غير صالح",422);assets.set(productId,{...assets.get(productId),...line,productId})}
   if(staffIds.length>100||members.length>100||assets.size>100)throw new BookingResourceConflictError("موارد الحجز كثيرة؛ يلزم مراجعتها قبل الحفظ",422);
-  return {...ref,eventDate:b.event_date??null,eventTime:b.event_time??details.eventTime??details.eventStartTime??details.startTime??null,eventEndTime:details.eventEndTime??details.endTime??null,archivedAt:b.archived_at??null,details,operations,status:String(b.status??""),assignedStaffId:id(b.assigned_staff_id),staffIds,vehicleId,vehicleIds,transportUses,driverId,crewId:id(dispatch[0]?.crew_id),koshaId:id(b.kosha_id??details.koshaId),assets:[...assets.values()]};
+  return {...ref,eventDate:b.event_date??null,eventTime:b.event_time??details.eventTime??details.eventStartTime??details.startTime??null,eventEndTime:details.eventEndTime??details.endTime??null,archivedAt:b.archived_at??null,details,operations,status:String(b.status??""),assignedStaffId:id(b.assigned_staff_id),staffIds,transportDriverIds,vehicleId,vehicleIds,transportUses,driverId,crewId:id(dispatch[0]?.crew_id),koshaId:id(b.kosha_id??details.koshaId),assets:[...assets.values()]};
 }
 
 /** Replaces one operational leaf only, atomically with the original timeline.
@@ -173,7 +177,11 @@ async function assertBookingResourceCandidate(tx:ResourceExecutor,next:ResourceB
     // Trusted internal photo-manager policy only, never forwarded directly from
     // a generic booking payload. Other resources and failed reads still block.
     const groups=staffConflictGroups(next.staffIds,staffOverrideReason,staffOverrideIds);
-    if(await findBookingStaffConflict(next,groups.checked,tx))throw new BookingResourceConflictError("أحد أفراد الفريق أو السائق مشغول أو مواعيده غير مكتملة خلال فترة التشغيل",409);
+    // Owner's rule (2026-11-07): a car and the driver who only drives it may serve
+    // another booking the same day. The transport card shows that as a warning
+    // naming the other booking; the booking's team members are still checked.
+    const team=groups.checked.filter(value=>!(next.transportDriverIds??[]).includes(value));
+    if(await findBookingStaffConflict(next,team,tx))throw new BookingResourceConflictError("أحد أفراد الفريق مشغول أو مواعيده غير مكتملة خلال فترة التشغيل",409);
     if(groups.overridden.length)await findBookingStaffConflict(next,groups.overridden,tx); // A failed read is never an override.
   }
   await lockBookingDispatchResources(tx,next);
@@ -204,7 +212,10 @@ async function lockBookingDispatchResources(tx:ResourceExecutor,next:ResourceBoo
     const resource=kind==="vehicle"?locked.get(resourceId):resourceRows(await tx.execute(sql`SELECT id,is_active,status FROM crews WHERE id=${resourceId} FOR UPDATE`))[0];
     if(!resource||resource.is_active!==true||["maintenance","repair","retired","inactive",...(kind==="crew"?["unavailable"]:[])].includes(String(resource.status)))throw new BookingResourceConflictError("المركبة أو فريق التركيب غير متاح أو تغيّرت حالته",409);
     const outside=resourceRows(await tx.execute(sql`SELECT entity_type,entity_id FROM dispatch_assignments WHERE ${kind==="vehicle"?sql`vehicle_id`:sql`crew_id`}=${resourceId} AND status IN ('assigned','en_route','active') AND entity_type NOT IN ('kosha_booking','service_order') LIMIT 1`));
-    if(outside.length||await(kind==="vehicle"?findBookingVehicleConflict(next,resourceId,tx):findBookingCrewConflict(next,resourceId,tx)))throw new BookingResourceConflictError("المركبة أو فريق التركيب مشغول أو مواعيده غير مكتملة",409);
+    // Another booking using the same car that day is allowed (owner's rule
+    // 2026-11-07; shown as a warning on the transport card). A non-booking
+    // assignment without a documented window and a busy crew still block.
+    if(outside.length||kind==="crew"&&await findBookingCrewConflict(next,resourceId,tx))throw new BookingResourceConflictError("المركبة أو فريق التركيب مشغول أو مواعيده غير مكتملة",409);
   }
 }
 

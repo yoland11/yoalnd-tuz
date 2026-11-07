@@ -23,6 +23,8 @@ export type TransportPlanResponse={
   resourceOccupancy?:{start:string;end:string}|null;
   assignmentOptions?:{vehicles:Array<{id:number;name:string;plateNumber?:string|null}>;drivers:Array<{id:number;fullName?:string|null}>};
   capabilities:{canEdit:boolean;canPrintFinancial:boolean};
+  /** Another booking uses the same car or driver that day: allowed, named here. */
+  warnings?:string[];
 };
 export type TransportReceiptReference=TransportReference&{tripId?:string};
 const settingLabels:Record<keyof TransportReceiptSettings,string>={showLogo:"شعار الشركة",showCompanyName:"اسم الشركة",showCustomer:"اسم العميل وهاتفه",showBookingNumber:"رقم الحجز",showTransportType:"نوع النقل",showOrigin:"موقع الانطلاق",showDestination:"موقع الوصول",showDriver:"اسم السائق",showDriverPhone:"هاتف السائق",showVehicle:"المركبة ورقمها",showDateTime:"التاريخ وأوقات النقل",showAmount:"مبلغ النقل",showNotes:"ملاحظات النقل",showQr:"رمز QR المحمي"};
