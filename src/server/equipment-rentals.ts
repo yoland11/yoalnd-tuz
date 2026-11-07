@@ -4,7 +4,8 @@ import { sql, type SQL } from "drizzle-orm";
 import { NextResponse, type NextRequest } from "next/server";
 import { parseBookingResourceWindow } from "@/lib/booking-resource-window";
 import { iraqiPhoneVariants, normalizeIraqiPhone } from "@/lib/phone";
-import { rentalDispatchLimit, rentalDispatchSources, rentalEquipmentStatus, rentalReturnCounts } from "@/lib/equipment-rental-returns";
+import { canDispatchEquipment, canReturnEquipment, rentalDispatchLimit, rentalDispatchSources, rentalEquipmentStatus, rentalReturnCounts } from "@/lib/equipment-rental-returns";
+import { normalizeRentalScanCode, rentalAssetIdFromCode } from "@/lib/equipment-rental-scan";
 import {
   calculateEquipmentRental, canApproveEquipmentRentalLoss, equipmentRentalCapabilities, normalizeEquipmentRentalSettings,
   EquipmentRentalValidationError, rentalDateTime,
@@ -158,6 +159,34 @@ async function list(req: NextRequest, actor: EquipmentRentalActor) {
   const data = rows(await db.execute(sql`select r.* from rental_orders r where ${where} order by r.created_at desc,r.id desc limit ${pageSize} offset ${(page - 1) * pageSize}`));
   const pictures = await rentalPictures(db, data);
   return json({ data: await Promise.all(data.map(row => detail(db, row, actor, pictures))), total: Number(totals.total), summary: { active: Number(totals.active), awaitingDispatch: Number(totals.awaiting_dispatch), dueToday: Number(totals.due_today), overdue: Number(totals.overdue), outstanding: Number(totals.outstanding), depositHeld: Number(totals.deposit_held) }, page, pageSize });
+}
+
+/** The open rentals a scanned label or rental number belongs to, for the dispatch and return desk. Read only. */
+async function scanLookup(req: NextRequest, action: "dispatch" | "return", actor: EquipmentRentalActor) {
+  const code = normalizeRentalScanCode(text(req.nextUrl.searchParams.get("code"), 300));
+  if (!code) throw new RentalError("امسح باركود المعدة أو اكتب رقم الإيجار");
+  const lower = code.toLowerCase(); const assetId = rentalAssetIdFromCode(code);
+  // The same aliases detail() hands the in-rental scanner: barcode, passport QR and serial, profile serial and asset QR tokens.
+  const products = rows(await db.execute(sql`select p.id from products p left join asset_passports ap on ap.product_id=p.id left join asset_profiles a on a.product_id=p.id
+    where lower(trim(p.barcode))=${lower} or lower(trim(ap.qr_token))=${lower} or lower(trim(ap.serial_number))=${lower} or lower(trim(a.serial_number))=${lower}
+      or exists(select 1 from qr_tokens q where q.entity_type='asset' and q.entity_id=p.id and lower(trim(q.token))=${lower})${assetId ? sql` or p.id=${assetId}` : sql``} limit 50`)).map(row => Number(row.id));
+  const holdsAsset = products.length ? sql`exists(select 1 from jsonb_array_elements(coalesce(r.equipment_details->'assets','[]'::jsonb)) a where (a->>'productId')::bigint in (${idsSql(products)}))` : sql`false`;
+  const found = rows(await db.execute(sql`select r.* from rental_orders r where r.rental_kind='equipment'
+    and r.status in ('confirmed','awaiting_dispatch','active','partially_dispatched','dispatched','partially_returned','inspection','returned')
+    and (lower(r.order_no)=${lower} or ${holdsAsset}) order by r.end_date, r.id limit 50`));
+  const capabilities = equipmentRentalCapabilities(actor);
+  const data = found.flatMap(row => {
+    const details = readDetails(row);
+    // The same rules that show the dispatch and return buttons on the rental itself.
+    const rental = { rentalKind: "equipment", status: String(row.status), capabilities, details } as unknown as EquipmentRentalDetail;
+    if (action === "dispatch" ? !canDispatchEquipment(rental) : !canReturnEquipment(rental)) return [];
+    const byNumber = String(row.order_no).toLowerCase() === lower;
+    const lines = details.assets.filter(line => byNumber || products.includes(Number(line.productId)))
+      .map(line => ({ productId: Number(line.productId), name: String(line.name ?? ""), remaining: action === "dispatch" ? rentalDispatchLimit(line) : rentalReturnCounts(line).outstanding }))
+      .filter(line => line.remaining > 0);
+    return lines.length ? [{ id: Number(row.id), orderNo: String(row.order_no), customerName: String(row.customer_name), phone: String(row.phone), endDate: dateText(row.end_date), status: String(row.status), lines }] : [];
+  });
+  return json({ code, action, data: data.slice(0, 20) });
 }
 
 async function options(req: NextRequest, actor: EquipmentRentalActor) {
@@ -555,6 +584,10 @@ export async function handleEquipmentRentals(req: NextRequest, parts: string[], 
         union all select 'kosha',id,coalesce(tracking_code,id::text),customer_name,event_date::text from kosha_bookings where archived_at is null and (customer_name ilike ${q} or phone ilike ${q} or tracking_code ilike ${q})) bookings order by "eventDate" desc nulls last,id desc limit 20`)) });
     }
     if (parts[0] === "options" && req.method === "GET") { requireCapability(caps,"view"); return await options(req, actor); }
+    if (parts[0] === "scan" && req.method === "GET") {
+      const action = req.nextUrl.searchParams.get("action") === "dispatch" ? "dispatch" : "return";
+      requireCapability(caps, action); return await scanLookup(req, action, actor);
+    }
     if (parts[0] === "availability" && ["GET", "POST"].includes(req.method)) { requireCapability(caps,"view"); return await availability(req, req.method === "POST" ? await readRequestBody(req) : {}); }
     if (parts[0] === "reports" && req.method === "GET") { requireCapability(caps, "reports"); return await reports(req); }
     if (parts[0] === "settings") {

@@ -7,11 +7,14 @@ import { resolveRentalScan } from "@/lib/equipment-rental-scan";
 
 const LiveScanner = lazy(() => import("@/views/staff/live-scanner").then(module => ({ default: module.LiveScanner })));
 
-export function EquipmentRentalScanner({ assets, action, busy, onSelect }: {
+export function EquipmentRentalScanner({ assets, action, busy, onSelect, notice = null }: {
   assets: EquipmentRentalAssetLine[];
   action: "dispatch" | "return";
   busy: boolean;
-  onSelect: (productId: number) => void;
+  /** What the scan did; a refusal is shown as an error and nothing else changes. */
+  onSelect: (productId: number) => { ok: boolean; message: string } | void;
+  /** The result of a code scanned before this form opened. */
+  notice?: { ok: boolean; message: string } | null;
 }) {
   const [camera, setCamera] = useState(false);
   const [code, setCode] = useState("");
@@ -31,14 +34,18 @@ export function EquipmentRentalScanner({ assets, action, busy, onSelect }: {
     if (!active.current) return;
     const match = resolveRentalScan(value, assets, action);
     if ("error" in match) { setError(match.error); setMessage(""); return; }
-    setCode(""); setError("");
+    setCode("");
     const asset = assets.find(line => line.productId === match.productId)!;
-    setMessage(`تم تحديد ${asset.name}. أدخل الكمية يدوياً أو تابع مسح المعدات.`);
-    onSelect(match.productId);
+    const result = onSelect(match.productId);
+    if (result && !result.ok) { setError(result.message); setMessage(""); return; }
+    setError("");
+    setMessage(result?.message ?? `تم تحديد ${asset.name}. أدخل الكمية يدوياً أو تابع مسح المعدات.`);
   }
+  const shownError = error || (notice && !notice.ok && !message ? notice.message : "");
+  const shownMessage = message || (notice?.ok && !error ? notice.message : "");
 
   return <section className="flex flex-col gap-3 rounded-xl border border-primary/15 p-3" aria-label="تحديد معدات الإيجار بالباركود">
-    <p className="text-xs text-muted-foreground">وجّه الكاميرا إلى الرمز، أو استخدم قارئ الباركود في الحقل. حدّد كمية كل معدة قبل الحفظ.</p>
+    <p className="text-xs text-muted-foreground">وجّه الكاميرا إلى الرمز، أو استخدم قارئ الباركود في الحقل. كل مسحة تضيف قطعة واحدة، ويمكن تعديل الكميات قبل الحفظ.</p>
     {!busy ? <div className="flex flex-col gap-3">
       {!camera && <label className="flex flex-col gap-1.5 text-xs">باركود المعدة أو رمز الأصل
         <Input autoFocus dir="ltr" value={code} onChange={event => setCode(event.target.value)} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); detect(code); } }} placeholder="AJN-A000001" />
@@ -49,7 +56,7 @@ export function EquipmentRentalScanner({ assets, action, busy, onSelect }: {
       </div>
       {camera ? <Suspense fallback={<p role="status" className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" />جارٍ تحميل الماسح…</p>}><LiveScanner key={cameraSession} active={!busy} stopOnDetect={false} onDetect={value => { if (cameraActive.current && cameraSession === cameraGeneration.current) detect(value); }} /></Suspense> : null}
     </div> : null}
-    {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
-    {message ? <p role="status" className="text-sm text-primary">{message}</p> : null}
+    {shownError ? <p role="alert" className="text-sm text-destructive">{shownError}</p> : null}
+    {shownMessage ? <p role="status" className="text-sm text-primary">{shownMessage}</p> : null}
   </section>;
 }

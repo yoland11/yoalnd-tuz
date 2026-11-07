@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { resolveRentalScan } from "../src/lib/equipment-rental-scan";
+import { readFileSync } from "node:fs";
+import { normalizeRentalScanCode, rentalAssetIdFromCode, resolveRentalScan } from "../src/lib/equipment-rental-scan";
 
 const assets = [
   { productId: 7, code: "CHAIR-7", quantity: 5, checkedOutQty: 3, returnedGoodQty: 1 },
@@ -35,4 +36,27 @@ assert.deepEqual(resolveRentalScan(`/api/qr/${qrToken}`, withAliases, "dispatch"
 assert.deepEqual(resolveRentalScan("NEW-BARCODE", withAliases, "return"), { productId: 7 });
 assert.ok("error" in resolveRentalScan(`/api/qr/${qrToken}`, assets, "dispatch"), "an unlisted QR token cannot identify equipment");
 assert.ok("error" in resolveRentalScan("CHAIR-7", [{ ...assets[0], reservedQty: 3 }], "dispatch"), "a scan cannot offer an unreserved unit");
-console.log("PASS rental barcode identification: exact scoped matches, QR/URLs, ambiguity, exhausted quantities and manual legacy fallback");
+// The desk's lookup reads codes exactly as the in-rental scanner does.
+assert.equal(normalizeRentalScanCode("  CHAIR-7  "), "CHAIR-7");
+assert.equal(normalizeRentalScanCode("https://ajn.example/assets/LIGHT%2F12?print=1#x"), "LIGHT/12");
+assert.equal(normalizeRentalScanCode("LIGHT/12"), "LIGHT/12", "a slash inside an ordinary barcode stays");
+assert.equal(rentalAssetIdFromCode("AJN-A000007"), 7);
+assert.equal(rentalAssetIdFromCode("ajn-a7-abcdef12"), 7);
+assert.equal(rentalAssetIdFromCode("CHAIR-7"), null);
+
+// The desk: find the rental from a scan, then open it on the right form with the unit counted.
+const server = readFileSync("src/server/equipment-rentals.ts", "utf8");
+const lookup = server.slice(server.indexOf("async function scanLookup("), server.indexOf("async function options("));
+assert.ok(lookup.length > 200 && !/(insert|update|delete)/i.test(lookup), "the lookup only reads");
+assert.match(lookup, /canDispatchEquipment\(rental\) : !canReturnEquipment\(rental\)/, "it offers only what the rental's own buttons would offer");
+assert.match(lookup, /ap\.qr_token[\s\S]*ap\.serial_number[\s\S]*a\.serial_number[\s\S]*qr_tokens/, "it knows every alias the in-rental scanner knows");
+assert.match(server, /parts\[0\] === "scan" && req\.method === "GET"\) \{\s+const action = [^;]+;\s+requireCapability\(caps, action\);/, "dispatch and return lookups need their own permission");
+const view = readFileSync("src/views/admin/equipment-rentals.tsx", "utf8");
+assert.match(view, /mode === "returns" \? <RentalScanDesk capabilities=\{capabilities\} \/>/, "the dispatch and return page opens with the scan desk");
+assert.match(view, /\?\$\{new URLSearchParams\(\{ action, scan: scanned \}\)\}/, "a match opens the rental on the right form with the code");
+assert.match(view, /useState<"manual" \| "scan">\("scan"\)/, "the movement form starts on scanning");
+assert.match(view, /const scanField: RentalQuantityField = dispatching \? "quantity" : "good";/, "each scan counts one unit");
+assert.match(view, /if \(item\.entered >= item\.limit\) return \{ ok: false/, "a scan never counts past what is out or reserved");
+assert.match(view, /function RentalRowActions[\s\S]{0,400}استلام معدات[\s\S]{0,400}تسليم معدات/, "receive and dispatch are visible buttons on every rental");
+assert.match(view, /<RentalCards rows=\{list\.data\?\.data \?\? \[\]\} mode=\{mode\} \/><div className="hidden overflow-x-auto xl:block">/, "below the wide-table width rentals are cards, so the buttons stay on screen");
+console.log("PASS rental barcode identification: exact scoped matches, QR/URLs, ambiguity, exhausted quantities and manual legacy fallback; the scan desk finds the rental and counts each scan");
