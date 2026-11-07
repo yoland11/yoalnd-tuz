@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { executedTransportRevenue, transportTotalDelta } from "../src/lib/booking-transport";
+import { executedTransportRevenue, serviceOrderTransportation, transportTotalDelta } from "../src/lib/booking-transport";
+import { readTransportPlan } from "../src/lib/booking-transport-plan";
 
 // Booking transport reaches the vehicle accounts from one place: the booking
 // centre's «خدمة النقل» card (kosha bookings through their own columns, service
@@ -14,6 +15,29 @@ assert.equal(transportTotalDelta({ mode: "ajn", fee: 25_000, inTotal: true }, 30
 assert.equal(transportTotalDelta({ mode: "ajn", fee: 25_000, inTotal: true }, 0), -25_000, "removing transport takes the fee back out");
 assert.equal(transportTotalDelta({ mode: "customer", fee: 0, inTotal: false }, 0), 0);
 assert.equal(transportTotalDelta({ mode: "ajn", fee: 25_000 }, 0), 0, "removing an informational fee leaves the total alone");
+
+// 1b. Service booking 162: transport chosen in the booking form (new booking or
+// «إضافة خدمة») lives in customFields beside a «النقل» line, its fee already in the
+// total. The card, the receipt and the save must all see it, and add it only once.
+const formFields = { transportationMode: "ajn", transportationFee: 15_000, departments: ["kosha", "transportation"], bookingCenterServices: [{ type: "kosha", status: "waiting", amount: 0 }, { type: "transportation", status: "waiting", amount: 15_000 }] };
+const formTransport = serviceOrderTransportation(formFields);
+assert.deepEqual(formTransport, { mode: "ajn", fee: 15_000, vehicleId: null, driverId: null, note: null, inTotal: true, source: "booking_form" });
+const formPlan = readTransportPlan({ source: "service", id: 162, bookingNumber: "B-162", legacy: formTransport, storedPlan: undefined });
+assert.equal(formPlan.trips.length, 1, "the receipt finds one trip to print");
+assert.equal(formPlan.trips[0].id, "legacy-1");
+assert.equal(formPlan.trips[0].vehicleId, null, "no car is invented");
+assert.equal(formPlan.overallCharge, 15_000);
+assert.equal(transportTotalDelta(formTransport as any, 15_000), 0, "saving the card with the same fee adds nothing a second time");
+assert.equal(transportTotalDelta(formTransport as any, 20_000), 5_000);
+assert.equal(transportTotalDelta(formTransport as any, 0), -15_000, "«بدون نقل» takes the form fee back out once");
+assert.deepEqual(serviceOrderTransportation({ ...formFields, bookingOperations: { transportation: null } }), null, "a card save of «بدون نقل» wins over the form");
+assert.deepEqual(serviceOrderTransportation({ ...formFields, bookingOperations: { transportation: { mode: "ajn", fee: 20_000, vehicleId: 5, inTotal: true } } }), { mode: "ajn", fee: 20_000, vehicleId: 5, inTotal: true }, "the card's saved transport wins");
+assert.deepEqual(serviceOrderTransportation({ ...formFields, bookingOperations: {} }), formTransport, "other booking operations do not hide the form transport");
+assert.deepEqual(serviceOrderTransportation({ transportationMode: "customer", transportationFee: 0 }), { mode: "customer", source: "booking_form" });
+assert.equal(readTransportPlan({ source: "service", id: 162, bookingNumber: "B-162", legacy: serviceOrderTransportation({ transportationMode: "customer" }), storedPlan: undefined }).trips.length, 0);
+assert.equal(serviceOrderTransportation({ bookingCenterServices: [{ type: "transportation", amount: 0 }] }), null, "a «النقل» line with no choice is not turned into a trip");
+assert.equal(serviceOrderTransportation(null), null);
+assert.throws(() => readTransportPlan({ source: "service", id: 162, bookingNumber: "B-162", legacy: serviceOrderTransportation({ transportationMode: "ajn", transportationFee: "abc" }), storedPlan: undefined }), /أجرة النقل غير صالحة/, "a bad form fee is an error, never zero");
 
 // 2. Legacy collection attribution remains separate from full recorded vehicle income.
 assert.equal(executedTransportRevenue(25_000, 500_000, 1_250_000), 10_000, "40% paid → 40% of the fee");
@@ -38,7 +62,9 @@ assert.match(endpoint, /if \(fee <= 0\) return error\("أجرة النقل مط�
 assert.match(endpoint, /if \(!d\.vehicleId\) return error\("اختر سيارة للنقل بواسطة AJN"/);
 assert.match(endpoint, /from service_orders where id = \$\{reference\.id\} for update/);
 assert.match(endpoint, /const clash = await transportVehicleClash\(tx, d\.vehicleId, live\);/);
-assert.match(endpoint, /const delta = transportTotalDelta\(\(live\.operations as any\)\.transportation \?\? null, fee\);/);
+assert.match(endpoint, /const liveTransport=serviceOrderTransportation\(live\.details\);/, "the save reads the transport the booking form saved too");
+assert.match(endpoint, /const delta = transportTotalDelta\(liveTransport as Parameters<typeof transportTotalDelta>\[0\], fee\);/);
+assert.match(endpoint, /const opsTransport = reference\.source === "service" \? serviceOrderTransportation\(reference\.details\)/);
 assert.match(endpoint, /if \(!canEditOrderFinancials\(auth\)\)\s*throw new CheckoutError/);
 assert.match(endpoint, /deposit > after\)\s*throw new CheckoutError/, "paid can never exceed the new total");
 assert.match(endpoint, /const payment = paymentSummary\(after, deposit\);/);
@@ -68,7 +94,7 @@ assert.deepEqual(settlePaymentAmounts(540000, 200000), { paid: 200000, remaining
 // 4b. Transport without a vehicle is listed so a vehicle can be chosen on it.
 const unassigned = between(api, 'parts[1] === "unassigned-transport"', 'parts[2] === "financial"');
 assert.match(unassigned, /transportation_mode = 'ajn' and transportation_vehicle_id is null/);
-assert.match(unassigned, /->>'mode' = 'ajn' and coalesce\(\$\{SERVICE_TRANSPORT\}->>'vehicleId', ''\) = ''/);
+assert.match(unassigned, /->>'mode' = 'ajn' and coalesce\(\$\{SERVICE_TRANSPORT_EFFECTIVE\}->>'vehicleId', ''\) = ''/, "form-saved transport without a car is listed too");
 assert.match(unassigned, /throw new Error\("Invalid unassigned transport database response"\)/, "a bad read is an error, never an empty list");
 const vehiclesPage = readFileSync("src/views/admin/vehicles.tsx", "utf8");
 assert.match(vehiclesPage, /<\/Card><UnassignedTransport \/>/);

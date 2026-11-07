@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import QRCode from "qrcode";
 import { shortBookingNumber } from "@/lib/booking-number";
-import { executedTransportRevenue } from "@/lib/booking-transport";
+import { executedTransportRevenue,serviceOrderTransportation } from "@/lib/booking-transport";
 import { readTransportPlan,transportPlanFee,transportTripReference,TransportPlanError,type TransportPlan,type TransportReference } from "@/lib/booking-transport-plan";
 import type { TransportReceiptData,TransportReceiptVariant } from "@/lib/transport-receipt";
 
@@ -39,7 +39,7 @@ export async function readTransportReceipt(executor:Executor,ref:TransportRefere
   const operations=details.bookingOperations??{};
   const legacy=ref.source==="kosha"&&booking.transportation_mode?{
     mode:booking.transportation_mode,fee:booking.transportation_fee,vehicleId:booking.transportation_vehicle_id,driverId:booking.transportation_driver_id,note:booking.transportation_notes,
-  }:operations.transportation??null;
+  }:ref.source==="service"?serviceOrderTransportation(details):operations.transportation??null;
   const bookingNumber=shortBookingNumber(ref.source,ref.id,booking.tracking_code);
   const plan=readTransportPlan({...ref,bookingNumber,legacy,storedPlan:operations.transportPlan});
   const trip=plan.trips.find(t=>t.id===selection.tripId);
@@ -54,7 +54,7 @@ export async function readTransportReceipt(executor:Executor,ref:TransportRefere
     const origin=new URL(access.origin);
     if(!["http:","https:"].includes(origin.protocol)||origin.username||origin.password)throw new TransportPlanError("عنوان صفحة النقل غير آمن",422);
     const link=new URL(`/admin/bookings/${ref.source}/${ref.id}`,origin.origin);
-    link.searchParams.set("tab","overview");link.searchParams.set("transportTrip",trip.id);link.hash="ajn-transport-card";qrUrl=link.toString();
+    link.searchParams.set("tab","transport");link.searchParams.set("transportTrip",trip.id);link.hash="ajn-transport-card";qrUrl=link.toString();
   }
   const showCustomerMoney=selection.variant!=="driver"&&access.canViewCustomerCharge;
   return {

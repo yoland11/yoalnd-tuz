@@ -5,6 +5,7 @@ import { sql,eq } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { readTransportReceipt } from "../src/server/booking-transport-receipt";
 import { readTransportPlan } from "../src/lib/booking-transport-plan";
+import { serviceOrderTransportation } from "../src/lib/booking-transport";
 import { bookingResourceSpan } from "../src/lib/booking-resource-window";
 import { normalizeTransportReceiptSettings,DEFAULT_TRANSPORT_RECEIPT_SETTINGS } from "../src/lib/transport-receipt";
 const api=fs.readFileSync("src/server/api.ts","utf8"),start=api.indexOf('  if (resource === "transportation") {');
@@ -22,7 +23,7 @@ async function run(variant:string,financial:boolean,options:{action?:string;meth
     if(statement.includes("dispatch_assignments"))return {rows:[]};
     throw Error("Unexpected receipt route IO");
   },query:{settingsTable:{findFirst:async()=>preferences==null?undefined:{value:preferences}}},insert:()=>({values:(data:any)=>({onConflictDoUpdate:async()=>{preferences=data.value;writes++}})}),update:()=>{writes++;throw Error("receipt actions cannot post money")}};
-  const env={sql,eq,resource:"transportation",method:options.method??"GET",reference:{source:"service",id:7,entityType:"service_order",row:{},operations},auth:{id:1,role:options.manager?"admin":"employee",fullName:"مدير"},
+  const env={sql,eq,resource:"transportation",method:options.method??"GET",reference:{source:"service",id:7,entityType:"service_order",row:{},details:{bookingOperations:operations},operations},serviceOrderTransportation,auth:{id:1,role:options.manager?"admin":"employee",fullName:"مدير"},
     req:{headers:new Map(),nextUrl:new URL(`https://example.test/api/admin/booking-operations/service/7/transportation?receipt=${options.ordinary?0:1}&tripId=legacy-1&variant=${variant}&canViewCustomerCharge=true${options.action?`&transportAction=${options.action}`:""}`)},
     db,can:()=>true,hasPermission:(_auth:any,permission:string)=>permission==="booking_finance_view"&&financial,canEditOrderFinancials:()=>financial,
     getCachedPublicSettings:async()=>({site_name:"شركة محددة",phone:"07720000000",logo_url:""}),readTransportReceipt,readTransportPlan,bookingResourceSpan,
@@ -56,4 +57,13 @@ await assert.rejects(()=>run("driver",false,{action:"print-request",method:"POST
 const ordinary=await run("driver",false,{ordinary:true});
 assert.equal(ordinary.data.capabilities?.canPrintFinancial,false);
 assert.equal(ordinary.data.capabilities?.canEdit,false);
+// Booking 162: transport only in the booking form's fields; the receipt prints from what it has.
+const formReceipt=await readTransportReceipt({execute:async(q:any)=>{
+  const statement=dialect.sqlToQuery(q).sql.toLowerCase();
+  if(statement.includes("from service_orders"))return {rows:[{id:162,customer_name:"احمد ستار",phone:"07734445296",tracking_code:"B-162-5296",details:{transportationMode:"ajn",transportationFee:15000,bookingCenterServices:[{type:"transportation",status:"waiting",amount:15000}],bookingOperations:{bookingStage:"booked"}}}]};
+  throw Error("no car or driver lookup without ids: "+statement);
+}},{source:"service",id:162},{tripId:"legacy-1",variant:"customer"},{canView:true,canViewCustomerCharge:true,company:{name:"AJN",phone:null,logoUrl:null},origin:"https://example.test"});
+assert.equal(formReceipt.amount?.value,15000,"the form fee prints");
+assert.equal(formReceipt.vehicleName,null);assert.equal(formReceipt.driverName,null);
+assert.match(formReceipt.qrUrl??"",/[?&]tab=transport&transportTrip=legacy-1#ajn-transport-card$/,"the QR opens the transport tab");
 console.log("PASS actual receipt GET: original source, trusted financial scope, driver redaction, configured brand, private response and no writes");

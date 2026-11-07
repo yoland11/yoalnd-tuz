@@ -1,5 +1,6 @@
 import { normalizeQuantityLine, lineOutstanding } from "./quantity-assets";
 import { evaluateBookingReadiness } from "./booking-operational-readiness";
+import { serviceOrderTransportation } from "./booking-transport";
 
 export type DailySource = "kosha" | "service";
 export type DailyFilters = {
@@ -86,7 +87,7 @@ export function projectDailyBooking(fact: DailyBookingFact, now = new Date()) {
   const href = `/admin/bookings/${fact.source}/${fact.id}`;
   const ops = record(fact.details?.bookingOperations);
   // Same precedence as the existing booking transportation reader/writer.
-  const transport = ops.transportation ?? (fact.source === "kosha" ? { mode: fact.transportationMode } : null);
+  const transport = fact.source === "service" ? serviceOrderTransportation(fact.details) : ops.transportation ?? { mode: fact.transportationMode };
   const transportationMode = record(transport).mode;
   const meta = record(ops.productMeta);
   const assets = new Map<number, any>();

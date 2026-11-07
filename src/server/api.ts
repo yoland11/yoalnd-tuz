@@ -70,7 +70,7 @@ import { readTransportReceipt,projectVehicleTransportBooking } from "./booking-t
 import { readVehicleTransportPlans,addPlanVehicleStats,assertPlanFitsPartnershipLedger,type VehicleTransportFinancialTrip } from "./vehicle-transport-plans";
 import { PartnerShareError, assertPayoutFits, buildPartnerMonths, isMonth, lastDayOfMonth, monthRange, partnerBalance, percentToBasisPoints, settleMonths, termForMonth, toFils, fromFils, type PartnerTerm, type PayoutSlice } from "@/lib/vehicle-partner-share";
 import { normalizeTransportReceiptSettings,DEFAULT_TRANSPORT_RECEIPT_SETTINGS } from "@/lib/transport-receipt";
-import { executedTransportRevenue, transportTotalDelta } from "@/lib/booking-transport";
+import { executedTransportRevenue, serviceOrderTransportation, transportTotalDelta } from "@/lib/booking-transport";
 import { LoadingError } from "@/lib/booking-loading";
 import { parseDailyOperationsFilters } from "@/lib/booking-daily-operations";
 import { autoTranslate, autoTranslateStatus } from "@/server/translate";
@@ -23907,10 +23907,10 @@ async function handleEnterpriseAdmin(
           and archived_at is null and status <> 'cancelled'
         union all
         select 'service', id, tracking_code, customer_name, event_date::text, status,
-               case when ${SERVICE_TRANSPORT}->>'fee' ~ '^[0-9]+([.][0-9]+)?$' then (${SERVICE_TRANSPORT}->>'fee')::numeric else 0 end,
-               coalesce(${SERVICE_TRANSPORT}->>'inTotal', '') = 'true'
+               case when ${SERVICE_TRANSPORT_EFFECTIVE}->>'fee' ~ '^[0-9]+([.][0-9]+)?$' then (${SERVICE_TRANSPORT_EFFECTIVE}->>'fee')::numeric else 0 end,
+               coalesce(${SERVICE_TRANSPORT_EFFECTIVE}->>'inTotal', '') = 'true'
         from service_orders
-        where ${SERVICE_TRANSPORT}->>'mode' = 'ajn' and coalesce(${SERVICE_TRANSPORT}->>'vehicleId', '') = ''
+        where ${SERVICE_TRANSPORT_EFFECTIVE}->>'mode' = 'ajn' and coalesce(${SERVICE_TRANSPORT_EFFECTIVE}->>'vehicleId', '') = ''
           and archived_at is null and status not in ('cancelled', 'canceled')
       ) unassigned
       order by event_date desc nulls last, id desc
@@ -32285,6 +32285,17 @@ const BookingTransportationSchema = z.object({
 
 /** Service-order transport lives in custom_fields.bookingOperations.transportation. */
 const SERVICE_TRANSPORT = sql.raw("custom_fields->'bookingOperations'->'transportation'");
+/** Same reading as serviceOrderTransportation(): until the transport card saves
+ * bookingOperations.transportation, the booking form's choice counts (its AJN fee
+ * is already in the booking total). Read-only SQL; it never carries a vehicle. */
+const SERVICE_TRANSPORT_EFFECTIVE = sql.raw(`(case
+  when jsonb_typeof(custom_fields->'bookingOperations') = 'object' and custom_fields->'bookingOperations' ? 'transportation'
+    then custom_fields->'bookingOperations'->'transportation'
+  when custom_fields->>'transportationMode' = 'ajn'
+    then jsonb_build_object('mode', 'ajn', 'fee', custom_fields->'transportationFee', 'inTotal', true, 'source', 'booking_form')
+  when custom_fields->>'transportationMode' = 'customer'
+    then jsonb_build_object('mode', 'customer', 'source', 'booking_form')
+end)`);
 
 /**
  * Another active booking that holds the vehicle while this one needs it: during
@@ -34738,9 +34749,10 @@ async function handleBookingOperations(
       throw new TransportPlanError("إجراء وصل النقل غير مدعوم",422);
     }
     // Kosha bookings keep transport on their own columns (the vehicle accounts read
-    // them); service orders keep it in bookingOperations. A value saved by the older
-    // booking-centre card stays readable until it is saved again.
-    const opsTransport = (reference.operations as any).transportation ?? null;
+    // them); service orders keep it in bookingOperations, or — until the card saves
+    // it — where the booking form put it. A value saved by the older booking-centre
+    // card stays readable until it is saved again.
+    const opsTransport = reference.source === "service" ? serviceOrderTransportation(reference.details) : (reference.operations as any).transportation ?? null;
     const row = reference.row as any;
     const columnMode = reference.source === "kosha" ? (row?.transportationMode ?? row?.transportation_mode ?? null) : null;
     const current = columnMode
@@ -34818,7 +34830,8 @@ async function handleBookingOperations(
       try {
         saved = await db.transaction(async (tx) => guardBookingResourceWrite(tx, { source: reference.source, id: reference.id }, async (live) => {
           if(["cancelled","canceled","deleted","completed","delivered","closed"].includes(String(live.status).toLowerCase()))throw new TransportPlanError("لا يمكن تعديل نقل حجز ملغي أو مكتمل",409);
-          const decision=submittedPlan?prepareTransportPlanSave(readTransportPlan({source:reference.source,id:reference.id,bookingNumber:"",legacy:live.operations.transportation,storedPlan:live.operations.transportPlan}),submittedPlan,d.expectedTransportRevision,canEditOrderFinancials(auth)):null;
+          const liveTransport=serviceOrderTransportation(live.details);
+          const decision=submittedPlan?prepareTransportPlanSave(readTransportPlan({source:reference.source,id:reference.id,bookingNumber:"",legacy:liveTransport,storedPlan:live.operations.transportPlan}),submittedPlan,d.expectedTransportRevision,canEditOrderFinancials(auth)):null;
           if(decision?.duplicate){
             const snapshot=live.operations.transportation;
             if(snapshot!=null&&(typeof snapshot!=="object"||Array.isArray(snapshot)))throw new TransportPlanError("بيانات النقل المحفوظة غير صالحة",422);
@@ -34836,7 +34849,7 @@ async function handleBookingOperations(
           }
           // The AJN fee is part of the booking total, added exactly once: a fee saved
           // before this rule («للعلم») was never in the total, so it counts as zero.
-          const delta = transportTotalDelta((live.operations as any).transportation ?? null, fee);
+          const delta = transportTotalDelta(liveTransport as Parameters<typeof transportTotalDelta>[0], fee);
           let totals: { before: number; after: number; delta: number } | null = null;
           if (delta !== 0) {
             if (!canEditOrderFinancials(auth))

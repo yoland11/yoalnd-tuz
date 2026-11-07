@@ -17,6 +17,7 @@ import { EmployeeSelect } from "@/components/employee-select";
 import { BookingTransportPlanEditor } from "@/components/booking-transport-plan-editor";
 import { TransportReceiptDialog, type TransportReceiptReference } from "@/components/transport-receipt-dialog";
 import type { TransportPlanView } from "@/lib/booking-transport-plan";
+import { servicesWithTransport } from "@/lib/booking-transport";
 const BookingPreparationDetail=lazy(()=>import("./preparation").then(module=>({default:module.PreparationDetail})));
 import { employeeMatchesSearch } from "@/lib/employee-identity";
 import {
@@ -458,13 +459,15 @@ function BookingBranchControl({ booking }: { booking: BookingOperationsBooking }
 }
 
 /** What this booking includes, department by department, and the way to add more. */
-function BookingServicesSection({ booking, onAdd, children }: { booking: BookingOperationsBooking; onAdd?: () => void; children?: React.ReactNode }) {
+function BookingServicesSection({ booking, onAdd, transport, children }: { booking: BookingOperationsBooking; onAdd?: () => void; transport?: { mode?: unknown; fee?: unknown } | null; children?: React.ReactNode }) {
+  // The «النقل» line follows the transport card (undefined while it loads).
+  const services = servicesWithTransport(booking.services, transport);
   return <section className="ajn-op-services" aria-labelledby="ajn-op-services-title">
     <div className="ajn-op-services-head">
-      <h2 id="ajn-op-services-title">خدمات الحجز <span>{booking.services.length}</span></h2>
+      <h2 id="ajn-op-services-title">خدمات الحجز <span>{services.length}</span></h2>
       {onAdd ? <Button variant="outline" size="sm" onClick={onAdd}><Plus /> إضافة خدمة</Button> : bookingSalesInvoice(booking) ? <small className="ajn-op-services-source">من فاتورة المبيعات <span dir="ltr">{bookingSalesInvoice(booking)!.reference}</span></small> : null}
     </div>
-    {booking.services.length ? <ul className="ajn-op-service-list">{booking.services.map((service) => {
+    {services.length ? <ul className="ajn-op-service-list">{services.map((service) => {
       const Icon = SERVICE_ICONS[service.type] ?? Sparkles;
       return <li key={service.type}>
         <span className="ajn-op-service-icon"><Icon /></span>
@@ -499,6 +502,11 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
     const url = new URL(window.location.href);
     url.searchParams.set("tab", value);
     window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+  };
+  // The receipt dialog's «فتح بطاقة النقل»: same page, so switch the tab here.
+  const openTransportCard = () => {
+    changeTab("transport");
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => document.getElementById("ajn-transport-card")?.scrollIntoView({ block: "start" })));
   };
 
   const overview = useQuery<OverviewData>({ queryKey: [...key, "overview"], queryFn: () => adminFetch(`${base}/overview`) });
@@ -646,10 +654,10 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
       </div>
     </header>
     <BookingThermalPrintAction booking={booking} open={labelOpen} onOpenChange={setLabelOpen} hideTrigger />
-    <TransportReceiptDialog reference={transportReceipt} onClose={() => setTransportReceipt(null)} />
+    <TransportReceiptDialog reference={transportReceipt} onClose={() => setTransportReceipt(null)} onOpenTransport={openTransportCard} />
 
 
-    <BookingServicesSection booking={booking} onAdd={onAddServices}>
+    <BookingServicesSection booking={booking} onAdd={onAddServices} transport={transportation.isSuccess ? transportation.data.transportation ?? null : undefined}>
       {booking.source === "service" && booking.services.some((service) => service.type === "photography") ? <PhotographyProductionPanel bookingId={booking.id} /> : null}
     </BookingServicesSection>
 

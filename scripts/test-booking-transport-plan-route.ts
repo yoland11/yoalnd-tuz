@@ -6,7 +6,7 @@ import { sql, eq, and } from "drizzle-orm";
 import { z } from "zod/v4";
 import * as tables from "@workspace/db";
 import * as plan from "../src/lib/booking-transport-plan";
-import { transportTotalDelta } from "../src/lib/booking-transport";
+import { serviceOrderTransportation, transportTotalDelta } from "../src/lib/booking-transport";
 
 const api=fs.readFileSync("src/server/api.ts","utf8");
 const start=api.indexOf('  if (resource === "transportation") {');
@@ -15,7 +15,7 @@ const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
 const dialect=new PgDialect();
 const initial=plan.readTransportPlan({source:"service",id:7,bookingNumber:"B-7",legacy:{mode:"ajn",fee:50000,inTotal:true,vehicleId:5,driverId:8,note:"تفاصيل النقل الأصلية"},storedPlan:null});
 const draft={...initial,feeMode:"per_trip",overallCharge:null,trips:[{...initial.trips[0],customerCharge:30000},{...initial.trips[0],id:"trip-2",sequence:2,vehicleId:6,driverId:9,customerCharge:30000}]};
-let state:any={total:200000,paid:0,ops:{baseBookingAmount:160000,transportation:{mode:"ajn",fee:50000,inTotal:true,vehicleId:5,driverId:8,note:"تفاصيل النقل الأصلية"}},writes:0};
+let state:any={total:200000,paid:0,form:{},ops:{baseBookingAmount:160000,transportation:{mode:"ajn",fee:50000,inTotal:true,vehicleId:5,driverId:8,note:"تفاصيل النقل الأصلية"}},writes:0};
 class CheckoutError extends Error{constructor(message:string,public status=409,public options={}){super(message)}}
 async function run(payload:any,financial=true,failAudit=false){
   const before=structuredClone(state);
@@ -25,15 +25,15 @@ async function run(payload:any,financial=true,failAudit=false){
     if(statement.startsWith("insert into entity_timeline")){if(failAudit)throw Error("transport audit unavailable");return {rows:[]};}
     throw Error("Unexpected transport route query "+statement);
   },update:()=>({set:(data:any)=>({where:async()=>{state.total=Number(data.totalAmount??state.total);state.paid=Number(data.depositAmount??state.paid);state.writes++}})})};
-  const reference:any={source:"service",id:7,entityType:"service_order",row:{bookingCode:"B-7"},details:{bookingOperations:state.ops},operations:state.ops,eventDate:"2026-10-24"};
+  const reference:any={source:"service",id:7,entityType:"service_order",row:{bookingCode:"B-7"},details:{...state.form,bookingOperations:state.ops},operations:state.ops,eventDate:"2026-10-24"};
   const env:any={...tables,sql,eq,and,...plan,resource:"transportation",method:"POST",reference,auth:{id:1,role:"admin",username:"admin",fullName:"مدير"},req:{},
     can:()=>true,canEditOrderFinancials:()=>financial,body:async()=>payload,
     BookingTransportationSchema:z.object({mode:z.enum(["ajn","customer"]).nullable().optional(),fee:z.coerce.number().default(0),vehicleId:z.number().nullable().optional(),driverId:z.number().nullable().optional(),note:z.string().nullable().optional(),transportPlan:z.unknown().optional(),expectedTransportRevision:z.number().optional()}),
-    money:(v:any)=>Math.round(Number(v)*100)/100,transportTotalDelta,transportVehicleBookedElsewhere:async()=>null,CheckoutError,
+    money:(v:any)=>Math.round(Number(v)*100)/100,transportTotalDelta,serviceOrderTransportation,transportVehicleBookedElsewhere:async()=>null,CheckoutError,
     paymentSummary:(total:number,paid:number)=>({deposit:paid,remaining:total-paid,status:paid?"partial":"unpaid"}),
     transportVehicleClash:async()=>null,
     assertPlanFitsPartnershipLedger:async()=>undefined,
-    guardBookingResourceWrite:async(_tx:any,_ref:any,work:any)=>work({details:{bookingOperations:state.ops},operations:state.ops}),
+    guardBookingResourceWrite:async(_tx:any,_ref:any,work:any)=>work({details:{...state.form,bookingOperations:state.ops},operations:state.ops}),
     saveBookingOperations:async(_ref:any,ops:any,_tx:any,savedPlan:any)=>{state.ops=structuredClone({...ops,...(savedPlan?{transportPlan:savedPlan}:{})});state.writes++},
     reconcilePaymentState:async()=>({approvedPaidAmount:String(state.paid)}),
     json:(data:any)=>({status:200,data}),error:(message:string,status:number)=>({status,message}),validationError:()=>({status:422}),formatCurrency:String,
@@ -67,4 +67,19 @@ assert.equal(state.total,210000);
 await assert.rejects(()=>run({mode:"ajn",fee:1,vehicleId:5,transportPlan:{...draft,revision:1,trips:[{...draft.trips[0],customerCharge:40000},draft.trips[1]]},expectedTransportRevision:1},true,true),/transport audit unavailable/);
 assert.equal(state.total,210000,"failed plan audit rolls the original aggregate write back");
 assert.equal(state.ops.transportPlan.revision,1);
+// Booking 162: transport chosen in the booking form only (customFields, fee already
+// in the 140,000 total). Choosing the car on the card keeps the total and the trip.
+state={total:140000,paid:0,form:{transportationMode:"ajn",transportationFee:15000,bookingCenterServices:[{type:"transportation",status:"waiting",amount:15000}]},ops:{},writes:0};
+const formPlan=plan.readTransportPlan({source:"service",id:7,bookingNumber:"B-7",legacy:serviceOrderTransportation(state.form),storedPlan:null});
+assert.equal(formPlan.trips.length,1);
+response=await run({transportPlan:{...formPlan,trips:[{...formPlan.trips[0],vehicleId:5}]},expectedTransportRevision:0});
+assert.equal(response.status,200);
+assert.equal(state.total,140000,"the form fee is already in the total: never added twice");
+assert.equal(state.ops.transportation.fee,15000);assert.equal(state.ops.transportation.inTotal,true);assert.equal(state.ops.transportation.vehicleId,5);
+assert.equal(state.ops.transportPlan.trips[0].id,"legacy-1");
+state={total:140000,paid:0,form:{transportationMode:"ajn",transportationFee:15000},ops:{},writes:0};
+response=await run({mode:null,fee:0,vehicleId:null,driverId:null,note:null});
+assert.equal(response.status,200);
+assert.equal(state.total,125000,"«بدون نقل» removes the form fee exactly once");
+assert.equal(state.ops.transportation,null);
 console.log("PASS actual service transport route: server-derived aggregate, one delta, same retry no writes, stale/legacy conflicts, financial authorization and transaction rollback");

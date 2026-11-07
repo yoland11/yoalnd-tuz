@@ -25,7 +25,7 @@ assert.match(center, /onAddServices=\{source === "service" && !bookingSalesInvoi
 
 // The workspace shows departments by name and keeps every panel reachable.
 assert.doesNotMatch(workspace, /booking\.services\.map\(\(service\) => service\.type\)/, "no raw department keys in the header or the receipt");
-assert.match(workspace, /<BookingServicesSection booking=\{booking\} onAdd=\{onAddServices\}>/);
+assert.match(workspace, /<BookingServicesSection booking=\{booking\} onAdd=\{onAddServices\} transport=\{transportation\.isSuccess \? transportation\.data\.transportation \?\? null : undefined\}>/);
 assert.match(workspace, /<TabsContent value="transport"><BookingTransportPlanEditor /, "transport has one card in its tab");
 assert.match(workspace, /<TabsContent value="group-photos">[\s\S]{0,200}<GroupAttendeesCard /, "group attendees keep their panel");
 assert.match(workspace, /const PRIMARY_TABS = new Set\(\[/);

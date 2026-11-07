@@ -1,7 +1,7 @@
 import { useId,useMemo,useState } from "react";
 import { useMutation,useQuery,useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { Printer,Settings2,RotateCcw } from "lucide-react";
+import { Printer,Settings2,RotateCcw,Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription,DialogFooter } from "@/components/ui/dialog";
 import { Field,FieldGroup,FieldLabel,FieldDescription,FieldSet,FieldLegend } from "@/components/ui/field";
@@ -43,15 +43,23 @@ export function TransportReceiptSettingsFields({settings,onChange,disabled}:{set
 function ReceiptError({title,error,onRetry}:{title:string;error:unknown;onRetry?:()=>void}){
   return <Alert variant="destructive"><AlertTitle>{title}</AlertTitle><AlertDescription>{apiErrorMessage(error,title)}{onRetry?<Button type="button" variant="outline" size="sm" onClick={onRetry} className="mt-2">إعادة المحاولة</Button>:null}</AlertDescription></Alert>;
 }
-export function TransportReceiptDialog({reference,onClose}:{reference:TransportReceiptReference|null;onClose:()=>void}){
-  return reference?<ReceiptSession key={`${reference.source}:${reference.id}:${reference.tripId??""}`} reference={reference} onClose={onClose}/>:null;
+/** Where a booking's transport is edited: the «النقل» tab of its workspace. */
+export const transportCardHref=(reference:TransportReference)=>`/admin/bookings/${reference.source}/${reference.id}?tab=transport#ajn-transport-card`;
+/** Opens the booking's transport card. Inside the booking page the caller switches
+ * the tab itself (`onOpen`); anywhere else this navigates to the «النقل» tab. */
+function OpenTransportCard({reference,onClose,onOpen,variant="outline"}:{reference:TransportReference;onClose:()=>void;onOpen?:()=>void;variant?:"outline"|"default"}){
+  return onOpen?<Button type="button" variant={variant} size="sm" onClick={()=>{onClose();onOpen()}}><Truck data-icon="inline-start"/>فتح بطاقة النقل</Button>
+    :<Button asChild variant={variant} size="sm"><Link href={transportCardHref(reference)} onClick={onClose}><Truck data-icon="inline-start"/>فتح بطاقة النقل</Link></Button>;
+}
+export function TransportReceiptDialog({reference,onClose,onOpenTransport}:{reference:TransportReceiptReference|null;onClose:()=>void;onOpenTransport?:()=>void}){
+  return reference?<ReceiptSession key={`${reference.source}:${reference.id}:${reference.tripId??""}`} reference={reference} onClose={onClose} onOpenTransport={onOpenTransport}/>:null;
 }
 /** Standalone history action; dialog stays mounted after its action completes. */
 export function TransportReceiptAction({reference,label="طباعة وصل نقل 80mm"}:{reference:TransportReceiptReference;label?:string}){
   const [open,setOpen]=useState(false);
   return <><Button type="button" variant="outline" size="sm" onClick={()=>setOpen(true)}><Printer data-icon="inline-start"/>{label}</Button><TransportReceiptDialog reference={open?reference:null} onClose={()=>setOpen(false)}/></>;
 }
-function ReceiptSession({reference,onClose}:{reference:TransportReceiptReference;onClose:()=>void}){
+function ReceiptSession({reference,onClose,onOpenTransport}:{reference:TransportReceiptReference;onClose:()=>void;onOpenTransport?:()=>void}){
   const queryClient=useQueryClient(),id=useId();
   const base=`/admin/booking-operations/${reference.source}/${reference.id}/transportation`;
   const [tripChoice,setTripChoice]=useState(reference.tripId??"");
@@ -62,6 +70,11 @@ function ReceiptSession({reference,onClose}:{reference:TransportReceiptReference
   const preferences=useQuery<{settings:TransportReceiptSettings;canManage:boolean}>({queryKey:["transport-receipt-settings"],queryFn:()=>adminFetch(`${base}?transportAction=settings`),retry:false});
   const trips=transport.data?.transportPlan.trips;
   const tripId=tripChoice||(trips?.length===1?trips[0].id:"");
+  const selectedTrip=trips?.find(trip=>trip.id===tripId)??null;
+  // A trip without a car or driver still prints; the empty lines read «غير مسجل».
+  const missing=selectedTrip?[!selectedTrip.vehicleId&&"السيارة",!selectedTrip.driverId&&"السائق"].filter((value):value is string=>!!value):[];
+  const savedMode=(transport.data?.transportation as {mode?:unknown}|null|undefined)?.mode;
+  const canEdit=!!transport.data?.capabilities.canEdit;
   const variant=variantChoice??(transport.data?.capabilities.canPrintFinancial?"customer":"driver");
   const receipt=useQuery<TransportReceiptData>({queryKey:["transport-receipt",reference.source,reference.id,tripId,variant],queryFn:()=>adminFetch(`${base}?receipt=1&tripId=${encodeURIComponent(tripId)}&variant=${variant}`),enabled:!!tripId&&!transport.isError&&!!transport.data,retry:false,staleTime:0});
   const settings=draft??preferences.data?.settings??DEFAULT_TRANSPORT_RECEIPT_SETTINGS;
@@ -85,8 +98,9 @@ function ReceiptSession({reference,onClose}:{reference:TransportReceiptReference
   const busy=printing||savePreferences.isPending;
   return <Dialog open onOpenChange={open=>{if(!open&&!busy)onClose()}}><DialogContent dir="rtl" className="flex w-[min(calc(100%-1rem),58rem)] max-w-4xl flex-col overflow-hidden"><DialogHeader className="shrink-0"><DialogTitle>معاينة وصل النقل — 80mm</DialogTitle><DialogDescription>اختر عملية نقل واحدة. الطباعة لا تسجّل دفعة ولا تغيّر حالة النقل.</DialogDescription></DialogHeader>
     <div className="min-h-0 flex-1 overflow-y-auto">
-    {transport.isError?<ReceiptError title="تعذر قراءة عمليات النقل" error={transport.error} onRetry={reload}/>:transport.isPending||transport.isFetching?<div aria-label="تحميل عمليات النقل"><Skeleton className="h-24 w-full"/></div>:trips?.length===0?<Empty><EmptyHeader><EmptyTitle>لا توجد عملية نقل مرتبطة بهذا الحجز.</EmptyTitle><EmptyDescription>أضف بيانات النقل من بطاقة خدمة النقل الموجودة في الحجز.</EmptyDescription></EmptyHeader>{transport.data?.capabilities.canEdit?<EmptyContent><Button asChild variant="outline"><Link href={`/admin/bookings/${reference.source}/${reference.id}?tab=overview#ajn-transport-card`} onClick={onClose}>إضافة تفاصيل النقل</Link></Button></EmptyContent>:null}</Empty>:
+    {transport.isError?<ReceiptError title="تعذر قراءة عمليات النقل" error={transport.error} onRetry={reload}/>:transport.isPending||transport.isFetching?<div aria-label="تحميل عمليات النقل"><Skeleton className="h-24 w-full"/></div>:trips?.length===0?<Empty>{savedMode==="customer"?<EmptyHeader><EmptyTitle>النقل على الزبون بهذا الحجز.</EmptyTitle><EmptyDescription>ما اكو رحلة علينا حتى يطلعلها وصل. إذا صار النقل علينا، غيّره من بطاقة النقل.</EmptyDescription></EmptyHeader>:<EmptyHeader><EmptyTitle>لا توجد عملية نقل مرتبطة بهذا الحجز.</EmptyTitle><EmptyDescription>ما محدد منو يتكفل بالنقل. من بطاقة النقل اختار «النقل علينا» وحدد السيارة والأجرة، وبعدها يطلع الوصل.</EmptyDescription></EmptyHeader>}<EmptyContent><OpenTransportCard reference={reference} onClose={onClose} onOpen={onOpenTransport}/></EmptyContent></Empty>:
     <div className="grid min-w-0 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"><section className="flex min-w-0 flex-col gap-5" aria-label="خيارات وصل النقل">
+      {missing.length?<Alert><AlertTitle>ناقص بهذي الرحلة: {missing.join(" و")}</AlertTitle><AlertDescription><p>الوصل يطلع هسه، وبمكان {missing.length>1?"الناقصين":"الناقص"} يكتب «غير مسجل». {missing.length>1?(canEdit?"تقدر تحددهم من بطاقة النقل.":"اطلب من المسؤول يحددهم من بطاقة النقل."):(canEdit?"تقدر تحدده من بطاقة النقل.":"اطلب من المسؤول يحدده من بطاقة النقل.")}</p>{canEdit?<div className="mt-2"><OpenTransportCard reference={reference} onClose={onClose} onOpen={onOpenTransport}/></div>:null}</AlertDescription></Alert>:null}
       {trips&&trips.length>1?<Field><FieldLabel htmlFor={`${id}-trip`}>عملية النقل</FieldLabel><Select dir="rtl" value={tripId} disabled={busy} onValueChange={value=>{setTripChoice(value);setRequested(false);setPrintError(null)}}><SelectTrigger id={`${id}-trip`}><SelectValue placeholder="اختر عملية النقل"/></SelectTrigger><SelectContent><SelectGroup>{trips.map(trip=><SelectItem key={trip.id} value={trip.id}>رحلة {trip.sequence}{trip.transportType?` · ${trip.transportType}`:""}{trip.destination?` · ${trip.destination}`:""}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>:null}
       <TransportReceiptControls variant={variant} canFinancial={!!transport.data?.capabilities.canPrintFinancial} copies={copies} onCopies={value=>{setCopies(value);setRequested(false)}} onVariant={value=>{setVariantChoice(value);setRequested(false);setPrintError(null)}} disabled={busy}/>
       {preferences.isError?<ReceiptError title="تعذر قراءة إعدادات الوصل" error={preferences.error} onRetry={()=>void preferences.refetch()}/>:null}
