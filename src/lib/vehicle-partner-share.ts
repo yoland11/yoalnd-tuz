@@ -189,3 +189,54 @@ export function assertPayoutFits(amount: number, balance: PartnerBalance): numbe
   if (fils > toFils(balance.available)) throw new PartnerShareError(`المبلغ أكبر من الباقي للشريك (${fromFils(toFils(balance.available)).toLocaleString("en-US")} د.ع)`, 409);
   return fromFils(fils);
 }
+
+/** One payout request: the month it pays (null on payouts made before months were
+ * recorded), what of it was executed net of reversals, and what still waits. */
+export type PayoutSlice = { month: string | null; paid: number; pending: number };
+export type SettledMonth = PartnerMonth & {
+  /** Paid for this month (executed, net of reversals). */
+  paid: number;
+  /** Waiting for approval for this month. */
+  pending: number;
+  /** partnerShare - paid - pending; negative when paid above the share or on a losing month. */
+  remaining: number;
+  /** What a new payout for this month may ask for: never above the month's remainder or the overall balance. */
+  payable: number;
+};
+
+/**
+ * Splits payouts over months: a payout names its month; older payouts without one
+ * fill the oldest months that still have share left, paid money first. The month
+ * cap also respects the overall balance, so a later loss is never paid out.
+ */
+export function settleMonths(months: readonly PartnerMonth[], payouts: readonly PayoutSlice[], balance: PartnerBalance): SettledMonth[] {
+  const ordered = [...months].sort((a, b) => a.month.localeCompare(b.month));
+  const paid = new Map<string, number>(), pending = new Map<string, number>();
+  let loosePaid = 0, loosePending = 0;
+  const known = new Set(ordered.map((month) => month.month));
+  for (const payout of payouts) {
+    if (payout.month && known.has(payout.month)) {
+      paid.set(payout.month, (paid.get(payout.month) ?? 0) + toFils(payout.paid));
+      pending.set(payout.month, (pending.get(payout.month) ?? 0) + toFils(payout.pending));
+    } else { loosePaid += toFils(payout.paid); loosePending += toFils(payout.pending); }
+  }
+  for (const [pool, target] of [[loosePaid, paid], [loosePending, pending]] as const) {
+    let left = pool;
+    for (const month of ordered) {
+      if (left <= 0) break;
+      const room = toFils(month.partnerShare) - (paid.get(month.month) ?? 0) - (pending.get(month.month) ?? 0);
+      if (room <= 0) continue;
+      const take = Math.min(room, left);
+      target.set(month.month, (target.get(month.month) ?? 0) + take);
+      left -= take;
+    }
+    // Anything still left (paid above every share) stays visible on the latest month.
+    if (left > 0 && ordered.length) { const last = ordered[ordered.length - 1].month; target.set(last, (target.get(last) ?? 0) + left); }
+  }
+  const available = toFils(balance.available);
+  const settled = new Map(ordered.map((month) => {
+    const share = toFils(month.partnerShare), p = paid.get(month.month) ?? 0, w = pending.get(month.month) ?? 0, remaining = share - p - w;
+    return [month.month, { ...month, paid: fromFils(p), pending: fromFils(w), remaining: fromFils(remaining), payable: share > 0 ? fromFils(Math.max(0, Math.min(remaining, available))) : 0 }];
+  }));
+  return months.map((month) => settled.get(month.month)!);
+}

@@ -68,7 +68,7 @@ import { readTransportPlan,validateTransportPlan,prepareTransportPlanSave,Transp
 import { reconcilePaymentState } from "./payment-state";
 import { readTransportReceipt,projectVehicleTransportBooking } from "./booking-transport-receipt";
 import { readVehicleTransportPlans,addPlanVehicleStats,assertPlanFitsPartnershipLedger,type VehicleTransportFinancialTrip } from "./vehicle-transport-plans";
-import { PartnerShareError, assertPayoutFits, buildPartnerMonths, isMonth, lastDayOfMonth, monthRange, partnerBalance, percentToBasisPoints, termForMonth, toFils, fromFils, type PartnerTerm } from "@/lib/vehicle-partner-share";
+import { PartnerShareError, assertPayoutFits, buildPartnerMonths, isMonth, lastDayOfMonth, monthRange, partnerBalance, percentToBasisPoints, settleMonths, termForMonth, toFils, fromFils, type PartnerTerm, type PayoutSlice } from "@/lib/vehicle-partner-share";
 import { normalizeTransportReceiptSettings,DEFAULT_TRANSPORT_RECEIPT_SETTINGS } from "@/lib/transport-receipt";
 import { executedTransportRevenue, transportTotalDelta } from "@/lib/booking-transport";
 import { LoadingError } from "@/lib/booking-loading";
@@ -23754,7 +23754,50 @@ const VehiclePartnerTermSchema = z.object({
   startsMonth: z.string().refine(isMonth, "اختر الشهر"),
 }).strict();
 
+// Standalone trips and payout months (migration 0137).
+let vehicleTripsTablesReady = false;
+async function vehicleTripsReady() {
+  if (vehicleTripsTablesReady) return true;
+  const result: any = await db.execute(sql`select to_regclass('public.vehicle_trips') is not null and to_regclass('public.vehicle_partner_payout_months') is not null as ready`);
+  vehicleTripsTablesReady = result?.rows?.[0]?.ready === true;
+  return vehicleTripsTablesReady;
+}
+
+const VehicleTripSchema = z.object({
+  tripDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "اختر تاريخ النقل"),
+  customerName: z.string().trim().min(1, "اكتب اسم الزبون").max(200),
+  customerPhone: z.string().trim().max(30).regex(/^[+0-9\u0660-\u0669\s()-]*$/, "رقم الهاتف غير صالح").optional().nullable(),
+  origin: z.string().trim().max(300).optional().nullable(),
+  destination: z.string().trim().max(300).optional().nullable(),
+  driverId: z.coerce.number().int().positive().optional().nullable(),
+  fee: z.coerce.number().positive("اكتب أجرة النقل").max(999_999_999_999),
+  notes: z.string().trim().max(1000).optional().nullable(),
+  collectNow: z.boolean().default(true),
+  paymentMethod: z.enum(["cash", "transfer", "pos"]).default("cash"),
+  idempotencyKey: z.string().trim().min(12).max(150),
+}).strict();
+const VehicleTripCollectSchema = z.object({
+  paymentMethod: z.enum(["cash", "transfer", "pos"]).default("cash"),
+  idempotencyKey: z.string().trim().min(12).max(150),
+}).strict();
+
+/** A standalone trip's money: executed collections net of reversals, and requests waiting. */
+async function vehicleTripCash(executor: { execute: (query: any) => Promise<any> }, tripId: number) {
+  const result: any = await executor.execute(sql`
+    select
+      coalesce(sum(case when f.approval_status = 'executed' and f.reversed_transaction_id is null then f.amount
+                        when f.approval_status = 'executed' then -f.amount else 0 end), 0)::text as collected,
+      coalesce(sum(case when f.approval_status = 'pending' and f.reversed_transaction_id is null then f.amount else 0 end), 0)::text as pending
+    from financial_transactions f
+    where f.source_type = 'vehicle_trip' and f.source_id = ${String(tripId)}
+  `);
+  const row = result?.rows?.[0];
+  if (!row) throw new Error("Invalid vehicle trip cash response");
+  return { collected: fromFils(Math.max(0, toFils(Number(row.collected)))), pending: fromFils(toFils(Number(row.pending))) };
+}
+
 const VehiclePartnerPayoutSchema = z.object({
+  month: z.string().refine(isMonth, "اختر الشهر"),
   amount: z.coerce.number().positive("مبلغ الصرف يجب أن يكون أكبر من صفر").max(999_999_999_999),
   payoutDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "اختر تاريخ الصرف"),
   paymentMethod: z.enum(["cash", "transfer", "pos"]).default("cash"),
@@ -23766,10 +23809,11 @@ type VehiclePartnerExecutor = { execute: (query: any) => Promise<any> };
 
 /** Payout requests are main-cash rows of source 'vehicle_partner_share'. Paid is
  * what was executed minus executed reversals; nothing else is a payment. */
-async function vehiclePartnerPayouts(executor: VehiclePartnerExecutor, vehicleId: number) {
+async function vehiclePartnerPayouts(executor: VehiclePartnerExecutor, vehicleId: number, withMonths = false) {
   const result: any = await executor.execute(sql`
     select f.id, f.transaction_no, f.transaction_date::text as transaction_date, f.amount::text as amount,
            f.approval_status, f.payment_method, f.customer_name, f.notes, f.requested_by_name,
+           ${withMonths ? sql`(select to_char(m.share_month, 'YYYY-MM') from vehicle_partner_payout_months m where m.financial_transaction_id = f.id)` : sql`null::text`} as share_month,
            coalesce((select sum(r.amount) from financial_transactions r
                      where r.reversed_transaction_id = f.id and r.approval_status = 'executed'), 0)::text as reversed
     from financial_transactions f
@@ -23781,12 +23825,15 @@ async function vehiclePartnerPayouts(executor: VehiclePartnerExecutor, vehicleId
   if (!Array.isArray(result?.rows)) throw new Error("Invalid vehicle partner payout response");
   if (result.rows.length > 1000) throw new PartnerShareError("سجل صرف حصة الشريك تجاوز حد العرض", 422);
   let paid = 0, pending = 0;
+  const slices: PayoutSlice[] = [];
   const rows = result.rows.map((row: any) => {
     const amount = toFils(Number(row.amount)), reversed = toFils(Number(row.reversed));
-    if (row.approval_status === "executed") paid += Math.max(0, amount - reversed);
-    else if (row.approval_status === "pending") pending += amount;
+    const month = row.share_month ? String(row.share_month) : null;
+    if (row.approval_status === "executed") { paid += Math.max(0, amount - reversed); slices.push({ month, paid: fromFils(Math.max(0, amount - reversed)), pending: 0 }); }
+    else if (row.approval_status === "pending") { pending += amount; slices.push({ month, paid: 0, pending: fromFils(amount) }); }
     return {
       id: Number(row.id),
+      month,
       transactionNo: row.transaction_no ?? null,
       date: row.transaction_date,
       amount: fromFils(amount),
@@ -23798,7 +23845,7 @@ async function vehiclePartnerPayouts(executor: VehiclePartnerExecutor, vehicleId
       requestedBy: row.requested_by_name ?? null,
     };
   });
-  return { rows, paid: fromFils(paid), pending: fromFils(pending) };
+  return { rows, slices, paid: fromFils(paid), pending: fromFils(pending) };
 }
 
 async function handleEnterpriseAdmin(
@@ -24035,7 +24082,35 @@ async function handleEnterpriseAdmin(
         const operations=value.operations.map(trip=>({id:trip.id,sequence:trip.sequence,destination:trip.destination,driverName:trip.driverId?(driverById.get(trip.driverId)?.fullName||driverById.get(trip.driverId)?.username||null):null}));
         trips.push({source:booking.source,bookingId:booking.id,bookingNo:booking.bookingNo,customerName:booking.customerName,eventDate:booking.eventDate,transportationFee:value.customerCharge,executedTransportationRevenue:value.transportRevenue,paymentStatus:booking.paymentStatus,executionStatus:value.transportRevenue==null?"unallocated":value.transportRevenue>0?"executed":"pending",driverName:[...new Set(operations.map(trip=>trip.driverName).filter(Boolean))].join("، ")||null,tripExpense:value.expense,tripProfit:value.profit,operations});
       }
-      trips.sort((a,b)=>String(b.eventDate??"").localeCompare(String(a.eventDate??""))||b.bookingId-a.bookingId);
+      // Standalone trips from the vehicles page (0137): their fee is the vehicle's
+    // income by trip date; collected is executed cash net of reversals.
+    const standaloneReady: any = await db.execute(sql`select to_regclass('public.vehicle_trips') is not null as ready`);
+    if (standaloneReady?.rows?.[0]?.ready === true) {
+      const standalone: any = await db.execute(sql`
+        select t.id, t.trip_date::text as trip_date, t.customer_name, t.customer_phone, t.origin, t.destination, t.notes,
+               t.fee::text as fee, t.driver_id, s.full_name as driver_name, s.username as driver_username,
+               coalesce((select sum(case when f.reversed_transaction_id is null then f.amount else -f.amount end) from financial_transactions f
+                         where f.source_type = 'vehicle_trip' and f.source_id = t.id::text and f.approval_status = 'executed'), 0)::text as collected,
+               coalesce((select sum(f.amount) from financial_transactions f
+                         where f.source_type = 'vehicle_trip' and f.source_id = t.id::text and f.approval_status = 'pending' and f.reversed_transaction_id is null), 0)::text as pending
+        from vehicle_trips t left join staff s on s.id = t.driver_id
+        where t.vehicle_id = ${vehicleId} and t.status = 'active'
+          ${from ? sql`and t.trip_date::text >= ${from}` : sql``}
+          ${to ? sql`and t.trip_date::text <= ${to}` : sql``}
+        order by t.trip_date desc, t.id desc
+        limit 501
+      `);
+      if (!Array.isArray(standalone?.rows)) throw new Error("Invalid standalone trip response");
+      if (standalone.rows.length > 500) throw new TransportPlanError("تجاوزت رحلات النقل المستقل حد التقرير؛ اختر نطاق تاريخ أدق", 422);
+      for (const row of standalone.rows) {
+        const fee = money(row.fee), collected = Math.max(0, money(row.collected)), waiting = money(row.pending);
+        trips.push({ source: "trip", bookingId: Number(row.id), bookingNo: `T-${row.id}`, customerName: row.customer_name, eventDate: row.trip_date,
+          transportationFee: fee, executedTransportationRevenue: collected, paymentStatus: collected >= fee ? "paid" : collected > 0 ? "partial" : "unpaid",
+          executionStatus: collected > 0 ? "executed" : "pending", driverName: row.driver_name || row.driver_username || null, tripExpense: 0, tripProfit: fee,
+          standalone: { phone: row.customer_phone ?? null, origin: row.origin ?? null, destination: row.destination ?? null, notes: row.notes ?? null, collected, pending: waiting, driverId: row.driver_id == null ? null : Number(row.driver_id) } });
+      }
+    }
+    trips.sort((a,b)=>String(b.eventDate??"").localeCompare(String(a.eventDate??""))||b.bookingId-a.bookingId);
       const expenses = expenseRows.map((expense) => {
         const reversed = expense.financialTransactionId ? money(reversedByTransaction.get(expense.financialTransactionId) ?? 0) : 0;
         const effectiveAmount = ["executed", "partially_reversed", "reversed"].includes(expense.status)
@@ -24094,7 +24169,7 @@ async function handleEnterpriseAdmin(
       updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
     }));
     const thisMonth = baghdadToday().slice(0, 7);
-    if (!terms.length) return { ready: true as const, thisMonth, partner: null, terms, months: [], balance: null, payouts: [] };
+    if (!terms.length) return { ready: true as const, thisMonth, partner: null, terms, months: [] as ReturnType<typeof settleMonths>, balance: null, payouts: [], monthsReady: false };
     const first = terms[0].startsMonth;
     const trips: Array<{ eventDate: string | null; fee: number | null; count?: number }> = [];
     const expenses: Array<{ date: string; amount: number; status: string }> = [];
@@ -24117,7 +24192,8 @@ async function handleEnterpriseAdmin(
       }
     }
     const months = buildPartnerMonths({ terms, trips, expenses, throughMonth: thisMonth });
-    const cash = await vehiclePartnerPayouts(db, vehicle.id);
+    const monthsReady = await vehicleTripsReady();
+    const cash = await vehiclePartnerPayouts(db, vehicle.id, monthsReady);
     const current = termForMonth(terms, thisMonth);
     const upcoming = terms.find((term) => term.startsMonth > thisMonth) ?? null;
     return {
@@ -24126,9 +24202,10 @@ async function handleEnterpriseAdmin(
       partner: current && current.shareBasisPoints > 0 ? current : null,
       upcoming,
       terms,
-      months: [...months].reverse(),
+      months: settleMonths(months, cash.slices, partnerBalance(months, cash.paid, cash.pending)).reverse(),
       balance: partnerBalance(months, cash.paid, cash.pending),
       payouts: cash.rows,
+      monthsReady,
     };
   }
 
@@ -24186,6 +24263,8 @@ async function handleEnterpriseAdmin(
         // A partnership that ended still pays out what the partner earned before it.
         const partner = state.partner ?? [...state.terms].reverse().find((term) => term.shareBasisPoints > 0 && term.startsMonth <= state.thisMonth) ?? null;
         if (!partner) return error("لا يوجد شريك لهذه السيارة", 409, { code: "CONFLICT" });
+        if (!state.monthsReady) return error("صرف الحصة حسب الشهر يحتاج تطبيق ترقية قاعدة البيانات 0137 أولاً", 409, { code: "CONFLICT" });
+        if (!state.months.some((month) => month.month === d.month)) return error("اختر شهراً من أشهر الشراكة", 422, { code: "VALIDATION_ERROR" });
         const idempotencyKey = `vehicle-partner-share:${d.idempotencyKey}`;
         const result = await db.transaction(async (tx) => {
           await tx.execute(sql`select id from fleet_vehicles where id = ${vehicleId} for update`);
@@ -24199,16 +24278,18 @@ async function handleEnterpriseAdmin(
           }
           // Paid and waiting requests are re-read under the lock: two requests at
           // once cannot both take the same remaining share.
-          const cash = await vehiclePartnerPayouts(tx, vehicleId);
-          const amount = assertPayoutFits(d.amount, partnerBalance([...state.months], cash.paid, cash.pending));
+          const cash = await vehiclePartnerPayouts(tx, vehicleId, true);
+          const balance = partnerBalance([...state.months], cash.paid, cash.pending);
+          const month = settleMonths([...state.months], cash.slices, balance).find((row) => row.month === d.month)!;
+          const amount = assertPayoutFits(d.amount, { ...balance, available: month.payable });
           const financial = await createAndExecuteSourceFinancialTransaction(tx, {
             transactionDate: d.payoutDate,
             direction: "expense",
             amount,
             department: "koshas",
             transactionType: "vehicle_partner_share",
-            referenceNo: `VPS-${vehicleId}`,
-            description: `حصة الشريك ${partner.partnerName} من أرباح ${vehicle.name}`,
+            referenceNo: `VPS-${vehicleId}-${d.month}`,
+            description: `حصة الشريك ${partner.partnerName} عن شهر ${d.month.replace("-", "/")} من أرباح ${vehicle.name}`,
             paymentMethod: d.paymentMethod,
             sourceType: "vehicle_partner_share",
             sourceId: vehicleId,
@@ -24218,11 +24299,16 @@ async function handleEnterpriseAdmin(
             customerPhone: partner.partnerPhone,
             notes: d.note || null,
           }, financialActor(financeAuth));
+          await tx.execute(sql`
+            insert into vehicle_partner_payout_months (financial_transaction_id, vehicle_id, share_month)
+            values (${financial.id}, ${vehicleId}, ${`${d.month}-01`}::date)
+            on conflict (financial_transaction_id) do nothing
+          `);
           return { id: financial.id, duplicate: false };
         });
         if (!result.duplicate)
           await recordEnterpriseMutation(req, financeAuth, "vehicle_partner_payout_requested", "fleet_vehicle", vehicleId,
-            "طلب صرف حصة شريك السيارة بانتظار الاعتماد", { financialTransactionId: result.id, amount: d.amount, partnerName: partner.partnerName });
+            "طلب صرف حصة شريك السيارة بانتظار الاعتماد", { financialTransactionId: result.id, amount: d.amount, month: d.month, partnerName: partner.partnerName });
         return json({ financialTransactionId: result.id, duplicate: result.duplicate, ...(await vehiclePartnerState(vehicle)), canManage: true }, result.duplicate ? 200 : 201);
       }
     } catch (cause) {
@@ -24327,6 +24413,111 @@ async function handleEnterpriseAdmin(
       maintenance: maintenance.map((row) => ({ ...row, cost: money(row.cost) })),
       odometerHistory,
     });
+  }
+
+  // «إضافة نقل»: a standalone transport job on a vehicle, its fee collection and cancellation (0137).
+  if (section === "vehicles" && parts[1] && parts[2] === "trips" && method === "POST" && (!parts[3] || (parts[3] && ["collect", "cancel"].includes(parts[4] ?? "") && !parts[5]))) {
+    const financeAuth = await requirePermission(req, "accounting");
+    if (isResponse(financeAuth)) return financeAuth;
+    const vehicleId = int(parts[1]);
+    if (!vehicleId) return error("معرف السيارة غير صحيح", 400);
+    if (!(await vehicleTripsReady()))
+      return error("النقل المستقل يحتاج تطبيق ترقية قاعدة البيانات 0137 أولاً", 409, { code: "CONFLICT" });
+    const vehicle = await db.query.fleetVehiclesTable.findFirst({ where: eq(fleetVehiclesTable.id, vehicleId) });
+    if (!vehicle) return error("السيارة غير موجودة", 404, { code: "NOT_FOUND" });
+    const actorName = financeAuth.fullName || financeAuth.username;
+    try {
+    if (!parts[3]) {
+      if (!vehicle.isActive) return error("السيارة المختارة غير متاحة", 409, { code: "CONFLICT" });
+      const parsed = VehicleTripSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("enterprise.vehicle-trip.create", parsed);
+      const d = parsed.data;
+      if (d.driverId) {
+        const driver = await db.query.staffTable.findFirst({ where: eq(staffTable.id, d.driverId) });
+        if (!driver) return error("السائق المختار غير موجود", 404, { code: "NOT_FOUND" });
+      }
+      const fee = money(d.fee);
+      const result = await db.transaction(async (tx) => {
+        const [existing] = ((await tx.execute(sql`select id, vehicle_id, fee::text as fee from vehicle_trips where idempotency_key = ${d.idempotencyKey}`)) as any)?.rows ?? [];
+        if (existing) {
+          if (Number(existing.vehicle_id) !== vehicleId || money(existing.fee) !== fee) throw new PartnerShareError("مرجع النقل مستخدم لنقل مختلف؛ حدّث الصفحة", 409);
+          return { id: Number(existing.id), duplicate: true, financialTransactionId: null as number | null };
+        }
+        const [trip] = ((await tx.execute(sql`
+          insert into vehicle_trips (vehicle_id, trip_date, customer_name, customer_phone, origin, destination, driver_id, fee, notes, idempotency_key, created_by, created_by_name)
+          values (${vehicleId}, ${d.tripDate}::date, ${d.customerName}, ${d.customerPhone || null}, ${d.origin || null}, ${d.destination || null}, ${d.driverId ?? null}, ${String(fee)}, ${d.notes || null}, ${d.idempotencyKey}, ${financeAuth.id}, ${actorName})
+          returning id
+        `)) as any)?.rows ?? [];
+        if (!trip) throw new Error("Vehicle trip insert was not confirmed");
+        const id = Number(trip.id);
+        let financialTransactionId: number | null = null;
+        if (d.collectNow) {
+          const financial = await createAndExecuteSourceFinancialTransaction(tx, {
+            transactionDate: d.tripDate, direction: "revenue", amount: fee, department: "koshas", transactionType: "vehicle_trip",
+            referenceNo: `VT-${vehicleId}-${id}`, description: `أجرة نقل · ${vehicle.name} · ${d.customerName}`, paymentMethod: d.paymentMethod,
+            sourceType: "vehicle_trip", sourceId: id, sourceEvent: "vehicle_trip_fee", idempotencyKey: `vehicle-trip-fee:${d.idempotencyKey}`,
+            customerName: d.customerName, customerPhone: d.customerPhone || null, notes: d.notes || null,
+          }, financialActor(financeAuth));
+          financialTransactionId = financial.id;
+        }
+        return { id, duplicate: false, financialTransactionId };
+      });
+      if (!result.duplicate)
+        await recordEnterpriseMutation(req, financeAuth, "vehicle_trip_created", "fleet_vehicle", vehicleId, `نقل مستقل T-${result.id} لـ ${d.customerName}`, { tripId: result.id, fee, collectNow: d.collectNow, financialTransactionId: result.financialTransactionId });
+      return json({ id: result.id, duplicate: result.duplicate, financialTransactionId: result.financialTransactionId }, result.duplicate ? 200 : 201);
+    }
+    const tripId = int(parts[3]);
+    if (!tripId) return error("رقم النقل غير صحيح", 400);
+    if (parts[4] === "collect") {
+      const parsed = VehicleTripCollectSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("enterprise.vehicle-trip.collect", parsed);
+      const d = parsed.data;
+      const idempotencyKey = `vehicle-trip-fee:${d.idempotencyKey}`;
+      const result = await db.transaction(async (tx) => {
+        const [trip] = ((await tx.execute(sql`select id, vehicle_id, status, fee::text as fee, trip_date::text as trip_date, customer_name, customer_phone from vehicle_trips where id = ${tripId} for update`)) as any)?.rows ?? [];
+        if (!trip || Number(trip.vehicle_id) !== vehicleId) throw new PartnerShareError("النقل غير موجود لهذه السيارة", 404);
+        const [replay] = ((await tx.execute(sql`select id, source_type, source_id from financial_transactions where idempotency_key = ${idempotencyKey}`)) as any)?.rows ?? [];
+        if (replay) {
+          if (replay.source_type !== "vehicle_trip" || replay.source_id !== String(tripId)) throw new PartnerShareError("مرجع القبض مستخدم لحركة مختلفة؛ حدّث الصفحة", 409);
+          return { financialTransactionId: Number(replay.id), duplicate: true };
+        }
+        if (trip.status !== "active") throw new PartnerShareError("النقل ملغي", 409);
+        const cash = await vehicleTripCash(tx, tripId);
+        if (cash.pending > 0) throw new PartnerShareError("أجرة هذا النقل عندها طلب قبض بانتظار الموافقة", 409);
+        const remaining = money(money(trip.fee) - cash.collected);
+        if (remaining <= 0) throw new PartnerShareError("أجرة هذا النقل مقبوضة", 409);
+        const financial = await createAndExecuteSourceFinancialTransaction(tx, {
+          transactionDate: baghdadToday(), direction: "revenue", amount: remaining, department: "koshas", transactionType: "vehicle_trip",
+          referenceNo: `VT-${vehicleId}-${tripId}`, description: `أجرة نقل · ${vehicle.name} · ${trip.customer_name}`, paymentMethod: d.paymentMethod,
+          sourceType: "vehicle_trip", sourceId: tripId, sourceEvent: "vehicle_trip_fee", idempotencyKey,
+          customerName: trip.customer_name, customerPhone: trip.customer_phone ?? null,
+        }, financialActor(financeAuth));
+        return { financialTransactionId: financial.id, duplicate: false };
+      });
+      if (!result.duplicate)
+        await recordEnterpriseMutation(req, financeAuth, "vehicle_trip_collection_requested", "fleet_vehicle", vehicleId, `طلب قبض أجرة النقل T-${tripId}`, { tripId, financialTransactionId: result.financialTransactionId });
+      return json(result, result.duplicate ? 200 : 201);
+    }
+    // cancel: only a trip with no money collected or waiting.
+    const cancelled = await db.transaction(async (tx) => {
+      const [trip] = ((await tx.execute(sql`select id, vehicle_id, status from vehicle_trips where id = ${tripId} for update`)) as any)?.rows ?? [];
+      if (!trip || Number(trip.vehicle_id) !== vehicleId) throw new PartnerShareError("النقل غير موجود لهذه السيارة", 404);
+      if (trip.status === "cancelled") return { duplicate: true };
+      const cash = await vehicleTripCash(tx, tripId);
+      if (cash.collected > 0 || cash.pending > 0)
+        throw new PartnerShareError("أجرة هذا النقل مقبوضة أو بانتظار الموافقة؛ اعكسها أو ارفضها من الصندوق قبل الإلغاء", 409);
+      await tx.execute(sql`update vehicle_trips set status = 'cancelled', updated_at = now() where id = ${tripId}`);
+      return { duplicate: false };
+    });
+    if (!cancelled.duplicate)
+      await recordEnterpriseMutation(req, financeAuth, "vehicle_trip_cancelled", "fleet_vehicle", vehicleId, `إلغاء النقل T-${tripId}`, { tripId });
+    return json({ ok: true, duplicate: cancelled.duplicate });
+    } catch (cause) {
+      // Only this feature's own rule errors become a clear 4xx; the rest keeps its request ID at the boundary.
+      if (cause instanceof PartnerShareError)
+        return error(cause.message, cause.status, { code: cause.status === 404 ? "NOT_FOUND" : cause.status === 409 ? "CONFLICT" : "VALIDATION_ERROR" });
+      throw cause;
+    }
   }
 
   if (section === "vehicles" && parts[1] && parts[2] === "maintenance" && method === "POST") {
@@ -24531,12 +24722,20 @@ async function handleEnterpriseAdmin(
       `);
       // Kosha bookings (own columns) and service orders (booking-centre transport) both count.
       const planBookings=await readVehicleTransportPlans(db,{});
+      // Standalone trips from the vehicles page (0137) count like booking trips.
+      const standaloneByVehicle = new Map<number, { trips: number; fees: number }>();
+      const standaloneReady: any = await db.execute(sql`select to_regclass('public.vehicle_trips') is not null as ready`);
+      if (standaloneReady?.rows?.[0]?.ready === true) {
+        const totals: any = await db.execute(sql`select vehicle_id, count(*)::int as trips, coalesce(sum(fee), 0)::text as fees from vehicle_trips where status = 'active' group by vehicle_id`);
+        if (!Array.isArray(totals?.rows)) throw new Error("Invalid standalone trip totals response");
+        for (const row of totals.rows) standaloneByVehicle.set(Number(row.vehicle_id), { trips: Number(row.trips), fees: money(row.fees) });
+      }
       const statsById = new Map<number, { tripCount: number; transportationRevenue: number; vehicleExpenses: number }>((statsResult?.rows ?? []).map((row: any) => [Number(row.id), { tripCount: Number(row.trip_count ?? 0) + Number(row.service_trip_count ?? 0), transportationRevenue: money(money(row.transportation_revenue) + money(row.service_transportation_revenue)), vehicleExpenses: money(row.vehicle_expenses) }]));
       return json({
         data: rows.map((row) => ({
           ...row,
           purchasePrice: money(row.purchasePrice),
-          stats: addPlanVehicleStats(statsById.get(row.id) ?? { tripCount:0,transportationRevenue:0,vehicleExpenses:0 },planBookings,row.id),
+          stats: addPlanVehicleStats((() => { const base = statsById.get(row.id) ?? { tripCount:0,transportationRevenue:0,vehicleExpenses:0 }; const own = standaloneByVehicle.get(row.id); return own ? { ...base, tripCount: base.tripCount + own.trips, transportationRevenue: money(base.transportationRevenue + own.fees) } : base; })(),planBookings,row.id),
           latitude: row.latitude ? Number(row.latitude) : null,
           longitude: row.longitude ? Number(row.longitude) : null,
           lastLocationAt: enterpriseDate(row.lastLocationAt),

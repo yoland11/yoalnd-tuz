@@ -17,7 +17,8 @@ assert.ok(vehicleStart > 0 && vehicleEnd > vehicleStart);
 function visit(node) {
   if (ts.isPropertyAssignment(node)) {
     const name = node.name.getText(api), expression = node.initializer.getText(api);
-    if ((name === "tripProfit" && !expression.includes("value.profit") && node.getStart(api) > vehicleStart && node.getStart(api) < vehicleEnd) ||
+    // A standalone trip (0137) has no linked expenses: its profit is its fee, nothing is subtracted.
+    if ((name === "tripProfit" && !expression.includes("value.profit") && expression !== "fee" && node.getStart(api) > vehicleStart && node.getStart(api) < vehicleEnd) ||
         (name === "netProfit" && expression.includes("transportationRevenue") && expression.includes("vehicleExpenses"))) {
       expressions.push({ name, expression, line: api.getLineAndCharacterOfPosition(node.getStart(api)).line + 1 });
     }

@@ -22,10 +22,16 @@ export type BookingTransportPrintData = {
   /** The fee is part of the booking total (always for kosha bookings). */
   inTotal: boolean;
   note?: string | null;
+  /** A standalone trip («نقل مستقل») is not a booking: its own number label, title and fee note. */
+  numberLabel?: string;
+  title?: string;
+  feeNoteText?: string;
 };
 
 const printedAt = () => new Intl.DateTimeFormat("en-CA", { dateStyle: "short", timeStyle: "short" }).format(new Date());
-const feeNote = (data: BookingTransportPrintData) => (data.inTotal ? "ضمن مبلغ الحجز" : "للعلم — غير مضافة إلى مبلغ الحجز");
+const feeNote = (data: BookingTransportPrintData) => data.feeNoteText ?? (data.inTotal ? "ضمن مبلغ الحجز" : "للعلم — غير مضافة إلى مبلغ الحجز");
+const title = (data: BookingTransportPrintData) => data.title ?? "وصل خدمة النقل";
+const numberLabel = (data: BookingTransportPrintData) => data.numberLabel ?? "رقم الحجز";
 
 function thermalHtml(data: BookingTransportPrintData) {
   const kv = (label: string, value: unknown, num = false) => {
@@ -42,10 +48,10 @@ function thermalHtml(data: BookingTransportPrintData) {
   </style></head><body><div class="receipt transport-slip">
     <div class="r-head">
       <div class="r-company">AJN — مجموعة علي جان نهاد</div>
-      <div class="r-sub">وصل خدمة النقل</div>
+      <div class="r-sub">${esc(title(data))}</div>
     </div>
     <hr class="rule">
-    ${kv("رقم الحجز", data.bookingNumber, true)}
+    ${kv(numberLabel(data), data.bookingNumber, true)}
     ${kv("تاريخ الطباعة", printedAt(), true)}
     <hr class="rule dashed">
     ${kv("العميل", data.customerName)}
@@ -84,8 +90,8 @@ function a4Html(data: BookingTransportPrintData) {
     .num { font-variant-numeric: tabular-nums; }
   </style></head><body><main class="report-sheet">
     <header class="report-head">
-      <div><div class="report-company">مجموعة علي جان نهاد</div><div class="report-title">وصل خدمة النقل</div></div>
-      <div class="report-meta">رقم الحجز: <b class="num">${esc(data.bookingNumber)}</b><br>تاريخ الطباعة: <span class="num">${esc(printedAt())}</span></div>
+      <div><div class="report-company">مجموعة علي جان نهاد</div><div class="report-title">${esc(title(data))}</div></div>
+      <div class="report-meta">${esc(numberLabel(data))}: <b class="num">${esc(data.bookingNumber)}</b><br>تاريخ الطباعة: <span class="num">${esc(printedAt())}</span></div>
     </header>
     <section class="t-grid">
       ${field("العميل", data.customerName)}
@@ -100,7 +106,7 @@ function a4Html(data: BookingTransportPrintData) {
     <div class="t-fee-note">${esc(feeNote(data))}</div>
     ${clean(data.note) ? `<div class="t-note"><b>ملاحظات: </b>${esc(data.note)}</div>` : ""}
     <section class="t-sign"><div>توقيع السائق</div><div>توقيع المستلم</div></section>
-    <footer class="report-footer">مجموعة علي جان نهاد — وصل خدمة النقل للحجز ${esc(data.bookingNumber)}</footer>
+    <footer class="report-footer">مجموعة علي جان نهاد — ${esc(title(data))} ${esc(data.bookingNumber)}</footer>
   </main></body></html>`;
 }
 

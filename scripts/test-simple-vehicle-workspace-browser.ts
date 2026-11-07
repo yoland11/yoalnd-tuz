@@ -13,7 +13,7 @@ const esbuild = createRequire(realpathSync(resolve("lib/db/node_modules/tsx/pack
 const postcss = createRequire(realpathSync(resolve("node_modules/@tailwindcss/postcss/package.json")))("postcss");
 const tailwind = createRequire(resolve("package.json"))("@tailwindcss/postcss");
 const css = (await postcss([tailwind()]).process(await readFile("src/index.css", "utf8"), { from: resolve("src/index.css") })).css;
-const js = (await esbuild.build({ stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import {QueryClient,QueryClientProvider} from '@tanstack/react-query';import {Router} from 'wouter';import VehiclesPage from './src/views/admin/vehicles';const qc=new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false}}});window.fixtureRefresh=()=>qc.invalidateQueries({queryKey:['admin','vehicle',6]});createRoot(document.getElementById('root')).render(<Router><QueryClientProvider client={qc}><VehiclesPage/></QueryClientProvider></Router>);`, resolveDir: process.cwd(), loader: "tsx" }, bundle: true, write: false, outdir: ".next/simple-vehicle-fixture", platform: "browser", format: "iife", jsx: "automatic", loader: { ".css": "empty" }, define: { "process.env.NODE_ENV": '"development"' } })).outputFiles.find((file: any) => file.path.endsWith(".js"))!.text;
+const js = (await esbuild.build({ stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import {QueryClient,QueryClientProvider} from '@tanstack/react-query';import {Router} from 'wouter';import VehiclesPage from './src/views/admin/vehicles';import {PrintProvider} from './src/components/print/print-provider';const qc=new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false}}});window.fixtureRefresh=()=>qc.invalidateQueries({queryKey:['admin','vehicle',6]});createRoot(document.getElementById('root')).render(<Router><QueryClientProvider client={qc}><PrintProvider><VehiclesPage/></PrintProvider></QueryClientProvider></Router>);`, resolveDir: process.cwd(), loader: "tsx" }, bundle: true, write: false, outdir: ".next/simple-vehicle-fixture", platform: "browser", format: "iife", jsx: "automatic", loader: { ".css": "empty" }, define: { "process.env.NODE_ENV": '"development"' } })).outputFiles.find((file: any) => file.path.endsWith(".js"))!.text;
 const server = createServer((req, res) => {
   res.setHeader("Content-Type", req.url === "/fixture.js" ? "application/javascript" : req.url === "/fixture.css" ? "text/css" : "text/html; charset=utf-8");
   res.end(req.url === "/fixture.js" ? js : req.url === "/fixture.css" ? css : '<html lang="ar" dir="rtl"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/fixture.css"></head><body><main id="root"></main><script src="/fixture.js"></script></body></html>');
@@ -26,7 +26,7 @@ const vehicle = { id: 6, name: "سيارة النقل المشتركة", plateNu
 const monthParts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit" }).formatToParts(new Date());
 const thisMonth = `${monthParts.find(p => p.type === "year")!.value}-${monthParts.find(p => p.type === "month")!.value}`;
 const term = { startsMonth: thisMonth, partnerName: "أبو حسين", partnerPhone: null, shareBasisPoints: 5000 };
-const partner = { ready: true, thisMonth, canManage: true, partner: term, upcoming: null, terms: [term], months: [{ month: thisMonth, partnerName: "أبو حسين", shareBasisPoints: 5000, tripCount: 1, unallocatedTrips: 0, income: 15000, expenses: 1000, pendingExpenses: 0, net: 14000, partnerShare: 7000, companyShare: 7000 }], balance: { earned: 7000, paid: 0, pending: 0, remaining: 7000, available: 7000 }, payouts: [] };
+const partner = { ready: true, thisMonth, canManage: true, partner: term, upcoming: null, terms: [term], months: [{ month: thisMonth, partnerName: "أبو حسين", shareBasisPoints: 5000, tripCount: 1, unallocatedTrips: 0, income: 15000, expenses: 1000, pendingExpenses: 0, net: 14000, partnerShare: 7000, companyShare: 7000, paid: 0, pending: 0, remaining: 7000, payable: 7000 }], monthsReady: true, balance: { earned: 7000, paid: 0, pending: 0, remaining: 7000, available: 7000 }, payouts: [] };
 const right = { id: 5, category: "profit", direction: "credit", memberId: 2, memberName: "الشريك الأول", amount: "100000.00", status: "approved", closingId: 23, closingVersion: 7, paymentState: { totalAmount: "100000.00", approvedPaidAmount: "20000.00", remainingAmount: "80000.00", reservedAmount: "30000.00", availableAmount: "50000.00", payable: true, approvalStatus: "approved" } };
 try {
   for (const width of [1440, 390]) {
@@ -68,7 +68,7 @@ try {
     await page.getByRole("button", { name: "تسجيل صيانة", exact: true }).waitFor();
     // The simple split: balance, then a payout that keeps its reference across a failed send.
     await primary.getByRole("button", { name: "الشريك والأرباح", exact: true }).click();
-    await page.getByRole("heading", { name: "الأرباح شهر بشهر" }).waitFor();
+    await page.getByRole("heading", { name: "المستحقات شهر بشهر" }).waitFor();
     assert.equal(await page.getByRole("heading", { name: "أبو حسين" }).isVisible(), true);
     await page.getByRole("button", { name: "صرف حصة الشريك", exact: true }).click();
     const payout = page.getByRole("dialog");
@@ -80,6 +80,7 @@ try {
     await waitWrites(2);
     assert.deepEqual(writes[1], writes[0], "a retry resends the same amount and reference");
     assert.equal(writes[0].amount, 7000);
+    assert.equal(writes[0].month, thisMonth, "the payout names the month it pays");
     await payout.getByRole("button", { name: "إلغاء", exact: true }).click();
     // The older detailed accounting stays under «المزيد».
     await openMore();

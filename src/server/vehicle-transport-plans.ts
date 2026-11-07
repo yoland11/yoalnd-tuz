@@ -5,7 +5,7 @@ import {projectVehicleTransportBooking} from "./booking-transport-receipt";
 
 type Executor={execute:(query:any)=>Promise<any>};
 export type VehiclePlanBooking={source:"kosha"|"service";id:number;bookingNo:string;customerName:string;eventDate:string|null;total:number;paid:number;paymentStatus:string|null;plan:TransportPlanView};
-export type VehicleTransportFinancialTrip={source:"kosha"|"service";bookingId:number;bookingNo:string;customerName:string;eventDate:string|null;transportationFee:number|null;executedTransportationRevenue:number|null;paymentStatus:string|null;executionStatus:string;driverName:string|null;tripExpense:number;tripProfit:number|null;operations?:Array<{id:string;sequence:number;destination:string|null;driverName:string|null}>};
+export type VehicleTransportFinancialTrip={source:"kosha"|"service"|"trip";standalone?:{phone:string|null;origin:string|null;destination:string|null;notes:string|null;collected:number;pending:number;driverId:number|null};bookingId:number;bookingNo:string;customerName:string;eventDate:string|null;transportationFee:number|null;executedTransportationRevenue:number|null;paymentStatus:string|null;executionStatus:string;driverName:string|null;tripExpense:number;tripProfit:number|null;operations?:Array<{id:string;sequence:number;destination:string|null;driverName:string|null}>};
 /** Read the original JSON extension only. No trip table, writes or accounting.
  * The bound fails visibly rather than silently returning incomplete financials. */
 export async function readVehicleTransportPlans(executor:Executor,filters:{vehicleId?:number;from?:string|null;to?:string|null}):Promise<VehiclePlanBooking[]>{
