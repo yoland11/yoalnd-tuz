@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings, normalizeAppearanceSettings } from "@/lib/appearance";
+import { normalizeReceiptBrand, type ReceiptBrandFields } from "@/lib/receipt-brand";
 
 export type PublicSettings = {
   site_name: string;
@@ -20,6 +21,8 @@ export type PublicSettings = {
   logo_metadata?: Record<string, unknown>;
   image_settings: ImageSettings;
   appearance_settings: AppearanceSettings;
+  /** Company identity printed on branded receipts (name, tagline, address, phones, Instagram). */
+  receipt_brand: ReceiptBrandFields;
 };
 
 export type ImageSettings = {
@@ -54,6 +57,7 @@ export const DEFAULT_PUBLIC_SETTINGS: PublicSettings = {
   logo_url: "",
   logo_metadata: {},
   appearance_settings: DEFAULT_APPEARANCE_SETTINGS,
+  receipt_brand: normalizeReceiptBrand(undefined),
   image_settings: {
     productMaxSize: 1600,
     serviceMaxSize: 1600,
@@ -76,6 +80,7 @@ export async function fetchPublicSettings(): Promise<PublicSettings> {
     social_links: { ...DEFAULT_PUBLIC_SETTINGS.social_links, ...(data.social_links ?? {}) },
     image_settings: { ...DEFAULT_PUBLIC_SETTINGS.image_settings, ...(data.image_settings ?? {}) },
     appearance_settings: normalizeAppearanceSettings(data.appearance_settings),
+    receipt_brand: normalizeReceiptBrand(data.receipt_brand),
   };
 }
 
@@ -87,6 +92,7 @@ export function initialPublicSettings(): PublicSettings {
         ...window.__AJN_PUBLIC_SETTINGS__,
         image_settings: { ...DEFAULT_PUBLIC_SETTINGS.image_settings, ...(window.__AJN_PUBLIC_SETTINGS__.image_settings ?? {}) },
         appearance_settings: normalizeAppearanceSettings(window.__AJN_PUBLIC_SETTINGS__.appearance_settings),
+        receipt_brand: normalizeReceiptBrand(window.__AJN_PUBLIC_SETTINGS__.receipt_brand),
       }
     : DEFAULT_PUBLIC_SETTINGS;
 }

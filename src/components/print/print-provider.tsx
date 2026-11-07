@@ -2,10 +2,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { setCurrentReceiptBrand } from "@/lib/receipt-brand";
 import {
   PrintFormatDialog,
   type PrintJob,
@@ -36,6 +39,12 @@ export function PrintProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const close = useCallback(() => setJob(null), []);
+
+  // Branded receipts print the company identity from the site settings.
+  const { data: settings } = usePublicSettings();
+  useEffect(() => {
+    if (settings) setCurrentReceiptBrand({ ...settings.receipt_brand, logoUrl: logoSrc(settings) });
+  }, [settings]);
 
   const value = useMemo<PrintContextValue>(
     () => ({ print, close }),

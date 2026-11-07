@@ -12,7 +12,7 @@ const compiled = ts.transpileModule(readFileSync("src/lib/graduation-receipt-pri
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
 new Function("require", "module", "exports", "document", "XMLSerializer", compiled)(
-  (name) => name === "@/lib/money" ? { formatCurrency: String } : name === "jsbarcode" ? () => {} : require(name),
+  (name) => name === "@/lib/money" ? { formatCurrency: String } : name === "jsbarcode" ? () => {} : name === "@/lib/branded-receipt" || name === "@/lib/receipt-brand" ? {} : require(name),
   module, module.exports, { createElementNS: () => ({}) },
   class { serializeToString() { return '<svg xmlns="http://www.w3.org/2000/svg" width="230" height="34"><path d="M0 0h230v34H0z"/></svg>'; } },
 );

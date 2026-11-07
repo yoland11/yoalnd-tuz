@@ -130,7 +130,7 @@ assert.match(migration, /unique index[\s\S]*\("vehicle_id", "starts_month"\)/i);
 // Printed receipt and monthly report: only an executed payout reads as money paid.
 const { buildPartnerPayoutReceiptHtml, buildVehicleMonthReportHtml } = await import("../src/components/vehicle-print");
 const receipt = { id: 9, transactionNo: "FIN-2611-000010", date: "2026-11-06", month: "2026-10", amount: 50_000, status: "executed", paymentMethod: "cash", note: "<دفعة>", partnerName: "أبو حسين", partnerPhone: "07701234567", vehicleName: "كيا", plateNumber: "P-1", monthShare: 60_000, monthRemaining: 10_000 };
-for (const size of ["a4", "80mm"] as const) {
+for (const size of ["a5", "80mm"] as const) {
   const paid = buildPartnerPayoutReceiptHtml(receipt, size);
   assert.match(paid, /وصل صرف حصة شريك/);
   assert.match(paid, /50,000/);

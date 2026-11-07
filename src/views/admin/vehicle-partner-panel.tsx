@@ -80,7 +80,7 @@ export default function VehiclePartnerPanel({ vehicleId, vehicleName, plateNumbe
   const printReceipt = (payout: Payout) => {
     const data = receipt(payout);
     print({ documentLabel: `${payout.status === "executed" ? "وصل صرف" : "طلب صرف"} ${payout.transactionNo ?? `#${payout.id}`}`, formats: [
-      { id: "a4", buildHtml: () => buildPartnerPayoutReceiptHtml(data, "a4") },
+      { id: "a5", buildHtml: () => buildPartnerPayoutReceiptHtml(data, "a5"), imageName: `${payout.status === "executed" ? "وصل صرف" : "طلب صرف"} ${payout.transactionNo ?? payout.id}` },
       { id: "thermal80", buildHtml: () => buildPartnerPayoutReceiptHtml(data, "80mm") },
     ] });
   };

@@ -11,6 +11,9 @@ import { exportReport, type ReportColumn } from "@/lib/pdf-report";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { printWhenImagesReadyScript, thermalReceiptCss } from "./print-helpers";
 import { DateField } from "@/components/ui/date-field";
+import { usePrint } from "@/components/print/print-provider";
+import { buildBrandedReceiptHtml } from "@/lib/branded-receipt";
+import type { ReceiptBrand } from "@/lib/receipt-brand";
 import { useWarehouseOptions } from "@/components/warehouse-select";
 
 type Expense = { warehouseId?: number | null; id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; financialTransactionId?: number | null; createdByName: string; createdAt: string; costCategory?: string | null; koshaId?: number | null; bookingId?: number | null; constructionProjectId?: number | null; expenseType?: string | null; beneficiaryName?: string | null };
@@ -31,6 +34,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
   const qc = useQueryClient();
   const { toast } = useToast();
   const { data: settings } = usePublicSettings();
+  const { print } = usePrint();
   const [filters, setFilters] = useState({ from: "", to: "", categoryId: "", paymentMethod: "", search: "", user: "" });
   const [showCategories, setShowCategories] = useState(false);
   const [form, setForm] = useState<ExpenseForm | null>(() => startNew ? blankForm() : null);
@@ -170,9 +174,14 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
   }
   function printExpense(expense: Expense, format: ExpenseVoucherFormat) {
     void recordReportAudit("report_printed", `سند مصروف #${expense.id}`, format);
-    const win = window.open("", "_blank", format === "a4" ? "width=920,height=760" : "width=420,height=760");
+    if (format === "a5") {
+      // A5 opens the preview with «صورة واتساب»; the dialog adds the print script itself.
+      print({ documentLabel: `سند مصروف #${expense.id}`, formats: [{ id: "a5", buildHtml: () => buildExpenseVoucherHtml(expense, "a5", undefined, false), imageName: `سند مصروف ${expense.id}` }] });
+      return;
+    }
+    const win = window.open("", "_blank", "width=420,height=760");
     if (!win) { toast({ title: "اسمح بالنوافذ المنبثقة للطباعة", variant: "destructive" }); return; }
-    win.document.write(buildExpenseVoucherHtml(expense, format, logoSrc(settings), settings?.site_name || "مجموعة علي جان نهاد"));
+    win.document.write(buildExpenseVoucherHtml(expense, format));
     win.document.close();
     win.focus();
   }
@@ -266,7 +275,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
                               <Button variant="ghost" size="sm" aria-label={`طباعة مصروف ${expense.name || expense.id}`} className="h-8 gap-1 px-2 text-xs"><Printer className="h-3.5 w-3.5" /> طباعة</Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              <DropdownMenuItem onSelect={() => printExpense(expense, "a4")}>طباعة A4</DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => printExpense(expense, "a5")}>A5 + صورة واتساب</DropdownMenuItem>
                               <DropdownMenuItem onSelect={() => printExpense(expense, "80mm")}>طباعة 80mm</DropdownMenuItem>
                               <DropdownMenuItem onSelect={() => printExpense(expense, "58mm")}>طباعة 58mm</DropdownMenuItem>
                             </DropdownMenuContent>
@@ -407,48 +416,33 @@ function buildExpensesReceiptHtml(size: "58mm" | "80mm", expenses: Expense[], fi
     <div class="thanks">نظام AJN</div>
   </div>${printWhenImagesReadyScript()}</body></html>`;
 }
-type ExpenseVoucherFormat = "a4" | "58mm" | "80mm";
-/** One expense on paper. Only an executed expense reads as money paid out. */
-export function buildExpenseVoucherHtml(expense: Pick<Expense, "id" | "date" | "name" | "amount" | "categoryName" | "paymentMethod" | "notes" | "approvalStatus" | "createdByName" | "beneficiaryName">, format: ExpenseVoucherFormat, logo: string, company: string) {
+type ExpenseVoucherFormat = "a5" | "58mm" | "80mm";
+/** One expense on the shared branded receipt. Only an executed expense reads as money paid out. */
+export function buildExpenseVoucherHtml(expense: Pick<Expense, "id" | "date" | "name" | "amount" | "categoryName" | "paymentMethod" | "notes" | "approvalStatus" | "createdByName" | "beneficiaryName">, format: ExpenseVoucherFormat, brand?: ReceiptBrand, autoPrint = true) {
   const status = expense.approvalStatus ?? "executed";
   const statusLabel = EXPENSE_STATUS_LABELS[status] ?? status;
-  const printedAt = new Date().toLocaleString("ar-IQ-u-nu-latn");
-  const facts = ([
-    ["رقم المصروف", `#${expense.id}`],
-    ["التاريخ", expense.date],
-    ["العنوان", expense.name],
-    ["التصنيف", expense.categoryName],
-    ["طريقة الدفع", paymentLabel(expense.paymentMethod)],
-    ["المستفيد", expense.beneficiaryName],
-    ["الحالة", statusLabel],
-    ["بواسطة", expense.createdByName],
-    ["ملاحظات", expense.notes],
-  ] as [string, string | null | undefined][]).filter(([, value]) => value);
-  const notice = status === "executed" ? "" : `${statusLabel}: هذا السند لا يثبت صرف المبلغ`;
-  if (format === "a4") {
-    return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>سند مصروف #${expense.id}</title><style>@page{size:A4;margin:14mm}*{color:#000!important;box-shadow:none!important;box-sizing:border-box}body{font-family:Arial,sans-serif;background:#fff;margin:0}.head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:14px}img{width:64px;height:50px;object-fit:contain}h1{font-size:20px;margin:0}.meta{font-size:11px;text-align:left}.company{font-size:13px;font-weight:700}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #000;padding:7px 9px;text-align:right;vertical-align:top}th{width:28%;font-weight:700;background:#f3f3f3}.amount{display:flex;justify-content:space-between;align-items:center;border:2px solid #000;padding:10px 12px;margin:14px 0;font-size:18px;font-weight:800}.notice{border:2px dashed #000;padding:8px 12px;margin-bottom:14px;font-weight:800;text-align:center}.signs{display:flex;gap:24px;margin-top:48px}.signs div{flex:1;border-top:1px solid #000;padding-top:6px;text-align:center;font-size:12px}</style></head><body>
-      <div class="head"><div>${logo ? `<img src="${escapeHtml(logo)}" alt="">` : ""}<div class="company">${escapeHtml(company)}</div><h1>سند مصروف</h1></div><div class="meta">تاريخ الطباعة<br>${escapeHtml(printedAt)}</div></div>
-      ${notice ? `<div class="notice">${escapeHtml(notice)}</div>` : ""}
-      <table><tbody>${facts.map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>
-      <div class="amount"><span>المبلغ</span><span>${escapeHtml(formatCurrency(expense.amount))}</span></div>
-      <div class="signs"><div>المستلم</div><div>المحاسب</div><div>المدير</div></div>
-      ${printWhenImagesReadyScript()}</body></html>`;
-  }
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>سند مصروف #${expense.id} ${format}</title><style>${thermalReceiptCss(format)}
-    .kv .v { max-width: 65%; overflow-wrap: anywhere; }
-    .grand .num { white-space: nowrap; }
-    .notice { border: 1.5px dashed #000; padding: 3px 4px; margin: 4px 0; font-weight: 900; text-align: center; }
-    .sign { margin-top: 26px; border-top: 1.5px solid #000; padding-top: 3px; text-align: center; font-weight: 700; }
-  </style></head><body><div class="receipt">
-    <div class="r-head">${logo ? `<img class="r-logo" src="${escapeHtml(logo)}" alt="">` : ""}<div class="r-company">${escapeHtml(company)}</div><div class="r-sub">سند مصروف</div></div>
-    <hr class="rule">
-    ${notice ? `<div class="notice">${escapeHtml(notice)}</div>` : ""}
-    ${facts.map(([label, value]) => `<div class="kv"><span>${escapeHtml(label)}</span><span class="v">${escapeHtml(value)}</span></div>`).join("")}
-    <div class="kv"><span>تاريخ الطباعة</span><span class="v num">${escapeHtml(printedAt)}</span></div>
-    <div class="grand"><span>المبلغ</span><span class="num">${escapeHtml(formatCurrency(expense.amount))}</span></div>
-    <div class="sign">توقيع المستلم</div>
-    <div class="thanks">نظام AJN</div>
-  </div>${printWhenImagesReadyScript()}</body></html>`;
+  const executed = status === "executed";
+  const html = buildBrandedReceiptHtml({
+    documentTitle: `سند مصروف #${expense.id}`,
+    title: "سند مصروف",
+    icon: "cash-out",
+    state: executed ? null : { text: `${statusLabel}: هذا السند لا يثبت صرف المبلغ`, tone: status === "pending" ? "warn" : "danger" },
+    facts: [
+      { label: "رقم المصروف", value: `#${expense.id}`, icon: "receipt" },
+      { label: "التاريخ", value: expense.date, icon: "calendar" },
+      { label: "التصنيف", value: expense.categoryName, icon: "layers" },
+      { label: "طريقة الدفع", value: paymentLabel(expense.paymentMethod), icon: "wallet" },
+      { label: "المستفيد", value: expense.beneficiaryName, icon: "user" },
+      { label: "الحالة", value: statusLabel, icon: "note" },
+      { label: "بواسطة", value: expense.createdByName, icon: "id" },
+      { label: "العنوان", value: expense.name, icon: "note", wide: true },
+    ],
+    totals: [{ label: "المبلغ", value: formatCurrency(expense.amount), tone: executed ? "due" : "strong" }],
+    notes: expense.notes,
+    signatures: format === "a5" ? ["المستلم", "المحاسب", "المدير"] : ["توقيع المستلم"],
+    hideQr: true,
+  }, format, brand);
+  return autoPrint ? html.replace("</body>", `${printWhenImagesReadyScript()}</body>`) : html;
 }
 function escapeHtml(value: unknown) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char] as string));

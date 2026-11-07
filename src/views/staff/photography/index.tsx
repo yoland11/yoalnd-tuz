@@ -19,7 +19,8 @@ import { formatIraqiPhoneInput } from "@/lib/phone";
 import { processImageFile } from "@/lib/image-tools";
 import { apiErrorMessage, apiErrorStatus, fetchAdminMe, hasPerm, isSessionDecision, loginAdmin, logoutAdmin, type AdminMe } from "@/views/admin/_lib";
 import { SessionDevicesPanel } from "@/components/session-devices";
-import { thermalReceiptCss, printWhenImagesReadyScript } from "@/views/admin/print-helpers";
+import { usePrint } from "@/components/print/print-provider";
+import { buildBrandedReceiptHtml, type BrandedReceiptDoc } from "@/lib/branded-receipt";
 import { formatCurrency } from "@/lib/money";
 import { countOps, flushQueue, isQueued } from "../offline";
 import {
@@ -500,6 +501,7 @@ function QrScannerButton({ onScan }: { onScan: (value: string) => void }) {
 }
 
 function OrderDetailPage({ id, me }: { id: number; me: AdminMe }) {
+  const { print } = usePrint();
   const { toast } = useToast(); const manager = isPhotoManager(me); const [order, setOrder] = useState<PhotographyOrder | null>(null); const [collect, setCollect] = useState(""); const [note, setNote] = useState(""); const [busy, setBusy] = useState(false);
   const load = useCallback(() => photographyApi.order(id).then(setOrder).catch(() => setOrder(null)), [id]);
   useEffect(() => { load(); }, [load]);
@@ -530,37 +532,39 @@ function OrderDetailPage({ id, me }: { id: number; me: AdminMe }) {
   }
   function printReceipt() {
     if (!order) return; void photographyApi.markPrinted(order.id).catch(() => {});
-    const win = window.open("", "_blank", "width=420,height=720"); if (!win) return;
-    const date = new Date(order.createdAt).toLocaleDateString("ar-IQ-u-nu-latn");
-    const rows = [
-      ["المناسبة", order.event?.eventName || order.event?.groomName || "-"],
-      ["الزبون", order.customerName],
-      ["الهاتف", phoneDisplay(order.phone)],
-      ["النسخ", String(order.copies)],
-      ["سعر النسخة", `${photoMoney(order.unitPrice)} د.ع`],
-    ].map(([k, v]) => `<div class="kv"><span>${k}</span><span class="v num">${v ?? "-"}</span></div>`).join("");
-    const qrBlock = order.qr?.dataUrl ? `<div class="qr"><img src="${order.qr.dataUrl}" alt="QR"><div class="cap">امسح لمتابعة الطلب</div></div>` : "";
-    win.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>${order.orderNo}</title>
-      <style>${thermalReceiptCss("80mm")}</style></head><body>
-      <div class="receipt">
-        <div class="r-head">
-          <div class="r-company">مجموعة علي جان نهاد</div>
-          <div class="r-sub">وصل طلب تصوير</div>
-          <div class="r-sub num">${order.orderNo} · ${date}</div>
-        </div>
-        <hr class="rule">
-        ${rows}
-        <hr class="rule dashed">
-        <div class="totals">
-          <div class="grand"><span>الإجمالي</span><span class="num">${photoMoney(order.totalAmount)} د.ع</span></div>
-          <div class="payline"><span>المدفوع</span><span class="num">${photoMoney(order.paidAmount)} د.ع</span></div>
-          <div class="payline remain"><span>المتبقي</span><span class="num">${photoMoney(order.remainingAmount)} د.ع</span></div>
-        </div>
-        ${qrBlock}
-        <div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div>
-      </div>
-      ${printWhenImagesReadyScript()}
-    </body></html>`); win.document.close();
+    const doc: BrandedReceiptDoc = {
+      documentTitle: order.orderNo,
+      title: "وصل طلب تصوير",
+      icon: "camera",
+      facts: [
+        { label: "رقم الطلب", value: order.orderNo, icon: "receipt" },
+        { label: "التاريخ", value: new Date(order.createdAt).toLocaleDateString("ar-IQ-u-nu-latn"), icon: "calendar" },
+        { label: "الزبون", value: order.customerName, icon: "user" },
+        { label: "الهاتف", value: phoneDisplay(order.phone), icon: "phone" },
+        { label: "المناسبة", value: order.event?.eventName || order.event?.groomName || "-", icon: "camera", wide: true },
+      ],
+      items: {
+        columns: [
+          { key: "name", label: "البيان", role: "name" },
+          { key: "copies", label: "النسخ", role: "number" },
+          { key: "unit", label: "سعر النسخة", role: "number", wideOnly: true },
+          { key: "total", label: "الإجمالي", role: "total" },
+        ],
+        rows: [{ cells: { name: "طبع صور", copies: String(order.copies), unit: `${photoMoney(order.unitPrice)} د.ع`, total: `${photoMoney(order.totalAmount)} د.ع` } }],
+      },
+      totals: [
+        { label: "الإجمالي", value: `${photoMoney(order.totalAmount)} د.ع` },
+        { label: "المدفوع", value: `${photoMoney(order.paidAmount)} د.ع` },
+        { label: "المتبقي", value: `${photoMoney(order.remainingAmount)} د.ع`, tone: "due" },
+      ],
+      // Money waiting for approval is not in «المدفوع»; say so instead of hiding it.
+      totalsNote: order.pendingAmount > 0 ? `بانتظار الموافقة: ${photoMoney(order.pendingAmount)} د.ع — غير محسوب في المدفوع` : null,
+      qr: order.qr?.dataUrl ? { url: "", caption: "امسح لمتابعة الطلب", image: order.qr.dataUrl } : null,
+    };
+    print({ documentLabel: `وصل طلب تصوير ${order.orderNo}`, formats: [
+      { id: "a5", buildHtml: () => buildBrandedReceiptHtml(doc, "a5"), imageName: `وصل تصوير ${order.orderNo}` },
+      { id: "thermal80", buildHtml: () => buildBrandedReceiptHtml(doc, "80mm") },
+    ] });
   }
   if (!order) return <Loading />;
   const availableToCollect = Math.max(0, order.remainingAmount - order.pendingAmount);

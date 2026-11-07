@@ -12,6 +12,7 @@ import { THEME_PRESETS, matchPresetId, type ThemePreset } from "@/lib/theme-pres
 import { type SeasonalTheme, normalizeSeasonalThemes, findActiveSeason } from "@/lib/seasonal-themes";
 import { cn } from "@/lib/utils";
 import { DateField } from "@/components/ui/date-field";
+import { instagramHandle, normalizeReceiptBrand, type ReceiptBrandFields } from "@/lib/receipt-brand";
 
 type Settings = {
   siteName: string;
@@ -40,6 +41,8 @@ type Settings = {
   customThemes?: CustomTheme[];
   seasonalEnabled?: boolean;
   seasonalThemes?: SeasonalTheme[];
+  /** Identity printed on branded receipts (src/lib/receipt-brand.ts). */
+  receiptBrand: ReceiptBrandFields;
 };
 
 type CustomTheme = { id: string; label: string; colors: AppearanceSettings };
@@ -106,6 +109,7 @@ export default function SettingsPage() {
         : [],
       seasonalEnabled: data.seasonalEnabled === true,
       seasonalThemes: normalizeSeasonalThemes(data.seasonalThemes),
+      receiptBrand: normalizeReceiptBrand(data.receiptBrand),
     });
   }, [data, form]);
 
@@ -233,12 +237,20 @@ export default function SettingsPage() {
   const removeSeason = (id: string) => updateSeasons(seasonalThemes.filter((s) => s.id !== id));
 
   const ap = form.appearanceSettings;
+  const setReceiptBrand = (patch: Partial<ReceiptBrandFields>) => setForm(f => ({ ...f!, receiptBrand: { ...f!.receiptBrand, ...patch } }));
+  const receiptProblem = form.receiptBrand.instagram.trim() && !instagramHandle(form.receiptBrand.instagram)
+    ? "اكتب اسم حساب الإنستغرام فقط (حروف إنكليزية وأرقام و . و _) أو رابط الحساب"
+    : null;
   const headingFont = ap.headingFont ?? "Cairo";
   const bodyFont = ap.bodyFont ?? "Cairo";
   const baseFontPx = ap.baseFontPx ?? 16;
 
   return (
-    <form onSubmit={e => { e.preventDefault(); save.mutate(form); }} className="space-y-6 max-w-3xl">
+    <form onSubmit={e => {
+      e.preventDefault();
+      if (receiptProblem) { toast({ title: "راجع هوية الوصولات", description: receiptProblem, variant: "destructive" }); return; }
+      save.mutate({ ...form, receiptBrand: { ...form.receiptBrand, instagram: instagramHandle(form.receiptBrand.instagram), phones: form.receiptBrand.phones.map(p => p.trim()).filter(Boolean) } });
+    }} className="space-y-6 max-w-3xl">
       <div className="flex items-center justify-between sticky top-0 bg-background py-2 z-10">
         <h1 className="text-2xl font-bold text-foreground">إعدادات الموقع</h1>
         <Button type="submit" disabled={save.isPending || logoSaving} className="gap-2">
@@ -291,6 +303,31 @@ export default function SettingsPage() {
           <Button variant="ghost" type="button" onClick={() => setForm(f => ({ ...f!, phones: [...f!.phones, ""] }))}
             className="text-xs text-primary inline-flex items-center gap-1 hover:underline"><Plus className="w-3.5 h-3.5" /> إضافة رقم</Button>
         </div>
+      </Section>
+
+      <Section title="هوية الوصولات">
+        <p className="text-xs leading-6 text-muted-foreground">تظهر على كل الوصولات المطبوعة وصورة الواتساب: الاسم والجملة بالأعلى، والعنوان والأرقام بالأسفل، وباركود الإنستغرام جنب المبالغ. الشعار هو شعار الموقع أعلاه. الحقل الفارغ ما يطبع.</p>
+        <Field label="اسم الشركة على الوصل" value={form.receiptBrand.name} onChange={v => setReceiptBrand({ name: v })} />
+        <Field label="الجملة تحت الاسم" value={form.receiptBrand.tagline} onChange={v => setReceiptBrand({ tagline: v })} placeholder="لتنظيم كافة المناسبات" />
+        <Field label="العنوان على الوصل" value={form.receiptBrand.address} onChange={v => setReceiptBrand({ address: v })} />
+        <div className="space-y-2">
+          <label className="block text-xs text-muted-foreground">أرقام الهاتف على الوصل (حتى 4)</label>
+          {form.receiptBrand.phones.map((phone, index) => (
+            <div key={index} className="flex gap-2">
+              <input value={phone} inputMode="tel" dir="ltr" aria-label={`رقم الوصل ${index + 1}`}
+                onChange={e => setReceiptBrand({ phones: form.receiptBrand.phones.map((value, at) => at === index ? e.target.value : value) })}
+                className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-right focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+              <Button variant="ghost" type="button" aria-label="حذف الرقم" onClick={() => setReceiptBrand({ phones: form.receiptBrand.phones.filter((_, at) => at !== index) })}
+                className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg"><X className="w-4 h-4" /></Button>
+            </div>
+          ))}
+          {form.receiptBrand.phones.length < 4 ? (
+            <Button variant="ghost" type="button" onClick={() => setReceiptBrand({ phones: [...form.receiptBrand.phones, ""] })}
+              className="text-xs text-primary inline-flex items-center gap-1 hover:underline"><Plus className="w-3.5 h-3.5" /> إضافة رقم</Button>
+          ) : null}
+        </div>
+        <Field label="حساب الإنستغرام (للباركود)" value={form.receiptBrand.instagram} onChange={v => setReceiptBrand({ instagram: v })} placeholder="koshat_alijan" />
+        {receiptProblem ? <p className="text-xs font-semibold text-destructive" role="alert">{receiptProblem}</p> : null}
       </Section>
 
       <Section title="السوشيال ميديا">

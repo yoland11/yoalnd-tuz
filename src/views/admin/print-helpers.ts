@@ -1,4 +1,6 @@
 import { formatCurrency } from "@/lib/money";
+import { buildBrandedReceiptHtml, type BrandedReceiptDoc, type BrandedReceiptSize } from "@/lib/branded-receipt";
+import type { ReceiptBrand } from "@/lib/receipt-brand";
 import {
   buildSalesInvoiceThermalHtml,
   salesInvoiceThermalCss,
@@ -530,6 +532,61 @@ export function buildSalesInvoiceDocumentHtml(
   const body = `<main class="sales-sheet">${header}<hr class="rule"><div class="kv-grid">${metaRows}</div><table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>${totals}${qr}${footer}</main>`;
   const css = salesInvoiceSheetCss();
   return `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.invoiceNo)}</title><style>${css}</style></head><body>${body}</body></html>`;
+}
+
+/**
+ * The branded A5 sales invoice (+ WhatsApp image) on the shared receipt
+ * template. Same figures as the A4 invoice above; nothing is recalculated.
+ * The 80mm invoice stays in @workspace/print-template (shared with the Print Agent).
+ */
+export function buildSalesInvoiceBrandedHtml(input: SalesInvoiceReceiptInput, brand?: ReceiptBrand): string {
+  const issuedAt = input.issuedAt ? new Date(input.issuedAt) : null;
+  const dateTime = issuedAt && !Number.isNaN(issuedAt.getTime())
+    ? new Intl.DateTimeFormat("en-CA", { dateStyle: "medium", timeStyle: "short" }).format(issuedAt)
+    : String(input.issuedAt ?? "");
+  const method = ({ cash: "نقدي", card: "بطاقة", transfer: "تحويل", credit: "آجل" } as Record<string, string>)[String(input.paymentMethod ?? "").toLowerCase()] ?? input.paymentMethod;
+  const amount = (value: unknown) => Number(value ?? 0);
+  const optional = (label: string, value: unknown, sign = "") => (amount(value) > 0 ? [{ label, value: `${sign}${formatCurrency(amount(value))}` }] : []);
+  return buildBrandedReceiptHtml({
+    documentTitle: input.invoiceNo,
+    title: input.documentTitle?.trim() || "فاتورة مبيعات",
+    icon: "receipt",
+    facts: [
+      { label: "رقم الفاتورة", value: input.invoiceNo, icon: "receipt" },
+      { label: "التاريخ والوقت", value: dateTime, icon: "calendar" },
+      { label: "العميل", value: input.customerName, icon: "user" },
+      { label: "الهاتف", value: input.showCustomerPhone !== false ? input.customerPhone : null, icon: "phone" },
+      { label: "نوع الدفع", value: method, icon: "wallet" },
+      { label: "حالة الدفع", value: thermalPaymentStatusLabel(input.paymentStatus, input.paid, input.remaining), icon: "layers" },
+      { label: "الموظف", value: input.showEmployeeName !== false ? input.employeeName : null, icon: "id" },
+    ],
+    items: {
+      columns: [
+        { key: "i", label: "#", role: "index" },
+        { key: "name", label: "الصنف", role: "name" },
+        { key: "quantity", label: "الكمية", role: "number", wideOnly: true },
+        { key: "unitPrice", label: "سعر الوحدة", role: "number", wideOnly: true },
+        { key: "total", label: "الإجمالي", role: "total" },
+      ],
+      rows: input.items.map((item) => ({
+        cells: { name: item.productName, quantity: item.quantity, unitPrice: formatCurrency(item.unitPrice), total: formatCurrency(item.total) },
+        sub: item.unit || null,
+      })),
+    },
+    totals: [
+      ...(amount(input.subtotal) ? [{ label: "المجموع الفرعي", value: formatCurrency(amount(input.subtotal)) }] : []),
+      ...optional("الخصم", input.discount, "- "),
+      ...optional("الضريبة", input.tax),
+      ...optional("أجور توصيل العرض", input.offerDeliveryFee),
+      ...optional("أجور التوصيل", input.deliveryFee),
+      { label: "الإجمالي", value: formatCurrency(input.total) },
+      { label: "المدفوع", value: formatCurrency(input.paid) },
+      { label: "المتبقي", value: formatCurrency(input.remaining), tone: "due" },
+    ],
+    notes: input.notes,
+    qr: input.showQr !== false && input.qrDataUrl ? { url: "", caption: input.qrCaption || input.invoiceNo, image: input.qrDataUrl } : null,
+    footNote: input.footerText?.trim() || null,
+  }, "a5", brand);
 }
 
 export function openSalesInvoicePrintWindow(
@@ -1245,40 +1302,38 @@ export type ThermalReceiptInput = {
 };
 
 /**
- * Shared 80mm thermal receipt for NON-item documents (salary, loan repayment,
- * cash payment/collection/expense receipts, supplier payments…). It reuses the
- * canonical thermal stylesheet so every thermal output looks consistent, and it
- * is a real receipt layout — never a scaled-down A4 sheet. Read-only: it only
- * renders values passed in; it performs no financial calculation.
+ * Shared receipt for NON-item documents (salary, loan repayment, vehicle
+ * partnership payouts…) on the branded template (src/lib/branded-receipt.ts):
+ * 80mm/58mm thermal by default, or the branded A5 page. Read-only: it only
+ * renders values passed in; it performs no financial calculation. The company
+ * identity comes from the receipt settings (companyName/logoUrl/companyPhone
+ * are kept for older callers and no longer override it).
  */
-export function buildThermalReceiptHtml(input: ThermalReceiptInput): string {
-  const esc = escapePrintHtml;
-  const kv = (label: string, value: unknown, big = false) =>
-    value === undefined || value === null || String(value).trim() === ""
-      ? ""
-      : `<div class="receipt-info-row kv"><span>${esc(label)}</span><span class="v ${big ? "big" : ""}">${esc(value)}</span></div>`;
-  const meta =
-    kv("رقم الوصل", input.docNo, true) + kv("التاريخ والوقت", input.dateTime);
-  const rows = input.rows.map((row) => kv(row.label, row.value, row.strong)).join("");
-  const amount =
-    input.amountValue === undefined || input.amountValue === null
-      ? ""
-      : `<div class="grand"><span>${esc(input.amountLabel || "الإجمالي")}</span><span class="num">${esc(input.amountValue)}</span></div>`;
-  const extras = (input.extraLines || [])
-    .map(
-      (line) =>
-        `<div class="payline"><span>${esc(line.label)}</span><span class="num">${esc(line.value)}</span></div>`,
-    )
-    .join("");
-  const status = input.statusText
-    ? `<div class="payline remain"><span>الحالة</span><span>${esc(input.statusText)}</span></div>`
-    : "";
-  const notes = input.notes?.trim()
-    ? `<hr class="rule dashed"><div class="receipt-info-row kv"><span>ملاحظات</span><span class="v">${esc(input.notes.trim())}</span></div>`
-    : "";
-  const header = `<div class="r-head">${input.logoUrl ? `<img class="r-logo" src="${esc(input.logoUrl)}" alt="" onerror="this.remove()">` : ""}<div class="r-company">${esc(input.companyName?.trim() || AJN_COMPANY_NAME)}</div><div class="r-sub">لتنظيم المناسبات</div><div class="r-sub">${esc(input.title)}</div></div>`;
-  const footer = `<div class="thanks">${esc(input.footerText?.trim() || "وصل للقراءة والطباعة فقط")}</div>${input.companyPhone ? `<div class="r-sub center num">${esc(input.companyPhone)}</div>` : ""}`;
-  return `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.docNo || input.title)}</title><style>${salesInvoiceThermalCss("80mm")}</style></head><body><div class="receipt invoice-thermal-80">${header}<hr class="rule"><div class="meta-rows">${meta}${rows}</div><hr class="rule dashed">${amount}${extras}${status}${notes}${footer}</div></body></html>`;
+export function buildThermalReceiptHtml(input: ThermalReceiptInput, size: BrandedReceiptSize = "80mm", brand?: ReceiptBrand): string {
+  return buildBrandedReceiptHtml(thermalReceiptDoc(input, size), size, brand);
+}
+
+function thermalReceiptDoc(input: ThermalReceiptInput & { state?: BrandedReceiptDoc["state"]; signatures?: string[] }, size: BrandedReceiptSize): BrandedReceiptDoc {
+  return {
+    documentTitle: input.docNo || input.title,
+    title: input.title,
+    icon: "receipt",
+    state: input.state ?? null,
+    facts: [
+      { label: "رقم الوصل", value: input.docNo, icon: "receipt" },
+      { label: "التاريخ والوقت", value: input.dateTime, icon: "calendar" },
+      ...input.rows.map((row) => ({ label: row.label, value: row.value })),
+      { label: "الحالة", value: input.statusText },
+    ],
+    totals: [
+      ...(input.amountValue === undefined || input.amountValue === null ? [] : [{ label: input.amountLabel || "الإجمالي", value: input.amountValue, tone: "due" as const }]),
+      ...(input.extraLines ?? []).map((line) => ({ label: line.label, value: line.value })),
+    ],
+    notes: input.notes?.trim() || null,
+    footNote: input.footerText?.trim() || "وصل للقراءة والطباعة فقط",
+    signatures: size === "a5" ? input.signatures : undefined,
+    hideQr: true,
+  };
 }
 
 /** Shared A4 salary-slip layout. Keep salary printing out of view-local CSS. */
@@ -1317,40 +1372,39 @@ export type SimpleSalarySlipPrintInput = {
 };
 
 /**
- * Pure builder for a simple salary slip. A4 is the full professional slip; 80mm
- * is a compact thermal salary receipt. No auto-print script and no financial
- * mutation — every amount is passed in already computed.
+ * Pure builder for a simple salary slip on the branded receipt: A5 page ("a4"
+ * is accepted for older callers and prints the A5 page) or 80mm/58mm. No
+ * auto-print script and no financial mutation — every amount is passed in
+ * already computed. An unpaid slip says it is not proof of payment.
  */
 export function buildSimpleSalarySlipDocumentHtml(
   input: SimpleSalarySlipPrintInput,
-  paperSize: SalesInvoicePrintSize = "a4",
+  paperSize: SalesInvoicePrintSize | "a5" = "a5",
+  brand?: ReceiptBrand,
 ): string {
-  const status = input.paymentStatus === "paid" ? "تم الصرف" : "غير مصروف";
-  const paidAt = input.paidAt ? statementDate(input.paidAt) : "—";
-  if (paperSize === "58mm" || paperSize === "80mm") {
-    return buildThermalReceiptHtml({
-      title: "قسيمة راتب موظف",
-      docNo: input.month,
-      dateTime: englishDateTime.format(new Date()),
-      rows: [
-        { label: "الموظف", value: input.employeeName, strong: true },
-        { label: "القسم", value: input.department || "—" },
-        { label: "تاريخ الصرف", value: paidAt },
-        { label: "الراتب الأساسي", value: statementMoney(input.baseSalary) },
-        { label: "المكافأة", value: statementMoney(input.bonus) },
-        { label: "الخصم", value: statementMoney(input.deduction) },
-      ],
-      amountLabel: "صافي الراتب",
-      amountValue: statementMoney(input.netSalary),
-      statusText: status,
-      companyName: input.companyName,
-      logoUrl: input.logoUrl,
-      footerText: "قسيمة للقراءة والطباعة فقط · لا تنشئ أو تعدل أي حركة مالية",
-    });
-  }
-  const logo = input.logoUrl ? `<img class="report-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : "";
-  const money = (value: number) => statementEsc(statementMoney(value));
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>قسيمة راتب ${statementEsc(input.employeeName)}</title><style>${salarySlipCss()}</style></head><body><section class="report-sheet salary-slip"><header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || AJN_COMPANY_NAME)}</div><div class="report-title">قسيمة راتب موظف</div></div>${logo}<div class="report-meta">الشهر: <span class="num">${statementEsc(input.month)}</span><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header><div class="salary-person"><div class="field"><span>الموظف</span><b>${statementEsc(input.employeeName)}</b></div><div class="field"><span>القسم</span><b>${statementEsc(input.department || "—")}</b></div><div class="field"><span>الحالة</span><b>${status}</b></div><div class="field"><span>تاريخ الصرف</span><b class="num">${statementEsc(paidAt)}</b></div></div><table class="salary-components"><thead><tr><th>البيان</th><th>المبلغ</th></tr></thead><tbody><tr><td>الراتب الأساسي</td><td class="num">${money(input.baseSalary)}</td></tr><tr><td>المكافأة</td><td class="num">${money(input.bonus)}</td></tr><tr><td>الخصم</td><td class="num">${money(input.deduction)}</td></tr></tbody></table><div class="salary-net"><span>صافي الراتب</span><b class="num">${money(input.netSalary)}</b></div><div class="salary-signatures"><div>توقيع الموظف</div><div>اعتماد الإدارة</div></div><footer class="report-footer">قسيمة للقراءة والطباعة فقط · لا تنشئ أو تعدل أي حركة مالية</footer></section></body></html>`;
+  const paid = input.paymentStatus === "paid";
+  const size: BrandedReceiptSize = paperSize === "58mm" || paperSize === "80mm" ? paperSize : "a5";
+  return buildBrandedReceiptHtml(thermalReceiptDoc({
+    title: "قسيمة راتب موظف",
+    docNo: input.month,
+    dateTime: englishDateTime.format(new Date()),
+    rows: [
+      { label: "الموظف", value: input.employeeName, strong: true },
+      { label: "القسم", value: input.department || "—" },
+      { label: "تاريخ الصرف", value: input.paidAt ? statementDate(input.paidAt) : "—" },
+    ],
+    amountLabel: "صافي الراتب",
+    amountValue: statementMoney(input.netSalary),
+    extraLines: [
+      { label: "الراتب الأساسي", value: statementMoney(input.baseSalary) },
+      { label: "المكافأة", value: statementMoney(input.bonus) },
+      { label: "الخصم", value: statementMoney(input.deduction) },
+    ],
+    statusText: paid ? "تم الصرف" : "غير مصروف",
+    state: paid ? null : { text: "الراتب غير مصروف بعد — هذه القسيمة لا تثبت الصرف" },
+    signatures: ["توقيع الموظف", "اعتماد الإدارة"],
+    footerText: "قسيمة للقراءة والطباعة فقط · لا تنشئ أو تعدل أي حركة مالية",
+  }, size), size, brand);
 }
 
 /** A4 print window for the new simple salary module. */
@@ -1359,7 +1413,7 @@ export function openSimpleSalarySlipPrintWindow(input: SimpleSalarySlipPrintInpu
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
   popup.document.open();
   popup.document.write(
-    buildSimpleSalarySlipDocumentHtml(input, "a4").replace(
+    buildSimpleSalarySlipDocumentHtml(input, "a5").replace(
       "</body>",
       `${printWhenImagesReadyScript()}</body>`,
     ),
@@ -1409,34 +1463,38 @@ export function openCompanyLoanStatementPrintWindow(input: CompanyLoanPrintInput
 }
 
 /**
- * Pure builder for a single company-loan repayment receipt. A4 is the formal
- * receipt; 80mm is a compact thermal receipt. No auto-print script; read-only.
+ * Pure builder for a single company-loan repayment receipt on the branded
+ * receipt: A5 page ("a4" is accepted for older callers) or 80mm/58mm.
+ * No auto-print script; read-only. A repayment that is not executed says so.
  */
 export function buildCompanyLoanRepaymentReceiptDocumentHtml(
   input: Omit<CompanyLoanPrintInput, "repayments"> & { repayment: CompanyLoanPrintInput["repayments"][number] },
-  paperSize: SalesInvoicePrintSize = "a4",
+  paperSize: SalesInvoicePrintSize | "a5" = "a5",
+  brand?: ReceiptBrand,
 ): string {
   const r = input.repayment;
-  if (paperSize === "58mm" || paperSize === "80mm") {
-    return buildThermalReceiptHtml({
-      title: "وصل سداد قرض",
-      docNo: r.repaymentNo,
-      dateTime: statementDate(r.paymentDate),
-      rows: [
-        { label: "رقم القرض", value: input.loanNo },
-        { label: "المقرض", value: input.lenderName, strong: true },
-        { label: "طريقة الدفع", value: loanMethodAr[r.paymentMethod] || r.paymentMethod },
-        { label: "الصندوق / الحساب", value: r.cashAccount || "الصندوق الرئيسي" },
-        { label: "المتبقي بعد السداد", value: statementMoney(input.remainingAmount) },
-      ],
-      amountLabel: "المبلغ المسدد",
-      amountValue: statementMoney(r.amount),
-      statusText: loanStatusAr[r.status] || r.status,
-      notes: r.notes || undefined,
-      footerText: "وصل للقراءة والطباعة فقط — لا ينشئ ولا يعدل أي حركة مالية.",
-    });
-  }
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>وصل سداد ${statementEsc(r.repaymentNo)}</title><style>${sheetReportCss("a4")}.loan-receipt{max-width:180mm;margin:auto;border:1px solid #111;padding:12mm}.loan-receipt .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:16px 0}.loan-receipt .box{border:1px solid #111;padding:8px}.loan-receipt .box span{display:block;font-size:10px;color:#555}.loan-receipt .total{border:2px solid #111;padding:12px;display:flex;justify-content:space-between;font-size:17px;font-weight:800}.num{font-variant-numeric:tabular-nums}</style></head><body><main class="report-sheet loan-receipt"><header class="report-head"><div><div class="report-company">${AJN_COMPANY_NAME}</div><div class="report-title">وصل سداد قرض</div></div><div class="report-meta">رقم الوصل: <b class="num">${statementEsc(r.repaymentNo)}</b><br>رقم القرض: <b class="num">${statementEsc(input.loanNo)}</b></div></header><section class="grid"><div class="box"><span>المقرض</span><b>${statementEsc(input.lenderName)}</b></div><div class="box"><span>تاريخ السداد</span><b class="num">${statementEsc(statementDate(r.paymentDate))}</b></div><div class="box"><span>طريقة الدفع</span><b>${statementEsc(loanMethodAr[r.paymentMethod] || r.paymentMethod)}</b></div><div class="box"><span>الصندوق / الحساب</span><b>${statementEsc(r.cashAccount || "الصندوق الرئيسي")}</b></div><div class="box"><span>المتبقي بعد السداد</span><b class="num">${statementEsc(statementMoney(input.remainingAmount))}</b></div><div class="box"><span>الحالة</span><b>${statementEsc(loanStatusAr[r.status] || r.status)}</b></div></section><div class="total"><span>المبلغ المسدد</span><b class="num">${statementEsc(statementMoney(r.amount))}</b></div><section class="loan-note" style="margin-top:12px"><b>الملاحظة</b><br>${statementEsc(r.notes || "—")}</section><footer class="report-footer">وصل للقراءة والطباعة فقط — لا ينشئ ولا يعدل أي حركة مالية.</footer></main></body></html>`;
+  const size: BrandedReceiptSize = paperSize === "58mm" || paperSize === "80mm" ? paperSize : "a5";
+  const statusText = loanStatusAr[r.status] || r.status;
+  const done = r.status === "executed";
+  return buildBrandedReceiptHtml(thermalReceiptDoc({
+    title: "وصل سداد قرض",
+    docNo: r.repaymentNo,
+    dateTime: statementDate(r.paymentDate),
+    rows: [
+      { label: "رقم القرض", value: input.loanNo },
+      { label: "المقرض", value: input.lenderName, strong: true },
+      { label: "طريقة الدفع", value: loanMethodAr[r.paymentMethod] || r.paymentMethod },
+      { label: "الصندوق / الحساب", value: r.cashAccount || "الصندوق الرئيسي" },
+    ],
+    amountLabel: "المبلغ المسدد",
+    amountValue: statementMoney(r.amount),
+    extraLines: [{ label: "المتبقي بعد السداد", value: statementMoney(input.remainingAmount) }],
+    statusText,
+    state: done ? null : { text: `${statusText}: هذا الوصل لا يثبت السداد`, tone: r.status === "pending" ? "warn" : "danger" },
+    notes: r.notes || undefined,
+    signatures: ["توقيع المقرض", "توقيع المحاسب"],
+    footerText: "وصل للقراءة والطباعة فقط — لا ينشئ ولا يعدل أي حركة مالية.",
+  }, size), size, brand);
 }
 
 /** Printable receipt for one approved/executed company-loan repayment. */
@@ -1445,7 +1503,7 @@ export function openCompanyLoanRepaymentReceiptPrintWindow(input: Omit<CompanyLo
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
   popup.document.open();
   popup.document.write(
-    buildCompanyLoanRepaymentReceiptDocumentHtml(input, "a4").replace(
+    buildCompanyLoanRepaymentReceiptDocumentHtml(input, "a5").replace(
       "</body>",
       `${printWhenImagesReadyScript()}</body>`,
     ),

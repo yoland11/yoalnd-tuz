@@ -12,7 +12,7 @@ import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, fetchAdminMe, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { buildSalesInvoiceDocumentHtml, openSalesInvoicePrintWindow, printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss, type SalesInvoicePrintSize, type SalesInvoiceReceiptInput } from "./print-helpers";
+import { buildSalesInvoiceBrandedHtml, buildSalesInvoiceDocumentHtml, openSalesInvoicePrintWindow, printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss, type SalesInvoicePrintSize, type SalesInvoiceReceiptInput } from "./print-helpers";
 import { usePrint } from "@/components/print/print-provider";
 import { formatMoney } from "@/lib/money";
 import DeliverySection, { type DeliveryOutput } from "./delivery-section";
@@ -610,6 +610,7 @@ export default function POSPage() {
       documentLabel: `فاتورة #${lastInvoiceNo}`,
       defaultFormat: "thermal80",
       formats: [
+        { id: "a5", buildHtml: () => buildSalesInvoiceBrandedHtml(posReprintInput("a4")), imageName: `فاتورة ${lastInvoiceNo}` },
         { id: "a4", buildHtml: () => buildSalesInvoiceDocumentHtml(posReprintInput("a4")) },
         { id: "thermal80", buildHtml: () => buildSalesInvoiceDocumentHtml(posReprintInput("80mm")) },
       ],

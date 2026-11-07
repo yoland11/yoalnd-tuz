@@ -1,16 +1,16 @@
 import { Receipt } from "lucide-react";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { usePrint } from "@/components/print/print-provider";
-import { thermalReceiptCss } from "@/views/admin/print-helpers";
+import { buildBrandedReceiptHtml, type BrandedReceiptDoc, type BrandedReceiptSize } from "@/lib/branded-receipt";
+import type { ReceiptBrand } from "@/lib/receipt-brand";
 import { formatCurrency } from "@/lib/money";
 import { paymentLabels } from "@/lib/kosha-manager";
 
 /**
- * Dedicated Booking Center 80mm thermal RECEIPT (وصل حجز).
- *
- * This is a genuine vertical thermal layout built on the from-scratch
- * `thermalReceiptCss("80mm")` stylesheet — it is NOT the A4 wedding invoice
- * scaled/zoomed down, and shares no physical layout with it. It only RENDERS
+ * Booking Center RECEIPT (وصل حجز): the branded A5 page (+ WhatsApp image) and
+ * the 80mm thermal slip, both from the shared template in
+ * src/lib/branded-receipt.ts. It is NOT the A4 wedding invoice scaled/zoomed
+ * down, and shares no physical layout with it. It only RENDERS
  * authoritative Booking Center values passed in by the caller (total, paid,
  * remaining and the authoritative payment status); it performs no financial
  * calculation and no reconciliation.
@@ -56,58 +56,45 @@ export function displayDate(value: unknown) {
   return match ? `${match[3]} / ${match[2]} / ${match[1]}` : raw;
 }
 
-/**
- * Pure builder: the complete standalone 80mm booking-receipt document, WITHOUT
- * an auto-print script (the shared print dialog adds it at print time).
- */
-export function buildBookingThermalReceiptHtml(data: BookingThermalReceiptData): string {
-  const kv = (label: string, value: unknown, opts: { num?: boolean; big?: boolean } = {}) => {
-    const text = clean(value);
-    if (!text) return "";
-    const cls = `v${opts.num ? " num" : ""}${opts.big ? " big" : ""}`;
-    return `<div class="kv"><span>${esc(label)}</span><b class="${cls}">${esc(text)}</b></div>`;
-  };
+function bookingReceiptDoc(data: BookingThermalReceiptData): BrandedReceiptDoc {
   const statusLabel = data.paymentStatus ? paymentLabels[data.paymentStatus] ?? data.paymentStatus : "";
-  const printedAt = new Intl.DateTimeFormat("en-CA", { dateStyle: "short", timeStyle: "short" }).format(new Date());
+  return {
+    documentTitle: `وصل حجز ${data.bookingNumber}`,
+    title: "وصل حجز",
+    icon: "receipt",
+    // A booking still waiting for its price must not read as a settled amount.
+    state: data.paymentStatus === "pending_pricing" ? { text: "الحجز بانتظار التسعير — المبالغ غير نهائية" } : null,
+    facts: [
+      { label: "رقم الحجز", value: data.bookingNumber, icon: "receipt" },
+      { label: "رقم العقد", value: data.contractNumber, icon: "hash" },
+      { label: "العميل", value: data.customerName, icon: "user" },
+      { label: "الهاتف", value: data.phone, icon: "phone" },
+      { label: "الخدمة", value: data.service, icon: "layers" },
+      { label: "تاريخ المناسبة", value: displayDate(data.eventDate), icon: "calendar" },
+      { label: "وقت المناسبة", value: data.eventTime, icon: "clock" },
+      { label: "حالة الدفع", value: statusLabel, icon: "wallet" },
+      { label: "الموقع", value: data.location, icon: "pin", wide: true },
+    ],
+    totals: [
+      { label: "الإجمالي", value: formatCurrency(data.total) },
+      { label: "المدفوع", value: formatCurrency(data.paid) },
+      { label: "المتبقي", value: formatCurrency(data.remaining), tone: "due" },
+    ],
+    notes: data.notes,
+  };
+}
 
-  const body = `<div class="receipt booking-receipt">
-    <div class="r-head">
-      <div class="r-company">AJN — مجموعة علي جان نهاد</div>
-      <div class="r-sub">لتنظيم المناسبات</div>
-      <div class="r-sub">وصل حجز</div>
-    </div>
-    <hr class="rule">
-    ${kv("رقم الحجز", data.bookingNumber, { num: true, big: true })}
-    ${kv("رقم العقد", data.contractNumber, { num: true })}
-    ${kv("تاريخ الطباعة", printedAt, { num: true })}
-    <hr class="rule dashed">
-    ${kv("العميل", data.customerName)}
-    ${kv("الهاتف", data.phone, { num: true })}
-    <hr class="rule dashed">
-    ${kv("الخدمة", data.service)}
-    ${kv("تاريخ المناسبة", displayDate(data.eventDate), { num: true })}
-    ${kv("وقت المناسبة", data.eventTime, { num: true })}
-    ${kv("الموقع", data.location)}
-    <hr class="rule">
-    <div class="grand"><span>الإجمالي</span><span class="num">${esc(formatCurrency(data.total))}</span></div>
-    <div class="payline"><span>المدفوع</span><span class="num">${esc(formatCurrency(data.paid))}</span></div>
-    <div class="payline remain"><span>المتبقي</span><span class="num">${esc(formatCurrency(data.remaining))}</span></div>
-    ${statusLabel ? `<div class="kv"><span>حالة الدفع</span><b class="v">${esc(statusLabel)}</b></div>` : ""}
-    ${clean(data.notes) ? `<hr class="rule dashed"><div class="kv note"><span>ملاحظات</span><b class="v">${esc(data.notes)}</b></div>` : ""}
-    <hr class="rule dashed">
-    <div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div>
-    ${clean(data.companyPhone) ? `<div class="r-sub center num">${esc(data.companyPhone)}</div>` : ""}
-  </div>`;
+/**
+ * Pure builder: the complete standalone booking receipt — the branded A5 page or
+ * the 80mm thermal slip — WITHOUT an auto-print script (the print dialog adds it).
+ */
+export function buildBookingReceiptHtml(data: BookingThermalReceiptData, size: BrandedReceiptSize, brand?: ReceiptBrand): string {
+  return buildBrandedReceiptHtml(bookingReceiptDoc(data), size, brand);
+}
 
-  const extraCss = `
-    .booking-receipt .kv { align-items: baseline; }
-    .booking-receipt .kv .v { max-width: 62%; overflow-wrap: anywhere; }
-    .booking-receipt .kv.note { display: block; }
-    .booking-receipt .kv.note .v { display: block; max-width: 100%; text-align: right; margin-top: 2px; }
-    .booking-receipt .grand span:first-child,
-    .booking-receipt .payline span:first-child { font-weight: 800; }
-  `;
-  return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>وصل حجز ${esc(data.bookingNumber)}</title><style>${thermalReceiptCss("80mm")}${extraCss}</style></head><body>${body}</body></html>`;
+/** The 80mm booking receipt (kept for existing callers). */
+export function buildBookingThermalReceiptHtml(data: BookingThermalReceiptData, brand?: ReceiptBrand): string {
+  return buildBookingReceiptHtml(data, "80mm", brand);
 }
 
 /**
@@ -116,13 +103,16 @@ export function buildBookingThermalReceiptHtml(data: BookingThermalReceiptData):
  * The A4 invoice remains its own separate action, so the two paper formats are
  * both available and the A4 output is completely unaffected.
  */
-/** Opens the shared print dialog with the single 80mm booking receipt format. */
+/** Opens the shared print dialog with the A5 (+ WhatsApp image) and 80mm booking receipt. */
 export function useBookingThermalReceiptPrint() {
   const { print } = usePrint();
   return (data: BookingThermalReceiptData) =>
     print({
       documentLabel: `وصل حجز ${data.bookingNumber}`,
-      formats: [{ id: "thermal80", buildHtml: () => buildBookingThermalReceiptHtml(data) }],
+      formats: [
+        { id: "a5", buildHtml: () => buildBookingReceiptHtml(data, "a5"), imageName: `وصل حجز ${data.bookingNumber}` },
+        { id: "thermal80", buildHtml: () => buildBookingReceiptHtml(data, "80mm") },
+      ],
     });
 }
 
@@ -146,7 +136,7 @@ export function BookingThermalReceiptAction({
       className={className}
       onClick={() => printReceipt(data)}
     >
-      <Receipt className="h-4 w-4" /> وصل حراري 80mm
+      <Receipt className="h-4 w-4" /> وصل الحجز
     </Button>
   );
 }

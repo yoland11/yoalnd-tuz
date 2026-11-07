@@ -232,7 +232,7 @@ try {
     assert.ok(writes.every(write=>/^[a-zA-Z0-9_-]{8,80}$/.test(write.payload.requestId)), "all UI request keys satisfy the original server contract");assert.deepEqual(errors,[]);
     // Render the actual receipt/contract HTML, independently of UI screenshots.
     await page.setViewportSize({width:303,height:900});
-    await page.setContent(equipmentRentalPrintHtml(row,{site_name:"AJN",phone:"07700000000"},"80mm","receipt"));
+    await page.setContent(equipmentRentalPrintHtml(row,"80mm","receipt"));
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),"80mm receipt has no horizontal clipping");
     if(width===390) { await page.screenshot({path:resolve(artifacts,"rental-receipt-80mm.png"),fullPage:true}); await page.pdf({path:resolve(artifacts,"rental-receipt-80mm.pdf"),width:"80mm",printBackground:true}); }
     await context.close();

@@ -23,6 +23,7 @@ import DeliverySection, { type DeliveryInitialValue, type DeliveryOutput } from 
 import { printDeliveryLabel } from "./delivery-label";
 import {
   buildSalesInvoiceDocumentHtml,
+  buildSalesInvoiceBrandedHtml,
   createSalesInvoiceThermalPdfElement,
   downloadDataUrl,
   openQrPrintWindow,
@@ -2352,6 +2353,11 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
       documentLabel: `فاتورة #${invoice.invoiceNo}`,
       defaultFormat: printSize === "a4" ? "a4" : "thermal80",
       formats: [
+        {
+          id: "a5",
+          buildHtml: () => buildSalesInvoiceBrandedHtml(buildInvoicePrintInput("a4")),
+          imageName: `فاتورة ${invoice.invoiceNo}`,
+        },
         {
           id: "a4",
           buildHtml: () => buildSalesInvoiceDocumentHtml(buildInvoicePrintInput("a4")),

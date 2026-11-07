@@ -1,6 +1,8 @@
 /**
  * Professional graduation receipts for the representatives portal:
- * «وصل وكشف حساب الطالب» and «وصل استلام دفعة», in 80mm thermal or A5.
+ * «وصل وكشف حساب الطالب» and «وصل استلام دفعة», in 80mm thermal or A5 — both on
+ * the shared branded receipt (src/lib/branded-receipt.ts). Tailor sheets keep
+ * their own workshop layout below.
  *
  * Read-only projections of values the server already computed (total, paid,
  * remaining, receipt numbers); nothing is recalculated here. The print window
@@ -10,6 +12,8 @@
 import JsBarcode from "jsbarcode";
 import QRCode from "qrcode";
 import { formatCurrency } from "@/lib/money";
+import { brandedReceiptBody, buildBrandedReceiptHtml, type BrandedReceiptDoc, type BrandedReceiptSize, type ReceiptFact } from "@/lib/branded-receipt";
+import { currentReceiptBrand, type ReceiptBrand as BrandIdentity } from "@/lib/receipt-brand";
 
 export type ReceiptFormat = "80mm" | "a5";
 
@@ -308,57 +312,93 @@ export type StudentReceiptInput = {
   printedBy?: string;
 };
 
+/** The graduation tagline replaces the group tagline on graduation receipts. */
+const GRADUATION_TAGLINE = "تجهيزات التخرج — أرواب · أوشحة · قبعات";
+
+function graduationBrand(brand: ReceiptBrand): BrandIdentity {
+  const base = currentReceiptBrand();
+  return { ...base, tagline: GRADUATION_TAGLINE, logoUrl: base.logoUrl || brand.logo };
+}
+
+const brandedSize = (format: ReceiptFormat): BrandedReceiptSize => (format === "a5" ? "a5" : "80mm");
+
+function studentFacts(student: ReceiptStudent, group: ReceiptGroup): ReceiptFact[] {
+  const place = [group.university, group.college, group.department].filter(Boolean).join(" — ");
+  return [
+    { label: "الطالب", value: student.name, icon: "user" },
+    { label: "كود الطالب", value: student.studentCode, icon: "id" },
+    { label: "الهاتف", value: student.phone, icon: "phone" },
+    { label: "المجموعة", value: group.title, icon: "graduation" },
+    { label: "الوجبة", value: group.batchLabel, icon: "layers" },
+    { label: "ممثل الدفعة", value: group.representativeName, icon: "user" },
+    { label: "الجهة", value: place, icon: "pin", wide: true },
+  ];
+}
+
+function studentReceiptDoc(input: StudentReceiptInput, barcode: string): BrandedReceiptDoc {
+  const { student, group, totals } = input;
+  const receiptNo = student.receiptNo || student.orderNo || student.studentCode;
+  const details = input.details.filter((line) => line.value && line.value !== "—");
+  return {
+    documentTitle: `وصل ${student.name}`,
+    title: "وصل وكشف حساب الطالب",
+    icon: "graduation",
+    copyLabel: `نسخة الطالب${input.printedBy ? ` · طُبع بواسطة ${input.printedBy}` : ""}`,
+    facts: [
+      { label: "رقم الوصل", value: receiptNo, icon: "receipt" },
+      { label: "تاريخ الطباعة", value: nowText(), icon: "calendar" },
+      ...studentFacts(student, group),
+      { label: "حالة الدفع", value: stamp(totals).label, icon: "wallet" },
+    ],
+    sections: details.length ? [{ title: "تفاصيل التجهيز", facts: details.map((line) => ({ label: line.label, value: line.value })) }] : [],
+    items: {
+      title: "الدفعات المعتمدة",
+      columns: [
+        { key: "i", label: "#", role: "index" },
+        { key: "date", label: "التاريخ", role: "name" },
+        { key: "receiptNo", label: "رقم الوصل", role: "number", wideOnly: true },
+        { key: "method", label: "الطريقة", wideOnly: true },
+        { key: "amount", label: "المبلغ", role: "total" },
+      ],
+      rows: input.payments.map((payment) => ({ cells: { date: payment.date, receiptNo: payment.receiptNo, method: payment.method, amount: money(payment.amount) } })),
+      empty: "لا توجد دفعات معتمدة بعد",
+    },
+    totals: [
+      { label: "إجمالي التجهيز", value: money(totals.total) },
+      { label: "المدفوع", value: money(totals.paid) },
+      { label: "المتبقي", value: money(totals.remaining), tone: "due" },
+    ],
+    qr: student.trackingUrl ? { url: student.trackingUrl, caption: "تابع طلبك ودفعاتك" } : null,
+    hideQr: !student.trackingUrl && !barcode,
+    barcode: barcode ? { svg: barcode, code: student.studentCode } : null,
+    signatures: ["توقيع ممثل الدفعة", "توقيع الطالب"],
+    footNote: "المبالغ أعلاه معتمدة من الإدارة؛ الدفعات بانتظار الاعتماد لا تظهر في هذا الوصل.",
+  };
+}
+
 export async function printStudentReceipt(popup: Window, input: StudentReceiptInput) {
-  writeDocument(popup, `وصل ${input.student.name}`, input.format, await studentReceiptBody(input));
+  writeBrandedDocument(popup, buildBrandedReceiptHtml(studentReceiptDoc(input, barcodeSvg(input.student.studentCode)), brandedSize(input.format), graduationBrand(input.brand)));
 }
 
 /**
- * The same receipt as a detached element for PDF export: styles are scoped to
- * the element, so adding it to the page never restyles the page itself.
+ * The same receipt as a detached element for PDF export: the branded receipt
+ * styles are scoped to its root, so adding it to the page never restyles the page.
  */
 export async function studentReceiptElement(input: StudentReceiptInput): Promise<HTMLElement> {
   const element = document.createElement("div");
   element.className = "ajn-receipt-pdf";
   element.dir = "rtl";
-  element.style.width = input.format === "80mm" ? "80mm" : "148mm";
+  element.style.width = input.format === "80mm" ? "72mm" : "148mm";
   element.style.background = "#fff";
-  element.style.padding = input.format === "80mm" ? "0" : "8mm";
-  element.innerHTML = `<style>${scopedReceiptCss(input.format, ".ajn-receipt-pdf")}</style><main class="doc">${await studentReceiptBody(input)}</main>`;
+  element.innerHTML = brandedReceiptBody(studentReceiptDoc(input, barcodeSvg(input.student.studentCode)), brandedSize(input.format), graduationBrand(input.brand));
   return element;
 }
 
-async function studentReceiptBody(input: StudentReceiptInput) {
-  const { format, brand, student, group, totals } = input;
-  const [qr, barcode] = await Promise.all([qrDataUrl(student.trackingUrl || ""), Promise.resolve(barcodeSvg(student.studentCode))]);
-  const state = stamp(totals);
-  const meta = `<div>رقم الوصل: <b class="num">${escapeReceipt(student.receiptNo || student.orderNo || student.studentCode)}</b></div><div>تاريخ الطباعة: <span class="num">${escapeReceipt(nowText())}</span></div>`;
-  const details = input.details.filter((line) => line.value && line.value !== "—");
-  const rows = input.payments.length
-    ? input.payments.map((payment, index) => `<tr><td class="num">${index + 1}</td><td class="num">${escapeReceipt(payment.date)}</td>${format === "a5" ? `<td class="num">${escapeReceipt(payment.receiptNo)}</td><td>${escapeReceipt(payment.method)}</td>` : ""}<td class="amount num">${escapeReceipt(money(payment.amount))}</td></tr>`).join("")
-    : `<tr><td colspan="${format === "a5" ? 5 : 3}" class="empty">لا توجد دفعات معتمدة بعد</td></tr>`;
-  const body = `${headerHtml(brand, format, meta)}
-    <div class="title">وصل وكشف حساب الطالب</div>
-    ${format === "80mm" ? `<div class="docno"><span>رقم: <b class="num">${escapeReceipt(student.receiptNo || student.orderNo || student.studentCode)}</b></span><span class="num">${escapeReceipt(nowText())}</span></div>` : ""}
-    ${studentCard(student, group, format)}
-    ${details.length ? `<section class="card"><h3>تفاصيل التجهيز</h3><div class="grid">${details.map((line) => `<div class="kv"><span>${escapeReceipt(line.label)}</span><span>${escapeReceipt(line.value)}</span></div>`).join("")}</div></section>` : ""}
-    <section class="card">
-      <h3>الدفعات المعتمدة</h3>
-      <table><thead><tr><th>#</th><th>التاريخ</th>${format === "a5" ? "<th>رقم الوصل</th><th>الطريقة</th>" : ""}<th class="amount">المبلغ</th></tr></thead><tbody>${rows}</tbody></table>
-    </section>
-    <section class="totals">
-      <div class="kv"><span>إجمالي التجهيز</span><span class="num">${escapeReceipt(money(totals.total))}</span></div>
-      <div class="kv"><span>المدفوع</span><span class="num">${escapeReceipt(money(totals.paid))}</span></div>
-      <div class="grand"><span>المتبقي</span><span class="num">${escapeReceipt(money(totals.remaining))}</span></div>
-      <div style="text-align:center"><span class="stamp ${state.tone}">${state.label}</span></div>
-    </section>
-    ${verifyBlock(qr, barcode, student.studentCode)}
-    <div class="signs"><div>توقيع ممثل الدفعة</div><div>توقيع الطالب</div></div>
-    <footer class="foot">
-      <div class="thanks">شكراً لاختياركم ${escapeReceipt(brand.company)}</div>
-      <div>المبالغ أعلاه معتمدة من الإدارة؛ الدفعات بانتظار الاعتماد لا تظهر في هذا الوصل.</div>
-      <div class="copy">نسخة الطالب${input.printedBy ? ` · طُبع بواسطة ${escapeReceipt(input.printedBy)}` : ""}</div>
-    </footer>`;
-  return body;
+/** Writes a branded receipt into the already-open popup and prints once images and fonts are ready. */
+function writeBrandedDocument(popup: Window, html: string) {
+  popup.document.open();
+  popup.document.write(html.replace("</body>", `${printScript(false)}</body>`));
+  popup.document.close();
 }
 
 /** «وصل استلام دفعة» for one approved payment, from the payment's own snapshot. */
@@ -371,32 +411,35 @@ export async function printPaymentReceipt(popup: Window, input: {
   totals?: ReceiptTotals | null;
   printedBy?: string;
 }) {
-  const { format, brand, student, group, payment, totals } = input;
-  const [qr, barcode] = await Promise.all([qrDataUrl(student.trackingUrl || ""), Promise.resolve(barcodeSvg(student.studentCode))]);
-  const meta = `<div>رقم الوصل: <b class="num">${escapeReceipt(payment.receiptNo)}</b></div><div>تاريخ الدفعة: <span class="num">${escapeReceipt(payment.date)}</span></div>`;
-  const body = `${headerHtml(brand, format, meta)}
-    <div class="title">وصل استلام دفعة</div>
-    ${format === "80mm" ? `<div class="docno"><span>رقم: <b class="num">${escapeReceipt(payment.receiptNo)}</b></span><span class="num">${escapeReceipt(payment.date)}</span></div>` : ""}
-    ${studentCard(student, group, format)}
-    <section class="card">
-      <h3>تفاصيل الدفعة</h3>
-      <div class="kv"><span>طريقة الدفع</span><span>${escapeReceipt(payment.method)}</span></div>
-      ${payment.receivedBy ? `<div class="kv"><span>المستلم</span><span>${escapeReceipt(payment.receivedBy)}</span></div>` : ""}
-      ${payment.notes ? `<div class="kv"><span>ملاحظات</span><span>${escapeReceipt(payment.notes)}</span></div>` : ""}
-      <div class="grand"><span>المبلغ المستلم</span><span class="num">${escapeReceipt(money(payment.amount))}</span></div>
-    </section>
-    ${totals ? `<section class="totals">
-      <div class="kv"><span>إجمالي التجهيز</span><span class="num">${escapeReceipt(money(totals.total))}</span></div>
-      <div class="kv"><span>مجموع المدفوع حتى الآن</span><span class="num">${escapeReceipt(money(totals.paid))}</span></div>
-      <div class="kv"><span>المتبقي حالياً</span><span class="num">${escapeReceipt(money(totals.remaining))}</span></div>
-    </section>` : ""}
-    ${verifyBlock(qr, barcode, student.studentCode)}
-    <div class="signs"><div>توقيع المستلم</div><div>توقيع الطالب</div></div>
-    <footer class="foot">
-      <div class="thanks">شكراً لاختياركم ${escapeReceipt(brand.company)}</div>
-      <div class="copy">نسخة الطالب${input.printedBy ? ` · طُبع بواسطة ${escapeReceipt(input.printedBy)}` : ""}</div>
-    </footer>`;
-  writeDocument(popup, payment.receiptNo || "وصل دفعة", format, body);
+  const { student, group, payment, totals } = input;
+  const barcode = barcodeSvg(student.studentCode);
+  const doc: BrandedReceiptDoc = {
+    documentTitle: payment.receiptNo || "وصل دفعة",
+    title: "وصل استلام دفعة",
+    icon: "cash-in",
+    copyLabel: `نسخة الطالب${input.printedBy ? ` · طُبع بواسطة ${input.printedBy}` : ""}`,
+    facts: [
+      { label: "رقم الوصل", value: payment.receiptNo, icon: "receipt" },
+      { label: "تاريخ الدفعة", value: payment.date, icon: "calendar" },
+      ...studentFacts(student, group),
+      { label: "طريقة الدفع", value: payment.method, icon: "wallet" },
+      { label: "المستلم", value: payment.receivedBy, icon: "id" },
+    ],
+    totals: [
+      { label: "المبلغ المستلم", value: money(payment.amount), tone: totals ? "strong" : "due" },
+      ...(totals ? [
+        { label: "إجمالي التجهيز", value: money(totals.total) },
+        { label: "مجموع المدفوع حتى الآن", value: money(totals.paid) },
+        { label: "المتبقي حالياً", value: money(totals.remaining), tone: "due" as const },
+      ] : []),
+    ],
+    notes: payment.notes || null,
+    qr: student.trackingUrl ? { url: student.trackingUrl, caption: "تابع طلبك ودفعاتك" } : null,
+    hideQr: !student.trackingUrl && !barcode,
+    barcode: barcode ? { svg: barcode, code: student.studentCode } : null,
+    signatures: ["توقيع المستلم", "توقيع الطالب"],
+  };
+  writeBrandedDocument(popup, buildBrandedReceiptHtml(doc, brandedSize(input.format), graduationBrand(input.brand)));
 }
 
 // ------------------------------------------------------------------ tailor sheets

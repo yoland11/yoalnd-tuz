@@ -23,6 +23,8 @@ import {
   sheetReportCss,
 } from "./print-helpers";
 import { DateField } from "@/components/ui/date-field";
+import { usePrint, type PrintJob } from "@/components/print/print-provider";
+import { buildBrandedReceiptHtml, type BrandedReceiptDoc } from "@/lib/branded-receipt";
 
 type Tab = "receipts" | "payments" | "expenses" | "categories" | "statement" | "receivables" | "pnl";
 
@@ -119,6 +121,7 @@ export default function AccountingPage() {
 
 // ───── Receipts ─────
 function ReceiptsTab() {
+  const { print } = usePrint();
   const qc = useQueryClient();
   const { toast } = useToast();
   const [editing, setEditing] = useState<null | {
@@ -140,7 +143,7 @@ function ReceiptsTab() {
     onSuccess: (row) => {
       qc.invalidateQueries({ queryKey: ["admin", "receipt-vouchers"] });
       setEditing(null);
-      printReceipt(row);
+      printReceipt(print, row);
     },
     onError: (err: any) => toast({ title: "تعذر حفظ سند القبض", description: apiErrorMessage(err, "تعذر حفظ سند القبض"), variant: "destructive" }),
   });
@@ -178,7 +181,7 @@ function ReceiptsTab() {
             methodLabel(r.method),
             r.createdByName || "—",
             <div className="flex gap-1 justify-end">
-              <Button variant="ghost" onClick={() => printReceipt(r)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary" title="طباعة"><Printer className="w-4 h-4" /></Button>
+              <Button variant="ghost" onClick={() => printReceipt(print, r)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary" title="طباعة"><Printer className="w-4 h-4" /></Button>
               <Button variant="ghost" onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive" title="حذف"><Trash2 className="w-4 h-4" /></Button>
             </div>,
           ])}
@@ -257,6 +260,7 @@ function ReceiptsTab() {
 
 // ───── Payments ─────
 function PaymentsTab() {
+  const { print } = usePrint();
   const qc = useQueryClient();
   const { toast } = useToast();
   const [editing, setEditing] = useState<null | {
@@ -274,7 +278,7 @@ function PaymentsTab() {
     onSuccess: (row) => {
       qc.invalidateQueries({ queryKey: ["admin", "payment-vouchers"] });
       setEditing(null);
-      printPayment(row);
+      printPayment(print, row);
     },
     onError: (err: any) => toast({ title: "تعذر حفظ سند الصرف", description: apiErrorMessage(err, "تعذر حفظ سند الصرف"), variant: "destructive" }),
   });
@@ -306,7 +310,7 @@ function PaymentsTab() {
             methodLabel(r.method),
             r.createdByName || "—",
             <div className="flex gap-1 justify-end">
-              <Button variant="ghost" onClick={() => printPayment(r)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary"><Printer className="w-4 h-4" /></Button>
+              <Button variant="ghost" onClick={() => printPayment(print, r)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary"><Printer className="w-4 h-4" /></Button>
               <Button variant="ghost" onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></Button>
             </div>,
           ])}
@@ -359,6 +363,7 @@ function PaymentsTab() {
 
 // ───── Expenses ─────
 function ExpensesTab() {
+  const { print } = usePrint();
   const qc = useQueryClient();
   const { toast } = useToast();
   const cats = useQuery({
@@ -403,7 +408,7 @@ function ExpensesTab() {
             <span className="text-muted-foreground text-xs">{e.notes ?? ""}</span>,
             e.createdByName || "—",
             <div className="flex gap-1 justify-end">
-              <Button variant="ghost" onClick={() => printExpense(e)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary" title="طباعة"><Printer className="w-4 h-4" /></Button>
+              <Button variant="ghost" onClick={() => printExpense(print, e)} className="p-1.5 hover:bg-background/50 rounded text-muted-foreground hover:text-primary" title="طباعة"><Printer className="w-4 h-4" /></Button>
               <Button variant="ghost" onClick={() => { if (confirm("حذف المصروف؟")) del.mutate(e.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></Button>
             </div>,
           ])}
@@ -1254,7 +1259,8 @@ function Skeletons() {
 }
 
 // ───── Print slips ─────
-function buildVoucherHtml(opts: {
+/** سند قبض / صرف / مصروف on the shared branded receipt (A5 + WhatsApp image, or 80mm). */
+function voucherJob(opts: {
   kind: "قبض" | "صرف" | "مصروف";
   voucherNo: string;
   date: string;
@@ -1265,67 +1271,36 @@ function buildVoucherHtml(opts: {
   reference: string | null;
   notes: string | null;
   createdByName: string;
-}): string {
-  const amountFmt = formatCurrency(opts.amount);
-  return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">
-<title>سند ${opts.kind} ${opts.voucherNo}</title>
-<style>
-  *{box-sizing:border-box;font-family:"Tajawal","Cairo",system-ui,sans-serif}
-  body{margin:0;padding:30px;color:#111;background:#fff}
-  .slip{max-width:720px;margin:0 auto;border:2px solid #C9A84C;border-radius:14px;padding:28px}
-  .head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #C9A84C;padding-bottom:14px;margin-bottom:18px}
-  .brand{font-size:22px;font-weight:800;color:#8a7637}
-  .sub{font-size:12px;color:#666;margin-top:4px}
-  .kind{font-size:20px;font-weight:800;color:#111;background:#C9A84C;border-radius:10px;padding:8px 16px}
-  .row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed #ddd;font-size:14px}
-  .row b{color:#111}
-  .amount{margin-top:20px;padding:18px;background:#fdf7e6;border:1px solid #C9A84C;border-radius:10px;text-align:center}
-  .amount .label{font-size:12px;color:#8a7637;margin-bottom:6px}
-  .amount .v{font-size:28px;font-weight:800;color:#111}
-  .notes{margin-top:14px;padding:10px;background:#f8f8f8;border-radius:8px;font-size:13px;color:#444}
-  .foot{margin-top:30px;display:flex;justify-content:space-between;font-size:12px;color:#666}
-  .sig{border-top:1px solid #999;width:160px;text-align:center;padding-top:6px}
-  @media print { body{padding:0} .slip{border-radius:0;border-width:1px} }
-</style></head><body>
-<div class="slip">
-  <div class="head">
-    <div>
-      <div class="brand">مجموعة علي جان</div>
-      <div class="sub">طوزخورماتو — صلاح الدين</div>
-    </div>
-    <div class="kind">سند ${opts.kind}</div>
-  </div>
-  <div class="row"><span>رقم السند</span><b>${escapeHtml(opts.voucherNo)}</b></div>
-  <div class="row"><span>التاريخ</span><b>${escapeHtml(opts.date)}</b></div>
-  <div class="row"><span>${escapeHtml(opts.partyLabel)}</span><b>${escapeHtml(opts.party)}</b></div>
-  <div class="row"><span>طريقة الدفع</span><b>${escapeHtml(opts.method)}</b></div>
-  ${opts.reference ? `<div class="row"><span>المرجع</span><b>${escapeHtml(opts.reference)}</b></div>` : ""}
-  <div class="amount">
-    <div class="label">المبلغ</div>
-    <div class="v">${amountFmt}</div>
-  </div>
-  ${opts.notes ? `<div class="notes"><b>ملاحظات:</b> ${escapeHtml(opts.notes)}</div>` : ""}
-  <div class="foot">
-    <div class="sig">توقيع الموظف<br><b style="color:#111">${escapeHtml(opts.createdByName || "—")}</b></div>
-    <div class="sig">توقيع المستلم</div>
-  </div>
-</div>
-<script>window.onload=function(){setTimeout(function(){window.print()},250)}</script>
-</body></html>`;
+}): PrintJob {
+  const doc: BrandedReceiptDoc = {
+    documentTitle: `سند ${opts.kind} ${opts.voucherNo}`,
+    title: `سند ${opts.kind}`,
+    icon: opts.kind === "قبض" ? "cash-in" : "cash-out",
+    facts: [
+      { label: "رقم السند", value: opts.voucherNo, icon: "receipt" },
+      { label: "التاريخ", value: opts.date, icon: "calendar" },
+      { label: opts.partyLabel, value: opts.party, icon: "user" },
+      { label: "طريقة الدفع", value: opts.method, icon: "wallet" },
+      { label: "المرجع", value: opts.reference, icon: "hash" },
+      { label: "الموظف", value: opts.createdByName, icon: "id" },
+    ],
+    totals: [{ label: "المبلغ", value: formatCurrency(opts.amount), tone: "due" }],
+    notes: opts.notes,
+    signatures: ["توقيع الموظف", "توقيع المستلم"],
+    hideQr: opts.kind !== "قبض",
+  };
+  const label = `سند ${opts.kind} ${opts.voucherNo}`;
+  return {
+    documentLabel: label,
+    formats: [
+      { id: "a5", buildHtml: () => buildBrandedReceiptHtml(doc, "a5"), imageName: label },
+      { id: "thermal80", buildHtml: () => buildBrandedReceiptHtml(doc, "80mm") },
+    ],
+  };
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
-}
-
-function openPrintWindow(html: string) {
-  const w = window.open("", "_blank", "width=820,height=900");
-  if (!w) return;
-  w.document.open(); w.document.write(html); w.document.close();
-}
-
-function printReceipt(r: ReceiptVoucher) {
-  openPrintWindow(buildVoucherHtml({
+function printReceipt(print: (job: PrintJob) => void, r: ReceiptVoucher) {
+  print(voucherJob({
     kind: "قبض",
     voucherNo: r.voucherNo, date: r.date, amount: r.amount,
     party: r.payerName, partyLabel: "الواصل من",
@@ -1333,8 +1308,8 @@ function printReceipt(r: ReceiptVoucher) {
     createdByName: r.createdByName,
   }));
 }
-function printPayment(r: PaymentVoucher) {
-  openPrintWindow(buildVoucherHtml({
+function printPayment(print: (job: PrintJob) => void, r: PaymentVoucher) {
+  print(voucherJob({
     kind: "صرف",
     voucherNo: r.voucherNo, date: r.date, amount: r.amount,
     party: r.payeeName, partyLabel: "صُرف إلى",
@@ -1342,8 +1317,8 @@ function printPayment(r: PaymentVoucher) {
     createdByName: r.createdByName,
   }));
 }
-function printExpense(e: Expense) {
-  openPrintWindow(buildVoucherHtml({
+function printExpense(print: (job: PrintJob) => void, e: Expense) {
+  print(voucherJob({
     kind: "مصروف",
     voucherNo: `EXP-${String(e.id).padStart(4, "0")}`,
     date: e.date,

@@ -48,7 +48,7 @@ export function CompanyLoansPanel({ embedded = false }: { embedded?: boolean }) 
     print({
       documentLabel: `وصل سداد ${item.repaymentNo}`,
       formats: [
-        { id: "a4", buildHtml: () => buildCompanyLoanRepaymentReceiptDocumentHtml(input, "a4") },
+        { id: "a5", buildHtml: () => buildCompanyLoanRepaymentReceiptDocumentHtml(input, "a5"), imageName: `وصل سداد ${item.repaymentNo}` },
         { id: "thermal80", buildHtml: () => buildCompanyLoanRepaymentReceiptDocumentHtml(input, "80mm") },
       ],
       onPrinted: () => { void adminFetch(`/admin/loans/${loan.id}/repayments/${item.id}/printed`, { method: "POST" }); },

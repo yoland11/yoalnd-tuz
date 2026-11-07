@@ -2,6 +2,7 @@ import { unstable_cache } from "next/cache";
 import { db, settingsTable } from "@workspace/db";
 import { DEFAULT_APPEARANCE_SETTINGS, normalizeAppearanceSettings } from "@/lib/appearance";
 import { findActiveSeason, normalizeSeasonalThemes } from "@/lib/seasonal-themes";
+import { normalizeReceiptBrand } from "@/lib/receipt-brand";
 
 export const PUBLIC_SETTINGS_TAG = "ajn-public-settings";
 export const PUBLIC_SETTINGS_REVALIDATE_SECONDS = 300;
@@ -99,6 +100,7 @@ export function publicSettingsPayload(settings: Record<string, any>) {
       ...((settings.imageSettings && typeof settings.imageSettings === "object") ? settings.imageSettings : {}),
     },
     appearance_settings: effectiveAppearance,
+    receipt_brand: normalizeReceiptBrand(settings.receiptBrand),
   };
 }
 

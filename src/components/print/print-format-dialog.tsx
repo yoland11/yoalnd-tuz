@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, FileText, Printer, Receipt } from "lucide-react";
+import { ArrowRight, FileText, ImageDown, Loader2, Printer, Receipt } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { printWhenImagesReadyScript } from "@/views/admin/print-helpers";
+import { shareReceiptImage } from "@/lib/receipt-image";
 
 /**
  * Unified AJN print system — shared types + presentation dialog.
@@ -22,7 +23,7 @@ import { printWhenImagesReadyScript } from "@/views/admin/print-helpers";
  * action and never mutates anything.
  */
 
-export type PrintFormatId = "a4" | "thermal80";
+export type PrintFormatId = "a4" | "a5" | "thermal80";
 
 export type PrintFormat = {
   id: PrintFormatId;
@@ -41,6 +42,11 @@ export type PrintFormat = {
   onPrint?: () => void | Promise<void>;
   /** Optional override for the card's sub-label (defaults per format). */
   sublabel?: string;
+  /**
+   * File name (without extension) for «صورة واتساب». Set it on a branded A5
+   * receipt (src/lib/branded-receipt.ts) to offer saving/sharing it as a PNG.
+   */
+  imageName?: string;
 };
 
 export type PrintJob = {
@@ -63,6 +69,12 @@ const FORMAT_META: Record<
     sublabel: "فاتورة كاملة",
     badge: "A4 · ورقة كاملة",
     naturalWidth: 794, // 210mm @ 96dpi
+  },
+  a5: {
+    title: "A5",
+    sublabel: "وصل ملوّن + صورة واتساب",
+    badge: "A5 · نصف A4",
+    naturalWidth: 560, // 148mm @ 96dpi
   },
   thermal80: {
     title: "80mm",
@@ -113,7 +125,7 @@ function DocumentPreview({
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [scale, setScale] = useState(1);
   const [frameHeight, setFrameHeight] = useState(
-    format === "a4" ? 1123 : 520,
+    format === "a4" ? 1123 : format === "a5" ? 794 : 520,
   );
   const naturalWidth = FORMAT_META[format].naturalWidth;
 
@@ -132,10 +144,10 @@ function DocumentPreview({
     return () => observer.disconnect();
   }, [measure]);
 
-  // Thermal receipts have dynamic height — size the frame to its content once
-  // rendered so the preview shows the full receipt without an inner scrollbar.
+  // Thermal and A5 receipts have dynamic height — size the frame to its content
+  // once rendered so the preview shows the full receipt without an inner scrollbar.
   const handleLoad = useCallback(() => {
-    if (format !== "thermal80") return;
+    if (format === "a4") return;
     const doc = frameRef.current?.contentDocument;
     if (!doc) return;
     const height = Math.max(
@@ -188,7 +200,7 @@ function FormatCard({
   onSelect: () => void;
 }) {
   const meta = FORMAT_META[format.id];
-  const Icon = format.id === "a4" ? FileText : Receipt;
+  const Icon = format.id === "thermal80" ? Receipt : FileText;
   return (
     <Button variant="ghost"
       type="button"
@@ -248,6 +260,8 @@ export function PrintFormatDialog({
     singleFormat ? "preview" : "select",
   );
   const [error, setError] = useState<string | null>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageNote, setImageNote] = useState<string | null>(null);
 
   // Reset the flow whenever a new job opens.
   useEffect(() => {
@@ -255,6 +269,7 @@ export function PrintFormatDialog({
     setSelected(initialFormat);
     setStep(singleFormat ? "preview" : "select");
     setError(null);
+    setImageNote(null);
   }, [job, initialFormat, singleFormat]);
 
   const activeFormat = useMemo(
@@ -306,6 +321,31 @@ export function PrintFormatDialog({
     }
   };
 
+  const handleImage = async () => {
+    if (!activeFormat?.imageName || imageBusy) return;
+    setImageBusy(true);
+    setError(null);
+    setImageNote(null);
+    try {
+      const result = await shareReceiptImage(activeFormat.buildHtml(), activeFormat.imageName);
+      setImageNote(
+        result === "shared"
+          ? "تمت مشاركة صورة الوصل."
+          : result === "downloaded"
+            ? "حُفظت صورة الوصل في التنزيلات — أرسلها للزبون من واتساب."
+            : null,
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error && cause.message
+          ? cause.message
+          : "تعذر تجهيز صورة الوصل. حاول مرة أخرى.",
+      );
+    } finally {
+      setImageBusy(false);
+    }
+  };
+
   return (
     <Dialog open={!!job} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
@@ -325,7 +365,7 @@ export function PrintFormatDialog({
         </DialogHeader>
 
         {step === "select" ? (
-          <div className="grid grid-cols-2 gap-4 py-2">
+          <div className={cn("grid gap-4 py-2", formats.length > 2 ? "grid-cols-3" : "grid-cols-2")}>
             {formats.map((format) => (
               <FormatCard
                 key={format.id}
@@ -343,7 +383,7 @@ export function PrintFormatDialog({
                   "inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/8 px-3 py-1 text-xs font-bold text-primary",
                 )}
               >
-                {activeFormat?.id === "a4" ? (
+                {activeFormat && activeFormat.id !== "thermal80" ? (
                   <FileText className="h-3.5 w-3.5" />
                 ) : (
                   <Receipt className="h-3.5 w-3.5" />
@@ -363,6 +403,9 @@ export function PrintFormatDialog({
         {error ? (
           <p className="text-sm font-semibold text-destructive">{error}</p>
         ) : null}
+        {imageNote ? (
+          <p className="text-sm font-semibold text-emerald-700" role="status">{imageNote}</p>
+        ) : null}
 
         <div className="flex items-center justify-between gap-2 pt-1">
           {step === "preview" ? (
@@ -376,10 +419,18 @@ export function PrintFormatDialog({
             </Button>
           )}
           {step === "preview" ? (
-            <Button type="button" onClick={handlePrint}>
-              <Printer className="h-4 w-4" />
-              طباعة
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {activeFormat?.imageName ? (
+                <Button type="button" variant="outline" onClick={handleImage} disabled={imageBusy}>
+                  {imageBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageDown className="h-4 w-4" />}
+                  صورة واتساب
+                </Button>
+              ) : null}
+              <Button type="button" onClick={handlePrint}>
+                <Printer className="h-4 w-4" />
+                طباعة
+              </Button>
+            </div>
           ) : (
             <span className="text-xs font-semibold text-muted-foreground">
               اختر مقاس الطباعة للمتابعة

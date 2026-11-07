@@ -631,7 +631,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
               <DropdownMenuSeparator />
               <DropdownMenuLabel className="ajn-op-menu-label">الطابعة الحرارية</DropdownMenuLabel>
               <DropdownMenuItem onSelect={() => setLabelOpen(true)}><Tag /> طباعة ملصق</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => printReceipt(thermalReceiptData)}><Receipt /> وصل حراري 80mm</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => printReceipt(thermalReceiptData)}><Receipt /> وصل الحجز</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setTransportReceipt({source:booking.source,id:booking.id})}><Truck /> طباعة وصل نقل 80mm</DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel className="ajn-op-menu-label">قائمة التجهيز</DropdownMenuLabel>

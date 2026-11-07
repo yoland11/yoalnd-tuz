@@ -10,7 +10,7 @@ const compiled = ts.transpileModule(readFileSync("src/lib/graduation-receipt-pri
 }).outputText;
 const module = { exports: {} };
 new Function("require", "module", "exports", "document", "XMLSerializer", compiled)(
-  (name) => name === "@/lib/money" ? { formatCurrency: String } : name === "jsbarcode" ? () => {} : require(name),
+  (name) => name === "@/lib/money" ? { formatCurrency: String } : name === "jsbarcode" ? () => {} : name === "@/lib/branded-receipt" || name === "@/lib/receipt-brand" ? {} : require(name),
   module, module.exports, { createElementNS: () => ({}) },
   class { serializeToString() { return '<svg xmlns="http://www.w3.org/2000/svg" width="230" height="34"></svg>'; } },
 );
