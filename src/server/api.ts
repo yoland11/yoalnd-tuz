@@ -483,7 +483,8 @@ import {
   updateFinancialTransaction,
   type FinancialActor,
 } from "@/server/master-cash-box";
-import { getCustomerAccountSummary, getCustomerStatement } from "@/server/customer-account";
+import { customerDocumentHref, getCustomerAccountSummary, getCustomerStatement } from "@/server/customer-account";
+import { customerSourceLabelAr } from "@/server/customer-account-summary";
 import { wholesaleCustomerProfileSchema } from "@/server/wholesale-customer";
 import { customerProductPriceSchema, wholesalePriceUpdateSchema } from "@/server/wholesale-price-admin";
 import { resolveWholesaleUnitPrice } from "@/server/wholesale-pricing";
@@ -52454,50 +52455,14 @@ async function handleAdmin(
           limit: 20,
         }),
       ]);
-      const productTotal = orders.reduce(
-        (sum, row) => sum + money(row.total),
-        0,
-      );
-      const serviceTotal = serviceOrders.reduce(
-        (sum, row) => sum + money(row.totalAmount),
-        0,
-      );
-      const invoiceTotal = invoices.reduce(
-        (sum, row) => sum + money(row.total),
-        0,
-      );
-      const koshaTotal = koshaBookings.reduce(
-        (sum, row) => sum + money(row.totalAmount),
-        0,
-      );
-      const remainingTotal =
-        orders.reduce((sum, row) => sum + money(row.remainingAmount), 0) +
-        serviceOrders.reduce(
-          (sum, row) => sum + money(row.remainingAmount),
-          0,
-        ) +
-        invoices.reduce((sum, row) => sum + money(row.remainingAmount), 0) +
-        koshaBookings.reduce((sum, row) => sum + money(row.remainingAmount), 0);
-      const unpaidCount =
-        orders.filter(
-          (row) =>
-            row.paymentStatus !== "paid" && money(row.remainingAmount) > 0,
-        ).length +
-        serviceOrders.filter(
-          (row) =>
-            row.paymentStatus !== "paid" && money(row.remainingAmount) > 0,
-        ).length +
-        invoices.filter(
-          (row) =>
-            row.paymentStatus !== "paid" && money(row.remainingAmount) > 0,
-        ).length +
-        koshaBookings.filter(
-          (row) =>
-            row.paymentStatus !== "paid" && money(row.remainingAmount) > 0,
-        ).length;
-      const totalCharges =
-        productTotal + serviceTotal + invoiceTotal + koshaTotal;
-      const totalPaid = Math.max(totalCharges - remainingTotal, 0);
+      // Money figures are the ONE canonical customer account (the same numbers
+      // as كشف الحساب and every other screen) — never sums of the capped lists
+      // above, which skip older invoices, rentals and include cancelled records.
+      const account = await getCustomerAccountSummary({
+        id: customer.id,
+        phone: customer.phone,
+      });
+      const unpaidCount = account.sources.filter((doc) => doc.remaining > 0).length;
       return json({
         id: customer.id,
         name: customer.name,
@@ -52530,11 +52495,13 @@ async function handleAdmin(
           serviceOrders: serviceOrders.length,
           invoices: invoices.length,
           koshaBookings: koshaBookings.length,
-          totalSpent: totalCharges,
-          totalCharges,
-          totalPaid,
-          remainingTotal,
-          currentBalance: remainingTotal,
+          documentCount: account.documentCount,
+          totalSpent: account.totalReceivable,
+          totalCharges: account.totalReceivable,
+          totalPaid: account.totalPaid,
+          totalReturnCredits: account.totalReturnCredits,
+          remainingTotal: account.currentBalance,
+          currentBalance: account.currentBalance,
           openInvoices: unpaidCount,
           unpaidCount,
           lastPayment: customerPayments[0]
@@ -73131,6 +73098,22 @@ async function handleAccounting(
           )
           ORDER BY name ASC LIMIT 12
         `);
+        // The balance shown next to each account is the canonical customer
+        // account «المتبقي» (the same figure the selected customer card shows).
+        const balanceByCustomer = new Map<number, number>();
+        for (const row of [...(customerRows.rows ?? []), ...(supplierRows.rows ?? [])] as any[]) {
+          const linkedId = row.customer_id ? Number(row.customer_id) : 0;
+          if (!linkedId || balanceByCustomer.has(linkedId)) continue;
+          const linked = row.account_type === "customer"
+            ? { id: linkedId, phone: row.phone ?? "" }
+            : await db.query.customersTable.findFirst({ where: eq(customersTable.id, linkedId) });
+          balanceByCustomer.set(
+            linkedId,
+            linked
+              ? (await getCustomerAccountSummary({ id: linkedId, phone: linked.phone })).currentBalance
+              : 0,
+          );
+        }
         return json(
           [...(customerRows.rows ?? []), ...(supplierRows.rows ?? [])].map(
             (row: any) => ({
@@ -73140,7 +73123,9 @@ async function handleAccounting(
               name: row.name,
               phone: row.phone ?? "",
               accountNumber: row.account_number ?? null,
-              currentBalance: money(row.current_balance),
+              currentBalance: row.customer_id
+                ? money(balanceByCustomer.get(Number(row.customer_id)) ?? 0)
+                : money(row.current_balance),
             }),
           ),
         );
@@ -73245,7 +73230,9 @@ async function handleAccounting(
             FROM kosha_bookings WHERE (customer_id = ${customerId} OR (${accountPhone} <> '' AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10))) AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
             UNION ALL
             SELECT 'sales_invoice', id, invoice_no, date::text, total::float, paid_amount::float, remaining_amount::float, due_date::text, payment_status
-            FROM sales_invoices WHERE customer_id = ${customerId} AND status = 'active' AND financially_reversed = false AND remaining_amount::numeric > 0
+            FROM sales_invoices invoice WHERE customer_id = ${customerId} AND status = 'active' AND financially_reversed = false AND remaining_amount::numeric > 0
+              AND NOT EXISTS (SELECT 1 FROM graduation_orders owner WHERE owner.invoice_id = invoice.id AND owner.customer_id = ${customerId} AND owner.archived_at IS NULL AND owner.status <> 'cancelled' AND owner.remaining_amount::numeric > 0)
+              AND NOT EXISTS (SELECT 1 FROM research_orders owner WHERE owner.invoice_id = invoice.id AND owner.customer_id = ${customerId} AND owner.archived_at IS NULL AND owner.remaining_amount::numeric > 0)
             UNION ALL
             SELECT 'order', id, tracking_code, created_at::date::text, total::float, deposit_amount::float, remaining_amount::float, due_date::text, payment_status
             FROM orders WHERE (customer_id = ${customerId} OR (${accountPhone} <> '' AND right(regexp_replace(coalesce(customer_phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10))) AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
@@ -74710,524 +74697,82 @@ async function handleAccounting(
         customer = await findCustomerByPhone(phoneParam);
       const phone = customer?.phone ?? phoneParam ?? null;
       if (!phone) return error("اختر زبون أو رقم هاتف", 400);
-      const phoneVariants = iraqiPhoneVariants(phone);
-      const [
-        orders,
-        bookings,
-        koshaBookings,
-        receipts,
-        salesInvoices,
-        receiptAllocations,
-        graduationOrders,
-        photographyOrders,
-        rentalOrders,
-        researchOrders,
-        customerCredit,
-      ] = await Promise.all([
-        db
-          .select({
-            id: ordersTable.id,
-            trackingCode: ordersTable.trackingCode,
-            total: ordersTable.total,
-            depositAmount: ordersTable.depositAmount,
-            createdAt: ordersTable.createdAt,
-          })
-          .from(ordersTable)
-          .where(inArray(ordersTable.customerPhone, phoneVariants))
-          .orderBy(desc(ordersTable.createdAt)),
-        db
-          .select({
-            id: serviceOrdersTable.id,
-            trackingCode: serviceOrdersTable.trackingCode,
-            totalAmount: serviceOrdersTable.totalAmount,
-            depositAmount: serviceOrdersTable.depositAmount,
-            createdAt: serviceOrdersTable.createdAt,
-          })
-          .from(serviceOrdersTable)
-          .where(inArray(serviceOrdersTable.phone, phoneVariants))
-          .orderBy(desc(serviceOrdersTable.createdAt)),
-        db
-          .select({
-            id: koshaBookingsTable.id,
-            trackingCode: koshaBookingsTable.trackingCode,
-            totalAmount: koshaBookingsTable.totalAmount,
-            paidAmount: koshaBookingsTable.paidAmount,
-            remainingAmount: koshaBookingsTable.remainingAmount,
-            customerId: koshaBookingsTable.customerId,
-            customerName: koshaBookingsTable.customerName,
-            phone: koshaBookingsTable.phone,
-            createdAt: koshaBookingsTable.createdAt,
-            status: koshaBookingsTable.status,
-          })
-          .from(koshaBookingsTable)
-          .where(
-            and(
-              sql`${koshaBookingsTable.archivedAt} is null`,
-              customer
-                ? or(
-                    inArray(koshaBookingsTable.phone, phoneVariants),
-                    eq(koshaBookingsTable.customerId, customer.id),
-                  )
-                : inArray(koshaBookingsTable.phone, phoneVariants),
-            ),
-          )
-          .orderBy(desc(koshaBookingsTable.createdAt)),
-        customer
-          ? db
-              .select({
-                id: receiptVouchersTable.id,
-                voucherNo: receiptVouchersTable.voucherNo,
-                date: receiptVouchersTable.date,
-                amount: receiptVouchersTable.amount,
-                payerName: receiptVouchersTable.payerName,
-                orderId: receiptVouchersTable.orderId,
-                bookingId: receiptVouchersTable.bookingId,
-                koshaBookingId: receiptVouchersTable.koshaBookingId,
-                reference: receiptVouchersTable.reference,
-                method: receiptVouchersTable.method,
-              })
-              .from(receiptVouchersTable)
-              .where(eq(receiptVouchersTable.customerId, customer.id))
-              .orderBy(desc(receiptVouchersTable.date))
-          : Promise.resolve([] as any[]),
-        db
-          .select({
-            id: salesInvoicesTable.id,
-            invoiceNo: salesInvoicesTable.invoiceNo,
-            date: salesInvoicesTable.date,
-            customerName: salesInvoicesTable.customerName,
-            total: salesInvoicesTable.total,
-            paidAmount: salesInvoicesTable.paidAmount,
-            remainingAmount: salesInvoicesTable.remainingAmount,
-            status: salesInvoicesTable.status,
-            cancelledAt: salesInvoicesTable.cancelledAt,
-            cancellationReason: salesInvoicesTable.cancellationReason,
-            cancelledOriginalPaidAmount:
-              salesInvoicesTable.cancelledOriginalPaidAmount,
-            cancelledOriginalRemainingAmount:
-              salesInvoicesTable.cancelledOriginalRemainingAmount,
-            createdAt: salesInvoicesTable.createdAt,
-          })
-          .from(salesInvoicesTable)
-          .where(
-            and(
-              sql`${salesInvoicesTable.status} != 'deleted'`,
-              customer
-                ? or(
-                    inArray(salesInvoicesTable.customerPhone, phoneVariants),
-                    eq(salesInvoicesTable.customerId, customer.id),
-                  )
-                : inArray(salesInvoicesTable.customerPhone, phoneVariants),
-            ),
-          )
-          .orderBy(desc(salesInvoicesTable.createdAt)),
-        customer
-          ? db.execute(sql`
-              SELECT a.source_type, a.source_id, a.amount::float AS amount, a.posted_at,
-                a.reversed_at, a.reversal_transaction_id, a.reversal_reason,
-                rv.id AS voucher_id, rv.voucher_no, rv.date::text AS date, rv.method,
-                rv.financial_transaction_id
-              FROM receipt_voucher_allocations a
-              JOIN receipt_vouchers rv ON rv.id = a.receipt_voucher_id
-              WHERE a.customer_id = ${customer.id} AND a.posted_at IS NOT NULL
-              ORDER BY rv.date, a.id
-            `)
-          : Promise.resolve({ rows: [] } as any),
-        db
-          .select({
-            id: graduationOrdersTable.id,
-            orderNo: graduationOrdersTable.orderNo,
-            totalAmount: graduationOrdersTable.totalAmount,
-            paidAmount: graduationOrdersTable.paidAmount,
-            remainingAmount: graduationOrdersTable.remainingAmount,
-            createdAt: graduationOrdersTable.createdAt,
-          })
-          .from(graduationOrdersTable)
-          .where(
-            and(
-              sql`${graduationOrdersTable.archivedAt} is null`,
-              ne(graduationOrdersTable.status, "cancelled"),
-              customer
-                ? or(
-                    eq(graduationOrdersTable.customerId, customer.id),
-                    inArray(graduationOrdersTable.phone, phoneVariants),
-                  )
-                : inArray(graduationOrdersTable.phone, phoneVariants),
-            ),
-          )
-          .orderBy(desc(graduationOrdersTable.createdAt)),
-        db
-          .select({
-            id: photographyOrdersTable.id,
-            orderNo: photographyOrdersTable.orderNo,
-            totalAmount: photographyOrdersTable.totalAmount,
-            paidAmount: photographyOrdersTable.paidAmount,
-            remainingAmount: photographyOrdersTable.remainingAmount,
-            createdAt: photographyOrdersTable.createdAt,
-          })
-          .from(photographyOrdersTable)
-          .where(
-            and(
-              inArray(photographyOrdersTable.phone, phoneVariants),
-              isNull(photographyOrdersTable.cancelledAt),
-            ),
-          )
-          .orderBy(desc(photographyOrdersTable.createdAt)),
-        db
-          .select({
-            id: rentalOrdersTable.id,
-            orderNo: rentalOrdersTable.orderNo,
-            totalAmount: rentalOrdersTable.totalAmount,
-            paidAmount: rentalOrdersTable.paidAmount,
-            remainingAmount: rentalOrdersTable.remainingAmount,
-            createdAt: rentalOrdersTable.createdAt,
-          })
-          .from(rentalOrdersTable)
-          .where(
-            and(
-              ne(rentalOrdersTable.status, "cancelled"),
-              customer
-                ? or(
-                    eq(rentalOrdersTable.customerId, customer.id),
-                    inArray(rentalOrdersTable.phone, phoneVariants),
-                  )
-                : inArray(rentalOrdersTable.phone, phoneVariants),
-            ),
-          )
-          .orderBy(desc(rentalOrdersTable.createdAt)),
-        customer
-          ? db
-              .select({
-                id: researchOrdersTable.id,
-                researchNo: researchOrdersTable.researchNo,
-                invoiceId: researchOrdersTable.invoiceId,
-                totalAmount: researchOrdersTable.totalAmount,
-                paidAmount: researchOrdersTable.paidAmount,
-                remainingAmount: researchOrdersTable.remainingAmount,
-                createdAt: researchOrdersTable.createdAt,
-              })
-              .from(researchOrdersTable)
-              .where(
-                and(
-                  eq(researchOrdersTable.customerId, customer.id),
-                  isNull(researchOrdersTable.archivedAt),
-                ),
-              )
-              .orderBy(desc(researchOrdersTable.createdAt))
-          : Promise.resolve([] as any[]),
-        customer
-          ? db.execute(sql`
-              SELECT coalesce(sum(amount::numeric), 0)::float AS total
-              FROM receipt_voucher_allocations
-              WHERE customer_id = ${customer.id}
-                AND source_type = 'customer_credit'
-                AND posted_at IS NOT NULL
-                AND reversed_at IS NULL
-            `)
-          : Promise.resolve({ rows: [] } as any),
-      ]);
-      type Entry = {
-        date: string;
-        kind:
-          | "order"
-          | "booking"
-          | "receipt"
-          | "invoice"
-          | "invoice_payment"
-          | "invoice_cancellation"
-          | "payment_reversal";
-        ref: string;
-        description: string;
-        debit: number;
-        credit: number;
-        href: string | null;
-      };
-      const entries: Entry[] = [];
-      const postedAllocations = ((receiptAllocations as any)?.rows ??
-        []) as any[];
-      const allocatedReceiptIds = new Set(
-        postedAllocations.map((row) => Number(row.voucher_id)),
-      );
-      const koshaAllocated = new Map<number, number>();
-      for (const allocation of postedAllocations)
-        if (
-          allocation.source_type === "kosha_booking" &&
-          allocation.source_id != null
-        )
-          koshaAllocated.set(
-            Number(allocation.source_id),
-            money(
-              (koshaAllocated.get(Number(allocation.source_id)) ?? 0) +
-                money(allocation.amount),
-            ),
-          );
-      const salesAllocated = new Map<number, number>();
-      for (const allocation of postedAllocations)
-        if (
-          allocation.source_type === "sales_invoice" &&
-          allocation.source_id != null
-        )
-          salesAllocated.set(
-            Number(allocation.source_id),
-            money(
-              (salesAllocated.get(Number(allocation.source_id)) ?? 0) +
-                money(allocation.amount),
-            ),
-          );
-      const rentalOrderNumbers = new Set(
-        rentalOrders.map((order) => order.orderNo),
-      );
-      const researchInvoiceIds = new Set(
-        researchOrders
-          .map((order) => order.invoiceId)
-          .filter((id): id is number => typeof id === "number"),
-      );
-      for (const o of orders) {
-        if (rentalOrderNumbers.has(o.trackingCode)) continue;
-        entries.push({
-          date: o.createdAt.toISOString(),
-          kind: "order",
-          ref: o.trackingCode,
-          description: "طلب من المتجر",
-          debit: Number.parseFloat(o.total),
-          credit: Number.parseFloat(o.depositAmount ?? "0"),
-          href: `/admin/invoice/${o.id}`,
-        });
-      }
-      for (const b of bookings) {
-        entries.push({
-          date: b.createdAt.toISOString(),
-          kind: "booking",
-          ref: b.trackingCode ?? `#${b.id}`,
-          description: "حجز خدمة",
-          debit: Number.parseFloat(b.totalAmount ?? "0"),
-          credit: Number.parseFloat(b.depositAmount ?? "0"),
-          href: `/admin/invoice/${b.id}?type=booking`,
-        });
-      }
-      for (const b of koshaBookings) {
-        entries.push({
-          date: b.createdAt.toISOString(),
-          kind: "booking",
-          ref: b.trackingCode ?? `KB-${b.id}`,
-          description: "حجز كوشة",
-          debit: Number.parseFloat(b.totalAmount ?? "0"),
-          credit: Math.max(
-            0,
-            Number.parseFloat(b.paidAmount ?? "0") -
-              (koshaAllocated.get(b.id) ?? 0),
-          ),
-          href: `/admin/kosha-bookings?booking=${b.id}`,
-        });
-      }
-      // Sales invoices — the charge (debit) and any amount paid against it (credit).
-      for (const si of salesInvoices) {
-        if (researchInvoiceIds.has(si.id)) continue;
-        const when = si.createdAt
-          ? si.createdAt.toISOString()
-          : new Date(`${si.date}T00:00:00`).toISOString();
-        const nameSuffix = si.customerName ? ` — ${si.customerName}` : "";
-        entries.push({
-          date: when,
-          kind: "invoice",
-          ref: si.invoiceNo,
-          description: `فاتورة مبيعات${nameSuffix}`,
-          debit: Number.parseFloat(si.total),
-          credit: 0,
-          href: `/admin/sales?invoice=${si.id}`,
-        });
-        const paid = Number.parseFloat(
-          si.status === "cancelled"
-            ? (si.cancelledOriginalPaidAmount ?? si.paidAmount)
-            : si.paidAmount,
-        );
-        const inlinePaid = Math.max(0, paid - (salesAllocated.get(si.id) ?? 0));
-        if (inlinePaid > 0)
-          entries.push({
-            date: when,
-            kind: "invoice_payment",
-            ref: si.invoiceNo,
-            description: `دفعة فاتورة ${si.invoiceNo}`,
-            debit: 0,
-            credit: inlinePaid,
-            href: `/admin/sales?invoice=${si.id}`,
-          });
-        if (si.status === "cancelled") {
-          const cancellationDate = si.cancelledAt
-            ? si.cancelledAt.toISOString()
-            : when;
-          entries.push({
-            date: cancellationDate,
-            kind: "invoice_cancellation",
-            ref: si.invoiceNo,
-            description: `إلغاء فاتورة مبيعات${si.cancellationReason ? ` — ${si.cancellationReason}` : ""}`,
-            debit: 0,
-            credit: Number.parseFloat(si.total),
-            href: `/admin/sales?invoice=${si.id}`,
-          });
-          if (inlinePaid > 0)
-            entries.push({
-              date: cancellationDate,
-              kind: "payment_reversal",
-              ref: si.invoiceNo,
-              description: `عكس دفعة الفاتورة ${si.invoiceNo}`,
-              debit: inlinePaid,
-              credit: 0,
-              href: `/admin/sales?invoice=${si.id}`,
-            });
-        }
-      }
-      for (const order of graduationOrders) {
-        entries.push({
-          date: order.createdAt.toISOString(),
-          kind: "booking",
-          ref: order.orderNo,
-          description: "طلب تجهيزات تخرج",
-          debit: Number.parseFloat(order.totalAmount),
-          credit: Number.parseFloat(order.paidAmount),
-          href: `/admin/graduation/orders?order=${order.id}`,
-        });
-      }
-      for (const order of photographyOrders) {
-        entries.push({
-          date: order.createdAt.toISOString(),
-          kind: "booking",
-          ref: order.orderNo,
-          description: "طلب تصوير",
-          debit: Number.parseFloat(order.totalAmount),
-          credit: Number.parseFloat(order.paidAmount),
-          href: "/staff/photography",
-        });
-      }
-      for (const order of rentalOrders) {
-        entries.push({
-          date: order.createdAt.toISOString(),
-          kind: "order",
-          ref: order.orderNo,
-          description: "طلب تأجير",
-          debit: Number.parseFloat(order.totalAmount),
-          credit: Number.parseFloat(order.paidAmount),
-          href: `/admin/rental-orders?order=${order.id}`,
-        });
-      }
-      for (const order of researchOrders) {
-        entries.push({
-          date: order.createdAt.toISOString(),
-          kind: "booking",
-          ref: order.researchNo,
-          description: "طلب خدمة بحثية",
-          debit: Number.parseFloat(order.totalAmount),
-          credit: Number.parseFloat(order.paidAmount),
-          href: `/admin/research/orders?order=${order.id}`,
-        });
-      }
-      for (const r of receipts) {
-        if (allocatedReceiptIds.has(r.id)) continue;
-        if (r.orderId || r.bookingId || r.koshaBookingId) continue;
-        // Kosha receipts are linked by their KB-* reference until legacy
-        // receipt_vouchers gains a dedicated kosha_booking_id column. The
-        // booking row already carries the paid amount, so do not double count.
-        if (/^(KB-|AJN-KOSHA-)/i.test(String(r.reference ?? "").trim()))
-          continue;
-        if (
-          salesInvoices.some((invoice: any) =>
-            String(r.reference ?? "").startsWith(invoice.invoiceNo),
-          )
-        )
-          continue;
-        entries.push({
-          date: new Date(r.date).toISOString(),
-          kind: "receipt",
-          ref: r.voucherNo,
-          description: `سند قبض (${r.method}) — ${r.payerName ?? ""}`,
-          debit: 0,
-          credit: Number.parseFloat(r.amount),
-          href: null,
-        });
-      }
-      for (const allocation of postedAllocations) {
-        const sourceLabel =
-          allocation.source_type === "kosha_booking"
-            ? "حجز كوشة"
-            : allocation.source_type === "sales_invoice"
-              ? "فاتورة"
-              : allocation.source_type === "customer_credit"
-                ? "رصيد العميل"
-                : "توزيع دفعة";
-        entries.push({
-          date: new Date(allocation.date).toISOString(),
-          kind: "receipt",
-          ref: allocation.voucher_no,
-          description: `سند قبض وتوزيع على ${sourceLabel}`,
-          debit: 0,
-          credit: Number(allocation.amount),
-          href: `/admin/accounting?tab=receipts`,
-        });
-        if (allocation.reversed_at) {
-          entries.push({
-            date: new Date(allocation.reversed_at).toISOString(),
-            kind: "payment_reversal",
-            ref: allocation.voucher_no,
-            description: `عكس سند قبض${allocation.reversal_reason ? ` — ${allocation.reversal_reason}` : ""}`,
-            debit: Number(allocation.amount),
-            credit: 0,
-            href: `/admin/accounting?tab=receipts`,
-          });
-        }
-      }
-      entries.sort((a, b) => a.date.localeCompare(b.date));
-      let running = 0;
-      const withBalance = entries.map((e) => {
-        running += e.debit - e.credit;
-        return { ...e, balance: running };
+      // The same canonical derivation as «المتبقي» on the receipt voucher and
+      // the customer page. Without a customer profile only unlinked records
+      // that carry this phone are included.
+      const statement = await getCustomerStatement({
+        id: customer?.id ?? 0,
+        phone,
       });
-      const paymentHistoryFor = (reference: string, paid: number, date: Date) => {
-        const history = withBalance
-          .filter((entry) => entry.ref === reference && entry.credit > 0)
-          .map((entry) => ({ date: entry.date, amount: entry.credit, reference: entry.ref }));
-        return history.length || paid <= 0
-          ? history
-          : [{ date: date.toISOString(), amount: paid, reference }];
-      };
-      const record = (
-        reference: string,
-        date: Date,
-        serviceType: string,
-        total: string | number,
-        paid: string | number,
-        remaining: string | number,
-        href: string | null,
-      ) => ({
-        reference,
-        date: date.toISOString(),
-        serviceType,
-        total: money(total),
-        paid: money(paid),
-        remaining: money(remaining),
-        paymentHistory: paymentHistoryFor(reference, money(paid), date),
-        href,
-      });
-      const transactions = [
-        ...orders.filter((order) => !rentalOrderNumbers.has(order.trackingCode)).map((order) => record(order.trackingCode, order.createdAt, "طلب متجر", order.total, order.depositAmount ?? "0", Number.parseFloat(order.total) - Number.parseFloat(order.depositAmount ?? "0"), `/admin/invoice/${order.id}`)),
-        ...bookings.map((order) => record(order.trackingCode ?? `SRV-${order.id}`, order.createdAt, "حجز خدمة", order.totalAmount ?? "0", order.depositAmount ?? "0", Number.parseFloat(order.totalAmount ?? "0") - Number.parseFloat(order.depositAmount ?? "0"), `/admin/invoice/${order.id}?type=booking`)),
-        ...koshaBookings.map((booking) => record(booking.trackingCode ?? `KB-${booking.id}`, booking.createdAt, "حجز كوشة", booking.totalAmount ?? "0", booking.paidAmount ?? "0", booking.remainingAmount ?? "0", `/admin/kosha-bookings?booking=${booking.id}`)),
-        ...salesInvoices.filter((invoice) => !researchInvoiceIds.has(invoice.id)).map((invoice) => record(invoice.invoiceNo, invoice.createdAt ?? new Date(`${invoice.date}T00:00:00`), "فاتورة مبيعات", invoice.total, invoice.status === "cancelled" ? (invoice.cancelledOriginalPaidAmount ?? invoice.paidAmount) : invoice.paidAmount, invoice.status === "cancelled" ? (invoice.cancelledOriginalRemainingAmount ?? invoice.remainingAmount) : invoice.remainingAmount, `/admin/sales?invoice=${invoice.id}`)),
-        ...graduationOrders.map((order) => record(order.orderNo, order.createdAt, "تجهيزات تخرج", order.totalAmount, order.paidAmount, order.remainingAmount, `/admin/graduation/orders?order=${order.id}`)),
-        ...photographyOrders.map((order) => record(order.orderNo, order.createdAt, "تصوير", order.totalAmount, order.paidAmount, order.remainingAmount, "/staff/photography")),
-        ...rentalOrders.map((order) => record(order.orderNo, order.createdAt, "تأجير", order.totalAmount, order.paidAmount, order.remainingAmount, `/admin/rental-orders?order=${order.id}`)),
-        ...researchOrders.map((order) => record(order.researchNo, order.createdAt, "خدمات بحثية", order.totalAmount, order.paidAmount, order.remainingAmount, `/admin/research/orders?order=${order.id}`)),
-      ].sort((a, b) => b.date.localeCompare(a.date));
+      const kindOf = (line: (typeof statement.entries)[number]) =>
+        line.kind === "document"
+          ? line.sourceType === "sales_invoice"
+            ? "invoice"
+            : line.sourceType === "order" || line.sourceType === "rental_order"
+              ? "order"
+              : "booking"
+          : line.kind === "receipt" || line.kind === "credit"
+            ? "receipt"
+            : line.debit > 0
+              ? "payment_reversal"
+              : "invoice_payment";
+      const entries = statement.entries.map((line) => ({
+        date: line.date ?? new Date(0).toISOString(),
+        kind: kindOf(line),
+        type: line.type,
+        ref: line.reference,
+        documentRef: line.documentReference,
+        description: line.description,
+        debit: line.debit,
+        credit: line.credit,
+        balance: line.balance,
+        href:
+          line.sourceType && line.sourceId
+            ? customerDocumentHref(line.sourceType, line.sourceId)
+            : line.kind === "credit"
+              ? "/admin/accounting?tab=receipts"
+              : null,
+      }));
+      const transactions = statement.documents
+        .map((doc) => ({
+          reference: doc.reference,
+          date: doc.date ?? new Date(0).toISOString(),
+          serviceType: customerSourceLabelAr(doc.sourceType),
+          total: doc.total,
+          paid: doc.paid,
+          remaining: doc.remaining,
+          paymentHistory: statement.entries
+            .filter(
+              (line) =>
+                line.kind !== "document" &&
+                line.sourceType === doc.sourceType &&
+                line.sourceId === doc.sourceId,
+            )
+            .map((line) => ({
+              date: line.date ?? doc.date ?? new Date(0).toISOString(),
+              amount: Math.round((line.credit - line.debit) * 100) / 100,
+              reference: line.reference,
+            })),
+          href: customerDocumentHref(doc.sourceType, doc.sourceId),
+        }))
+        .sort((a, b) => b.date.localeCompare(a.date));
       return json({
         customer: customer
           ? { id: customer.id, name: customer.name, phone: customer.phone }
           : { id: null, name: phone, phone },
-        entries: withBalance,
+        entries,
         transactions,
         totals: {
-          totalCharges: entries.reduce((s, e) => s + e.debit, 0),
-          totalPayments: entries.reduce((s, e) => s + e.credit, 0),
-          balance: running,
-          customerCredit: money((customerCredit.rows?.[0] as any)?.total),
+          // Same figures as the receipt voucher card: Σ document totals and Σ
+          // money counted on them (the ledger lines below explain each one).
+          totalCharges: money(statement.documents.reduce((s, doc) => s + doc.total, 0)),
+          totalPayments: money(statement.documents.reduce((s, doc) => s + doc.paid, 0)),
+          // «المتبقي» = Σ reconciled remaining, identical to the receipt voucher.
+          balance: statement.documentsRemaining,
+          // The running balance after credit the customer holds (returns,
+          // unapplied receipt money); balance − customerCredit.
+          netBalance: statement.closingBalance,
+          customerCredit: Math.max(statement.creditBalance, 0),
         },
       });
     }

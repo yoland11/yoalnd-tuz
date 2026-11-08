@@ -12,6 +12,7 @@ import {
   type CustomerStatementLine,
 } from "@/server/customer-account-summary";
 import { salesReturnStatementLines, salesReturnsReady } from "@/server/sales-returns";
+import { iraqiPhoneVariants } from "@/lib/phone";
 
 export {
   buildCustomerStatement,
@@ -53,6 +54,12 @@ export async function getCustomerAccountDocuments(
 ): Promise<CustomerAccountDocument[]> {
   const cid = customer.id;
   const phone = (customer.phone ?? "").trim();
+  // The same number in any stored spelling (07…, 964…, +964…, 00964…).
+  const phones = [...new Set([phone, ...iraqiPhoneVariants(phone)].filter(Boolean))];
+  const phoneIs = (column: string) =>
+    phones.length
+      ? sql`${sql.raw(column)} IN (SELECT jsonb_array_elements_text(${JSON.stringify(phones)}::jsonb))`
+      : sql`false`;
   // Debt removed by approved sales returns, read from its own settlement rows
   // (never inferred from snapshot gaps); zero before migration 0130.
   const credited = (await salesReturnsReady(executor))
@@ -74,15 +81,15 @@ export async function getCustomerAccountDocuments(
       FROM sales_invoices
       WHERE status = 'active' AND financially_reversed = false
         AND (customer_id = ${cid}
-             OR (customer_id IS NULL AND ${phone ? sql`customer_phone = ${phone}` : sql`false`}))
+             OR (customer_id IS NULL AND ${phoneIs("customer_phone")}))
       UNION ALL
-      SELECT 'order', id, 'ORD-' || id, created_at,
+      SELECT 'order', id, coalesce(tracking_code, 'ORD-' || id), created_at,
              total::numeric, remaining_amount::numeric, payment_status,
              (customer_id = ${cid}), 0::numeric
       FROM orders
       WHERE archived_at IS NULL AND status <> 'cancelled'
         AND (customer_id = ${cid}
-             OR (customer_id IS NULL AND ${phone ? sql`customer_phone = ${phone}` : sql`false`}))
+             OR (customer_id IS NULL AND ${phoneIs("customer_phone")}))
       UNION ALL
       SELECT 'service_order', id, coalesce(tracking_code, 'SRV-' || id), created_at,
              total_amount::numeric, remaining_amount::numeric, payment_status,
@@ -90,7 +97,7 @@ export async function getCustomerAccountDocuments(
       FROM service_orders
       WHERE archived_at IS NULL AND status <> 'cancelled'
         AND (customer_id = ${cid}
-             OR (customer_id IS NULL AND ${phone ? sql`phone = ${phone}` : sql`false`}))
+             OR (customer_id IS NULL AND ${phoneIs("phone")}))
       UNION ALL
       SELECT 'kosha_booking', id, coalesce(tracking_code, 'KOSHA-' || id), created_at,
              total_amount::numeric, remaining_amount::numeric, payment_status,
@@ -98,7 +105,7 @@ export async function getCustomerAccountDocuments(
       FROM kosha_bookings
       WHERE archived_at IS NULL AND status <> 'cancelled'
         AND (customer_id = ${cid}
-             OR (customer_id IS NULL AND ${phone ? sql`phone = ${phone}` : sql`false`}))
+             OR (customer_id IS NULL AND ${phoneIs("phone")}))
       UNION ALL
       SELECT 'rental_order', r.id, r.order_no, r.created_at,
              r.total_amount::numeric, r.remaining_amount::numeric, r.payment_status,
@@ -106,7 +113,7 @@ export async function getCustomerAccountDocuments(
       FROM rental_orders r
       WHERE to_jsonb(r)->>'rental_kind'='equipment' AND r.status NOT IN ('draft','pending_approval','cancelled','canceled')
         AND NOT EXISTS (SELECT 1 FROM orders mirror WHERE mirror.tracking_code = r.order_no)
-        AND (r.customer_id = ${cid} OR (r.customer_id IS NULL AND ${phone ? sql`r.phone = ${phone}` : sql`false`}))
+        AND (r.customer_id = ${cid} OR (r.customer_id IS NULL AND ${phoneIs("r.phone")}))
     )
     SELECT source_type, source_id, reference, doc_date,
            total::text AS total, remaining::text AS remaining,
@@ -148,66 +155,218 @@ export async function getCustomerAccountSummary(
   return summarizeCustomerAccount(customer.id, documents);
 }
 
+/** Where each receivable document opens in the admin. */
+export function customerDocumentHref(sourceType: CustomerAccountSourceType, sourceId: number): string {
+  switch (sourceType) {
+    case "sales_invoice": return `/admin/sales?invoice=${sourceId}`;
+    case "order": return `/admin/invoice/${sourceId}`;
+    case "service_order": return `/admin/invoice/${sourceId}?type=booking`;
+    case "kosha_booking": return `/admin/kosha-bookings?booking=${sourceId}`;
+    case "rental_order": return `/admin/rental-orders?order=${sourceId}`;
+  }
+}
+
+/** One كشف حساب line, tied to the document it settles when there is one. */
+export type CustomerStatementMovement = CustomerStatementLine & {
+  /** document = the receivable itself; payment/receipt/installment/deposit = money against it;
+   * adjustment = paid recorded on the document without its own movement; return/credit = customer credit. */
+  kind: "document" | "payment" | "receipt" | "installment" | "deposit" | "adjustment" | "return" | "credit";
+  sourceType: CustomerAccountSourceType | null;
+  sourceId: number | null;
+  /** The receivable document's own reference (null for customer-level credit lines). */
+  documentReference: string | null;
+};
+
+export type CustomerStatementResult = {
+  entries: (CustomerStatementMovement & { balance: number })[];
+  /** Running balance after every line: debt − unused credit held for the customer. */
+  closingBalance: number;
+  /** Σ reconciled remaining of the documents — the same «المتبقي» every other screen shows. */
+  documentsRemaining: number;
+  /** documentsRemaining − closingBalance: unused return credit, refunds owed and unapplied receipt money. */
+  creditBalance: number;
+  documents: CustomerAccountDocument[];
+};
+
+const toIso = (value: unknown): string | null => {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  if (value == null || value === "") return null;
+  const parsed = new Date(String(value).replace(" ", "T"));
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
+};
+
 /**
- * Chronological كشف حساب: each receivable document is a debit at its date, each
- * executed payment a credit — direct source payments (deposits/direct
- * collections tagged customer_id) plus posted receipt-voucher allocations. These
- * two payment sets are disjoint by construction (a receipt's cash movement is a
- * `receipt_voucher` transaction; its application is the allocation), so they are
- * summed exactly as the payment-state engine reconciles them — never
- * double-counted. Read-only; posts nothing.
+ * Chronological كشف حساب built from the same reconciled documents as the account
+ * summary, so its balance always equals «المتبقي» everywhere else (less any
+ * credit the customer holds). Each document is a debit; its money is matched by
+ * the document's own identity exactly as reconcilePaymentState counts it —
+ * direct executed transactions (net of reversals), posted receipt-voucher
+ * allocations net of reversed amounts, installment cash for sales invoices,
+ * applied rental deposits, and the graduation/research order behind a mirror
+ * invoice. Paid that the document records without such a movement (legacy
+ * entries, or money above the document total that is not counted as debt) gets
+ * one explicit adjustment line, so nothing is hidden and nothing is counted
+ * twice. Read-only; posts nothing.
  */
 export async function getCustomerStatement(
   customer: { id: number; phone?: string | null },
   executor: { execute: (query: any) => Promise<any> } = db,
-): Promise<{ entries: CustomerStatementEntry[]; closingBalance: number }> {
+): Promise<CustomerStatementResult> {
   const documents = await getCustomerAccountDocuments(customer, executor);
-  const debitLines: CustomerStatementLine[] = documents.map((doc) => ({
+  const cid = customer.id;
+  const key = (sourceType: string, sourceId: number) => `${sourceType}:${sourceId}`;
+  const byKey = new Map(documents.map((doc) => [key(doc.sourceType, doc.sourceId), doc]));
+  const docLines: CustomerStatementMovement[] = documents.map((doc) => ({
     date: doc.date,
     type: customerSourceLabelAr(doc.sourceType),
     reference: doc.reference,
     description: `${customerSourceLabelAr(doc.sourceType)} — استحقاق`,
     debit: doc.total,
     credit: 0,
+    kind: "document",
+    sourceType: doc.sourceType,
+    sourceId: doc.sourceId,
+    documentReference: doc.reference,
   }));
-  const cid = customer.id;
+  const keys = JSON.stringify(documents.map((doc) => ({ t: doc.sourceType, id: doc.sourceId })));
   const result = await executor.execute(sql`
-    SELECT * FROM (
-      SELECT transaction_time::text AS date, 'دفعة' AS type,
-             coalesce(transaction_no, '#' || id) AS reference,
-             coalesce(nullif(notes, ''), nullif(description, ''), 'دفعة معتمدة') AS description,
-             CASE WHEN direction = 'revenue' THEN 0 ELSE amount::numeric END AS debit,
-             CASE WHEN direction = 'revenue' THEN amount::numeric ELSE 0 END AS credit
-      FROM financial_transactions
-      WHERE customer_id = ${cid} AND approval_status = 'executed'
-        AND source_type IN ('sales_invoice', 'order', 'service_order', 'kosha_booking', 'rental_order')
+    WITH docs AS (
+      SELECT d->>'t' AS source_type, (d->>'id')::int AS source_id
+      FROM jsonb_array_elements(${keys}::jsonb) d
+    ), mirrors AS (
+      -- A graduation/research order owns its mirror invoice's balance; its money
+      -- is posted on the order. Only when the invoice has no history of its own.
+      SELECT 'graduation_order'::text AS money_type, g.id AS money_id, d.source_id AS invoice_id
+      FROM docs d
+      JOIN sales_invoices invoice ON invoice.id = d.source_id
+      JOIN graduation_orders g ON g.invoice_id = invoice.id AND g.total_amount::numeric = invoice.total::numeric
+      WHERE d.source_type = 'sales_invoice'
       UNION ALL
-      SELECT transaction_time::text, 'تسوية تأمين', transaction_no, description,
-        CASE WHEN transaction_type='er_deposit_apply_reversal' THEN amount::numeric ELSE 0 END,
-        CASE WHEN transaction_type='er_deposit_apply' THEN amount::numeric ELSE 0 END
-      FROM financial_transactions
-      WHERE customer_id=${cid} AND approval_status='executed' AND source_type='equipment_rental_deposit'
-        AND transaction_type IN ('er_deposit_apply','er_deposit_apply_reversal')
+      SELECT 'research_order', r.id, d.source_id
+      FROM docs d JOIN research_orders r ON r.invoice_id = d.source_id
+      WHERE d.source_type = 'sales_invoice'
+    ), owned AS (
+      SELECT m.* FROM mirrors m
+      WHERE NOT EXISTS (SELECT 1 FROM financial_transactions f
+          WHERE f.source_type = 'sales_invoice' AND f.source_id = m.invoice_id::text)
+        AND NOT EXISTS (SELECT 1 FROM receipt_voucher_allocations a
+          WHERE a.source_type = 'sales_invoice' AND a.source_id = m.invoice_id)
+        AND NOT EXISTS (SELECT 1 FROM installment_contracts c WHERE c.sales_invoice_id = m.invoice_id)
+    ), targets AS (
+      SELECT source_type AS money_type, source_id AS money_id, source_type, source_id FROM docs
       UNION ALL
-      SELECT coalesce(a.posted_at::text, v.date::text) AS date, 'سند قبض' AS type,
-             v.voucher_no AS reference, 'تخصيص سند قبض' AS description,
-             0 AS debit,
-             greatest(a.amount::numeric - coalesce(a.reversed_amount::numeric, 0), 0) AS credit
-      FROM receipt_voucher_allocations a
-      JOIN receipt_vouchers v ON v.id = a.receipt_voucher_id
-      WHERE a.customer_id = ${cid} AND a.posted_at IS NOT NULL
-        AND a.source_type IN ('sales_invoice', 'order', 'service_order', 'kosha_booking', 'rental_order')
-        AND coalesce(v.approval_status, 'executed') = 'executed'
-    ) movements
+      SELECT money_type, money_id, 'sales_invoice', invoice_id FROM owned
+    )
+    SELECT t.source_type, t.source_id, 'payment' AS kind, f.transaction_time AS at,
+           coalesce(f.transaction_no, '#' || f.id) AS reference,
+           coalesce(nullif(f.notes, ''), nullif(f.description, '')) AS note,
+           CASE WHEN f.direction = 'revenue' THEN 0 ELSE f.amount::numeric END AS debit,
+           CASE WHEN f.direction = 'revenue' THEN f.amount::numeric ELSE 0 END AS credit
+    FROM targets t
+    JOIN financial_transactions f ON f.source_type = t.money_type AND f.source_id = t.money_id::text
+    WHERE f.approval_status = 'executed'
+    UNION ALL
+    SELECT t.source_type, t.source_id, 'receipt', coalesce(a.posted_at, v.date::timestamp), v.voucher_no, NULL,
+           0, greatest(a.amount::numeric - coalesce(a.reversed_amount::numeric, 0), 0)
+    FROM targets t
+    JOIN receipt_voucher_allocations a ON a.source_type = t.money_type AND a.source_id = t.money_id
+    JOIN receipt_vouchers v ON v.id = a.receipt_voucher_id
+    WHERE a.posted_at IS NOT NULL AND coalesce(v.approval_status, 'executed') = 'executed'
+    UNION ALL
+    SELECT d.source_type, d.source_id, 'installment', f.transaction_time,
+           coalesce(f.transaction_no, '#' || f.id), coalesce(nullif(f.notes, ''), nullif(f.description, '')),
+           CASE WHEN f.direction = 'revenue' THEN 0 ELSE f.amount::numeric END,
+           CASE WHEN f.direction = 'revenue' THEN f.amount::numeric ELSE 0 END
+    FROM docs d
+    JOIN installment_contracts c ON c.sales_invoice_id = d.source_id
+    JOIN financial_transactions f ON f.approval_status = 'executed' AND (
+      (f.source_type = 'installment_contract' AND f.source_event IN ('payment', 'reconciliation', 'reversal') AND f.source_id = c.id::text)
+      OR (f.source_type = 'installment_payment' AND EXISTS (
+        SELECT 1 FROM installment_payments p WHERE p.contract_id = c.id AND p.id::text = f.source_id)))
+    WHERE d.source_type = 'sales_invoice'
+    UNION ALL
+    SELECT d.source_type, d.source_id, 'deposit', f.transaction_time,
+           coalesce(f.transaction_no, '#' || f.id), coalesce(nullif(f.notes, ''), nullif(f.description, '')),
+           CASE WHEN f.direction = 'expense' THEN 0 ELSE f.amount::numeric END,
+           CASE WHEN f.direction = 'expense' THEN f.amount::numeric ELSE 0 END
+    FROM docs d
+    JOIN financial_transactions f ON f.source_type = 'equipment_rental_deposit' AND f.source_id = d.source_id::text
+    WHERE d.source_type = 'rental_order' AND f.approval_status = 'executed'
+      AND f.transaction_type IN ('er_deposit_apply', 'er_deposit_apply_reversal')
+    UNION ALL
+    -- Receipt money not applied to any document stays the customer's credit.
+    SELECT NULL, NULL, 'credit', coalesce(a.posted_at, v.date::timestamp), v.voucher_no, NULL,
+           0, greatest(a.amount::numeric - coalesce(a.reversed_amount::numeric, 0), 0)
+    FROM receipt_voucher_allocations a
+    JOIN receipt_vouchers v ON v.id = a.receipt_voucher_id
+    WHERE a.customer_id = ${cid} AND a.source_type = 'customer_credit' AND a.posted_at IS NOT NULL
+      AND coalesce(v.approval_status, 'executed') = 'executed'
   `);
-  const creditLines: CustomerStatementLine[] = ((result.rows ?? []) as any[]).map((row) => ({
-    date: row.date ? String(row.date) : null,
-    type: String(row.type),
-    reference: String(row.reference ?? ""),
-    description: String(row.description ?? ""),
-    debit: num(row.debit),
-    credit: num(row.credit),
+  const explained = new Map<string, number>();
+  const lastMoneyAt = new Map<string, string | null>();
+  const moneyLines: CustomerStatementMovement[] = [];
+  for (const row of (result.rows ?? []) as any[]) {
+    const debit = num(row.debit);
+    const credit = num(row.credit);
+    if (debit === 0 && credit === 0) continue;
+    const date = toIso(row.at);
+    if (row.kind === "credit") {
+      moneyLines.push({ date, type: "سند قبض", reference: String(row.reference ?? ""), description: "سند قبض — رصيد غير مخصص للعميل", debit, credit, kind: "credit", sourceType: null, sourceId: null, documentReference: null });
+      continue;
+    }
+    const doc = byKey.get(key(String(row.source_type), Number(row.source_id)));
+    if (!doc) continue;
+    const docKey = key(doc.sourceType, doc.sourceId);
+    explained.set(docKey, round2((explained.get(docKey) ?? 0) + credit - debit));
+    const previous = lastMoneyAt.get(docKey);
+    if (date && (!previous || date > previous)) lastMoneyAt.set(docKey, date);
+    const label = customerSourceLabelAr(doc.sourceType);
+    const kind = row.kind as CustomerStatementMovement["kind"];
+    const type = kind === "receipt" ? "سند قبض" : kind === "installment" ? "قسط" : kind === "deposit" ? "تسوية تأمين" : credit > 0 ? "دفعة" : "عكس دفعة";
+    const note = row.note ? String(row.note).trim() : "";
+    moneyLines.push({
+      date,
+      type,
+      reference: String(row.reference ?? ""),
+      description: note ? `${note} — ${doc.reference}` : `${type} على ${label} ${doc.reference}`,
+      debit,
+      credit,
+      kind,
+      sourceType: doc.sourceType,
+      sourceId: doc.sourceId,
+      documentReference: doc.reference,
+    });
+  }
+  // The document's own paid is the authority (reconciled snapshot). Make any
+  // difference from its detailed movements visible as one explicit line; an
+  // excess is shown right after the payment that caused it.
+  const justAfter = (date: string | null) => {
+    const time = date ? Date.parse(date) : Number.NaN;
+    return Number.isNaN(time) ? date : new Date(time + 1000).toISOString();
+  };
+  const adjustmentLines: CustomerStatementMovement[] = [];
+  for (const doc of documents) {
+    const docKey = key(doc.sourceType, doc.sourceId);
+    const difference = round2(doc.paid - (explained.get(docKey) ?? 0));
+    if (Math.abs(difference) < 0.01) continue;
+    const label = customerSourceLabelAr(doc.sourceType);
+    adjustmentLines.push(difference > 0
+      ? { date: doc.date, type: "مدفوع سابق", reference: doc.reference, description: `مدفوع مثبت على ${label} ${doc.reference} بدون حركة دفع مفصلة`, debit: 0, credit: difference, kind: "adjustment", sourceType: doc.sourceType, sourceId: doc.sourceId, documentReference: doc.reference }
+      : { date: justAfter(lastMoneyAt.get(docKey) ?? doc.date), type: "تسوية", reference: doc.reference, description: `مبلغ زائد عن قيمة ${label} ${doc.reference} — غير محسوب على الذمة`, debit: -difference, credit: 0, kind: "adjustment", sourceType: doc.sourceType, sourceId: doc.sourceId, documentReference: doc.reference });
+  }
+  const returnLines: CustomerStatementMovement[] = (await salesReturnStatementLines(executor, cid)).map((line) => ({
+    ...line,
+    kind: "return" as const,
+    sourceType: null,
+    sourceId: null,
+    documentReference: null,
   }));
-  const returnLines: CustomerStatementLine[] = await salesReturnStatementLines(executor, cid);
-  return buildCustomerStatement([...debitLines, ...creditLines, ...returnLines]);
+  const statement = buildCustomerStatement([...docLines, ...moneyLines, ...adjustmentLines, ...returnLines]);
+  const documentsRemaining = round2(documents.reduce((sum, doc) => sum + doc.remaining, 0));
+  return {
+    ...statement,
+    documentsRemaining,
+    creditBalance: round2(documentsRemaining - statement.closingBalance),
+    documents,
+  };
 }

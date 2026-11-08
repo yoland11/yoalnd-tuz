@@ -73,6 +73,24 @@ check("service_orders receivable is included in the account", service.includes("
 check("all four core receivable sources are covered", ["FROM sales_invoices", "FROM orders", "FROM service_orders", "FROM kosha_bookings"].every((s) => service.includes(s)));
 check("read-only: no INSERT / UPDATE / DELETE / cash posting", !/insert\s+into|update\s+[a-z_]+\s+set|delete\s+from|master_cash_box/i.test(service));
 
+// ── One «المتبقي» everywhere: receipt voucher card, كشف حساب, account search ──
+// The statement credits money by the DOCUMENT's identity (as reconcilePaymentState
+// does), never by a payment's customer_id tag; anything the document records
+// without a movement is one explicit adjustment line.
+check("statement credits direct money by document identity", service.includes("f.source_id = t.money_id::text") && !/WHERE customer_id = \$\{cid\} AND approval_status/.test(service));
+check("statement credits receipt allocations by document identity", service.includes("a.source_type = t.money_type AND a.source_id = t.money_id"));
+check("statement credits installment cash and rental deposit applications", service.includes("installment_contracts c ON c.sales_invoice_id = d.source_id") && service.includes("'er_deposit_apply', 'er_deposit_apply_reversal'"));
+check("mirror invoices take their graduation/research order's money", service.includes("graduation_orders g ON g.invoice_id = invoice.id") && service.includes("research_orders r ON r.invoice_id = d.source_id"));
+check("paid without a movement is one explicit adjustment line", service.includes('kind: "adjustment"') && service.includes("doc.paid - (explained.get(docKey) ?? 0)"));
+check("statement reports Σ remaining and the customer's credit", service.includes("documentsRemaining") && service.includes("creditBalance: round2(documentsRemaining - statement.closingBalance)"));
+check("unlinked records match the customer's phone in any stored spelling", service.includes("iraqiPhoneVariants(phone)"));
+const api = readFileSync("src/server/api.ts", "utf8");
+check("customer card money comes from the canonical account", api.includes("remainingTotal: account.currentBalance") && !api.includes("const remainingTotal =\n"));
+const accountingStatement = api.slice(api.indexOf('if (method === "GET" && parts[2] === "statement") {'), api.indexOf('if (method === "GET" && parts[2] === "pnl") {'));
+check("accounting كشف حساب is the canonical statement", accountingStatement.includes("getCustomerStatement(") && accountingStatement.includes("balance: statement.documentsRemaining") && !accountingStatement.includes("photographyOrdersTable"));
+check("voucher account search shows the canonical balance", api.includes("balanceByCustomer.get(Number(row.customer_id))"));
+check("open records never list a mirror invoice next to its order", api.includes("FROM graduation_orders owner WHERE owner.invoice_id = invoice.id AND owner.customer_id = ${customerId}"));
+
 if (failures) {
   console.error(`AJN CUSTOMER ACCOUNT REGRESSION: ${failures} check(s) failed.`);
   process.exit(1);

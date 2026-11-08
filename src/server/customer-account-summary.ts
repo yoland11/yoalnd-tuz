@@ -89,8 +89,8 @@ export type CustomerStatementEntry = CustomerStatementLine & {
  * same day) and compute the running receivable balance. Side-effect-free so the
  * ledger math is unit-testable without a DB.
  */
-export function buildCustomerStatement(lines: CustomerStatementLine[]): {
-  entries: CustomerStatementEntry[];
+export function buildCustomerStatement<T extends CustomerStatementLine>(lines: T[]): {
+  entries: (T & { balance: number })[];
   closingBalance: number;
 } {
   const sorted = [...lines].sort((a, b) => {

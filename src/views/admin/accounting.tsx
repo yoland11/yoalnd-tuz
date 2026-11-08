@@ -522,8 +522,13 @@ function CategoriesTab() {
 
 // ───── Statement ─────
 type StatementEntry = {
-  date: string; kind: "order" | "booking" | "receipt" | "invoice" | "invoice_payment";
-  ref: string; description: string; debit: number; credit: number; balance: number;
+  date: string; kind: "order" | "booking" | "receipt" | "invoice" | "invoice_payment" | "payment_reversal";
+  /** Arabic line type from the server (دفعة، سند قبض، قسط…). */
+  type?: string;
+  ref: string;
+  /** The receivable this line belongs to (a payment's own ref is its voucher/transaction number). */
+  documentRef?: string | null;
+  description: string; debit: number; credit: number; balance: number;
   href?: string | null;
 };
 type StatementData = {
@@ -539,7 +544,8 @@ type StatementData = {
     paymentHistory?: Array<{ date: string; amount: number; reference?: string }>;
     href?: string | null;
   }>;
-  totals: { totalCharges: number; totalPayments: number; balance: number; customerCredit?: number };
+  /** balance = Σ remaining (the receipt voucher's «إجمالي المتبقي»); netBalance = balance − customerCredit. */
+  totals: { totalCharges: number; totalPayments: number; balance: number; netBalance?: number; customerCredit?: number };
 };
 
 type CustomerLite = { id: number; name: string; phone: string };
@@ -553,6 +559,7 @@ type CustomerAccountDetail = CustomerLite & {
     totalPaid?: number;
     remainingTotal: number;
     openInvoices?: number;
+    documentCount?: number;
   };
   orders: Array<{ id: number; trackingCode: string; total: number; remainingAmount: number; createdAt: string }>;
   serviceOrders: Array<{ id: number; trackingCode: string; total: number; remainingAmount: number; createdAt: string }>;
@@ -660,7 +667,7 @@ function VoucherCustomerPicker({
 
   const summary = detail.data?.summary;
   const totalPaid = summary ? (summary.totalPaid ?? Math.max(summary.totalSpent - summary.remainingTotal, 0)) : 0;
-  const linkedCount = summary ? summary.productOrders + summary.serviceOrders + summary.invoices : 0;
+  const linkedCount = summary ? summary.documentCount ?? summary.productOrders + summary.serviceOrders + summary.invoices : 0;
 
   return (
     <div className="col-span-2 rounded-xl border border-border/30 bg-background/35 p-3 space-y-3">
@@ -779,7 +786,7 @@ function StatementTab() {
   const expandedEntryIndex = filteredEntries.findIndex((entry) => statementEntryKey(entry) === expandedReferenceKey);
   const expandedEntry = expandedEntryIndex >= 0 ? filteredEntries[expandedEntryIndex] : null;
   const expandedTransaction = expandedEntry
-    ? findAccountingReferenceTransaction(expandedEntry.ref, data?.transactions ?? [])
+    ? findAccountingReferenceTransaction(expandedEntry.documentRef ?? expandedEntry.ref, data?.transactions ?? [])
     : null;
   const filteredTotals = useMemo(
     () => customerStatementTransactionTotals(filteredTransactions),
@@ -809,6 +816,7 @@ function StatementTab() {
         totalCharges: statementTotals.totalCharges,
         totalPayments: statementTotals.totalPayments,
         outstandingBalance: statementTotals.outstandingBalance,
+        customerCredit: fromDate || toDate ? 0 : data.totals.customerCredit ?? 0,
         transactions: filteredTransactions,
       });
     } catch (cause) {
@@ -877,16 +885,22 @@ function StatementTab() {
             <StatCard label="عدد الفواتير" value={String(filteredTransactions.length)} />
             <StatCard label="إجمالي المستحق" value={formatCurrency(statementTotals.totalCharges)} />
             <StatCard label="إجمالي المدفوع" value={formatCurrency(statementTotals.totalPayments)} />
-            <StatCard label="الرصيد" value={formatCurrency(statementTotals.outstandingBalance)}
+            <StatCard label="إجمالي المتبقي" value={formatCurrency(statementTotals.outstandingBalance)}
               accent={statementTotals.outstandingBalance > 0 ? "text-status-warning" : "text-status-success"} />
           </div>
+          {!fromDate && !toDate && (data.totals.customerCredit ?? 0) > 0 && (
+            <p className="rounded-lg border border-status-success/30 bg-status-success/5 px-3 py-2 text-xs text-muted-foreground">
+              للعميل رصيد دائن <strong className="text-status-success tabular-nums">{formatCurrency(data.totals.customerCredit ?? 0)}</strong> (مرتجعات أو سندات قبض غير مخصصة)،
+              لذلك الرصيد الجاري بآخر الجدول = إجمالي المتبقي − رصيد العميل = <strong className="text-foreground tabular-nums">{formatCurrency(data.totals.netBalance ?? statementTotals.outstandingBalance)}</strong>.
+            </p>
+          )}
 
           {filteredEntries.length === 0 ? <EmptyState message={fromDate || toDate ? "لا توجد حركات ضمن الفترة المحددة" : "لا توجد حركات لهذا الزبون"} />
           : <DataTable
               columns={["التاريخ", "النوع", "المرجع", "الوصف", "مدين", "دائن", "المبلغ المتبقي"]}
               rows={filteredEntries.map(e => [
                 new Date(e.date).toLocaleDateString("ar-IQ-u-nu-latn"),
-                e.kind === "order" ? "طلب" : e.kind === "booking" ? "حجز" : e.kind === "invoice" ? "فاتورة" : e.kind === "invoice_payment" ? "دفعة" : "قبض",
+                e.type ?? (e.kind === "order" ? "طلب" : e.kind === "booking" ? "حجز" : e.kind === "invoice" ? "فاتورة" : e.kind === "invoice_payment" ? "دفعة" : e.kind === "payment_reversal" ? "عكس دفعة" : "قبض"),
                 <div className="flex flex-wrap items-center gap-2 text-primary">
                   <code className="text-xs">{e.ref}</code>
                   <Button
