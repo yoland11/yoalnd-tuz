@@ -113,6 +113,7 @@
     "test:graduation-student-flow": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-student-flow.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-individual-identity.tsx",
     "test:graduation-group-pricing": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-group-pricing.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-group-pricing-access.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-graduation-group-pricing-ui.ts && node ./scripts/test-graduation-group-pricing-wiring.mjs && node ./scripts/test-graduation-group-pricing-route.mjs && node ./scripts/test-graduation-group-public-pricing.mjs",
     "test:graduation-inventory-transaction": "node ./scripts/test-graduation-inventory-transaction.mjs",
+    "test:stock-engine-transaction": "node ./scripts/test-stock-engine-transaction.mjs",
     "test:graduation-archive": "node ./scripts/test-graduation-archive.mjs",
     "test:graduation-archive-ui": "node ./scripts/test-graduation-archive-ui.mjs",
     "test:graduation-archive-browser": "node ./scripts/test-graduation-archive-browser.mjs",

@@ -8268,10 +8268,55 @@ async function resolveSharedStockProductId(
   return { id: null, message: "لا يمكن إنشاء ربط مخزون بهذا العمق" };
 }
 
+// Stock changes run in one transaction each. The global `db` is a separate
+// pooled connection, and on Vercel the pool holds a single connection: a global
+// `db` call made while a transaction owns it waits until the connection timeout.
+// So every read and write inside a stock change goes through the executor it was
+// given, and a caller without a transaction gets one here. The ensure*Tables()
+// probes also use the global `db`: they run only when no transaction is passed,
+// so a caller that passes its own transaction runs them before opening it.
+type StockTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type StockExecutor = typeof db | StockTx;
+
+// Work that must not run inside the stock transaction (it writes through the
+// global `db`), queued per transaction and started after it commits.
+const stockAfterCommitQueues = new WeakMap<object, Array<() => void>>();
+
+async function withStockWrite<T>(
+  executor: StockExecutor,
+  work: (tx: StockExecutor) => Promise<T>,
+): Promise<T> {
+  if (executor !== db) return work(executor);
+  const queue: Array<() => void> = [];
+  const result = await db.transaction(async (tx) => {
+    stockAfterCommitQueues.set(tx, queue);
+    return work(tx);
+  });
+  for (const start of queue) start();
+  return result;
+}
+
+function afterStockCommit(
+  executor: StockExecutor,
+  effect: () => Promise<unknown>,
+): void {
+  const start = () => {
+    void effect().catch((err) =>
+      console.warn("stock timeline update failed", safeServerError(err)),
+    );
+  };
+  const queue = executor === db ? undefined : stockAfterCommitQueues.get(executor);
+  // A caller's own transaction has no queue: the effect then waits for the one
+  // pooled connection, which is free once that transaction ends.
+  if (queue) queue.push(start);
+  else start();
+}
+
 async function getStockOwnerProduct(
   productId: number,
+  executor: StockExecutor = db,
 ): Promise<{ product: any; stockProduct: any } | null> {
-  const product = (await db.query.productsTable.findFirst({
+  const product = (await executor.query.productsTable.findFirst({
     where: eq(productsTable.id, productId),
   })) as any;
   if (!product) return null;
@@ -8281,7 +8326,7 @@ async function getStockOwnerProduct(
     const stockProductId = productSharedStockId(stockProduct);
     if (!stockProductId || visited.has(stockProductId)) break;
     visited.add(stockProductId);
-    const next = (await db.query.productsTable.findFirst({
+    const next = (await executor.query.productsTable.findFirst({
       where: eq(productsTable.id, stockProductId),
     })) as any;
     if (!next) break;
@@ -8309,166 +8354,215 @@ async function stockOwnerIdsForProductIds(
   return [...new Set(owners.filter((id): id is number => !!id))];
 }
 
+// Writes the ledger row. With an idempotency key a repeat returns false: that
+// exact change is already recorded, so the caller must not change stock again.
+async function insertStockMovementRow(
+  executor: StockExecutor,
+  resolved: { product: any; stockProduct: any },
+  delta: number,
+  meta: StockMovementMeta,
+): Promise<boolean> {
+  const insert = executor.insert(stockMovementsTable).values({
+    productId: resolved.product?.id ?? null,
+    stockSourceProductId: resolved.stockProduct?.id ?? null,
+    variantId: meta.variantId ?? null,
+    quantityChange: String(delta),
+    reason: meta.reason,
+    relatedType: meta.relatedType ?? null,
+    relatedId: meta.relatedId ?? null,
+    salesInvoiceId: meta.salesInvoiceId ?? null,
+    salesInvoiceItemId: meta.salesInvoiceItemId ?? null,
+    invoiceNumber: meta.invoiceNumber ?? null,
+    warehouseId: meta.warehouseId ?? null,
+    movementType: meta.movementType ?? null,
+    reversedMovementId: meta.reversedMovementId ?? null,
+    reversalReason: meta.reversalReason ?? null,
+    cancelledBy: meta.cancelledBy ?? null,
+    cancelledAt: meta.cancelledAt ?? null,
+    idempotencyKey: meta.idempotencyKey ?? null,
+    metadata: meta.metadata ?? {},
+    createdBy: meta.createdBy ?? null,
+    createdByName: meta.createdByName ?? "",
+  } as any);
+  if (!meta.idempotencyKey) {
+    await insert;
+    return true;
+  }
+  const inserted = await insert
+    .onConflictDoNothing({
+      target: stockMovementsTable.idempotencyKey,
+      where: sql`idempotency_key is not null`,
+    })
+    .returning({ id: stockMovementsTable.id });
+  return inserted.length > 0;
+}
+
+// Asset passport upkeep for an out/damage/replacement movement: the usage count
+// in the same transaction, the timeline entry after it commits.
+async function applyStockMovementEffects(
+  executor: StockExecutor,
+  resolved: { product: any; stockProduct: any },
+  delta: number,
+  meta: StockMovementMeta,
+): Promise<void> {
+  const kind = stockMovementKind(meta.reason);
+  const usageProductId = Number(
+    resolved.stockProduct?.id ?? resolved.product?.id ?? 0,
+  );
+  if (
+    usageProductId &&
+    ["out", "damage", "replacement"].includes(kind.type)
+  ) {
+    const existingProfile = await executor.query.assetProfilesTable.findFirst({
+      where: eq(assetProfilesTable.productId, usageProductId),
+    });
+    if (existingProfile) {
+      const nextUsage = Math.max(
+        0,
+        Number(existingProfile.usageCount ?? 0) +
+          Math.max(1, Math.abs(Math.floor(Number(delta) || 1))),
+      );
+      const purchasePrice = Number(
+        existingProfile.purchasePrice ??
+          resolved.stockProduct?.costPrice ??
+          0,
+      );
+      const expectedLifeUses =
+        Number(existingProfile.expectedLifeUses ?? 50) || 50;
+      const currentValue = Math.max(
+        0,
+        purchasePrice -
+          (purchasePrice * Math.min(nextUsage, expectedLifeUses)) /
+            expectedLifeUses,
+      );
+      await executor
+        .update(assetProfilesTable)
+        .set({
+          usageCount: nextUsage,
+          currentValue: String(currentValue),
+          updatedAt: new Date(),
+        })
+        .where(eq(assetProfilesTable.id, existingProfile.id));
+    } else if (Number(resolved.stockProduct?.costPrice ?? 0) > 0) {
+      const cost = Number(resolved.stockProduct.costPrice ?? 0);
+      await executor
+        .insert(assetProfilesTable)
+        .values({
+          productId: usageProductId,
+          purchasePrice: String(cost),
+          expectedLifeUses: 50,
+          usageCount: Math.max(1, Math.abs(Math.floor(Number(delta) || 1))),
+          maintenanceEveryUses: 50,
+          currentValue: String(cost),
+          status: "active",
+          notes: "تم إنشاء ملف الأصل تلقائياً من حركة المخزون",
+        })
+        .onConflictDoNothing();
+    }
+    // Integration — reflect inventory/rental movements on the asset's passport timeline.
+    const isRental = /rental/i.test(String(meta.reason));
+    afterStockCommit(executor, () => addEntityTimeline({
+      entityType: "asset",
+      entityId: usageProductId,
+      type:
+        kind.type === "damage"
+          ? "damage"
+          : kind.type === "replacement"
+            ? "replacement"
+            : isRental
+              ? "rental"
+              : "usage",
+      title:
+        kind.type === "damage"
+          ? "⚠️ ضرر (حركة مخزون)"
+          : kind.type === "replacement"
+            ? "🔁 استبدال"
+            : isRental
+              ? "🏷️ تأجير الأصل"
+              : "📦 استخدام/خروج من المخزن",
+      body: meta.reason ? String(meta.reason) : null,
+      actor: {
+        id: meta.createdBy ?? null,
+        name: meta.createdByName || "النظام",
+      },
+      metadata: {
+        delta,
+        reason: meta.reason,
+        relatedType: meta.relatedType,
+        relatedId: meta.relatedId,
+      },
+    }));
+  }
+}
+
+// Records a movement for a stock change the caller already made. Errors reach
+// the caller: a stock change must never go unlogged without anyone knowing.
 async function recordStockMovement(
   resolved: { product: any; stockProduct: any },
   delta: number,
   meta?: StockMovementMeta,
-): Promise<void> {
-  if (!meta?.reason) return;
-  try {
-    await ensureStockTrackingTables();
-    await db.insert(stockMovementsTable).values({
-      productId: resolved.product?.id ?? null,
-      stockSourceProductId: resolved.stockProduct?.id ?? null,
-      variantId: meta.variantId ?? null,
-      quantityChange: String(delta),
-      reason: meta.reason,
-      relatedType: meta.relatedType ?? null,
-      relatedId: meta.relatedId ?? null,
-      salesInvoiceId: meta.salesInvoiceId ?? null,
-      salesInvoiceItemId: meta.salesInvoiceItemId ?? null,
-      invoiceNumber: meta.invoiceNumber ?? null,
-      warehouseId: meta.warehouseId ?? null,
-      movementType: meta.movementType ?? null,
-      reversedMovementId: meta.reversedMovementId ?? null,
-      reversalReason: meta.reversalReason ?? null,
-      cancelledBy: meta.cancelledBy ?? null,
-      cancelledAt: meta.cancelledAt ?? null,
-      idempotencyKey: meta.idempotencyKey ?? null,
-      metadata: meta.metadata ?? {},
-      createdBy: meta.createdBy ?? null,
-      createdByName: meta.createdByName ?? "",
-    } as any);
-    const kind = stockMovementKind(meta.reason);
-    const usageProductId = Number(
-      resolved.stockProduct?.id ?? resolved.product?.id ?? 0,
-    );
-    if (
-      usageProductId &&
-      ["out", "damage", "replacement"].includes(kind.type)
-    ) {
-      const existingProfile = await db.query.assetProfilesTable.findFirst({
-        where: eq(assetProfilesTable.productId, usageProductId),
-      });
-      if (existingProfile) {
-        const nextUsage = Math.max(
-          0,
-          Number(existingProfile.usageCount ?? 0) +
-            Math.max(1, Math.abs(Math.floor(Number(delta) || 1))),
-        );
-        const purchasePrice = Number(
-          existingProfile.purchasePrice ??
-            resolved.stockProduct?.costPrice ??
-            0,
-        );
-        const expectedLifeUses =
-          Number(existingProfile.expectedLifeUses ?? 50) || 50;
-        const currentValue = Math.max(
-          0,
-          purchasePrice -
-            (purchasePrice * Math.min(nextUsage, expectedLifeUses)) /
-              expectedLifeUses,
-        );
-        await db
-          .update(assetProfilesTable)
-          .set({
-            usageCount: nextUsage,
-            currentValue: String(currentValue),
-            updatedAt: new Date(),
-          })
-          .where(eq(assetProfilesTable.id, existingProfile.id));
-      } else if (Number(resolved.stockProduct?.costPrice ?? 0) > 0) {
-        const cost = Number(resolved.stockProduct.costPrice ?? 0);
-        await db
-          .insert(assetProfilesTable)
-          .values({
-            productId: usageProductId,
-            purchasePrice: String(cost),
-            expectedLifeUses: 50,
-            usageCount: Math.max(1, Math.abs(Math.floor(Number(delta) || 1))),
-            maintenanceEveryUses: 50,
-            currentValue: String(cost),
-            status: "active",
-            notes: "تم إنشاء ملف الأصل تلقائياً من حركة المخزون",
-          })
-          .onConflictDoNothing();
-      }
-      // Integration — reflect inventory/rental movements on the asset's passport timeline.
-      const isRental = /rental/i.test(String(meta.reason));
-      void addEntityTimeline({
-        entityType: "asset",
-        entityId: usageProductId,
-        type:
-          kind.type === "damage"
-            ? "damage"
-            : kind.type === "replacement"
-              ? "replacement"
-              : isRental
-                ? "rental"
-                : "usage",
-        title:
-          kind.type === "damage"
-            ? "⚠️ ضرر (حركة مخزون)"
-            : kind.type === "replacement"
-              ? "🔁 استبدال"
-              : isRental
-                ? "🏷️ تأجير الأصل"
-                : "📦 استخدام/خروج من المخزن",
-        body: meta.reason ? String(meta.reason) : null,
-        actor: {
-          id: meta.createdBy ?? null,
-          name: meta.createdByName || "النظام",
-        },
-        metadata: {
-          delta,
-          reason: meta.reason,
-          relatedType: meta.relatedType,
-          relatedId: meta.relatedId,
-        },
-      });
-    }
-  } catch (err) {
-    console.warn("stock movement log failed", {
-      reason: meta.reason,
-      relatedType: meta.relatedType,
-      relatedId: meta.relatedId,
-      message: err instanceof Error ? err.message : "unknown",
-    });
-  }
+  executor: StockExecutor = db,
+): Promise<boolean> {
+  if (!meta?.reason) return false;
+  if (executor === db) await ensureStockTrackingTables();
+  return withStockWrite(executor, async (tx) => {
+    const fresh = await insertStockMovementRow(tx, resolved, delta, meta);
+    if (fresh) await applyStockMovementEffects(tx, resolved, delta, meta);
+    return fresh;
+  });
 }
 
 async function adjustProductStock(
   productId: number,
   delta: number,
   meta?: StockMovementMeta,
+  executor: StockExecutor = db,
 ): Promise<number | null> {
-  const resolved = await getStockOwnerProduct(productId);
-  if (!resolved) return null;
-  await db.execute(sql`
-    UPDATE products
-    SET stock = GREATEST(0, stock + ${Number(delta)}), updated_at = now()
-    WHERE id = ${resolved.stockProduct.id}
-  `);
-  await recordStockMovement(resolved, delta, meta);
-  return resolved.stockProduct.id;
+  if (executor === db) await ensureStockTrackingTables();
+  return withStockWrite(executor, async (tx) => {
+    const resolved = await getStockOwnerProduct(productId, tx);
+    if (!resolved) return null;
+    // The ledger row goes first: when its idempotency key is already taken this
+    // exact change was applied before (a retry or a double click), so stock
+    // stays as it is.
+    if (meta?.reason && !(await insertStockMovementRow(tx, resolved, delta, meta)))
+      return resolved.stockProduct.id;
+    await tx.execute(sql`
+      UPDATE products
+      SET stock = GREATEST(0, stock + ${Number(delta)}), updated_at = now()
+      WHERE id = ${resolved.stockProduct.id}
+    `);
+    if (meta?.reason) await applyStockMovementEffects(tx, resolved, delta, meta);
+    return resolved.stockProduct.id;
+  });
 }
 
 async function setProductStock(
   productId: number,
   stock: number,
   meta?: StockMovementMeta,
+  executor: StockExecutor = db,
 ): Promise<number | null> {
-  const resolved = await getStockOwnerProduct(productId);
-  if (!resolved) return null;
-  const previousStock = Number(resolved.stockProduct?.stock ?? 0);
-  const nextStock = Math.max(0, Math.floor(Number(stock) || 0));
-  await db
-    .update(productsTable)
-    .set({ stock: nextStock, updatedAt: new Date() })
-    .where(eq(productsTable.id, resolved.stockProduct.id));
-  const delta = nextStock - previousStock;
-  if (delta !== 0) await recordStockMovement(resolved, delta, meta);
-  return resolved.stockProduct.id;
+  if (executor === db) await ensureStockTrackingTables();
+  return withStockWrite(executor, async (tx) => {
+    const resolved = await getStockOwnerProduct(productId, tx);
+    if (!resolved) return null;
+    // Lock the row so the recorded change matches the stock that was replaced.
+    const locked: any = await tx.execute(sql`
+      SELECT stock FROM products WHERE id = ${resolved.stockProduct.id} FOR UPDATE
+    `);
+    const previousStock = Number(
+      (locked.rows ?? locked ?? [])[0]?.stock ?? resolved.stockProduct?.stock ?? 0,
+    );
+    const nextStock = Math.max(0, Math.floor(Number(stock) || 0));
+    await tx
+      .update(productsTable)
+      .set({ stock: nextStock, updatedAt: new Date() })
+      .where(eq(productsTable.id, resolved.stockProduct.id));
+    const delta = nextStock - previousStock;
+    if (delta !== 0) await recordStockMovement(resolved, delta, meta, tx);
+    return resolved.stockProduct.id;
+  });
 }
 
 function normalizeSharedStockLinkedIds(
@@ -8551,9 +8645,10 @@ async function adjustSaleStock(
   productId: number,
   delta: number,
   meta: StockMovementMeta,
+  executor: StockExecutor = db,
 ): Promise<void> {
   if (!productId || !delta) return;
-  await adjustProductStock(productId, delta, meta);
+  await adjustProductStock(productId, delta, meta, executor);
 }
 
 async function applyOrderItemsStock(
@@ -8656,7 +8751,7 @@ async function applySalesInvoiceItemsStock(
   reason: string,
   actorInfo?: { id: number | null; name: string } | null,
 ): Promise<void> {
-  const [invoice, items] = await Promise.all([
+  const [invoice, items, recordedKeys] = await Promise.all([
     db.query.salesInvoicesTable.findFirst({
       where: eq(salesInvoicesTable.id, invoiceId),
     }),
@@ -8664,12 +8759,29 @@ async function applySalesInvoiceItemsStock(
       .select()
       .from(salesInvoiceItemsTable)
       .where(eq(salesInvoiceItemsTable.invoiceId, invoiceId)),
+    db
+      .select({ key: stockMovementsTable.idempotencyKey })
+      .from(stockMovementsTable)
+      .where(
+        and(
+          eq(stockMovementsTable.salesInvoiceId, invoiceId),
+          sql`${stockMovementsTable.idempotencyKey} is not null`,
+        ),
+      ),
   ]);
   for (const item of items) {
     if (!invoiceLineTracksInventory((item as any).trackInventorySnapshot)) continue;
     const productId = Number(item.productId ?? 0);
     const quantity = Number.parseFloat(String(item.quantity ?? "0")) || 0;
     if (productId > 0 && quantity > 0) {
+      // An invoice can go cancelled → active → cancelled again, and each of those
+      // changes is real, so the key counts how often this change already
+      // happened for the line. Two requests at the same moment get the same
+      // number and only one of them changes stock.
+      const keyBase = `sales-invoice-stock:${invoiceId}:${item.id}:${reason}`;
+      const timesApplied = recordedKeys.filter(
+        ({ key }) => key === keyBase || String(key).startsWith(`${keyBase}:`),
+      ).length;
       await adjustSaleStock(productId, direction * quantity, {
         reason,
         relatedType: "sales_invoice",
@@ -8678,7 +8790,7 @@ async function applySalesInvoiceItemsStock(
         salesInvoiceItemId: item.id,
         invoiceNumber: invoice?.invoiceNo ?? null,
         movementType: direction < 0 ? "sale" : "sales_invoice_stock_return",
-        idempotencyKey: `sales-invoice-stock:${invoiceId}:${item.id}:${reason}`,
+        idempotencyKey: `${keyBase}:${timesApplied}`,
         metadata: {
           sourceType: "sales_invoice",
           sourceId: invoiceId,
@@ -13186,9 +13298,12 @@ function taskItemProgress(
 
 // Product-level dashboard stock mirrors the sum of active color variants while
 // preserving the existing single product/inventory identity.
-async function syncProductStockFromVariants(productId: number): Promise<void> {
-  await ensureVariantTables();
-  await db.execute(
+async function syncProductStockFromVariants(
+  productId: number,
+  executor: StockExecutor = db,
+): Promise<void> {
+  if (executor === db) await ensureVariantTables();
+  await executor.execute(
     sql`update products set stock = coalesce((select sum(stock) from product_variants where product_id=${productId} and is_active=true),0)::int, updated_at=now() where id=${productId}`,
   );
 }
@@ -13360,20 +13475,23 @@ async function adjustVariantStock(
     sourceId?: number;
     who?: { id: number | null; name: string };
   },
+  executor: StockExecutor = db,
 ): Promise<void> {
   if (!variantId || !delta) return;
-  await ensureVariantTables();
-  const res: any = await db.execute(sql`
-    update product_variants set stock = greatest(0, stock + ${delta}), updated_at = now()
-    where id = ${variantId} returning product_id
-  `);
-  const row = (res.rows ?? res ?? [])[0];
-  const productId = Number(row?.product_id ?? 0);
-  if (productId) await syncProductStockFromVariants(productId);
-  // Mirror into stock_movements for a unified inventory ledger.
-  try {
+  if (executor === db) {
+    await ensureVariantTables();
     await ensureStockTrackingTables();
-    await db.insert(stockMovementsTable).values({
+  }
+  await withStockWrite(executor, async (tx) => {
+    const res: any = await tx.execute(sql`
+      update product_variants set stock = greatest(0, stock + ${delta}), updated_at = now()
+      where id = ${variantId} returning product_id
+    `);
+    const row = (res.rows ?? res ?? [])[0];
+    const productId = Number(row?.product_id ?? 0);
+    if (productId) await syncProductStockFromVariants(productId, tx);
+    // Same transaction as the stock change, so the ledger can no longer miss it.
+    await tx.insert(stockMovementsTable).values({
       productId: productId || null,
       stockSourceProductId: productId || null,
       variantId,
@@ -13384,9 +13502,7 @@ async function adjustVariantStock(
       createdBy: meta.who?.id ?? null,
       createdByName: meta.who?.name ?? "",
     } as any);
-  } catch {
-    /* movement log is best-effort */
-  }
+  });
 }
 
 /** A hold taken from another warehouse moves that warehouse's balance with the company stock. */
@@ -13394,7 +13510,9 @@ async function moveReservationShelf(productId: number, warehouseId: unknown, del
   const id = Number(warehouseId) || 0;
   if (!id || !delta) return;
   await db.transaction(async (tx) => {
-    const owner = (await getStockOwnerProduct(productId))?.stockProduct?.id ?? productId;
+    // The owner lookup must use this transaction: on Vercel the pool's only
+    // connection is held by it, so a global-db lookup here would wait it out.
+    const owner = (await getStockOwnerProduct(productId, tx))?.stockProduct?.id ?? productId;
     await tx.execute(sql`select id from products where id = ${owner} for update`);
     const breakdown = (await warehouseBreakdowns(tx as any, [owner])).get(owner);
     if (breakdown) await applyWarehouseDeltas(tx as any, { productId: owner, company: { ...breakdown.company, inWarehouse: breakdown.company.inWarehouse + delta }, deltas: [{ warehouseId: id, inWarehouse: delta }] });

@@ -10,11 +10,16 @@ const file = ts.createSourceFile(
   ts.ScriptTarget.Latest,
   true,
 );
-const fn = file.statements.find(
-  (n) => ts.isFunctionDeclaration(n) && n.name?.text === "adjustVariantStock",
+// adjustVariantStock runs its change in one transaction via withStockWrite.
+const wanted = new Set(["adjustVariantStock", "withStockWrite"]);
+const pieces = file.statements.filter(
+  (n) =>
+    (ts.isFunctionDeclaration(n) && wanted.has(n.name?.text)) ||
+    (ts.isVariableStatement(n) &&
+      n.declarationList.declarations.some((d) => d.name.getText(file) === "stockAfterCommitQueues")),
 );
-assert.ok(fn);
-const js = ts.transpileModule(fn.getText(file), {
+assert.equal(pieces.length, 3);
+const js = ts.transpileModule(pieces.map((n) => n.getText(file)).join("\n"), {
   compilerOptions: {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.CommonJS,
@@ -45,8 +50,13 @@ const context = {
         ledger.push(value);
       },
     }),
+    transaction: async (callback) => {
+      transactions += 1;
+      return callback(context.db);
+    },
   },
 };
+let transactions = 0;
 vm.createContext(context);
 vm.runInContext(js, context);
 (async () => {
@@ -68,6 +78,7 @@ vm.runInContext(js, context);
   });
   assert.equal(stock, 2, "reversal restores the exact fractional quantity");
   assert.equal(ledger[1].quantityChange, "0.5");
+  assert.equal(transactions, 2, "each variant change and its ledger row share one transaction");
   console.log(
     "PASS actual variant stock adjustment preserves decimal checkout/reversal and ledger agreement",
   );
