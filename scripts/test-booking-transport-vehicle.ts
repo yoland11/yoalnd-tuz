@@ -198,7 +198,9 @@ assert.match(loading, /عيّن فريق الحجز من «فريق الحجز»
 const { buildBookingTransportHtml } = await import("../src/components/booking-transport-print");
 const slip = { bookingNumber: "B-137-1839", customerName: "أحمد <لطيف>", phone: "07700000000", eventDate: "2026-10-25", eventTime: "12:00", location: "حي عسكري", vehicle: "كيا حمل · 26 A68498", driver: "علي ابراهيم", fee: 1000, inTotal: true, note: null };
 const a5 = buildBookingTransportHtml(slip, "a5"), thermal = buildBookingTransportHtml(slip, "80mm");
-for (const html of [a5, thermal]) {
+for (const printed of [a5, thermal]) {
+  // 80mm puts related facts on one line, each part a bidi isolate; compare the visible text.
+  const html = printed.replace(/[\u2068\u2069]/g, "");
   assert.match(html, /وصل خدمة النقل/);
   assert.match(html, /كيا حمل · 26 A68498/);
   assert.match(html, /علي ابراهيم/);
@@ -210,7 +212,9 @@ for (const html of [a5, thermal]) {
 assert.match(a5, /@page\{size:148mm 210mm/);
 assert.match(a5, /class="ajn-r ajn-r--a5"/, "A5 uses the shared branded receipt");
 assert.match(a5, /توقيع السائق/);
-assert.match(thermal, /class="ajn-r ajn-r--thermal"/);
+assert.match(thermal, /class="ajn-r ajn-r--thermal ajn-r--compact"/, "80mm is the short slip");
+assert.match(thermal.replace(/[\u2068\u2069]/g, ""), /أحمد &lt;لطيف&gt; · 07700000000/, "customer and phone share one line on 80mm");
+assert.doesNotMatch(thermal, /طوزخورماتو|توقيع السائق/, "the short slip leaves out the address and signatures");
 assert.doesNotMatch(thermal, /@page\{[^}]*size/, "80mm declares no page size (XP-80C centres a sized page)");
 assert.match(buildBookingTransportHtml({ ...slip, inTotal: false }, "80mm"), /للعلم — غير مضافة إلى مبلغ الحجز/);
 assert.match(card, /savedMode === "ajn" && data\.transportPlan\.trips\.length \? <div className="flex flex-wrap gap-2">\{data\.transportPlan\.trips\.map\(trip => <Button/, "receipts print only the saved trips");

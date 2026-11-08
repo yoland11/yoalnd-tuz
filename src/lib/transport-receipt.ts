@@ -48,8 +48,8 @@ export function normalizeTransportReceiptSettings(input:unknown):TransportReceip
   return settings;
 }
 /** Standalone 80mm composition on the branded receipt (src/lib/branded-receipt.ts),
- * one article per copy. Its caller uses the existing image/font-ready popup
- * helper; this builder never calls print. Missing facts print «غير مسجل». */
+ * compact, one article per copy. Its caller uses the existing image/font-ready popup
+ * helper; this builder never calls print. Facts that were not recorded are left out. */
 export function buildTransportReceiptHtml(data:TransportReceiptData,input:TransportReceiptSettings,copies:number,brandInput?:ReceiptBrand):string{
   if(!Number.isInteger(copies)||copies<1||copies>5)throw new Error("عدد النسخ يجب أن يكون من 1 إلى 5");
   if(!["customer","driver","internal"].includes(data.variant))throw new Error("نوع نسخة وصل النقل غير صالح");
@@ -58,21 +58,23 @@ export function buildTransportReceiptHtml(data:TransportReceiptData,input:Transp
   if(amount&&(!Number.isFinite(amount.value)||amount.value<0))throw new Error("مبلغ وصل النقل غير صالح");
   const base=brandInput??currentReceiptBrand();
   const brand:ReceiptBrand={...base,logoUrl:settings.showLogo?base.logoUrl:"",name:settings.showCompanyName?base.name:"",tagline:settings.showCompanyName?base.tagline:""};
-  const shown=(value:unknown)=>value==null||value===""?"غير مسجل":value;
+  // A short slip: only what was recorded, related facts on one line. Empty facts are left out.
+  // Each part is its own bidi isolate (FSI…PDI), so a plate like «26 A68498» keeps its order next to Arabic.
+  const join=(...parts:unknown[])=>parts.map(part=>part==null?"":String(part).trim()).filter(Boolean).map(part=>`\u2068${part}\u2069`).join(" · ");
   const title=data.variant==="driver"?"وصل السائق":"وصل نقل";
   const copyLabel={customer:"نسخة العميل",driver:"نسخة السائق",internal:"نسخة المكتب"}[data.variant];
+  const route=[settings.showOrigin&&data.origin?`من ${data.origin}`:"",settings.showDestination&&data.destination?`إلى ${data.destination}`:""].filter(Boolean).join(" ");
+  const time=[data.departureTime,data.expectedArrivalTime].filter(Boolean).join(" ← ");
   const facts:ReceiptFact[]=[
     {label:"رقم الوصل",value:data.receiptReference,icon:"receipt"},
-    ...(settings.showBookingNumber?[{label:"رقم الحجز",value:shown(data.bookingNumber),icon:"hash" as const}]:[]),
-    ...(settings.showCustomer?[{label:"العميل",value:shown(data.customerName),icon:"user" as const},{label:"هاتف التواصل",value:shown(data.customerPhone),icon:"phone" as const}]:[]),
-    ...(settings.showTransportType?[{label:"نوع النقل",value:shown(data.transportType),icon:"truck" as const}]:[]),
-    ...(settings.showOrigin?[{label:"من",value:shown(data.origin),icon:"pin" as const}]:[]),
-    ...(settings.showDestination?[{label:"إلى",value:shown(data.destination),icon:"pin" as const}]:[]),
-    ...(settings.showDriver?[{label:"السائق",value:shown(data.driverName),icon:"id" as const}]:[]),
-    ...(settings.showDriverPhone?[{label:"هاتف السائق",value:shown(data.driverPhone),icon:"phone" as const}]:[]),
-    ...(settings.showVehicle?[{label:"المركبة",value:shown(data.vehicleName),icon:"car" as const},{label:"رقم المركبة",value:shown(data.vehiclePlate),icon:"hash" as const}]:[]),
-    ...(settings.showDateTime?[{label:"تاريخ النقل",value:shown(data.transportDate),icon:"calendar" as const},{label:"وقت الانطلاق",value:shown(data.departureTime),icon:"clock" as const},{label:"الوصول المتوقع",value:shown(data.expectedArrivalTime),icon:"clock" as const}]:[]),
-    ...(data.assignedWork?[{label:"العمل المكلف",value:data.assignedWork,icon:"note" as const,wide:true}]:[]),
+    ...(settings.showBookingNumber&&data.bookingNumber&&!data.receiptReference.startsWith(data.bookingNumber)?[{label:"رقم الحجز",value:data.bookingNumber,icon:"hash" as const}]:[]),
+    ...(settings.showCustomer?[{label:"العميل",value:join(data.customerName,data.customerPhone),icon:"user" as const}]:[]),
+    ...(route?[{label:"المسار",value:route,icon:"pin" as const}]:[]),
+    ...(settings.showDateTime?[{label:"الموعد",value:join(data.transportDate,time),icon:"calendar" as const}]:[]),
+    ...(settings.showVehicle?[{label:"المركبة",value:join(data.vehicleName,data.vehiclePlate),icon:"car" as const}]:[]),
+    ...(settings.showDriver||settings.showDriverPhone?[{label:"السائق",value:join(settings.showDriver?data.driverName:null,settings.showDriverPhone?data.driverPhone:null),icon:"id" as const}]:[]),
+    ...(settings.showTransportType&&data.transportType?[{label:"النوع",value:data.transportType,icon:"truck" as const}]:[]),
+    ...(data.assignedWork?[{label:"العمل",value:data.assignedWork,icon:"note" as const,wide:true}]:[]),
   ];
   const receipt=(index:number)=>`<article class="transport-receipt" data-copy="${index}">${brandedReceiptBody({
     documentTitle:`${title} ${data.receiptReference}`,
@@ -80,19 +82,17 @@ export function buildTransportReceiptHtml(data:TransportReceiptData,input:Transp
     icon:"truck",
     copyLabel:`${copyLabel}${copies>1?` · ${index}/${copies}`:""}`,
     facts,
-    sections:[
-      ...(settings.showNotes?[{title:"ملاحظات النقل",text:String(shown(data.notes))}]:[]),
-      ...(data.variant==="driver"?[{title:"مستحق السائق",text:"غير مسجل في تسوية مستقلة"}]:[]),
-    ],
+    compact:true,
+    notes:settings.showNotes&&data.notes?data.notes:null,
     totals:settings.showAmount&&amount?[{label:amount.label,value:formatCurrency(amount.value),tone:"strong"}]:[],
-    totalsNote:settings.showAmount&&amount?"أجرة خدمة النقل — ليست إثبات دفع":null,
+    totalsNote:settings.showAmount&&amount?"ليست إثبات دفع":null,
     qr:settings.showQr&&data.qrUrl?{url:data.qrUrl,caption:"صفحة النقل"}:null,
     hideQr:!(settings.showQr&&data.qrUrl),
   },"80mm",brand)}</article>`;
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${receiptEsc(title)} ${receiptEsc(data.receiptReference)}</title><style>
     @page { size: 80mm auto; margin: 0; }
     *{box-sizing:border-box}html,body{margin:0;padding:0;width:80mm;color:#000;background:#fff}
-    .transport-receipt{width:80mm;padding:4mm;overflow-wrap:anywhere;break-after:page}.transport-receipt:last-child{break-after:auto}
+    .transport-receipt{width:80mm;padding:1mm 4mm;overflow-wrap:anywhere;break-after:page}.transport-receipt:last-child{break-after:auto}
     .transport-receipt .ajn-r{padding:0}
     @media print{html,body{width:80mm;margin:0!important;padding:0!important}body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
     </style><style id="transport-measured-page"></style></head><body>${Array.from({length:copies},(_,i)=>receipt(i+1)).join("")}

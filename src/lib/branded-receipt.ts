@@ -87,6 +87,8 @@ export type BrandedReceiptDoc = {
   thanks?: string;
   /** Small line above the thanks band (e.g. «وصل للقراءة والطباعة فقط»). */
   footNote?: string | null;
+  /** 80mm/58mm only: a short slip — small header, tight lines, small QR and a one-line footer. */
+  compact?: boolean;
   printedAt?: string;
 };
 
@@ -285,6 +287,32 @@ const NARROW_CSS = `
 .ajn-r--58 .contact,.ajn-r--58 .ig-line,.ajn-r--58 .thanks span{font-size:9.5px}
 `;
 
+/** Opt-in short thermal slip (doc.compact): the same order, less paper. */
+const COMPACT_CSS = `
+.ajn-r--compact{padding:.5mm 1mm 1.2mm;font-size:11px;line-height:1.4}
+.ajn-r--compact .medal{width:10mm;height:10mm;margin-bottom:.4mm}
+.ajn-r--compact .brand-name{font-size:14px;line-height:1.25}
+.ajn-r--compact .tagline{display:none}
+.ajn-r--compact .pill{margin-top:.8mm}
+.ajn-r--compact .pill-in{padding:.1mm 4mm;font-size:13.5px}
+.ajn-r--compact .copy{margin-top:.1mm;font-size:9.5px}
+.ajn-r--compact .facts{margin-top:1.2mm;padding-bottom:.9mm}
+.ajn-r--compact .fact{grid-template-columns:minmax(0,24%) minmax(0,76%);gap:1mm;padding:0}
+.ajn-r--compact .fact strong{font-size:11.5px}
+.ajn-r--compact .bottom{margin-top:1mm}
+.ajn-r--compact .trow{padding:.2mm 0;font-size:11.5px}
+.ajn-r--compact .trow.strong{padding:.4mm 0}
+.ajn-r--compact .trow.strong strong{font-size:14px}
+.ajn-r--compact .tnote{font-size:9px}
+.ajn-r--compact .qr-card{width:17mm;margin-top:1mm}
+.ajn-r--compact .qr-cap{font-size:8.5px}
+.ajn-r--compact .notes{margin-top:1mm;padding-top:.6mm}
+.ajn-r--compact .foot{margin-top:1mm;padding-top:.7mm}
+.ajn-r--compact .phones{font-size:11.5px}
+.ajn-r--compact .thanks-text{margin-top:.2mm;font-size:10.5px;font-weight:900}
+.ajn-r--compact .printed{margin-top:.1mm;font-size:8.5px}
+`;
+
 const THERMAL_CSS = `
 .ajn-r{box-sizing:border-box;width:100%;max-width:72mm;margin:0 auto;padding:1.5mm 1mm 3mm;background:#fff;color:#000;
   font-family:"AJN Cairo",Cairo,Tahoma,Arial,sans-serif;font-size:11.5px;line-height:1.5;direction:rtl;overflow-wrap:anywhere}
@@ -426,8 +454,9 @@ export function brandedReceiptBody(doc: BrandedReceiptDoc, size: BrandedReceiptS
   const phones = brand.phones.filter(Boolean);
   // A document QR replaces the Instagram one in the card, so the account still shows as text.
   const igLine = brand.instagram && (doc.qr?.url || doc.qr?.image || doc.hideQr) ? `<div class="ig-line">${INSTAGRAM_ICON}<bdi>@${receiptEsc(brand.instagram)}</bdi></div>` : "";
-  const rootClass = size === "a5" ? "ajn-r--a5" : size === "58mm" ? "ajn-r--thermal ajn-r--58" : "ajn-r--thermal";
-  return `<div class="ajn-r ${rootClass}" dir="rtl" lang="ar"><style>${FONT_FACE}${thermal ? THERMAL_CSS : A5_CSS}${size === "58mm" ? NARROW_CSS : ""}</style>${thermal ? "" : CORNER_IMAGES}
+  const compact = thermal && doc.compact === true;
+  const rootClass = `${size === "a5" ? "ajn-r--a5" : size === "58mm" ? "ajn-r--thermal ajn-r--58" : "ajn-r--thermal"}${compact ? " ajn-r--compact" : ""}`;
+  return `<div class="ajn-r ${rootClass}" dir="rtl" lang="ar"><style>${FONT_FACE}${thermal ? THERMAL_CSS : A5_CSS}${size === "58mm" ? NARROW_CSS : ""}${compact ? COMPACT_CSS : ""}</style>${thermal ? "" : CORNER_IMAGES}
     <header class="head">
       ${logo ? `<div class="medal"><div class="medal-ring"><div class="medal-in"><img src="${receiptEsc(logo)}" alt="" onerror="this.remove()"></div></div></div>` : ""}
       ${brand.name ? `<div class="brand-name">${receiptEsc(brand.name)}</div>` : ""}
@@ -444,11 +473,11 @@ export function brandedReceiptBody(doc: BrandedReceiptDoc, size: BrandedReceiptS
     ${doc.signatures?.length ? `<div class="signs">${doc.signatures.map((label) => `<div>${receiptEsc(label)}</div>`).join("")}</div>` : ""}
     <footer class="foot">
       <div class="foot-rule"></div>
-      ${brand.address ? `<div class="contact">${icon("pin")}<span>${receiptEsc(brand.address)}</span></div>` : ""}
+      ${brand.address && !compact ? `<div class="contact">${icon("pin")}<span>${receiptEsc(brand.address)}</span></div>` : ""}
       ${phones.length ? `<div class="contact phones">${icon("phone")}<span>${phones.map((phone) => `<bdi>${receiptEsc(phone)}</bdi>`).join("<i>|</i>")}</span></div>` : ""}
-      ${igLine}
+      ${compact ? "" : igLine}
       ${doc.footNote ? `<div class="foot-note">${receiptEsc(doc.footNote)}</div>` : ""}
-      <div class="thanks"><span>${receiptEsc(doc.thanks ?? "شكراً لتعاملكم معنا")}</span></div>
+      ${compact ? `<div class="thanks-text">${receiptEsc(doc.thanks ?? "شكراً لتعاملكم معنا")}</div>` : `<div class="thanks"><span>${receiptEsc(doc.thanks ?? "شكراً لتعاملكم معنا")}</span></div>`}
       <div class="printed">طُبع <bdi>${receiptEsc(doc.printedAt ?? receiptPrintedAt())}</bdi></div>
     </footer>
   </div>`;

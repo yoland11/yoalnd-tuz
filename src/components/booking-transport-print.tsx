@@ -33,9 +33,29 @@ export type BookingTransportPrintData = {
 const feeNote = (data: BookingTransportPrintData) => data.feeNoteText ?? (data.inTotal ? "ضمن مبلغ الحجز" : "للعلم — غير مضافة إلى مبلغ الحجز");
 const title = (data: BookingTransportPrintData) => data.title ?? "وصل خدمة النقل";
 const numberLabel = (data: BookingTransportPrintData) => data.numberLabel ?? "رقم الحجز";
+/** Parts on one line, each its own bidi isolate (FSI…PDI) so numbers keep their order. */
+const oneLine = (...parts: unknown[]) => parts.map((part) => clean(part)).filter(Boolean).map((part) => `\u2068${part}\u2069`).join(" · ");
 
 /** Pure builder (no auto-print script; the shared print dialog adds it). */
 export function buildBookingTransportHtml(data: BookingTransportPrintData, size: BrandedReceiptSize, brand?: ReceiptBrand) {
+  // 80mm: a short slip with related facts on one line; A5 keeps every fact on its own line.
+  if (size !== "a5") return buildBrandedReceiptHtml({
+    documentTitle: `وصل نقل ${data.bookingNumber}`,
+    title: title(data),
+    icon: "truck",
+    compact: true,
+    facts: [
+      { label: numberLabel(data), value: data.bookingNumber, icon: "receipt" },
+      { label: "العميل", value: oneLine(data.customerName, data.phone), icon: "user" },
+      { label: "الموعد", value: oneLine(displayDate(data.eventDate), data.eventTime), icon: "calendar" },
+      { label: "الموقع", value: data.location, icon: "pin" },
+      { label: "السيارة", value: oneLine(...clean(data.vehicle).split(" · ")), icon: "car" },
+      { label: "السائق", value: data.driver, icon: "id" },
+    ],
+    totals: [{ label: "أجرة النقل", value: formatCurrency(data.fee), tone: "strong" }],
+    totalsNote: feeNote(data),
+    notes: clean(data.note) || null,
+  }, size, brand);
   return buildBrandedReceiptHtml({
     documentTitle: `وصل نقل ${data.bookingNumber}`,
     title: title(data),
