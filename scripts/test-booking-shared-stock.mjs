@@ -13,10 +13,11 @@ const slice = (start, end) => {
 // 1. A product sharing stock reads the stock owner's quantity (its own stock is kept at 0)
 //    and every product in that pool counts against it.
 const summary = slice("async function getProductStockSummary(", "type ReservationItem");
-assert.match(summary, /productSharedStockId\(product\)\s*\?\s*\(\(await getStockOwnerProduct\(productId\)\)\?\.stockProduct \?\? product\)/);
+// The optional executor lets a reservation run this same summary inside its transaction.
+assert.match(summary, /productSharedStockId\(product\)\s*\?\s*\(\(await getStockOwnerProduct\(productId(, executor)?\)\)\?\.stockProduct \?\? product\)/);
 assert.match(summary, /: Number\(owner\.stock \?\? 0\);/, "non-variant stock comes from the stock owner");
 assert.doesNotMatch(summary, /: Number\(product\.stock \?\? 0\);/, "a linked product's own stock (0) is never used");
-assert.match(summary, /loadPoolReserved\(ownerId, options\.excludeSource\)/);
+assert.match(summary, /loadPoolReserved\(ownerId, options\.excludeSource(, executor)?\)/);
 assert.match(summary, /stockOwnerName: ownerId !== productId \?/);
 const pool = slice("async function loadPoolReserved(", "// Full stock summary");
 assert.match(pool, /with recursive pool as \(\s*select id from products where id = \$\{ownerId\}\s*union\s*select p\.id from products p join pool on p\.shared_stock_product_id = pool\.id\s*\)/, "the pool follows chains of linked products");
@@ -26,7 +27,7 @@ assert.match(pool, /and not \(r\.source_type = \$\{excludeSource\.type\} and r\.
 // 2. Saving a booking checks the same pool, so linked products are not refused for "no stock";
 //    two lines drawing on one pool cannot overbook it together.
 const check = slice("async function checkAvailability(", "// Bookings/orders currently reserving");
-assert.match(check, /getProductStockSummary\(p, \{ excludeSource \}\)/);
+assert.match(check, /getProductStockSummary\(p, \{ excludeSource \}(, executor)?\)/);
 assert.match(check, /requestedFromPool\.get\(summary\.stockOwnerId\)/);
 assert.match(check, /requestedFromPool\.set\(summary\.stockOwnerId, already \+ requested\)/);
 

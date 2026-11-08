@@ -13232,9 +13232,12 @@ function formatVariant(row: any, reserved = 0) {
   };
 }
 
-async function loadVariantRows(productId: number): Promise<any[]> {
-  await ensureVariantTables();
-  const res: any = await db.execute(
+async function loadVariantRows(
+  productId: number,
+  executor: StockExecutor = db,
+): Promise<any[]> {
+  if (executor === db) await ensureVariantTables();
+  const res: any = await executor.execute(
     sql`select * from product_variants where product_id = ${productId} order by sort_order asc, id asc`,
   );
   return res.rows ?? res ?? [];
@@ -13314,9 +13317,10 @@ type StockSourceRef = { type: string; id: number };
 async function loadReservedForProduct(
   productId: number,
   excludeSource?: StockSourceRef,
+  executor: StockExecutor = db,
 ): Promise<{ productLevel: number; byVariant: Map<number, number> }> {
-  await ensureVariantTables();
-  const res: any = await db.execute(sql`
+  if (executor === db) await ensureVariantTables();
+  const res: any = await executor.execute(sql`
     select variant_id, coalesce(sum(quantity),0) as qty
     from stock_reservations
     where product_id = ${productId} and status = 'reserved'
@@ -13339,8 +13343,12 @@ async function loadReservedForProduct(
  * product linked to it (directly or through a chain). For a product without
  * links this is just its own product-level holds.
  */
-async function loadPoolReserved(ownerId: number, excludeSource?: StockSourceRef): Promise<number> {
-  const res: any = await db.execute(sql`
+async function loadPoolReserved(
+  ownerId: number,
+  excludeSource?: StockSourceRef,
+  executor: StockExecutor = db,
+): Promise<number> {
+  const res: any = await executor.execute(sql`
     with recursive pool as (
       select id from products where id = ${ownerId}
       union
@@ -13359,16 +13367,20 @@ async function loadPoolReserved(ownerId: number, excludeSource?: StockSourceRef)
 // A product that shares stock with another draws on the stock owner's quantity
 // (its own `stock` is kept at 0), and every product in that pool counts against it.
 // `excludeSource` leaves one booking/order's own holds out, e.g. "available for this booking".
-async function getProductStockSummary(product: any, options: { excludeSource?: StockSourceRef } = {}) {
+async function getProductStockSummary(
+  product: any,
+  options: { excludeSource?: StockSourceRef } = {},
+  executor: StockExecutor = db,
+) {
   const productId = Number(product.id);
   const owner = productSharedStockId(product)
-    ? ((await getStockOwnerProduct(productId))?.stockProduct ?? product)
+    ? ((await getStockOwnerProduct(productId, executor))?.stockProduct ?? product)
     : product;
   const ownerId = Number(owner.id);
   const [variantRows, reserved, poolReserved] = await Promise.all([
-    loadVariantRows(productId),
-    loadReservedForProduct(productId, options.excludeSource),
-    loadPoolReserved(ownerId, options.excludeSource),
+    loadVariantRows(productId, executor),
+    loadReservedForProduct(productId, options.excludeSource, executor),
+    loadPoolReserved(ownerId, options.excludeSource, executor),
   ]);
   const hasVariants = variantRows.length > 0;
   const variants = variantRows.map((v) =>
@@ -13404,23 +13416,28 @@ async function getProductStockSummary(product: any, options: { excludeSource?: S
 }
 
 /** A line that names a warehouse must fit what that warehouse has left, before any hold is written. */
-async function assertBookingLinesFitWarehouses(items: Array<{ productId: number; quantity: number; warehouseId?: number | null }>, sourceType: string, sourceId: number) {
-  const mainId = await mainWarehouseId(db as any);
+async function assertBookingLinesFitWarehouses(
+  items: Array<{ productId: number; quantity: number; warehouseId?: number | null }>,
+  sourceType: string,
+  sourceId: number,
+  executor: StockExecutor = db,
+) {
+  const mainId = await mainWarehouseId(executor as any);
   const needed = new Map<string, { productId: number; warehouseId: number; quantity: number }>();
   for (const item of items) {
     const warehouseId = item.warehouseId ?? mainId;
-    const owner = (await getStockOwnerProduct(item.productId))?.stockProduct?.id ?? item.productId;
+    const owner = (await getStockOwnerProduct(item.productId, executor))?.stockProduct?.id ?? item.productId;
     const key = `${owner}:${warehouseId}`;
     const current = needed.get(key) ?? { productId: owner, warehouseId, quantity: 0 };
     current.quantity += Number(item.quantity) || 0;
     needed.set(key, current);
   }
   for (const line of needed.values()) {
-    const warehouse = await requireActiveWarehouse(db as any, line.warehouseId);
+    const warehouse = await requireActiveWarehouse(executor as any, line.warehouseId);
     if (line.warehouseId === mainId) continue;
-    const breakdown = (await warehouseBreakdowns(db as any, [line.productId])).get(line.productId);
+    const breakdown = (await warehouseBreakdowns(executor as any, [line.productId])).get(line.productId);
     const shelf = breakdown?.shares.find((share) => share.warehouseId === line.warehouseId)?.inWarehouse ?? 0;
-    const others = warehouseRows(await db.execute(sql`
+    const others = warehouseRows(await executor.execute(sql`
       select coalesce(sum(quantity), 0) as quantity from stock_reservations
       where product_id = ${line.productId} and status = 'reserved' and warehouse_id = ${line.warehouseId} and not (source_type = ${sourceType} and source_id = ${sourceId})
     `))[0];
@@ -13437,33 +13454,73 @@ type ReservationItem = {
   warehouseId?: number | null;
 };
 
-// Reserve stock for a source (booking/order): replaces that source's active reservations.
-// Does NOT deduct inventory — only records the hold.
+// Reservation work always locks in this order: the source's holds, then the
+// stock-owner product rows, then the variant rows, each by id. Using one order
+// everywhere keeps two requests from each holding what the other waits for.
+async function lockReservationStock(
+  tx: StockExecutor,
+  lines: Array<{ productId: unknown; variantId?: unknown }>,
+): Promise<void> {
+  const owners = new Set<number>();
+  const variants = new Set<number>();
+  for (const line of lines) {
+    const productId = Number(line.productId) || 0;
+    if (productId)
+      owners.add(Number((await getStockOwnerProduct(productId, tx))?.stockProduct?.id ?? productId));
+    const variantId = Number(line.variantId) || 0;
+    if (variantId) variants.add(variantId);
+  }
+  const idList = (ids: Set<number>) =>
+    sql.join([...ids].sort((a, b) => a - b).map((id) => sql`${id}`), sql`, `);
+  if (owners.size)
+    await tx.execute(sql`select id from products where id in (${idList(owners)}) order by id for update`);
+  if (variants.size)
+    await tx.execute(sql`select id from product_variants where id in (${idList(variants)}) order by id for update`);
+}
+
+// Reserve stock for a source (booking/order): replaces that source's active
+// reservations in one transaction. Does NOT deduct inventory — only records the
+// hold. With `verify`, the stock involved is locked first and the check runs in
+// the same transaction, so two bookings reserving the same stock at the same
+// moment cannot both pass it.
 async function reserveStockForSource(
   sourceType: string,
   sourceId: number,
   sourceLabel: string | null,
   items: ReservationItem[],
   who: { id: number | null; name: string },
+  options: { verify?: (tx: StockExecutor) => Promise<void> } = {},
+  executor: StockExecutor = db,
 ): Promise<void> {
-  await ensureVariantTables();
-  // Drop prior still-reserved holds for this source (re-reservation on edit).
-  await db.execute(sql`
-    delete from stock_reservations
-    where source_type = ${sourceType} and source_id = ${sourceId} and status = 'reserved'
-  `);
-  for (const it of items) {
-    const productId = Number(it.productId);
-    const qty = Number(it.quantity) || 0;
-    if (!productId || qty <= 0) continue;
-    await db.execute(sql`
-      insert into stock_reservations
-        (product_id, variant_id, quantity, source_type, source_id, source_label, status, created_by, created_by_name, warehouse_id)
-      values
-        (${productId}, ${it.variantId ?? null}, ${qty}, ${sourceType}, ${sourceId}, ${sourceLabel},
-         'reserved', ${who.id}, ${who.name}, ${it.warehouseId ?? null})
+  if (executor === db) await ensureVariantTables();
+  await withStockWrite(executor, async (tx) => {
+    await tx.execute(sql`
+      select id from stock_reservations
+      where source_type = ${sourceType} and source_id = ${sourceId} and status = 'reserved'
+      order by id for update
     `);
-  }
+    if (options.verify) {
+      await lockReservationStock(tx, items);
+      await options.verify(tx);
+    }
+    // Drop prior still-reserved holds for this source (re-reservation on edit).
+    await tx.execute(sql`
+      delete from stock_reservations
+      where source_type = ${sourceType} and source_id = ${sourceId} and status = 'reserved'
+    `);
+    for (const it of items) {
+      const productId = Number(it.productId);
+      const qty = Number(it.quantity) || 0;
+      if (!productId || qty <= 0) continue;
+      await tx.execute(sql`
+        insert into stock_reservations
+          (product_id, variant_id, quantity, source_type, source_id, source_label, status, created_by, created_by_name, warehouse_id)
+        values
+          (${productId}, ${it.variantId ?? null}, ${qty}, ${sourceType}, ${sourceId}, ${sourceLabel},
+           'reserved', ${who.id}, ${who.name}, ${it.warehouseId ?? null})
+      `);
+    }
+  });
 }
 
 async function adjustVariantStock(
@@ -13506,10 +13563,15 @@ async function adjustVariantStock(
 }
 
 /** A hold taken from another warehouse moves that warehouse's balance with the company stock. */
-async function moveReservationShelf(productId: number, warehouseId: unknown, delta: number) {
+async function moveReservationShelf(
+  productId: number,
+  warehouseId: unknown,
+  delta: number,
+  executor: StockExecutor = db,
+) {
   const id = Number(warehouseId) || 0;
   if (!id || !delta) return;
-  await db.transaction(async (tx) => {
+  await withStockWrite(executor, async (tx) => {
     // The owner lookup must use this transaction: on Vercel the pool's only
     // connection is held by it, so a global-db lookup here would wait it out.
     const owner = (await getStockOwnerProduct(productId, tx))?.stockProduct?.id ?? productId;
@@ -13520,84 +13582,122 @@ async function moveReservationShelf(productId: number, warehouseId: unknown, del
 }
 
 // Convert a source's reservations into real inventory deduction (checkout/preparation).
+// One transaction for all of the source's holds. Locking them first means a
+// second request at the same moment waits, then finds them consumed and does
+// nothing, so stock is deducted once.
 async function consumeReservations(
   sourceType: string,
   sourceId: number,
   who: { id: number | null; name: string },
+  executor: StockExecutor = db,
 ): Promise<void> {
-  await ensureVariantTables();
-  const res: any = await db.execute(sql`
-    select * from stock_reservations
-    where source_type = ${sourceType} and source_id = ${sourceId} and status = 'reserved'
-  `);
-  const rows = res.rows ?? res ?? [];
-  for (const r of rows) {
-    const qty = Number(r.quantity) || 0;
-    if (qty <= 0) continue;
-    await moveReservationShelf(Number(r.product_id), r.warehouse_id, -qty);
-    if (r.variant_id != null) {
-      await adjustVariantStock(Number(r.variant_id), -qty, {
-        reason: `reservation_consumed:${sourceType}`,
-        sourceType,
-        sourceId,
-        who,
-      });
-    } else {
-      await adjustProductStock(Number(r.product_id), -qty, {
-        reason: `reservation_consumed:${sourceType}`,
-        relatedType: sourceType,
-        relatedId: sourceId,
-        createdBy: who.id,
-        createdByName: who.name,
-      });
-    }
-    await db.execute(sql`
-      update stock_reservations set status = 'consumed', consumed_at = now(), updated_at = now()
-      where id = ${Number(r.id)}
-    `);
+  if (executor === db) {
+    await ensureVariantTables();
+    await ensureStockTrackingTables();
   }
+  await withStockWrite(executor, async (tx) => {
+    const res: any = await tx.execute(sql`
+      select * from stock_reservations
+      where source_type = ${sourceType} and source_id = ${sourceId} and status = 'reserved'
+      order by id for update
+    `);
+    const rows = res.rows ?? res ?? [];
+    await lockReservationStock(
+      tx,
+      rows.map((r: any) => ({ productId: r.product_id, variantId: r.variant_id })),
+    );
+    for (const r of rows) {
+      const qty = Number(r.quantity) || 0;
+      if (qty <= 0) continue;
+      await moveReservationShelf(Number(r.product_id), r.warehouse_id, -qty, tx);
+      if (r.variant_id != null) {
+        await adjustVariantStock(
+          Number(r.variant_id),
+          -qty,
+          { reason: `reservation_consumed:${sourceType}`, sourceType, sourceId, who },
+          tx,
+        );
+      } else {
+        await adjustProductStock(
+          Number(r.product_id),
+          -qty,
+          {
+            reason: `reservation_consumed:${sourceType}`,
+            relatedType: sourceType,
+            relatedId: sourceId,
+            createdBy: who.id,
+            createdByName: who.name,
+          },
+          tx,
+        );
+      }
+      await tx.execute(sql`
+        update stock_reservations set status = 'consumed', consumed_at = now(), updated_at = now()
+        where id = ${Number(r.id)}
+      `);
+    }
+  });
 }
 
 // Release a source's holds. Reserved rows are freed (no stock change); already-consumed rows
-// are restored to inventory (e.g. cancelling a checked-out booking).
+// are restored to inventory (e.g. cancelling a checked-out booking). Same single
+// transaction and lock as consumeReservations, so a double cancel restores once.
 async function releaseReservations(
   sourceType: string,
   sourceId: number,
   who: { id: number | null; name: string },
+  executor: StockExecutor = db,
 ): Promise<void> {
-  await ensureVariantTables();
-  const res: any = await db.execute(sql`
-    select * from stock_reservations
-    where source_type = ${sourceType} and source_id = ${sourceId} and status in ('reserved','consumed')
-  `);
-  const rows = res.rows ?? res ?? [];
-  for (const r of rows) {
-    const qty = Number(r.quantity) || 0;
-    if (r.status === "consumed" && qty > 0) {
-      // Restore actual inventory that was deducted at checkout.
-      await moveReservationShelf(Number(r.product_id), r.warehouse_id, qty);
-      if (r.variant_id != null) {
-        await adjustVariantStock(Number(r.variant_id), qty, {
-          reason: `reservation_restored:${sourceType}`,
-          sourceType,
-          sourceId,
-          who,
-        });
-      } else {
-        await adjustProductStock(Number(r.product_id), qty, {
-          reason: `reservation_restored:${sourceType}`,
-          relatedType: sourceType,
-          relatedId: sourceId,
-          createdBy: who.id,
-          createdByName: who.name,
-        });
-      }
-    }
-    await db.execute(sql`
-      update stock_reservations set status = 'released', released_at = now(), updated_at = now()
-      where id = ${Number(r.id)}
-    `);
+  if (executor === db) {
+    await ensureVariantTables();
+    await ensureStockTrackingTables();
   }
+  await withStockWrite(executor, async (tx) => {
+    const res: any = await tx.execute(sql`
+      select * from stock_reservations
+      where source_type = ${sourceType} and source_id = ${sourceId} and status in ('reserved','consumed')
+      order by id for update
+    `);
+    const rows = res.rows ?? res ?? [];
+    await lockReservationStock(
+      tx,
+      rows
+        .filter((r: any) => r.status === "consumed")
+        .map((r: any) => ({ productId: r.product_id, variantId: r.variant_id })),
+    );
+    for (const r of rows) {
+      const qty = Number(r.quantity) || 0;
+      if (r.status === "consumed" && qty > 0) {
+        // Restore actual inventory that was deducted at checkout.
+        await moveReservationShelf(Number(r.product_id), r.warehouse_id, qty, tx);
+        if (r.variant_id != null) {
+          await adjustVariantStock(
+            Number(r.variant_id),
+            qty,
+            { reason: `reservation_restored:${sourceType}`, sourceType, sourceId, who },
+            tx,
+          );
+        } else {
+          await adjustProductStock(
+            Number(r.product_id),
+            qty,
+            {
+              reason: `reservation_restored:${sourceType}`,
+              relatedType: sourceType,
+              relatedId: sourceId,
+              createdBy: who.id,
+              createdByName: who.name,
+            },
+            tx,
+          );
+        }
+      }
+      await tx.execute(sql`
+        update stock_reservations set status = 'released', released_at = now(), updated_at = now()
+        where id = ${Number(r.id)}
+      `);
+    }
+  });
 }
 
 // Store products linked to a Kosha management section (accessory/addon/board/…).
@@ -13648,19 +13748,30 @@ async function loadKoshaSectionProducts(type: string, id: number) {
     });
 }
 
+type StockShortage = {
+  productId: number;
+  variantId: number | null;
+  name: string;
+  requested: number;
+  available: number;
+};
+
+// Thrown from a reservation's locked re-check; callers answer 409 with the shortages.
+class StockShortageError extends Error {
+  constructor(readonly shortages: StockShortage[]) {
+    super("المخزون المتاح غير كافٍ");
+    this.name = "StockShortageError";
+  }
+}
+
 // Availability check across products/variants: blocks quantities exceeding available stock.
 async function checkAvailability(
   items: ReservationItem[],
   opts: { ignoreSourceType?: string; ignoreSourceId?: number } = {},
+  executor: StockExecutor = db,
 ) {
-  await ensureVariantTables();
-  const shortages: Array<{
-    productId: number;
-    variantId: number | null;
-    name: string;
-    requested: number;
-    available: number;
-  }> = [];
+  if (executor === db) await ensureVariantTables();
+  const shortages: StockShortage[] = [];
   const excludeSource =
     opts.ignoreSourceType && opts.ignoreSourceId
       ? { type: opts.ignoreSourceType, id: opts.ignoreSourceId }
@@ -13675,7 +13786,7 @@ async function checkAvailability(
     let stock = 0;
     let name = `#${productId}`;
     if (variantId) {
-      const vres: any = await db.execute(
+      const vres: any = await executor.execute(
         sql`select * from product_variants where id = ${variantId} limit 1`,
       );
       const v = (vres.rows ?? vres ?? [])[0];
@@ -13684,10 +13795,10 @@ async function checkAvailability(
         [v?.color, v?.size].filter(Boolean).join(" / ") ||
         `variant#${variantId}`;
     } else {
-      const p = await db.query.productsTable.findFirst({
+      const p = await executor.query.productsTable.findFirst({
         where: eq(productsTable.id, productId),
       });
-      const summary = p ? await getProductStockSummary(p, { excludeSource }) : null;
+      const summary = p ? await getProductStockSummary(p, { excludeSource }, executor) : null;
       name = p?.nameAr || p?.name || name;
       if (summary && !summary.hasVariants) {
         const already = requestedFromPool.get(summary.stockOwnerId) ?? 0;
@@ -13700,7 +13811,7 @@ async function checkAvailability(
       stock = summary?.totalStock ?? 0;
     }
     // Reserved for this product/variant, excluding the source being (re)checked.
-    const rres: any = await db.execute(sql`
+    const rres: any = await executor.execute(sql`
       select coalesce(sum(quantity),0) as qty from stock_reservations
       where status = 'reserved'
         and ${variantId ? sql`variant_id = ${variantId}` : sql`product_id = ${productId} and variant_id is null`}
@@ -22181,13 +22292,24 @@ async function handleAdminKoshas(
               409,
             );
           }
-          await reserveStockForSource(
-            "kosha_booking",
-            id,
-            label,
-            items,
-            actor(auth),
-          );
+          try {
+            await reserveStockForSource("kosha_booking", id, label, items, actor(auth), {
+              // Re-checked with the stock locked: two bookings saved at the same
+              // moment cannot both take the last units.
+              verify: async (tx) => {
+                const locked = await checkAvailability(
+                  items.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity })),
+                  { ignoreSourceType: "kosha_booking", ignoreSourceId: id },
+                  tx,
+                );
+                if (!locked.ok) throw new StockShortageError(locked.shortages);
+              },
+            });
+          } catch (err) {
+            if (err instanceof StockShortageError)
+              return json({ error: "المخزون المتاح غير كافٍ", shortages: err.shortages }, 409);
+            throw err;
+          }
           // Persist per-line commerce metadata (price / free / note) into bookingDetails.
           const details = (existing.bookingDetails ?? {}) as Record<
             string,
@@ -34313,13 +34435,32 @@ async function handleBookingOperations(
       if ((await getSoundStoreProducts(selectedProducts as any[])).length > 0) {
         await stampBookingSoundDepartment(reference);
       }
-      await reserveStockForSource(
-        reference.entityType,
-        reference.id,
-        `${reference.customerName} · #${reference.id}`,
-        parsed.data.items,
-        actor(auth),
-      );
+      try {
+        await reserveStockForSource(
+          reference.entityType,
+          reference.id,
+          `${reference.customerName} · #${reference.id}`,
+          parsed.data.items,
+          actor(auth),
+          {
+            // The same checks again with the stock locked, so a booking saved at
+            // the same moment cannot take what this one was just shown as free.
+            verify: async (tx) => {
+              await assertBookingLinesFitWarehouses(parsed.data.items, reference.entityType, reference.id, tx);
+              const locked = await checkAvailability(
+                parsed.data.items,
+                { ignoreSourceType: reference.entityType, ignoreSourceId: reference.id },
+                tx,
+              );
+              if (!locked.ok) throw new StockShortageError(locked.shortages);
+            },
+          },
+        );
+      } catch (err) {
+        if (err instanceof StockShortageError)
+          return json({ error: "المخزون المتاح غير كافٍ", shortages: err.shortages }, 409);
+        throw err;
+      }
       const productMeta: Record<string, any> = {};
       let productCharges = 0;
       for (const item of parsed.data.items)
