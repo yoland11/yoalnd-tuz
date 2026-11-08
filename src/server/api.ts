@@ -71,6 +71,7 @@ import { readVehicleTransportPlans,addPlanVehicleStats,assertPlanFitsPartnership
 import { PartnerShareError, assertPayoutFits, buildPartnerMonths, isMonth, lastDayOfMonth, monthRange, partnerBalance, percentToBasisPoints, settleMonths, termForMonth, toFils, fromFils, type PartnerTerm, type PayoutSlice } from "@/lib/vehicle-partner-share";
 import { normalizeTransportReceiptSettings,DEFAULT_TRANSPORT_RECEIPT_SETTINGS } from "@/lib/transport-receipt";
 import { executedTransportRevenue, serviceOrderTransportation, transportTotalDelta } from "@/lib/booking-transport";
+import { bookingAssetInvoiceLines, bookingProductInvoiceLines, buildServiceBookingInvoice, INVOICE_GROUPS } from "@/lib/booking-invoice-lines";
 import { LoadingError } from "@/lib/booking-loading";
 import { parseDailyOperationsFilters } from "@/lib/booking-daily-operations";
 import { autoTranslate, autoTranslateStatus } from "@/server/translate";
@@ -55011,6 +55012,15 @@ async function handleAdmin(
           price: Number(formatted.transportationFee ?? 0),
         }] : []),
       ].filter((item) => item.price > 0 || item.description);
+      // Store products and assets held from the booking workspace are part of it
+      // too (products are already inside the total; assets are priced within it).
+      const koshaReference = await loadBookingOperationsReference("kosha", booking.id);
+      const koshaExtras = koshaReference
+        ? [
+            ...bookingProductInvoiceLines(await bookingOperationProducts(koshaReference)),
+            ...bookingAssetInvoiceLines(await bookingOperationAssets(koshaReference)),
+          ]
+        : [];
       const qr = await ensureQrForEntity("kosha_booking", booking, req);
       return json({
         kind: "kosha",
@@ -55096,26 +55106,34 @@ async function handleAdmin(
             ? [formatted.transportationVehicleName, formatted.transportationVehiclePlate].filter(Boolean).join(" · ") || null
             : null,
         },
-        items: components.length
-          ? components
-          : [
-              {
-                id: booking.id,
-                productNameAr:
-                  formatted.koshaName || formatted.packageName || "حجز كوشة",
-                category: formatted.eventType || "مناسبات",
-                description: [
-                  formatted.packageName,
-                  formatted.serviceLevel,
-                  formatted.venueType,
-                ]
-                  .filter(Boolean)
-                  .join(" · "),
-                selectedColor: formatted.themeColor,
-                quantity: 1,
-                price: Number(formatted.totalAmount ?? 0),
-              },
-            ],
+        items: [
+          ...(components.length
+            ? components
+            : [
+                {
+                  id: booking.id,
+                  productNameAr:
+                    formatted.koshaName || formatted.packageName || "حجز كوشة",
+                  category: formatted.eventType || "مناسبات",
+                  description: [
+                    formatted.packageName,
+                    formatted.serviceLevel,
+                    formatted.venueType,
+                  ]
+                    .filter(Boolean)
+                    .join(" · "),
+                  selectedColor: formatted.themeColor,
+                  quantity: 1,
+                  price: Math.max(
+                    0,
+                    Number(formatted.totalAmount ?? 0) -
+                      koshaExtras.reduce((sum, line) => sum + (line.included ? 0 : Math.max(0, line.price * line.quantity - line.discount)), 0),
+                  ),
+                },
+              ]
+          ).map((item) => (koshaExtras.length ? { ...item, group: INVOICE_GROUPS.services } : item)),
+          ...koshaExtras,
+        ],
         qr,
         createdAt: formatted.createdAt,
       });
@@ -55162,6 +55180,39 @@ async function handleAdmin(
           : num(cf.deposit ?? cf.downPayment);
       const balance =
         price > 0 ? Math.max(price - deposit, 0) : num(booking.remainingAmount);
+      // Everything the booking holds: services, picks saved with it, photography
+      // lines, workspace products, sound equipment and linked assets.
+      const operationsReference = await loadBookingOperationsReference("service", booking.id);
+      const transport = serviceOrderTransportation(cf);
+      const [serviceItemRows, operationProducts, operationAssets, transportVehicle] = await Promise.all([
+        db.query.serviceOrderItemsTable.findMany({
+          where: eq(serviceOrderItemsTable.serviceOrderId, booking.id),
+          orderBy: [asc(serviceOrderItemsTable.id)],
+        }),
+        operationsReference ? bookingOperationProducts(operationsReference) : Promise.resolve([] as any[]),
+        operationsReference ? bookingOperationAssets(operationsReference) : Promise.resolve([] as any[]),
+        transport?.mode === "ajn" && Number(transport.vehicleId) > 0
+          ? db.execute(sql`select name, plate_number from fleet_vehicles where id = ${Number(transport.vehicleId)}`).then((result: any) => (result.rows ?? [])[0] ?? null)
+          : Promise.resolve(null),
+      ]);
+      const invoice = buildServiceBookingInvoice({
+        total: price,
+        discount: num(cf.pricing?.discountAmount ?? cf.discount ?? 0),
+        fields: cf,
+        transport,
+        transportDescription: transportVehicle ? [transportVehicle.name, transportVehicle.plate_number].filter(Boolean).join(" · ") : null,
+        serviceName: service?.nameAr ?? service?.name ?? null,
+        serviceItems: serviceItemRows.map((item) => ({
+          id: item.id,
+          productName: item.productName,
+          unit: item.unit,
+          quantity: num(item.quantity),
+          unitPrice: num(item.unitPrice),
+          discount: num(item.discount),
+        })),
+        products: operationProducts,
+        assets: operationAssets,
+      });
       const qr = await ensureQrForEntity("service_order", booking, req);
       return json({
         kind: "booking",
@@ -55190,6 +55241,9 @@ async function handleAdmin(
         customFields: cf,
         dueDate: booking.dueDate ?? null,
         createdByName: creator?.userName || null,
+        items: invoice.items,
+        // Σ lines − discount = the stored booking total.
+        invoiceSummary: { subtotal: invoice.subtotal, discount: invoice.discount, total: invoice.total },
         qr,
         createdAt: booking.createdAt.toISOString(),
       });

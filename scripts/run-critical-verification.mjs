@@ -69,6 +69,7 @@ const steps = [
   ["Booking products shared stock", "pnpm", ["run", "test:booking-stock"]],
   ["Booking payments reach the cash box", "pnpm", ["run", "test:booking-cashbox"]],
   ["Services added to a saved booking", "pnpm", ["run", "test:booking-add-services"]],
+  ["Booking invoice lists every part of the booking", "pnpm", ["run", "test:booking-invoice-lines"]],
   ["Company loans follow their financial request", "pnpm", ["run", "test:company-loans"]],
   ["Booking transport reaches the vehicle accounts", "pnpm", ["run", "test:booking-transport"]],
   ["Vehicle transportation and actual signed result contracts", "pnpm", ["run", "test:vehicle-transportation"]],

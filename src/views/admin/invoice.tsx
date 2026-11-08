@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useRoute, useSearch } from "wouter";
 import { ArrowRight, Download, Loader2, Printer, ShieldCheck } from "lucide-react";
 import JsBarcode from "jsbarcode";
@@ -14,7 +14,13 @@ import { luxuryWeddingInvoiceCss, printDocumentWhenImagesReady } from "./print-h
 import { formatCurrency } from "@/lib/money";
 
 type InvoiceData = Record<string, any>;
-type InvoiceItem = { id?: string | number; name: string; category: string; description: string; color: string; quantity: number; unitPrice: number; discount: number; subtotal: number };
+type InvoiceItem = {
+  id?: string | number; name: string; category: string; description: string; color: string; quantity: number; unitPrice: number; discount: number; subtotal: number;
+  /** Section the line prints under (services, products, assets…). */
+  group?: string;
+  /** Part of the booking without its own price; `includedLabel` says where its money is. */
+  included?: boolean; includedLabel?: string;
+};
 
 const n = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const text = (...values: unknown[]) => values.map((value) => String(value ?? "").trim()).find(Boolean) || "—";
@@ -129,19 +135,23 @@ function invoiceModel(data: InvoiceData) {
     : Array.isArray(data.items) ? data.items : [];
   const items: InvoiceItem[] = raw.map((item: any, index: number) => {
     const quantity = Math.max(1, n(item.quantity) || 1), unitPrice = n(item.price), discount = n(item.discountAmount ?? item.discount);
-    return { id: item.id ?? index, name: text(item.productNameAr, item.productName, item.name, "خدمة مناسبات"), category: text(item.category, booking ? data.serviceType : data.serviceType, "فعاليات"), description: text(item.description, item.customization, booking ? data.serviceDescription : ""), color: text(item.selectedColor, item.color), quantity, unitPrice, discount, subtotal: Math.max(0, unitPrice * quantity - discount) };
+    const included = item.included === true;
+    return { id: item.id ?? index, name: text(item.productNameAr, item.productName, item.name, "خدمة مناسبات"), category: text(item.category, booking ? data.serviceType : data.serviceType, "فعاليات"), description: text(item.description, item.customization, booking && !item.group ? data.serviceDescription : ""), color: text(item.selectedColor, item.color), quantity, unitPrice: included ? 0 : unitPrice, discount: included ? 0 : discount, subtotal: included ? 0 : Math.max(0, unitPrice * quantity - discount), group: typeof item.group === "string" ? item.group : undefined, included, includedLabel: included ? text(item.includedLabel, "ضمن الحجز") : undefined };
   });
+  const grouped = new Set(items.map((item) => item.group).filter(Boolean)).size > 1;
   const itemSubtotal = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
   const total = n(booking ? data.price : data.total);
   const delivery = n(booking ? cf.deliveryFee : data.deliveryFee);
   const additional = n(cf.additionalCharges ?? data.additionalCharges);
   const storedDiscount = n(data.couponDiscountAmount) + n(data.loyaltyDiscountAmount) + n(cf.discount);
-  const discount = storedDiscount || Math.max(0, itemSubtotal + delivery + additional - total);
-  const subtotal = n(cf.subtotal) || itemSubtotal || Math.max(0, total + discount - delivery - additional);
+  // Service bookings send their own summary (Σ lines − discount = the booking total).
+  const summary = data.invoiceSummary && typeof data.invoiceSummary === "object" ? data.invoiceSummary : null;
+  const discount = summary ? n(summary.discount) : storedDiscount || Math.max(0, itemSubtotal + delivery + additional - total);
+  const subtotal = summary ? n(summary.subtotal) : n(cf.subtotal) || itemSubtotal || Math.max(0, total + discount - delivery - additional);
   const paid = n(booking ? data.deposit : data.depositAmount);
   const storedRemaining = booking ? data.balance : data.remainingAmount;
   const remaining = storedRemaining === null || storedRemaining === undefined ? Math.max(0, total - paid) : n(storedRemaining);
-  return { booking, cf, items, subtotal, discount, delivery, additional, paid, remaining, total };
+  return { booking, cf, items, grouped, subtotal, discount, delivery, additional, paid, remaining, total };
 }
 
 function WeddingInvoice({ data, model, settings, websiteQr, displayNumber }: { data: InvoiceData; model: ReturnType<typeof invoiceModel>; settings: PublicSettings; websiteQr: string; displayNumber?: string }) {
@@ -188,7 +198,7 @@ function WeddingInvoice({ data, model, settings, websiteQr, displayNumber }: { d
           <div className="wi-panel"><div className="wi-panel-title">بيانات الفاتورة · INVOICE DETAILS</div><div className="wi-info-grid">{info("رقم الفاتورة", displayNumber || code, true)}{info("رقم العقد", cf.contractNumber ?? cf.contractNo)}{info("رقم الحجز", displayNumber || cf.bookingNumber || (model.booking ? data.trackingCode : ""))}{info("التاريخ", dateText(created))}{info("الوقت", timeText(created))}{info("أنشأها", data.createdByName)}{info("الفرع", cf.branchName ?? cf.branch ?? settings?.city, true)}</div><div className="wi-codes"><div><img className="wi-qr" src={data.qr?.dataUrl || websiteQr} alt="QR verification" /><span className="wi-code-caption">Scan to verify booking</span></div><div><div className="wi-barcode"><svg ref={barcodeRef} /></div><div className="wi-readable">{barcodeValue}</div></div></div></div>
         </section>
 
-        <section className="wi-section"><div className="wi-section-heading">الخدمات والتفاصيل · SERVICES</div><table className="wi-items"><colgroup><col style={{ width: "4%" }} /><col style={{ width: "16%" }} /><col style={{ width: "11%" }} /><col style={{ width: "22%" }} /><col style={{ width: "9%" }} /><col style={{ width: "6%" }} /><col style={{ width: "11%" }} /><col style={{ width: "9%" }} /><col style={{ width: "12%" }} /></colgroup><thead><tr><th>#</th><th>الخدمة<br />Service</th><th>الفئة<br />Category</th><th>الوصف<br />Description</th><th>اللون<br />Color</th><th>الكمية<br />Qty</th><th>سعر الوحدة<br />Unit Price</th><th>الخصم<br />Discount</th><th>الإجمالي<br />Subtotal</th></tr></thead><tbody>{model.items.map((item, index) => <tr key={item.id ?? index}><td>{index + 1}</td><td className="service">{item.name}</td><td>{item.category}</td><td className="description">{item.description}</td><td>{item.color}</td><td className="num">{item.quantity}</td><td className="num">{formatCurrency(item.unitPrice)}</td><td className="num">{formatCurrency(item.discount)}</td><td className="num">{formatCurrency(item.subtotal)}</td></tr>)}</tbody></table></section>
+        <section className="wi-section"><div className="wi-section-heading">الخدمات والتفاصيل · SERVICES</div><table className="wi-items"><colgroup><col style={{ width: "4%" }} /><col style={{ width: "16%" }} /><col style={{ width: "11%" }} /><col style={{ width: "22%" }} /><col style={{ width: "9%" }} /><col style={{ width: "6%" }} /><col style={{ width: "11%" }} /><col style={{ width: "9%" }} /><col style={{ width: "12%" }} /></colgroup><thead><tr><th>#</th><th>الخدمة<br />Service</th><th>الفئة<br />Category</th><th>الوصف<br />Description</th><th>اللون<br />Color</th><th>الكمية<br />Qty</th><th>سعر الوحدة<br />Unit Price</th><th>الخصم<br />Discount</th><th>الإجمالي<br />Subtotal</th></tr></thead><tbody>{model.items.map((item, index) => <Fragment key={item.id ?? index}>{model.grouped && item.group && item.group !== model.items[index - 1]?.group ? <tr className="wi-group"><td colSpan={9}>{item.group}</td></tr> : null}<tr className={item.included ? "is-included" : undefined}><td>{index + 1}</td><td className="service">{item.name}</td><td>{item.category}</td><td className="description">{item.description}</td><td>{item.color}</td><td className="num">{item.quantity}</td>{item.included ? <><td className="included">—</td><td className="included">—</td><td className="included">{item.includedLabel}</td></> : <><td className="num">{formatCurrency(item.unitPrice)}</td><td className="num">{formatCurrency(item.discount)}</td><td className="num">{formatCurrency(item.subtotal)}</td></>}</tr></Fragment>)}</tbody></table></section>
 
         <section className="wi-totals-card">
           <div className="wi-section-heading">ملخص الحساب · TOTALS</div>

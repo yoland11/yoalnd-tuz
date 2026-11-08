@@ -1607,6 +1607,10 @@ export function luxuryWeddingInvoiceCss() {
     .wi-items td { padding:1.7mm 1mm; border-bottom:.12mm solid #ecd8d1; border-inline-start:.1mm solid #f0dfd8; vertical-align:top; text-align:center; overflow-wrap:anywhere; }
     .wi-items tbody tr:nth-child(even) td { background:rgba(249,223,227,.32); }.wi-items tbody tr:last-child td { border-bottom:0; }
     .wi-items td.service,.wi-items td.description { text-align:right; }.wi-items td.num { direction:ltr; white-space:nowrap; }
+    .wi-items tbody tr.wi-group td { padding:1.3mm 2mm; text-align:right; color:var(--wi-rose); background:linear-gradient(90deg,rgba(248,223,227,.6),rgba(255,243,231,.35)); border-bottom:.15mm solid rgba(198,149,63,.45); border-inline-start:0; font-size:7.4px; font-weight:800; }
+    .wi-items tr.wi-group td:before { content:"✦"; margin-inline-end:1.2mm; color:var(--wi-gold); }
+    .wi-items tr.wi-group { break-after:avoid; page-break-after:avoid; }
+    .wi-items td.included { color:#8a653d; font-size:6.4px; font-weight:700; line-height:1.3; }
     .wi-totals-card { margin-top:3.5mm; padding:2.8mm; border:.22mm solid rgba(198,149,63,.58); border-radius:3.5mm; background:rgba(255,255,255,.7); break-inside:avoid; page-break-inside:avoid; }
     .wi-totals-layout { display:grid; grid-template-columns:minmax(0,1fr) 38mm; overflow:hidden; border:.15mm solid rgba(198,149,63,.34); border-radius:2.6mm; background:#fffdfa; }
     .wi-summary-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); align-items:stretch; }
