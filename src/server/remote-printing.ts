@@ -12,6 +12,7 @@ import {
   settingsTable,
 } from "@workspace/db";
 import { getCachedPublicSettings } from "@/server/public-settings";
+import { normalizeReceiptBrand } from "@/lib/receipt-brand";
 import { formatIraqiPhone } from "@/lib/phone";
 
 export const REMOTE_PRINT_DOCUMENT = "sales_invoice" as const;
@@ -127,11 +128,17 @@ async function loadRemotePrintAppearance(publicOrigin: string) {
     db.query.settingsTable.findFirst({ where: eq(settingsTable.key, "printerSettings") }),
   ]);
   const printerSettings = normalizeRemotePrinterSettings(printerSettingsRow?.value ?? DEFAULT_REMOTE_PRINTER_SETTINGS);
+  // The receipt identity (الإعدادات → «هوية الوصولات») is what the browser prints too.
+  // Agents built before it ignore the extra fields and keep companyName/companyPhone.
+  const brand = normalizeReceiptBrand(publicSettings.receipt_brand);
   return {
     logoUrl: absolutePublicUrl(publicSettings.logo_url, publicOrigin),
-    companyName: publicSettings.site_name,
-    companyPhone: publicSettings.phone || publicSettings.whatsapp || null,
-    companyAddress: publicSettings.address || null,
+    companyName: brand.name || publicSettings.site_name,
+    companyPhone: brand.phones[0] || publicSettings.phone || publicSettings.whatsapp || null,
+    companyPhones: brand.phones,
+    companyAddress: brand.address || publicSettings.address || null,
+    tagline: brand.tagline,
+    instagram: brand.instagram,
     ...printerSettings,
   };
 }

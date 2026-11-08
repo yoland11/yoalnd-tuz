@@ -20,6 +20,10 @@ export type PrintPayload = {
     logoUrl: string | null;
     companyName: string | null;
     companyPhone: string | null;
+    /** Receipt identity; absent in jobs queued before Nov 2026. */
+    companyPhones?: string[];
+    tagline?: string;
+    instagram?: string;
     companyAddress: string | null;
     footerText: string;
     showLogo: boolean;

@@ -31,6 +31,7 @@ const checks = [
   ["agent encrypted local credential", /safeStorage\.encryptString/.test(files.agent) && /safeStorage\.decryptString/.test(files.agent)],
   ["agent uses Windows printer driver", /getPrintersAsync[\s\S]*webContents\.print/.test(files.agent)],
   ["browser and Agent use one canonical receipt template", /buildSalesInvoiceThermalHtml/.test(files.printHelper) && /buildSalesInvoiceThermalHtml/.test(files.receipt)],
+  ["browser and Agent print the same receipt identity", /salesThermalIdentity/.test(files.printHelper) && /normalizeReceiptBrand\(publicSettings\.receipt_brand\)/.test(files.server) && /companyPhones[\s\S]*tagline[\s\S]*instagram/.test(files.server) && /companyPhones: payload\.appearance\?\.companyPhones/.test(files.receipt) && /tagline\?: string/.test(files.contracts)],
   ["offer delivery fee is included in server-built print payloads", /offerDeliveryFee/.test(files.server) && /offerDeliveryFee/.test(files.receipt) && /offerDeliveryFee/.test(files.contracts)],
   ["canonical template forces Latin digits", /Intl\.NumberFormat\("en-US"/.test(files.template) && /direction:ltr/.test(files.template)],
   ["Agent derives the thermal page height from receipt content", /printPageSize[\s\S]*scrollHeight/.test(files.agent)],

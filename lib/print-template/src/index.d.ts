@@ -32,6 +32,10 @@ export type SalesInvoiceThermalInput = {
   logoUrl?: string | null;
   companyName?: string | null;
   companyPhone?: string | null;
+  /** Receipt identity (site setting «هوية الوصولات»): every phone, the tagline and the Instagram account. */
+  companyPhones?: string[] | null;
+  tagline?: string | null;
+  instagram?: string | null;
   companyAddress?: string | null;
   footerText?: string | null;
   documentTitle?: string | null;

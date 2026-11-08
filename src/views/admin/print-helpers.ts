@@ -1,6 +1,6 @@
 import { formatCurrency } from "@/lib/money";
 import { buildBrandedReceiptHtml, type BrandedReceiptDoc, type BrandedReceiptSize } from "@/lib/branded-receipt";
-import type { ReceiptBrand } from "@/lib/receipt-brand";
+import { currentReceiptBrand, type ReceiptBrand } from "@/lib/receipt-brand";
 import {
   buildSalesInvoiceThermalHtml,
   salesInvoiceThermalCss,
@@ -358,6 +358,23 @@ export function prepareSalesInvoicePrintWindow(
   return popup;
 }
 
+/**
+ * The receipt identity (الإعدادات → «هوية الوصولات») printed on the thermal
+ * sales invoice, the same one every branded receipt uses. The server sends the
+ * same fields to the AJN Print Agent (src/server/remote-printing.ts).
+ */
+function salesThermalIdentity() {
+  const brand = currentReceiptBrand();
+  return {
+    companyName: brand.name,
+    companyPhone: brand.phones[0] ?? null,
+    companyPhones: brand.phones,
+    companyAddress: brand.address,
+    tagline: brand.tagline,
+    instagram: brand.instagram,
+  };
+}
+
 /** Builds a hidden thermal receipt node for the real PDF export path. */
 export function createSalesInvoiceThermalPdfElement(
   input: SalesInvoiceReceiptInput,
@@ -384,9 +401,7 @@ export function createSalesInvoiceThermalPdfElement(
     qrImageUrl: input.qrDataUrl,
     qrCaption: input.qrCaption,
     logoUrl: input.logoUrl,
-    companyName: input.companyName,
-    companyPhone: input.companyPhone,
-    companyAddress: input.companyAddress,
+    ...salesThermalIdentity(),
     footerText: input.footerText,
     documentTitle: input.documentTitle,
     showLogo: input.showLogo,
@@ -440,9 +455,7 @@ export function buildSalesInvoiceDocumentHtml(
       qrImageUrl: input.qrDataUrl,
       qrCaption: input.qrCaption,
       logoUrl: input.logoUrl,
-      companyName: input.companyName,
-      companyPhone: input.companyPhone,
-      companyAddress: input.companyAddress,
+      ...salesThermalIdentity(),
       footerText: input.footerText,
       documentTitle: input.documentTitle,
       showLogo: input.showLogo,
