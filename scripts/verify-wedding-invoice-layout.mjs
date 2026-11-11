@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 const invoice = readFileSync("src/views/admin/invoice.tsx", "utf8");
 const styles = readFileSync("src/views/admin/print-helpers.ts", "utf8");
 
+const weddingCssStart = styles.indexOf("export function luxuryWeddingInvoiceCss");
+const weddingCss = styles.slice(weddingCssStart, styles.indexOf("\n}\n", weddingCssStart));
+
 const checks = [
   ["the wedding invoice uses one full-width totals card", invoice.includes('className="wi-totals-card"')],
   ["the six requested account fields remain in the horizontal summary", ["Subtotal", "Discount", "Delivery", "Additional", "Paid", "Remaining"].every((label) => invoice.includes(`english="${label}"`))],
@@ -13,6 +16,13 @@ const checks = [
   ["all five requested signature lines print", ["توقيع العميل", "مندوب المبيعات", "المحاسب", "اعتماد الفاتورة", "المدير الرئيسي"].every((label) => invoice.includes(`label="${label}"`))],
   ["the summary stays horizontal with six aligned columns", styles.includes("grid-template-columns:repeat(6,minmax(0,1fr))") && styles.includes("grid-template-columns:minmax(0,1fr) 38mm")],
   ["the floral A4 frame remains intact", ["ajn-rose-corner.png", ".wi-floral", "--wi-gold"].every((token) => invoice.includes(token) || styles.includes(token))],
+  // Upper section (Nov 2026): burgundy/gold header with customer and invoice panels.
+  ["the header shows the real logo, both panels, the barcode and the QR", ["logoSrc(settings)", "معلومات العميل", "معلومات الفاتورة", "barcodeRef", "data.qr?.dataUrl", "ajn-rose-corner-burgundy.png"].every((token) => invoice.includes(token))],
+  ["the header reads the company name and tagline from the receipt identity", invoice.includes("settings?.receipt_brand") && invoice.includes("brand?.tagline")],
+  // html2canvas (the «PDF للطباعة» button) fails or greys out on these; screen and print are unaffected.
+  ["no gradient fades to `transparent` (html2canvas draws it grey)", !/gradient\([^;]*transparent/.test(weddingCss)],
+  ["no sub-pixel gradient hairline (html2canvas createPattern crash)", !styles.includes("height:.15mm; flex:1; background:linear-gradient")],
+  ["header SVG images carry an intrinsic size (html2canvas skips size-less SVG)", (invoice.match(/<svg xmlns="http:\/\/www.w3.org\/2000\/svg" viewBox=/g) ?? []).length === 0],
 ];
 
 let failed = false;

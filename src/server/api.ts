@@ -55238,6 +55238,7 @@ async function handleAdmin(
         balance,
         paymentStatus: booking.paymentStatus ?? "unpaid",
         financiallyReversed: !!(booking as any).financiallyReversed,
+        paymentMethod: cf.paymentMethod ?? cf.pricing?.paymentMethod ?? null,
         customFields: cf,
         dueDate: booking.dueDate ?? null,
         createdByName: creator?.userName || null,
@@ -55285,10 +55286,19 @@ async function handleAdmin(
       products.map((product) => [Number(product.id), product]),
     );
     const qr = await ensureQrForEntity("order", order, req);
+    // An equipment rental keeps a store-order mirror under its own number; the
+    // invoice header shows the rental period from the rental itself (read-only).
+    const rentalRow = ((await db.execute(sql`
+      select start_date::text as start_date, end_date::text as end_date, days
+      from rental_orders where order_no = ${order.trackingCode} limit 1
+    `)).rows ?? [])[0] as { start_date?: string; end_date?: string; days?: number } | undefined;
     return json({
       kind: "order",
       id: order.id,
       trackingCode: order.trackingCode,
+      rental: rentalRow
+        ? { startDate: rentalRow.start_date ?? null, endDate: rentalRow.end_date ?? null, days: Number(rentalRow.days) || null }
+        : null,
       customerName: order.customerName,
       customerPhone: order.customerPhone,
       customerId: order.customerId ?? customer?.id ?? null,

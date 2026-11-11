@@ -1,13 +1,13 @@
 import { Button } from "@/components/ui/button";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useRoute, useSearch } from "wouter";
-import { ArrowRight, Download, Loader2, Printer, ShieldCheck } from "lucide-react";
+import { ArrowRight, Building2, CalendarCheck, CalendarDays, CircleCheck, Clock3, CreditCard, Download, FileText, Hash, Heart, Hourglass, Loader2, Mail, MapPin, Phone, Printer, ScrollText, ShieldCheck, Star, Truck, User, UserRound, Users, type LucideIcon, Layers } from "lucide-react";
 import JsBarcode from "jsbarcode";
 import QRCode from "qrcode";
 import { toast } from "sonner";
 import { adminFetch, fetchAdminMe, hasPerm } from "./_lib";
 import { formatIraqiPhone } from "@/lib/phone";
-import { logoSrc, usePublicSettings, type PublicSettings } from "@/lib/public-settings";
+import { handleDefaultLogoError, logoSrc, usePublicSettings, type PublicSettings } from "@/lib/public-settings";
 import { downloadElementPdf } from "@/lib/pdf";
 import { shortBookingNumber } from "@/lib/booking-number";
 import { luxuryWeddingInvoiceCss, printDocumentWhenImagesReady } from "./print-helpers";
@@ -80,7 +80,7 @@ export default function Invoice() {
     let active = true;
     const target = settings?.website || (typeof window !== "undefined" ? window.location.origin : "");
     if (!target) return;
-    QRCode.toDataURL(target, { width: 220, margin: 1, color: { dark: "#733647", light: "#fffaf3" } }).then((value) => { if (active) setWebsiteQr(value); }).catch(() => undefined);
+    QRCode.toDataURL(target, { width: 220, margin: 1, color: { dark: "#2a0710", light: "#ffffff" } }).then((value) => { if (active) setWebsiteQr(value); }).catch(() => undefined);
     return () => { active = false; };
   }, [settings?.website]);
 
@@ -172,31 +172,21 @@ function WeddingInvoice({ data, model, settings, websiteQr, displayNumber }: { d
 
   useEffect(() => {
     if (!barcodeRef.current || barcodeValue === "—") return;
-    try { JsBarcode(barcodeRef.current, barcodeValue, { format: "CODE128", height: 36, width: 1.25, margin: 0, displayValue: false, background: "transparent", lineColor: "#733647" }); }
+    try { JsBarcode(barcodeRef.current, barcodeValue, { format: "CODE128", height: 40, width: 1.4, margin: 0, displayValue: false, background: "transparent", lineColor: "#1c080d" }); }
     catch { barcodeRef.current.replaceChildren(); }
   }, [barcodeValue]);
 
-  // Numbers, dates, times, phones and codes never wrap mid-value; text wraps normally.
-  const info = (label: string, value: unknown, wide = false) => {
-    const shown = text(value);
-    const compact = shown.replace(/[‎‏]/g, "");
-    const numeric = shown !== "—" && /^[\d٠-٩A-Za-z:+\-/.\s]+(?:\s?[صم])?$/.test(compact);
-    return <div className={`wi-field${wide ? " wide" : ""}`}><span>{label}</span><b className={numeric ? "wi-num" : undefined}>{shown}</b></div>;
-  };
 
   return <article className="wedding-invoice-bleed" dir="rtl">
     {(["tl", "tr", "bl", "br"] as const).map((corner) => <i key={corner} className={`wi-crop ${corner}`} />)}
     <div className="wedding-invoice">
-      {(["tr", "tl", "br", "bl"] as const).map((corner) => <img key={corner} src="/images/invoice/ajn-rose-corner.png" alt="" className={`wi-floral ${corner}`} />)}
+      {/* Header: burgundy and ivory roses over a burgundy-and-gold ribbon; the lower corners keep the blush roses. */}
+      <img src={HERO_RIBBONS} alt="" className="wi-hero-ribbons" />
+      {(["tr", "tl"] as const).map((corner) => <img key={corner} src="/images/invoice/ajn-rose-corner-burgundy.png" alt="" className={`wi-floral ${corner} hero`} />)}
+      {(["br", "bl"] as const).map((corner) => <img key={corner} src="/images/invoice/ajn-rose-corner.png" alt="" className={`wi-floral ${corner}`} />)}
       <div className="wi-sparkles" />
       <div className="wi-content">
-        <header className="wi-brand"><span className="wi-crown">♛</span><img src={logoSrc(settings)} alt="AJN" className="wi-logo" /><div className="wi-company-en">AJN GROUP</div><div className="wi-company-ar">{company}</div><div className="wi-for-events">FOR EVENTS</div><div className="wi-title"><small>EVENT INVOICE</small>فاتورة</div></header>
-
-        <section className="wi-top">
-          <div className="wi-panel"><div className="wi-panel-title">معلومات العميل · CUSTOMER INFORMATION</div><div className="wi-info-grid">{info("اسم العميل", data.customerName, true)}{info("اسم العروس", cf.brideName)}{info("رقم الهاتف", data.customerPhone)}{info("البريد الإلكتروني", data.customerEmail ?? cf.email)}{info("المحافظة", province)}{info("العنوان", customerAddress, true)}{info("قاعة المناسبة", cf.hallName ?? cf.venueName ?? (model.booking ? data.eventLocation : ""), true)}{info("نوع المناسبة", cf.eventType ?? data.serviceName ?? data.serviceType)}{info("تاريخ المناسبة", cf.eventDate ?? data.eventDate)}{info("وقت المناسبة", cf.eventTime ?? data.eventTime)}{cf.transportationLabel ? info("خدمة النقل", cf.transportationVehicle ? `${cf.transportationLabel} · ${cf.transportationVehicle}` : cf.transportationLabel, true) : null}{info("مندوب المبيعات", salesRepresentative)}{info("المدير الرئيسي", cf.managerName ?? data.managerName)}</div></div>
-          <div className="wi-top-spacer" />
-          <div className="wi-panel"><div className="wi-panel-title">بيانات الفاتورة · INVOICE DETAILS</div><div className="wi-info-grid">{info("رقم الفاتورة", displayNumber || code, true)}{info("رقم العقد", cf.contractNumber ?? cf.contractNo)}{info("رقم الحجز", displayNumber || cf.bookingNumber || (model.booking ? data.trackingCode : ""))}{info("التاريخ", dateText(created))}{info("الوقت", timeText(created))}{info("أنشأها", data.createdByName)}{info("الفرع", cf.branchName ?? cf.branch ?? settings?.city, true)}</div><div className="wi-codes"><div><img className="wi-qr" src={data.qr?.dataUrl || websiteQr} alt="QR verification" /><span className="wi-code-caption">Scan to verify booking</span></div><div><div className="wi-barcode"><svg ref={barcodeRef} /></div><div className="wi-readable">{barcodeValue}</div></div></div></div>
-        </section>
+        <InvoiceHero data={data} cf={cf} booking={model.booking} paid={model.paid} remaining={model.remaining} settings={settings} invoiceNumber={displayNumber || code} created={created} customerAddress={customerAddress} province={province} salesRepresentative={salesRepresentative} websiteQr={websiteQr} barcodeRef={barcodeRef} barcodeValue={barcodeValue} />
 
         <section className="wi-section"><div className="wi-section-heading">الخدمات والتفاصيل · SERVICES</div><table className="wi-items"><colgroup><col style={{ width: "4%" }} /><col style={{ width: "16%" }} /><col style={{ width: "11%" }} /><col style={{ width: "22%" }} /><col style={{ width: "9%" }} /><col style={{ width: "6%" }} /><col style={{ width: "11%" }} /><col style={{ width: "9%" }} /><col style={{ width: "12%" }} /></colgroup><thead><tr><th>#</th><th>الخدمة<br />Service</th><th>الفئة<br />Category</th><th>الوصف<br />Description</th><th>اللون<br />Color</th><th>الكمية<br />Qty</th><th>سعر الوحدة<br />Unit Price</th><th>الخصم<br />Discount</th><th>الإجمالي<br />Subtotal</th></tr></thead><tbody>{model.items.map((item, index) => <Fragment key={item.id ?? index}>{model.grouped && item.group && item.group !== model.items[index - 1]?.group ? <tr className="wi-group"><td colSpan={9}>{item.group}</td></tr> : null}<tr className={item.included ? "is-included" : undefined}><td>{index + 1}</td><td className="service">{item.name}</td><td>{item.category}</td><td className="description">{item.description}</td><td>{item.color}</td><td className="num">{item.quantity}</td>{item.included ? <><td className="included">—</td><td className="included">—</td><td className="included">{item.includedLabel}</td></> : <><td className="num">{formatCurrency(item.unitPrice)}</td><td className="num">{formatCurrency(item.discount)}</td><td className="num">{formatCurrency(item.subtotal)}</td></>}</tr></Fragment>)}</tbody></table></section>
 
@@ -213,6 +203,169 @@ function WeddingInvoice({ data, model, settings, websiteQr, displayNumber }: { d
       </div>
     </div>
   </article>;
+}
+
+const svgImage = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg.replace(/\s*\n\s*/g, ""))}`;
+const HERO_RIBBONS = svgImage(`<svg xmlns="http://www.w3.org/2000/svg" width="2100" height="400" viewBox="0 0 2100 400" preserveAspectRatio="none">
+  <defs>
+    <linearGradient id="rb" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#3f0914"/><stop offset=".5" stop-color="#7a1a2f"/><stop offset="1" stop-color="#9b2c42"/></linearGradient>
+    <linearGradient id="rg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#9c7128"/><stop offset=".62" stop-color="#e9cd86"/><stop offset="1" stop-color="#e9cd86" stop-opacity="0"/></linearGradient>
+  </defs>
+  <g id="half">
+    <path d="M0 268C250 236 520 150 900 112C560 168 280 252 0 312Z" fill="url(#rb)"/>
+    <path d="M0 236C260 196 540 118 940 96" fill="none" stroke="url(#rg)" stroke-width="3.6"/>
+    <path d="M0 334C270 280 540 190 900 138" fill="none" stroke="url(#rg)" stroke-width="1.8"/>
+  </g>
+  <use href="#half" transform="translate(2100 0) scale(-1 1)"/>
+</svg>`);
+const HERO_RULE = svgImage(`<svg xmlns="http://www.w3.org/2000/svg" width="340" height="20" viewBox="0 0 340 20">
+  <defs><linearGradient id="l" x1="0" x2="1"><stop offset="0" stop-color="#b8893a" stop-opacity="0"/><stop offset="1" stop-color="#b8893a"/></linearGradient><linearGradient id="r" x1="1" x2="0"><stop offset="0" stop-color="#b8893a" stop-opacity="0"/><stop offset="1" stop-color="#b8893a"/></linearGradient></defs>
+  <path d="M0 10H150" stroke="url(#l)" stroke-width="1.6"/><path d="M190 10H340" stroke="url(#r)" stroke-width="1.6"/>
+  <circle cx="154" cy="10" r="2.2" fill="#b8893a"/><circle cx="186" cy="10" r="2.2" fill="#b8893a"/>
+  <path d="M170 2l8 8-8 8-8-8z" fill="#b8893a"/><path d="M170 6l4 4-4 4-4-4z" fill="#fff6e3"/>
+</svg>`);
+const HERO_FLOURISH = svgImage(`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="60" viewBox="0 0 400 60">
+  <g id="s" fill="none" stroke="#b8893a" stroke-linecap="round">
+    <path d="M184 30C160 10 128 10 112 26C100 38 112 52 126 44C136 38 128 26 118 32" stroke-width="2.4"/>
+    <path d="M112 26C84 46 46 42 12 30" stroke-width="1.6" stroke-opacity=".8"/>
+    <path d="M150 40C138 52 118 54 100 48" stroke-width="1.2" stroke-opacity=".6"/>
+  </g>
+  <use href="#s" transform="translate(400 0) scale(-1 1)"/>
+  <path d="M200 20l10 10-10 10-10-10z" fill="#6b1426" stroke="#b8893a" stroke-width="2"/>
+</svg>`);
+const HERO_BANNER = svgImage(`<svg xmlns="http://www.w3.org/2000/svg" width="500" height="125" viewBox="0 0 500 125">
+  <defs>
+    <linearGradient id="b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8f2338"/><stop offset=".55" stop-color="#6b1426"/><stop offset="1" stop-color="#4a0b18"/></linearGradient>
+    <linearGradient id="t" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a0f1f"/><stop offset="1" stop-color="#3a0812"/></linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#9c7128"/><stop offset=".5" stop-color="#f1d796"/><stop offset="1" stop-color="#9c7128"/></linearGradient>
+  </defs>
+  <path d="M62 34H6l24 32-24 32h56z" fill="url(#t)" stroke="url(#g)" stroke-width="3"/>
+  <path d="M438 34h56l-24 32 24 32h-56z" fill="url(#t)" stroke="url(#g)" stroke-width="3"/>
+  <path d="M62 98l22 14V98z" fill="#2c050d"/><path d="M438 98l-22 14V98z" fill="#2c050d"/>
+  <path d="M84 14Q250-2 416 14V112Q250 96 84 112Z" fill="url(#b)" stroke="url(#g)" stroke-width="3.2"/>
+  <path d="M92 22Q250 7 408 22" fill="none" stroke="#e3c47e" stroke-opacity=".55" stroke-width="1.4"/>
+  <path d="M92 104Q250 89 408 104" fill="none" stroke="#e3c47e" stroke-opacity=".55" stroke-width="1.4"/>
+</svg>`);
+
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  cash: "نقداً", cod: "الدفع عند الاستلام", transfer: "تحويل", bank_transfer: "تحويل مصرفي", bank: "تحويل مصرفي",
+  card: "بطاقة", pos: "بطاقة", zaincash: "زين كاش", zain_cash: "زين كاش", qi: "كي كارد", qicard: "كي كارد", qi_card: "كي كارد",
+  installment: "أقساط", installments: "أقساط", wallet: "محفظة إلكترونية", mixed: "مختلط", credit: "آجل", deferred: "آجل",
+};
+const has = (value: unknown) => String(value ?? "").trim() !== "" && String(value ?? "").trim() !== "—";
+const pad2 = (value: number) => String(value).padStart(2, "0");
+/** 2026/11/07 — date-only values stay as written; timestamps use the local day. */
+const slashDate = (value: unknown) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const day = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (day) return `${day[1]}/${day[2]}/${day[3]}`;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? raw : `${parsed.getFullYear()}/${pad2(parsed.getMonth() + 1)}/${pad2(parsed.getDate())}`;
+};
+/** "19:00" → "7:00 م"; anything else is printed as saved. */
+const clockText = (value: unknown) => {
+  const raw = String(value ?? "").trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return raw;
+  const hours = Number(match[1]);
+  return `${hours % 12 || 12}:${match[2]} ${hours < 12 ? "ص" : "م"}`;
+};
+const rentalDays = (days: number) => (days === 1 ? "يوم واحد" : days === 2 ? "يومان" : days <= 10 ? `${days} أيام` : `${days} يوماً`);
+
+type HeroRow = { key: string; icon: LucideIcon; label: string; value: ReactNode; ltr?: boolean };
+
+function invoiceStatus(data: InvoiceData, paid: number, remaining: number): { label: string; tone: "paid" | "partial" | "unpaid" | "void" } {
+  if (data.financiallyReversed) return { label: "معكوسة مالياً", tone: "void" };
+  if (String(data.status ?? "") === "cancelled") return { label: "ملغاة", tone: "void" };
+  const status = String(data.paymentStatus ?? "");
+  if (status === "paid" || (status !== "partial" && status !== "unpaid" && remaining <= 0 && paid > 0)) return { label: "مدفوعة", tone: "paid" };
+  if (status === "partial" || (paid > 0 && remaining > 0)) return { label: "مدفوعة جزئياً", tone: "partial" };
+  return { label: "غير مدفوعة", tone: "unpaid" };
+}
+
+/** The invoice's upper section: brand in the centre, customer (right) and invoice (left) panels. */
+function InvoiceHero({ data, cf, booking, paid, remaining, settings, invoiceNumber, created, customerAddress, province, salesRepresentative, websiteQr, barcodeRef, barcodeValue }: {
+  data: InvoiceData; cf: Record<string, any>; booking: boolean; paid: number; remaining: number; settings: PublicSettings; invoiceNumber: string; created: Date;
+  customerAddress: string; province: string; salesRepresentative: string; websiteQr: string; barcodeRef: RefObject<SVGSVGElement | null>; barcodeValue: string;
+}) {
+  const brand = settings?.receipt_brand;
+  const companyName = (brand?.name || settings?.site_name || "مجموعة علي جان نهاد").trim();
+  const tagline = (brand?.tagline ?? "لتنظيم كافة المناسبات").trim();
+  const rental = data.rental && typeof data.rental === "object" ? data.rental as { startDate?: string | null; endDate?: string | null; days?: number | null } : null;
+  const serviceType = rental ? "إيجار معدات" : booking ? text(cf.eventType, data.serviceName, data.serviceType) : text(data.serviceType, "طلب متجر");
+  const eventDate = cf.eventDate ?? data.eventDate;
+  const eventTime = cf.eventTime ?? data.eventTime;
+  const hall = cf.hallName ?? cf.venueName ?? (booking ? data.eventLocation : "");
+  const address = has(customerAddress) ? customerAddress : has(province) ? province : "";
+  const transport = cf.transportationLabel ? (cf.transportationVehicle ? `${cf.transportationLabel} · ${cf.transportationVehicle}` : cf.transportationLabel) : "";
+  const method = String(data.paymentMethod ?? cf.paymentMethod ?? "").trim();
+  const status = invoiceStatus(data, paid, remaining);
+  const customerRows: HeroRow[] = [
+    { key: "name", icon: User, label: "اسم العميل", value: text(data.customerName) },
+    { key: "phone", icon: Phone, label: "رقم الهاتف", value: text(data.customerPhone), ltr: true },
+    ...(has(cf.alternativePhone) ? [{ key: "alt", icon: Phone, label: "هاتف آخر", value: String(cf.alternativePhone), ltr: true }] : []),
+    { key: "service", icon: Layers, label: "نوع الخدمة", value: serviceType },
+    ...(rental
+      ? [
+          ...(Number(rental.days) > 0 ? [{ key: "days", icon: Hourglass, label: "مدة الإيجار", value: rentalDays(Number(rental.days)) }] : []),
+          ...(has(rental.startDate) ? [{ key: "start", icon: CalendarDays, label: "تاريخ بداية الإيجار", value: slashDate(rental.startDate), ltr: true }] : []),
+          ...(has(rental.endDate) ? [{ key: "end", icon: CalendarCheck, label: "تاريخ نهاية الإيجار", value: slashDate(rental.endDate), ltr: true }] : []),
+        ]
+      : [
+          ...(has(eventDate) ? [{ key: "date", icon: CalendarDays, label: "تاريخ المناسبة", value: slashDate(eventDate), ltr: true }] : []),
+          ...(has(eventTime) ? [{ key: "time", icon: Clock3, label: "وقت المناسبة", value: clockText(eventTime) }] : []),
+        ]),
+    ...(has(cf.brideName) ? [{ key: "bride", icon: Heart, label: "اسم العروس", value: String(cf.brideName) }] : []),
+    ...(has(hall) ? [{ key: "hall", icon: Building2, label: "قاعة المناسبة", value: String(hall) }] : []),
+    ...(has(address) ? [{ key: "address", icon: MapPin, label: "العنوان", value: address }] : []),
+    ...(has(data.customerEmail ?? cf.email) ? [{ key: "email", icon: Mail, label: "البريد الإلكتروني", value: String(data.customerEmail ?? cf.email), ltr: true }] : []),
+    ...(has(transport) ? [{ key: "transport", icon: Truck, label: "خدمة النقل", value: String(transport) }] : []),
+    { key: "employee", icon: UserRound, label: "اسم الموظف", value: salesRepresentative },
+    ...(has(cf.managerName ?? data.managerName) ? [{ key: "manager", icon: Users, label: "المدير الرئيسي", value: String(cf.managerName ?? data.managerName) }] : []),
+  ];
+  const bookingNumber = cf.bookingNumber || (booking ? data.trackingCode : "");
+  const branch = cf.branchName ?? cf.branch ?? settings?.city;
+  const invoiceRows: HeroRow[] = [
+    { key: "number", icon: FileText, label: "رقم الفاتورة", value: invoiceNumber, ltr: true },
+    ...(has(bookingNumber) && String(bookingNumber) !== invoiceNumber && booking ? [{ key: "booking", icon: Hash, label: "رقم الحجز", value: String(bookingNumber), ltr: true }] : []),
+    ...(has(cf.contractNumber ?? cf.contractNo) ? [{ key: "contract", icon: ScrollText, label: "رقم العقد", value: String(cf.contractNumber ?? cf.contractNo), ltr: true }] : []),
+    { key: "date", icon: CalendarDays, label: "تاريخ الفاتورة", value: slashDate(created.toISOString()), ltr: true },
+    { key: "time", icon: Clock3, label: "وقت الإصدار", value: timeText(created.toISOString()) },
+    { key: "method", icon: CreditCard, label: "طريقة الدفع", value: method ? PAYMENT_METHOD_LABELS[method.toLowerCase()] ?? method : "—" },
+    { key: "status", icon: Star, label: "حالة الفاتورة", value: <span className={`wi-hp-status is-${status.tone}`}><CircleCheck aria-hidden="true" color={status.tone === "paid" ? "#3d0a15" : status.tone === "unpaid" ? "#6b1426" : "#fff3dc"} strokeWidth={2.2} />{status.label}</span> },
+    ...(has(branch) ? [{ key: "branch", icon: Building2, label: "الفرع", value: String(branch) }] : []),
+    ...(has(data.createdByName) && data.createdByName !== salesRepresentative ? [{ key: "creator", icon: UserRound, label: "أنشأها", value: String(data.createdByName) }] : []),
+  ];
+  const qr = data.qr?.dataUrl || websiteQr;
+  return <header className="wi-hero">
+    <section className="wi-hp customer" aria-label="معلومات العميل">
+      <h2 className="wi-hp-title"><User aria-hidden="true" color="#f3dca4" strokeWidth={1.9} /><span>معلومات العميل</span><i>/</i><small>CUSTOMER INFORMATION</small></h2>
+      <HeroRows rows={customerRows} />
+    </section>
+    <div className="wi-hero-brand">
+      <div className="wi-medal"><div className="wi-medal-ring"><div className="wi-medal-in"><img src={logoSrc(settings)} alt="AJN" onError={handleDefaultLogoError} /></div></div></div>
+      <div className="wi-hero-name">{companyName}</div>
+      <div className="wi-hero-group">AJN GROUP</div>
+      <img className="wi-hero-rule" src={HERO_RULE} alt="" />
+      {tagline ? <div className="wi-hero-tagline"><span>{tagline}</span></div> : null}
+      <div className="wi-hero-banner"><img src={HERO_BANNER} alt="" /><b>فاتورة</b></div>
+      <div className="wi-hero-invoice">INVOICE</div>
+      <img className="wi-hero-flourish" src={HERO_FLOURISH} alt="" />
+    </div>
+    <section className="wi-hp details" aria-label="معلومات الفاتورة">
+      <h2 className="wi-hp-title"><FileText aria-hidden="true" color="#f3dca4" strokeWidth={1.9} /><span>معلومات الفاتورة</span><i>/</i><small>INVOICE DETAILS</small></h2>
+      <HeroRows rows={invoiceRows} />
+      <div className="wi-hp-codes">
+        <div className="wi-hp-qr">{qr ? <img src={qr} alt="QR" /> : null}<span>{data.qr?.dataUrl ? "امسح للتحقق" : "موقعنا"}</span></div>
+        <div className="wi-hp-code"><div className="wi-hp-barcode"><svg ref={barcodeRef} /></div><b>{barcodeValue}</b></div>
+      </div>
+    </section>
+  </header>;
+}
+
+function HeroRows({ rows }: { rows: HeroRow[] }) {
+  return <dl className="wi-hp-rows">{rows.map(({ key, icon: Icon, label, value, ltr }) => <div key={key} className="wi-hp-row"><dt><Icon aria-hidden="true" color="#7a1d32" strokeWidth={1.7} />{label}</dt><dd className={ltr ? "ltr" : undefined}>{typeof value === "string" ? text(value) : value}</dd></div>)}</dl>;
 }
 
 function SummaryCell({ label, english, value, emphasis = false }: { label: string; english: string; value: number; emphasis?: boolean }) { return <div className={`wi-summary-cell${emphasis ? " remaining" : ""}`}><span>{label}<small>{english}</small></span><b>{formatCurrency(value)}</b></div>; }
