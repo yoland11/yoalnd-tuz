@@ -15,7 +15,10 @@ const checks = [
   ["the required customer email and main manager fields print", invoice.includes("البريد الإلكتروني") && invoice.includes("المدير الرئيسي")],
   ["all five requested signature lines print", ["توقيع العميل", "مندوب المبيعات", "المحاسب", "اعتماد الفاتورة", "المدير الرئيسي"].every((label) => invoice.includes(`label="${label}"`))],
   ["the summary stays horizontal with six aligned columns", styles.includes("grid-template-columns:repeat(6,minmax(0,1fr))") && styles.includes("grid-template-columns:minmax(0,1fr) 38mm")],
-  ["the floral A4 frame remains intact", ["ajn-rose-corner.png", ".wi-floral", "--wi-gold"].every((token) => invoice.includes(token) || styles.includes(token))],
+  ["the floral A4 frame remains intact", ["ajn-rose-corner-burgundy.png", ".wi-floral", "--wi-gold"].every((token) => invoice.includes(token) || styles.includes(token))],
+  ["all four corners carry the burgundy roses", !invoice.includes('src="/images/invoice/ajn-rose-corner.png"') && (invoice.match(/ajn-rose-corner-burgundy\.png/g) ?? []).length === 2],
+  ["printing leaves no blank last page (no forced break; sheet under the page height)", !styles.includes(".wedding-invoice-bleed{margin:0;box-shadow:none;break-after:page}") && styles.includes("min-height:calc(303mm - 1px)") && styles.includes("min-height:calc(297mm - 1px)") && styles.includes("@page { size: 216mm 303mm; margin: 0; }")],
+  ["the PDF copy of the sheet carries no screen margin", styles.includes(".wedding-invoice-bleed { margin:0 auto;") && !styles.includes(".wedding-invoice-bleed { margin:20px auto;")],
   // Upper section (Nov 2026): burgundy/gold header with customer and invoice panels.
   ["the header shows the real logo, both panels, the barcode and the QR", ["logoSrc(settings)", "معلومات العميل", "معلومات الفاتورة", "barcodeRef", "data.qr?.dataUrl", "ajn-rose-corner-burgundy.png"].every((token) => invoice.includes(token))],
   ["the header reads the company name and tagline from the receipt identity", invoice.includes("settings?.receipt_brand") && invoice.includes("brand?.tagline")],

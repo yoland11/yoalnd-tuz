@@ -1564,12 +1564,13 @@ export function luxuryWeddingInvoiceCss() {
     :root { --wi-ivory:#fffaf3; --wi-cream:#fff3e7; --wi-blush:#f8dfe3; --wi-rose:#b64b68; --wi-rose-dark:#733647; --wi-gold:#c6953f; --wi-gold-light:#e7c87d; --wi-ink:#4d3038; }
     * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
     html,body { margin:0; min-height:100%; background:#f4f0ed; color:var(--wi-ink); direction:rtl; font-family:Cairo,Tahoma,Arial,sans-serif; }
-    .wedding-invoice-bleed { position:relative; width:216mm; min-height:303mm; margin:0 auto; padding:3mm; overflow:hidden; background:linear-gradient(145deg,#fffdf9 0%,var(--wi-cream) 52%,#fffdf9 100%); }
-    .wedding-invoice { position:relative; min-height:297mm; padding:11mm 11mm 9mm; overflow:hidden; isolation:isolate; background:radial-gradient(circle at 50% 3%,rgba(255,255,255,.96),rgba(255,255,255,0) 34%),linear-gradient(135deg,rgba(255,255,255,.96),rgba(255,248,242,.94)); border:.35mm solid var(--wi-gold); }
+    /* One pixel under the 303 mm page (inside the trimmed bleed): a sheet exactly as tall as the page spilled a blank last page. */
+    .wedding-invoice-bleed { position:relative; width:216mm; min-height:calc(303mm - 1px); margin:0 auto; padding:3mm; overflow:hidden; background:linear-gradient(145deg,#fffdf9 0%,var(--wi-cream) 52%,#fffdf9 100%); }
+    .wedding-invoice { position:relative; min-height:calc(297mm - 1px); padding:11mm 11mm 9mm; overflow:hidden; isolation:isolate; background:radial-gradient(circle at 50% 3%,rgba(255,255,255,.96),rgba(255,255,255,0) 34%),linear-gradient(135deg,rgba(255,255,255,.96),rgba(255,248,242,.94)); border:.35mm solid var(--wi-gold); }
     .wedding-invoice:before { content:""; position:absolute; inset:2.2mm; z-index:0; pointer-events:none; border:.18mm solid rgba(198,149,63,.72); border-radius:7mm 7mm 4mm 4mm; }
     .wedding-invoice:after { content:""; position:absolute; inset:4.1mm; z-index:0; pointer-events:none; border:.12mm solid rgba(182,75,104,.24); border-radius:5.5mm; }
     .wi-content { position:relative; z-index:3; min-height:274mm; display:flex; flex-direction:column; }
-    .wi-floral { position:absolute; z-index:2; width:59mm; height:84mm; object-fit:contain; pointer-events:none; opacity:.88; filter:saturate(.92) contrast(1.03); }
+    .wi-floral { position:absolute; z-index:2; width:59mm; height:84mm; object-fit:contain; pointer-events:none; }
     .wi-floral.tr { top:-8mm; right:-8mm; }.wi-floral.tl { top:-8mm; left:-8mm; transform:scaleX(-1); }
     .wi-floral.br { right:-8mm; bottom:-10mm; transform:scaleY(-1); }.wi-floral.bl { left:-8mm; bottom:-10mm; transform:scale(-1); }
     .wi-sparkles { position:absolute; inset:8mm; z-index:1; pointer-events:none; opacity:.42; background-image:radial-gradient(circle,#d8a84d 0 .35mm,rgba(216,168,77,0) .42mm),radial-gradient(circle,#e5afbc 0 .3mm,rgba(229,175,188,0) .38mm); background-size:38mm 43mm,51mm 37mm; background-position:5mm 8mm,21mm 18mm; }
@@ -1646,8 +1647,9 @@ export function luxuryWeddingInvoiceCss() {
     .wi-footer { margin-top:3.2mm; padding:2.4mm 15mm 0; border-top:.16mm solid rgba(198,149,63,.65); text-align:center; }.wi-footer-main { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:1.3mm 4mm; direction:ltr; color:#7b5360; font-size:6.2px; }.wi-footer-main span:before{content:"✦";margin-right:1mm;color:var(--wi-gold)}.wi-footer-address{margin-top:1mm;color:#8a653d;font-size:6.3px}.wi-website-qr{position:absolute;bottom:4.2mm;left:7mm;width:13mm;height:13mm;padding:.6mm;background:#fff;border:.15mm solid var(--wi-gold-light);border-radius:1.5mm}
     .wi-status { display:inline-flex; align-items:center; justify-content:center; padding:.7mm 2mm; border-radius:8mm; color:#fff; background:var(--wi-rose); font-size:6.2px; font-weight:800; }
     .wi-continued { display:none; }
-    @media screen { .wedding-invoice-bleed { margin:20px auto; box-shadow:0 8px 24px rgba(92,54,62,.16); }.wedding-invoice-stage{overflow:auto;padding:1px}.wi-crop{display:none} }
-    @media print { html,body { width:216mm; min-height:303mm; background:#fff; }.wedding-invoice-bleed{margin:0;box-shadow:none;break-after:page}.wedding-invoice-stage{overflow:visible}.wi-items tr,.wi-totals-card,.wi-signatures{break-inside:avoid;page-break-inside:avoid} }
+    /* Screen spacing lives on the stage: the PDF copies only the sheet, and a margin on it shifted the PDF page and spilled a strip onto a new page. */
+    @media screen { .wedding-invoice-bleed { margin:0 auto; box-shadow:0 8px 24px rgba(92,54,62,.16); }.wedding-invoice-stage{overflow:auto;padding:20px 1px}.wi-crop{display:none} }
+    @media print { html,body { width:216mm; min-height:303mm; background:#fff; }.wedding-invoice-bleed{margin:0;box-shadow:none;break-after:auto}.wedding-invoice-stage{overflow:visible}.wi-items tr,.wi-totals-card,.wi-signatures{break-inside:avoid;page-break-inside:avoid} }
   `;
 }
 

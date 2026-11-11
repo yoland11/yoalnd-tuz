@@ -180,10 +180,10 @@ function WeddingInvoice({ data, model, settings, websiteQr, displayNumber }: { d
   return <article className="wedding-invoice-bleed" dir="rtl">
     {(["tl", "tr", "bl", "br"] as const).map((corner) => <i key={corner} className={`wi-crop ${corner}`} />)}
     <div className="wedding-invoice">
-      {/* Header: burgundy and ivory roses over a burgundy-and-gold ribbon; the lower corners keep the blush roses. */}
+      {/* Burgundy and ivory roses in all four corners; the header adds a burgundy-and-gold ribbon. */}
       <img src={HERO_RIBBONS} alt="" className="wi-hero-ribbons" />
       {(["tr", "tl"] as const).map((corner) => <img key={corner} src="/images/invoice/ajn-rose-corner-burgundy.png" alt="" className={`wi-floral ${corner} hero`} />)}
-      {(["br", "bl"] as const).map((corner) => <img key={corner} src="/images/invoice/ajn-rose-corner.png" alt="" className={`wi-floral ${corner}`} />)}
+      {(["br", "bl"] as const).map((corner) => <img key={corner} src="/images/invoice/ajn-rose-corner-burgundy.png" alt="" className={`wi-floral ${corner}`} />)}
       <div className="wi-sparkles" />
       <div className="wi-content">
         <InvoiceHero data={data} cf={cf} booking={model.booking} paid={model.paid} remaining={model.remaining} settings={settings} invoiceNumber={displayNumber || code} created={created} customerAddress={customerAddress} province={province} salesRepresentative={salesRepresentative} websiteQr={websiteQr} barcodeRef={barcodeRef} barcodeValue={barcodeValue} />
