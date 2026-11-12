@@ -117,6 +117,8 @@ import { useBookingThermalReceiptPrint } from "@/components/booking-thermal-rece
 import { AccountSummaryCard, PAYMENT_STATUS_LABELS, effectivePaymentStatus } from "./payment-collection";
 import { CustomerFinancialSummary } from "./customer-financial-summary";
 import { BookingGroupPhotos } from "@/components/booking-group-photos";
+import { BookingKoshaPhoto } from "@/components/booking-kosha-photo";
+import type { BookedKoshaPhoto } from "@/lib/booking-kosha-photo";
 import "./booking-operations-workspace.css";
 
 export type BookingOperationsBooking = {
@@ -140,6 +142,7 @@ export type BookingOperationsBooking = {
 };
 
 type OverviewData = {
+  bookedKosha?: BookedKoshaPhoto | null;
   readiness: number;
   bookingStage: string;
   warehouseStage: string;
@@ -656,6 +659,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
     <BookingThermalPrintAction booking={booking} open={labelOpen} onOpenChange={setLabelOpen} hideTrigger />
     <TransportReceiptDialog reference={transportReceipt} onClose={() => setTransportReceipt(null)} onOpenTransport={openTransportCard} />
 
+    {booking.source === "kosha" || booking.services.some(service => service.type === "kosha") || overview.data?.bookedKosha ? <BookingKoshaPhoto kosha={overview.data?.bookedKosha} loading={overview.isLoading} error={overview.error} onRetry={() => void overview.refetch()} /> : null}
 
     <BookingServicesSection booking={booking} onAdd={onAddServices} transport={transportation.isSuccess ? transportation.data.transportation ?? null : undefined}>
       {booking.source === "service" && booking.services.some((service) => service.type === "photography") ? <PhotographyProductionPanel bookingId={booking.id} /> : null}

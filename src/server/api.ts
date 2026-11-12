@@ -8,6 +8,7 @@ import { applyWarehouseDeltas, createWarehouse, listWarehouses, mainWarehouseId,
 import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTransfer, sourceCommitment } from "./warehouse-transfers";
 import { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest, warehouseApprovalDocument } from "./warehouse-approvals";
 import { approvalRecordHref } from "@/lib/approval-records";
+import { resolveBookedKosha, type BookedKoshaPhoto } from "@/lib/booking-kosha-photo";
 import { ApprovalRequestError, OPEN_APPROVAL_STATUSES, WAREHOUSE_APPROVAL_TYPES, approvalDecisionNotice, approvalTypeCategory, approvalTypeNeedsMainManager, runApprovalDecision, type ApprovalExecution, type ApprovalExecutionPlan } from "./approval-requests";
 import { bookingCashSummary, bookingRowShares, bookingTransactionCondition } from "./booking-cash-link";
 import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence, rowsOf as attendanceDatabaseRows } from "./attendance";
@@ -32687,6 +32688,21 @@ async function loadBookingOperationsReference(
   return null;
 }
 
+// Workspace-only read projection. No active-only filter: historical bookings
+// must retain access to their original catalogue image after an item is hidden.
+async function bookingOperationsKoshaPhoto(reference: BookingOperationsReference): Promise<BookedKoshaPhoto | null> {
+  const selection = resolveBookedKosha(reference.source, reference.row, reference.details);
+  if (!selection) return null;
+  const table = selection.kind === "kosha" ? koshasTable : koshaPackagesTable;
+  const [item] = await db.select({ id: table.id, name: table.name, mainImage: table.mainImage, updatedAt: table.updatedAt })
+    .from(table).where(eq(table.id, selection.id)).limit(1);
+  return {
+    ...selection,
+    name: item?.name ?? selection.name,
+    imageUrl: item ? publicMediaValue(selection.kind === "kosha" ? "kosha" : "kosha-package", item, item.mainImage) : null,
+  };
+}
+
 async function saveBookingOperations(
   reference: BookingOperationsReference,
   operations: Record<string, any>,
@@ -36093,7 +36109,7 @@ async function handleBookingOperations(
   ) {
     if (resource === "depreciation" && !can("depreciation_view"))
       return error("ليس لديك صلاحية عرض الإهلاك", 403);
-    const [products, assets, tasks, documents, timeline] = await Promise.all([
+    const [products, assets, tasks, documents, timeline, bookedKosha] = await Promise.all([
       bookingOperationProducts(reference),
       bookingOperationAssets(reference),
       db.query.tasksTable.findMany({
@@ -36120,6 +36136,7 @@ async function handleBookingOperations(
         orderBy: [desc(entityTimelineTable.createdAt)],
         limit: 20,
       }),
+      resource === "overview" ? bookingOperationsKoshaPhoto(reference) : null,
     ]);
     if (resource === "depreciation") return json({ assets });
     const productReady = products.length
@@ -36228,6 +36245,7 @@ async function handleBookingOperations(
     ];
     return json({
       readiness,
+      bookedKosha,
       bookingStage: bookingOperationStage(reference),
       warehouseStage: reference.operations.warehouseStage ?? "reserved",
       warehouseHistory: reference.operations.warehouseHistory ?? [],

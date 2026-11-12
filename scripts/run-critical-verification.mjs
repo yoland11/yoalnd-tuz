@@ -65,6 +65,7 @@ const steps = [
   ["Equipment custody transactions and ownership", "pnpm", ["run", "test:custody-safety"]],
   ["Shared asset status and repair retry safety", "pnpm", ["run", "test:asset-status-safety"]],
   ["Asset list thumbnails", "pnpm", ["run", "test:asset-list"]],
+  ["Booked Kosha workspace photo", "pnpm", ["run", "test:booking-kosha-photo"]],
   ["Report PDF download", "pnpm", ["run", "test:report-pdf"]],
   ["Product details analytics", "pnpm", ["run", "test:product-insights"]],
   ["Work command center", "pnpm", ["run", "test:work-commands"]],

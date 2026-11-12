@@ -93,6 +93,8 @@
     "test:booking-transport-receipts": "node ./scripts/test-booking-transport-receipts.mjs",
     "test:work-commands": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-work-commands.ts && node ./scripts/test-work-commands-wiring.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-work-commands-ui.tsx",
     "test:asset-list": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-asset-list-thumbnails.tsx",
+    "test:booking-kosha-photo": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-kosha-photo.tsx",
+    "test:booking-kosha-photo-browser": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-kosha-photo-browser.ts",
     "test:attendance": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-attendance-client.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-attendance-rules.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-attendance-geofence.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-attendance-geofence-contract.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-attendance-integration.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-attendance-geofence-db.ts",
     "test:attendance-browser": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-attendance-browser.ts",
     "test:warehouses": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-warehouse-stock.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-warehouse-integration.ts",
