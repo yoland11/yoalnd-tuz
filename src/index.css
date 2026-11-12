@@ -1,5 +1,11 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+
+/* Scoped occasion-followup palette, including its portalled dialogs. */
+.ajn-event-followups, .ajn-event-dialog {
+  --primary: 335 85% 28%;
+  --ring: 335 65% 45%;
+}
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));

@@ -30,17 +30,18 @@ for (const contextKind of ["legacy", "followup", "conflict"]) {
   const sandbox = { exports: {} as any, customFields: contextKind === "legacy" ? {} : { customerFollowupId: 12 }, auth: { id: 4, fullName: "موظف", username: "staff" }, req: { headers: { get: () => null } }, photographySync: undefined, followupActor: (auth: any) => ({ id: auth.id }), CustomerFollowupError: Error,
     completeFollowupConversion: async (executor: unknown, data: unknown) => { assert.equal(executor, tx); calls.push({ kind: "conversion", value: data }); if (contextKind === "conflict") throw conflict; },
     syncCentralBookingToPhotography: async (_id: unknown, _actor: unknown, executor: unknown) => { assert.equal(executor, tx); calls.push({ kind: "photography", value: _id }); },
+    recordOccasionFollowups: async(executor:unknown,input:any)=>{assert.equal(executor,tx);assert.equal(input.source,'service');calls.push({kind:'occasion-followups',value:input});},
   };
   vm.runInNewContext(callback, sandbox);
   const booking = { id: 91, customerId: 7 };
   if (contextKind === "conflict") await assert.rejects(() => sandbox.exports.run(tx, booking), error => error === conflict);
   else await sandbox.exports.run(tx, booking);
-  assert.deepEqual(calls.map(call => call.kind), contextKind === "legacy" ? ["photography"] : contextKind === "conflict" ? ["conversion"] : ["conversion", "photography"]);
+  assert.deepEqual(calls.map(call => call.kind), contextKind === "legacy" ? ["photography",'occasion-followups'] : contextKind === "conflict" ? ["conversion"] : ["conversion", "photography",'occasion-followups']);
   if (contextKind !== "legacy") assert.deepEqual(JSON.parse(JSON.stringify(calls[0].value)), { actor: { id: 4 }, followupId: 12, customerId: 7, booking: { source: "service", id: 91 } });
 }
 for (const [file, expected] of [
   ["src/views/admin/index.tsx", "/admin/customer-followups"],
-  ["src/views/admin/_layout.tsx", "مركز المتابعة"],
+  ["src/views/admin/_layout.tsx", "متابعة المناسبات والإرسال الجماعي"],
   ["src/views/staff/unified-portal.tsx", "followups"],
   ["src/views/admin/booking-center.tsx", "followupBookingMetadata"],
 ] as const) assert.ok(readFileSync(file, "utf8").includes(expected), file);

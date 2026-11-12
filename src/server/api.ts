@@ -230,6 +230,8 @@ import {
 } from "@/server/production-env";
 import { safeServerError } from "@/server/safe-server-log";
 import { customerFollowupRoute } from "@/server/customer-followup-route";
+import { recordOccasionFollowups, sweepOccasionFollowups } from '@/server/event-followup-operations';
+import { sweepEventCampaigns } from '@/server/event-messaging';
 import { CustomerFollowupError, completeFollowupConversion, resolveFollowupBookingCustomer } from "@/server/customer-followups";
 import type { FollowupActor } from "@/lib/customer-followups";
 import {
@@ -16053,6 +16055,7 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       .where(eq(koshaBookingsTable.id, created.id));
     created.trackingCode=trackingCode;
     await validateBookingResourceCreation(tx,{source:"kosha",id:created.id});
+    await recordOccasionFollowups(tx,{source:'kosha',id:created.id});
     return rows;
     });
     const trackingCode=booking.trackingCode!;
@@ -53324,6 +53327,7 @@ async function handleAdmin(
               await completeFollowupConversion(tx, { actor: followupActor(auth), followupId, customerId: created.customerId!, booking: { source: "service", id: created.id } });
             }
             photographySync=await syncCentralBookingToPhotography(created.id,{id:auth.id,name:auth.fullName||auth.username,ipAddress:req.headers.get("x-forwarded-for"),userAgent:req.headers.get("user-agent")},tx);
+            await recordOccasionFollowups(tx,{source:'service',id:created.id,staffId:auth.id});
           } },
         );
       } catch (err) {
@@ -77238,7 +77242,13 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
           return { attendanceEvidence, attendanceGeofence };
         }),
       ]);
-      return json({ ok: true, summary, rateLimitCleanup, workOrderDeadlines, ...attendance });
+      const eventFollowups=await sweepOccasionFollowups(db);
+      for(const notificationId of eventFollowups.notificationIds){
+        const notice=await db.query.notificationsTable.findFirst({where:eq(notificationsTable.id,notificationId)});
+        if(notice)await deliverPersistedNotification(notice);
+      }
+      const eventCampaigns=await sweepEventCampaigns(db);
+      return json({ ok: true, summary, rateLimitCleanup, workOrderDeadlines, ...attendance,eventFollowups:{status:eventFollowups.status,created:eventFollowups.created,notifications:eventFollowups.notificationIds.length},eventCampaigns });
     }
     if (
       req.method === "GET" &&

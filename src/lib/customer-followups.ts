@@ -56,6 +56,10 @@ export interface FollowupRow {
   contactBlocked: boolean;
   booking: FollowupBooking | null;
   createdAt: string;
+  expectedEventDate?: string | null;
+  contactStage?: string | null;
+  occasionKey?: string | null;
+  sourceBooking?: FollowupBooking | null;
 }
 export interface FollowupSuggestion {
   key: string;
@@ -71,6 +75,8 @@ export interface FollowupSummary {
   converted: number;
   total: number;
   completed: number;
+  henna?: number;
+  wedding?: number;
 }
 export interface FollowupList {
   rows: FollowupRow[];
@@ -85,6 +91,7 @@ export interface FollowupList {
     canBook: boolean;
     canCreateCustomer: boolean;
     canOpenCustomer: boolean;
+    canMessage?: boolean;
   };
 }
 export interface FollowupActor {

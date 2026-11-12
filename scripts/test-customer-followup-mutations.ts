@@ -104,7 +104,7 @@ const db: any = {
       return { rows: [{ id }] };
     }
     if (s.includes("UPDATE customer_followups")) {
-      const row = records.get(Number(p[4]));
+      const row = records.get(Number(p[5]));
       assert.ok(row, "updates preserve the original row");
       records.set(row.id, {
         ...row,
@@ -112,6 +112,7 @@ const db: any = {
         completed_at: p[1],
         followup_at: p[2],
         note: p[3],
+        contact_stage: p[4],
         version: row.version + 1,
       });
       return { rows: [{ id: row.id }] };

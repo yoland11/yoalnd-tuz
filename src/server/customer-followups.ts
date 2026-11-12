@@ -19,6 +19,8 @@ import {
 } from "./booking-departments";
 import { suggestedFollowupServices } from "./customer-followups-rules";
 import { normalizeIraqiPhone } from "../lib/phone";
+import { handleEventMessaging } from "./event-messaging";
+import { EVENT_STAGES } from "../lib/event-messaging";
 
 export type { FollowupActor } from "../lib/customer-followups";
 export interface FollowupExecutor {
@@ -78,6 +80,7 @@ const capabilities = (actor: FollowupActor, query: URLSearchParams) => ({
   canBook: actor.canBook,
   canCreateCustomer: actor.canCreateCustomer,
   canOpenCustomer: true,
+  canMessage: actor.role === "admin" || actor.permissions.includes("whatsapp"),
 });
 async function rows(tx: FollowupExecutor, query: SQL): Promise<any[]> {
   const result = await tx.execute(query);
@@ -184,6 +187,16 @@ function view(row: any): FollowupRow {
     contactBlocked: row.contact_blocked === true,
     booking: bookingRef(row.booking_source, row.booking_id, row.booking_number),
     createdAt: iso(row.created_at),
+    expectedEventDate: row.expected_event_date
+      ? String(row.expected_event_date).slice(0, 10)
+      : null,
+    contactStage: row.contact_stage ?? null,
+    occasionKey: row.occasion_key ?? null,
+    sourceBooking: bookingRef(
+      row.source_booking_source,
+      row.source_booking_id,
+      null,
+    ),
   };
 }
 async function readOne(
@@ -366,13 +379,26 @@ function filters(actor: FollowupActor, query: URLSearchParams): SQL {
   }
   return sql.join(conditions, sql` AND `);
 }
+function expectedDate(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+    !Number.isFinite(Date.parse(value)) ||
+    new Date(value).toISOString().slice(0, 10) !== value
+  )
+    return fail(422, "INVALID_EVENT_DATE", "تاريخ المناسبة المتوقع غير صالح");
+  return value;
+}
 const dueEligible = sql`f.completed_at IS NULL AND f.status IN ('interested','waiting') AND NOT coalesce(p.contact_blocked,false)`;
 const today = sql`(now() AT TIME ZONE 'Asia/Baghdad')::date`;
 const dueDay = sql`(f.followup_at AT TIME ZONE 'Asia/Baghdad')::date`;
 function bucket(value: string | null): SQL {
-  if (!value || value === "all") return sql`TRUE`;
+  if (!value || value === "all" || value === "total") return sql`TRUE`;
   if (value === "converted") return sql`f.status='converted'`;
   if (value === "completed") return sql`f.completed_at IS NOT NULL`;
+  if (value === "henna" || value === "wedding")
+    return sql`${dueEligible} AND f.service_key=${value}`;
   if (!["today", "overdue", "upcoming"].includes(value))
     return fail(422, "INVALID_BUCKET", "مرشح الموعد غير صالح");
   return sql`${dueEligible} AND ${dueDay} ${value === "today" ? sql`=` : value === "overdue" ? sql`<` : sql`>`} ${today}`;
@@ -385,14 +411,22 @@ async function summary(
   const [data] = await rows(
     tx,
     sql`SELECT count(*)::int AS total,count(*) FILTER (WHERE f.completed_at IS NOT NULL)::int AS completed,
+ count(*) FILTER(WHERE ${dueEligible} AND f.service_key='henna')::int AS henna,count(*) FILTER(WHERE ${dueEligible} AND f.service_key='wedding')::int AS wedding,
  count(*) FILTER (WHERE ${dueEligible} AND ${dueDay}=${today})::int AS today,count(*) FILTER (WHERE ${dueEligible} AND ${dueDay}<${today})::int AS overdue,count(*) FILTER (WHERE ${dueEligible} AND ${dueDay}>${today})::int AS upcoming,
  count(DISTINCT (f.booking_source,f.booking_id)) FILTER (WHERE f.status='converted' AND f.booking_id IS NOT NULL)::int AS converted ${joins} WHERE ${filters(actor, query)}`,
   );
   if (!data) throw new Error("Missing customer followup summary response");
   return Object.fromEntries(
-    ["today", "overdue", "upcoming", "converted", "total", "completed"].map(
-      (key) => [key, Number(data[key])],
-    ),
+    [
+      "today",
+      "overdue",
+      "upcoming",
+      "converted",
+      "total",
+      "completed",
+      "henna",
+      "wedding",
+    ].map((key) => [key, Number(data[key])]),
   ) as unknown as FollowupSummary;
 }
 
@@ -630,19 +664,29 @@ export async function resolveFollowupBookingCustomer(
   input: { actor: FollowupActor; followupId: unknown; phone: string },
 ): Promise<{ id: number }> {
   try {
-    const id = typeof input.followupId === "number" ? positive(input.followupId) : null;
+    const id =
+      typeof input.followupId === "number" ? positive(input.followupId) : null;
     if (!id) return fail(422, "INVALID_FOLLOWUP", "مرجع المتابعة غير صالح");
-    if (!input.actor.canBook) fail(403, "BOOKING_FORBIDDEN", "ليس لديك صلاحية ربط الحجز");
+    if (!input.actor.canBook)
+      fail(403, "BOOKING_FORBIDDEN", "ليس لديك صلاحية ربط الحجز");
     await validateActor(tx, input.actor);
     const peek = await readOne(tx, input.actor, new URLSearchParams(), id);
     await lockCustomer(tx, Number(peek.customer_id));
     const row = await readOne(tx, input.actor, new URLSearchParams(), id, true);
     assertOpenConversionSource(row);
-    const [customer] = await rows(tx, sql`SELECT id,phone FROM customers WHERE id=${Number(row.customer_id)} AND status IS DISTINCT FROM 'deleted' FOR SHARE`);
-    if (!customer) return fail(404, "CUSTOMER_UNAVAILABLE", "العميل الأصلي غير متاح");
+    const [customer] = await rows(
+      tx,
+      sql`SELECT id,phone FROM customers WHERE id=${Number(row.customer_id)} AND status IS DISTINCT FROM 'deleted' FOR SHARE`,
+    );
+    if (!customer)
+      return fail(404, "CUSTOMER_UNAVAILABLE", "العميل الأصلي غير متاح");
     const currentPhone = normalizeIraqiPhone(String(customer.phone ?? ""));
     if (!currentPhone || currentPhone !== normalizeIraqiPhone(input.phone))
-      fail(409, "CUSTOMER_PHONE_CHANGED", "تغيّر رقم العميل؛ أعد فتح المتابعة لتحميل بياناته الحالية");
+      fail(
+        409,
+        "CUSTOMER_PHONE_CHANGED",
+        "تغيّر رقم العميل؛ أعد فتح المتابعة لتحميل بياناته الحالية",
+      );
     return { id: Number(customer.id) };
   } catch (error) {
     return storageError(error);
@@ -722,6 +766,8 @@ async function create(
     assignedStaffId: body.assignedStaffId,
     suggestionKey: body.suggestionKey ?? null,
     sourceBooking: body.sourceBooking ?? null,
+    expectedEventDate: body.expectedEventDate ?? null,
+    occasionKey: body.occasionKey ?? null,
   });
   return db.transaction(async (tx) => {
     await validateActor(tx, actor);
@@ -774,6 +820,25 @@ async function create(
       VALUES (${customerId},${serviceKey},${assigned},${followupAt}::timestamptz,${text},${actor.id},${key},${fingerprint},${body.suggestionKey ?? null},${source?.source ?? null},${source?.id ?? null}) RETURNING id`,
     );
     if (!saved) throw new Error("Followup insert returned no source");
+    if (body.expectedEventDate != null || body.occasionKey != null) {
+      const date = expectedDate(body.expectedEventDate),
+        occasion = body.occasionKey;
+      if (
+        occasion != null &&
+        ![
+          "engagement",
+          "henna",
+          "wedding",
+          "marriage_contract",
+          "graduation",
+        ].includes(occasion)
+      )
+        fail(422, "INVALID_OCCASION", "نوع المناسبة غير صالح");
+      await rows(
+        tx,
+        sql`UPDATE customer_followups SET expected_event_date=${date}::date,occasion_key=${occasion ?? null} WHERE id=${saved.id} RETURNING id`,
+      );
+    }
     const result = {
       followup: view(await readOne(tx, actor, query, Number(saved.id))),
     };
@@ -804,6 +869,7 @@ async function action(
     "link_booking",
     "stop_contact",
     "resume_contact",
+    "event_details",
   ];
   if (!supported.includes(body.action))
     fail(422, "INVALID_ACTION", "إجراء المتابعة غير صالح");
@@ -827,6 +893,29 @@ async function action(
     const row = await readOne(tx, actor, query, id, true);
     if (Number(row.version) !== expected)
       fail(409, "STALE_VERSION", "تغيرت المتابعة؛ حدّثها قبل المحاولة مجدداً");
+    if (body.action === "event_details") {
+      if (row.status === "converted" || row.status === "uninterested")
+        fail(409, "FOLLOWUP_CLOSED", "المتابعة مغلقة");
+      const stage = String(body.contactStage ?? "");
+      if (
+        !Object.hasOwn(EVENT_STAGES, stage) ||
+        ["booked", "declined"].includes(stage)
+      )
+        fail(
+          422,
+          "INVALID_CONTACT_STAGE",
+          "الحجز وعدم الاهتمام يستخدمان الإجراء الأصلي",
+        );
+      const date = expectedDate(body.expectedEventDate),
+        text = note(body.note);
+      await rows(
+        tx,
+        sql`UPDATE customer_followups SET contact_stage=${stage},expected_event_date=${date}::date,note=${text},version=version+1,updated_at=now() WHERE id=${id} RETURNING id`,
+      );
+      const result = { followup: view(await readOne(tx, actor, query, id)) };
+      await event(tx, actor, id, "event_details", key, fingerprint, result);
+      return { status: 200, data: result };
+    }
     if (body.action !== "assign")
       await assignee(tx, actor, query, Number(row.assigned_staff_id));
     let followup: FollowupRow, nextFollowup: FollowupRow | undefined;
@@ -896,9 +985,19 @@ async function action(
           completed = new Date().toISOString();
         }
       }
+      const contactStage =
+        body.action === "complete"
+          ? "contacted"
+          : body.action === "postpone"
+            ? "postponed"
+            : body.action === "status"
+              ? status === "interested"
+                ? "interested"
+                : "waiting"
+              : (row.contact_stage ?? null);
       const changed = await rows(
         tx,
-        sql`UPDATE customer_followups SET status=${status},completed_at=${completed}::timestamptz,followup_at=${date}::timestamptz,note=${text},version=version+1,updated_at=now() WHERE id=${id} RETURNING id`,
+        sql`UPDATE customer_followups SET status=${status},completed_at=${completed}::timestamptz,followup_at=${date}::timestamptz,note=${text},contact_stage=${contactStage},version=version+1,updated_at=now() WHERE id=${id} RETURNING id`,
       );
       if (changed.length !== 1)
         throw new Error("Followup action did not update its source");
@@ -908,6 +1007,7 @@ async function action(
         completed_at: completed,
         followup_at: date,
         note: text,
+        contact_stage: contactStage,
         version: Number(row.version) + 1,
       });
       if (body.nextFollowupAt != null) {
@@ -957,6 +1057,11 @@ export async function handleCustomerFollowupRequest(
     if (!positive(actor.id))
       return fail(401, "UNAUTHENTICATED", "يلزم تسجيل الدخول");
     const { method, parts, query } = request;
+    if (parts[0] === "messaging")
+      return await handleEventMessaging(db, actor, {
+        ...request,
+        parts: parts.slice(1),
+      });
     if (method === "GET" && parts.length === 1 && parts[0] === "summary")
       return {
         status: 200,
@@ -965,9 +1070,23 @@ export async function handleCustomerFollowupRequest(
     if (method === "GET" && parts.length === 1 && parts[0] === "options")
       return { status: 200, data: await options(db, actor, query) };
     if (method === "GET" && parts.length === 1 && parts[0] === "employees") {
-      if (!capabilities(actor, query).canManage) fail(403, "ASSIGNMENT_FORBIDDEN", "مرشح الموظفين متاح للمدير فقط");
-      const employees = await rows(db, sql`SELECT s.id,s.full_name,s.department,s.photo_url FROM staff s WHERE EXISTS (SELECT 1 FROM customer_followups f WHERE f.assigned_staff_id=s.id) ORDER BY s.full_name,s.id LIMIT 200`);
-      return { status: 200, data: { employees: employees.map(employee => ({ id: Number(employee.id), fullName: String(employee.full_name), department: employee.department, avatarUrl: employee.photo_url ?? null })) } };
+      if (!capabilities(actor, query).canManage)
+        fail(403, "ASSIGNMENT_FORBIDDEN", "مرشح الموظفين متاح للمدير فقط");
+      const employees = await rows(
+        db,
+        sql`SELECT s.id,s.full_name,s.department,s.photo_url FROM staff s WHERE EXISTS (SELECT 1 FROM customer_followups f WHERE f.assigned_staff_id=s.id) ORDER BY s.full_name,s.id LIMIT 200`,
+      );
+      return {
+        status: 200,
+        data: {
+          employees: employees.map((employee) => ({
+            id: Number(employee.id),
+            fullName: String(employee.full_name),
+            department: employee.department,
+            avatarUrl: employee.photo_url ?? null,
+          })),
+        },
+      };
     }
     if (method === "GET" && !parts.length) {
       const page = Math.max(
@@ -1003,6 +1122,31 @@ export async function handleCustomerFollowupRequest(
       return { status: 200, data: result };
     }
     const id = positive(parts[0]);
+    if (method === "GET" && id && parts[1] === "history") {
+      const row = view(await readOne(db, actor, query, id));
+      const history = await rows(
+        db,
+        sql`SELECT e.action,e.result,e.created_at,s.full_name AS employee FROM customer_followup_events e JOIN staff s ON s.id=e.actor_id WHERE e.followup_id=${id} ORDER BY e.created_at DESC,e.id DESC LIMIT 100`,
+      );
+      const related = await rows(
+        db,
+        sql`SELECT ${projection} ${joins} WHERE f.customer_id=${row.customer.id} AND ${scope(actor, query)} AND c.status IS DISTINCT FROM 'deleted' ORDER BY f.created_at DESC LIMIT 30`,
+      );
+      const bookings = await rows(
+        db,
+        sql`SELECT * FROM ((SELECT 'service' AS source,b.id,b.tracking_code AS number,b.event_date,b.status FROM service_orders b WHERE b.customer_id=${row.customer.id} AND b.archived_at IS NULL ORDER BY b.id DESC LIMIT 20) UNION ALL (SELECT 'kosha' AS source,b.id,b.tracking_code AS number,b.event_date,b.status FROM kosha_bookings b WHERE b.customer_id=${row.customer.id} AND b.archived_at IS NULL ORDER BY b.id DESC LIMIT 20)) b LIMIT 40`,
+      );
+      return {
+        status: 200,
+        data: {
+          customer: row.customer,
+          followup: row,
+          history,
+          related: related.map(view),
+          bookings,
+        },
+      };
+    }
     if (
       method === "GET" &&
       id &&

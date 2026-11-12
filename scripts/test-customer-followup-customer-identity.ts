@@ -56,6 +56,7 @@ for (const scenario of ["legacy-unicode", "duplicate-phone-variant", "phone-chan
     followupActor: () => actor, auth: { id: 8, username: "staff" }, req: { headers: { get: () => null } },
     completeFollowupConversion: async (_tx: any, input: any) => { assert.equal(_tx, tx); assert.equal(input.customerId, 5); steps.push("conversion"); },
     syncCentralBookingToPhotography: async () => { steps.push("photography"); },
+    recordOccasionFollowups: async (executor:any,input:any) => { assert.equal(executor,tx); assert.equal(input.id,902); steps.push('occasion-followups'); },
     photographySync: undefined, serviceItems: [], customFields: scenario === "no-source" ? {} : { customerFollowupId: 17 },
     trackingCodeForPhone: () => "SRV-902", phoneLast4: () => "4567", serviceOrdersTable: "orders", serviceOrderItemsTable: "items", serviceOrderStatusHistoryTable: "history",
     money: Number, paymentSummary: (total: any, deposit: any) => ({ deposit: Number(deposit), remaining: Number(total) - Number(deposit), status: "unpaid" }),

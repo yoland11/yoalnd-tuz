@@ -86,10 +86,10 @@ function render(
 }
 const html = render();
 for (const label of [
-  "متابعة العملاء",
+  "متابعة المناسبات والإرسال الجماعي",
   "اليوم",
   "المتأخرة",
-  "القادمة",
+  "إجمالي المتابعات",
   "تحولت إلى حجز",
   "أحمد علي",
   "زينب كريم",
@@ -102,13 +102,13 @@ for (const label of [
   assert.ok(html.includes(label), `page displays ${label}`);
 assert.equal(
   (html.match(/data-followup-kpi=/g) ?? []).length,
-  4,
-  "exactly four compact KPI controls",
+  6,
+  "exactly six compact occasion KPI controls",
 );
 assert.equal(
   (html.match(/<th scope="col"/g) ?? []).length,
-  7,
-  "assignment remains a secondary row action without extra columns",
+  8,
+  "expected event date is a dedicated column; assignment remains a secondary action",
 );
 assert.match(html, /dir="rtl"/);
 assert.match(
@@ -185,5 +185,5 @@ assert.ok(
   "successful empty state is distinct",
 );
 console.log(
-  "PASS customer followup UI: four KPIs, responsive records, scoped capabilities, contact block, real errors, loading and empty states",
+  "PASS customer followup UI: six KPIs, responsive records, scoped capabilities, contact block, real errors, loading and empty states",
 );

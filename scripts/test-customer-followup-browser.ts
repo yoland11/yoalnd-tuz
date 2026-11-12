@@ -178,9 +178,9 @@ try {
               json: { employees: [employee, replacementEmployee] },
             });
       }
-      if (path.endsWith("/17/customer")) {
+      if (path.endsWith("/17/customer")||path.endsWith('/17/history')) {
         customerReads++;
-        return route.fulfill({ json: { customer } });
+        return route.fulfill({ json: { customer,followup:row,history:[],related:[row],bookings:[] } });
       }
       if (req.method() === "GET")
         return failRead
@@ -356,10 +356,10 @@ try {
     failRead = false;
     await click("إعادة المحاولة");
     await page
-      .getByRole("heading", { name: "متابعة العملاء", exact: true })
+      .getByRole("heading", { name: "متابعة المناسبات والإرسال الجماعي", exact: true })
       .waitFor();
     await page.locator('[data-followup-kpi="today"]').waitFor();
-    assert.equal(await page.locator("[data-followup-kpi]").count(), 4);
+    assert.equal(await page.locator("[data-followup-kpi]").count(), 6);
     assert.equal(
       await page
         .locator(`[data-followup-layout="${width < 1280 ? "cards" : "table"}"]`)
@@ -511,8 +511,8 @@ try {
     await page.keyboard.press("Escape");
     assert.equal(
       await page.locator("[data-followup-kpi]").count(),
-      4,
-      "reassignment preserves four KPIs",
+      6,
+      "reassignment preserves six occasion KPIs",
     );
     canCreate = true;
     row = { ...initialRow };
@@ -736,7 +736,7 @@ try {
     });
     await context.close();
     console.log(
-      `PASS mounted customer followup ${width}px: manager reassignment/permissions/replay, errors, 4 KPIs, scoped preview, one-click complete, exact replay, postpone, consent, suggestion/manual create, complete+next, canonical link and staff scope`,
+      `PASS mounted customer followup ${width}px: manager reassignment/permissions/replay, errors, 6 KPIs, scoped preview, one-click complete, exact replay, postpone, consent, suggestion/manual create, complete+next, canonical link and staff scope`,
     );
   }
 } finally {

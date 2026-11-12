@@ -574,7 +574,7 @@ export const NAV: NavItem[] = [
     icon: Users,
     perm: "customers",
   },
-  { href: "/admin/customer-followups", label: "مركز المتابعة", icon: MessageCircle, perm: "customers", anyPerm: ["customers", "tasks"] },
+  { href: "/admin/customer-followups", label: "متابعة المناسبات والإرسال الجماعي", icon: MessageCircle, perm: "customers", anyPerm: ["customers", "tasks"] },
   {
     href: "/admin/customer-hub",
     label: "البحث الذكي عن العملاء",

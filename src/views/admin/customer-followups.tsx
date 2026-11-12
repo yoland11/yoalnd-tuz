@@ -82,6 +82,9 @@ import {
 } from "@/lib/customer-followups";
 import { adminFetch, apiErrorMessage } from "./_lib";
 import { CustomerQuickAddDialog } from "./customer-quick-add";
+import EventMessagingPanel from "./event-messaging";
+import { FollowupEventDetails } from "./followup-event-details";
+import { EVENT_STAGES, eventStage } from "@/lib/event-messaging";
 
 type Mode = "admin" | "staff";
 type Options = { customers: FollowupCustomer[]; employees: FollowupEmployee[] };
@@ -112,8 +115,10 @@ const statusTone: Record<FollowupStatus, string> = {
 const buckets = [
   { key: "today", label: "اليوم", icon: CalendarDays },
   { key: "overdue", label: "المتأخرة", icon: CircleAlert },
-  { key: "upcoming", label: "القادمة", icon: CalendarClock },
+  { key: "total", label: "إجمالي المتابعات", icon: CalendarClock },
   { key: "converted", label: "تحولت إلى حجز", icon: Check },
+  { key: "henna", label: "حنة قادمة", icon: CalendarClock },
+  { key: "wedding", label: "زفاف قادم", icon: CalendarDays },
 ] as const;
 
 function ErrorMessage({
@@ -205,6 +210,9 @@ export default function CustomerFollowupsPage({
   const [actionDialog, setActionDialog] = useState<ActionDialog | null>(null);
   const [assigning, setAssigning] = useState<FollowupRow | null>(null);
   const [preview, setPreview] = useState<FollowupRow | null>(null);
+  const [viewMode, setViewMode] = useState<"followups" | "messaging">(
+    "followups",
+  );
   const attempts = useRef(new Map<string, Attempt>());
   const scope = mode === "staff" ? "?scope=mine" : "";
   useEffect(() => {
@@ -492,17 +500,21 @@ export default function CustomerFollowupsPage({
           statusTone[row.status],
         )}
       >
-        {FOLLOWUP_STATUS_LABELS[row.status]}
+        {EVENT_STAGES[eventStage(row.status, row.contactStage)]}
       </span>
     );
   }
 
   return (
-    <div dir="rtl" className="min-w-0 space-y-5" data-followup-mode={mode}>
+    <div
+      dir="rtl"
+      className="ajn-event-followups min-w-0 space-y-5"
+      data-followup-mode={mode}
+    >
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-foreground md:text-2xl">
-            متابعة العملاء
+            متابعة المناسبات والإرسال الجماعي
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {mode === "staff"
@@ -510,430 +522,476 @@ export default function CustomerFollowupsPage({
               : "كل استفسار في موعده، من أول تواصل إلى الحجز."}
           </p>
         </div>
-        {capabilities?.canCreate && !list.isError ? (
+        {capabilities?.canCreate &&
+        !list.isError &&
+        viewMode === "followups" ? (
           <Button className="min-h-11 gap-2" onClick={() => openAdd()}>
             <Plus className="size-4" aria-hidden="true" />
             إضافة متابعة
           </Button>
         ) : null}
       </header>
-      {list.isLoading ? (
-        <div
-          aria-busy="true"
-          aria-label="جارٍ تحميل المتابعات"
-          className="space-y-4"
+      {mode === "admin" && capabilities?.canMessage ? (
+        <nav
+          aria-label="أقسام متابعة المناسبات"
+          className="flex gap-2 border-b pb-3"
         >
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            {buckets.map(({ key }) => (
-              <Skeleton key={key} className="h-20 rounded-lg" />
-            ))}
-          </div>
-          <Skeleton className="h-72 w-full rounded-xl" />
-        </div>
-      ) : list.isError ? (
-        <ErrorMessage
-          error={list.error}
-          onRetry={() => {
-            void list.refetch();
-          }}
-        />
-      ) : list.data ? (
-        <>
+          <Button
+            variant={viewMode === "followups" ? "default" : "outline"}
+            onClick={() => setViewMode("followups")}
+          >
+            متابعة المناسبات
+          </Button>
+          <Button
+            variant={viewMode === "messaging" ? "default" : "outline"}
+            onClick={() => setViewMode("messaging")}
+          >
+            الحملات والإرسال الجماعي
+          </Button>
+        </nav>
+      ) : null}
+      {viewMode === "messaging" ? <EventMessagingPanel /> : null}
+      <div hidden={viewMode !== "followups"} className="space-y-5">
+        {list.isLoading ? (
           <div
-            className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:gap-3"
-            aria-label="مواعيد المتابعة"
+            aria-busy="true"
+            aria-label="جارٍ تحميل المتابعات"
+            className="space-y-4"
           >
-            {buckets.map(({ key, label, icon: Icon }) => (
-              <button
-                key={key}
-                type="button"
-                data-followup-kpi={key}
-                aria-pressed={bucket === key}
-                onClick={() => {
-                  setBucket(bucket === key ? "" : key);
-                  setPage(1);
-                }}
-                className={cn(
-                  "flex min-h-20 items-center gap-3 rounded-lg border bg-card p-3 text-start transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:px-4",
-                  bucket === key
-                    ? "border-primary bg-primary/5"
-                    : "border-border hover:bg-muted/40",
-                )}
-              >
-                <Icon
-                  className={cn(
-                    "size-5 shrink-0",
-                    key === "overdue" && list.data.summary.overdue > 0
-                      ? "text-destructive"
-                      : "text-muted-foreground",
-                  )}
-                  aria-hidden="true"
-                />
-                <span className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-1">
-                  <span className="text-sm font-medium">{label}</span>
-                  <span className="text-xl font-semibold tabular-nums">
-                    {list.data.summary[key]}
-                  </span>
-                </span>
-              </button>
-            ))}
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {buckets.map(({ key }) => (
+                <Skeleton key={key} className="h-20 rounded-lg" />
+              ))}
+            </div>
+            <Skeleton className="h-72 w-full rounded-xl" />
           </div>
-          <section
-            className="min-w-0 overflow-hidden rounded-xl border border-border bg-card"
-            aria-label="قائمة المتابعات"
-            aria-busy={list.isFetching}
-          >
-            <div className="flex flex-wrap items-center gap-2 border-b border-border p-3 md:p-4">
-              <div className="relative min-w-0 basis-full sm:min-w-52 sm:flex-1 sm:basis-auto">
-                <Search
-                  className="pointer-events-none absolute start-3 top-3.5 size-4 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <Input
-                  type="search"
-                  aria-label="البحث عن عميل أو رقم هاتف"
-                  placeholder="ابحث باسم العميل أو رقم الهاتف..."
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  className="min-h-11 ps-9"
-                />
-              </div>
-              <div className="min-w-0 flex-1 sm:max-w-44">
-                <Select
-                  value={service || "all"}
-                  onValueChange={(value) => filter(setService, value)}
-                >
-                  <SelectTrigger
-                    className="min-h-11"
-                    aria-label="تصفية حسب الخدمة"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">كل الخدمات</SelectItem>
-                    {FOLLOWUP_SERVICES.map((option) => (
-                      <SelectItem key={option.key} value={option.key}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="min-w-0 flex-1 sm:max-w-44">
-                <Select
-                  value={status || "all"}
-                  onValueChange={(value) => filter(setStatus, value)}
-                >
-                  <SelectTrigger
-                    className="min-h-11"
-                    aria-label="تصفية حسب حالة الاستفسار"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">كل الحالات</SelectItem>
-                    {FOLLOWUP_STATUS_OPTIONS.map((option) => (
-                      <SelectItem key={option.key} value={option.key}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {canManage ? (
-                <div className="w-full sm:w-48">
-                  <EmployeeSelect
-                    employees={employeeOptions(roster.data?.employees ?? [])}
-                    value={employee}
-                    onValueChange={(value) => filter(setEmployee, value)}
-                    disabled={roster.isLoading || roster.isError}
-                    emptyLabel="كل الموظفين"
-                    aria-label="تصفية حسب الموظف"
-                  />
-                </div>
-              ) : null}
-              {bucket ? (
-                <Button
+        ) : list.isError ? (
+          <ErrorMessage
+            error={list.error}
+            onRetry={() => {
+              void list.refetch();
+            }}
+          />
+        ) : list.data ? (
+          <>
+            <div
+              className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6 md:gap-3"
+              aria-label="مواعيد المتابعة"
+            >
+              {buckets.map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
                   type="button"
-                  variant="ghost"
-                  className="text-xs"
+                  data-followup-kpi={key}
+                  aria-pressed={bucket === key}
                   onClick={() => {
-                    setBucket("");
+                    setBucket(bucket === key ? "" : key);
                     setPage(1);
                   }}
+                  className={cn(
+                    "flex min-h-20 items-center gap-3 rounded-lg border bg-card p-3 text-start transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:px-4",
+                    bucket === key
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:bg-muted/40",
+                  )}
                 >
-                  إلغاء تصفية الموعد
-                </Button>
-              ) : null}
+                  <Icon
+                    className={cn(
+                      "size-5 shrink-0",
+                      key === "overdue" && list.data.summary.overdue > 0
+                        ? "text-destructive"
+                        : "text-muted-foreground",
+                    )}
+                    aria-hidden="true"
+                  />
+                  <span className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-1">
+                    <span className="text-sm font-medium">{label}</span>
+                    <span className="text-xl font-semibold tabular-nums">
+                      {list.data.summary[key]}
+                    </span>
+                  </span>
+                </button>
+              ))}
             </div>
-            {roster.isError ? (
-              <div className="p-3">
-                <ErrorMessage
-                  error={roster.error}
-                  onRetry={() => {
-                    void roster.refetch();
-                  }}
-                />
-              </div>
-            ) : null}
-            {mutation.isError && !actionDialog && !addOpen && !assigning ? (
-              <div className="p-3">
-                <ErrorMessage
-                  error={mutation.error}
-                  onRetry={() => {
-                    if (mutation.variables) mutation.mutate(mutation.variables);
-                  }}
-                />
-              </div>
-            ) : null}
-            {list.data.rows.length ? (
-              <>
-                <div
-                  className="hidden overflow-x-auto xl:block"
-                  data-followup-layout="table"
-                >
-                  <table className="w-full text-start text-sm">
-                    <caption className="sr-only">
-                      متابعات العملاء، مواعيدها وحالة الاستفسار والموظف المسؤول
-                    </caption>
-                    <thead className="bg-muted/30 text-xs text-muted-foreground">
-                      <tr>
-                        {[
-                          "العميل",
-                          "رقم الهاتف",
-                          "الخدمة",
-                          "موعد المتابعة",
-                          "حالة الاستفسار",
-                          "الموظف المسؤول",
-                          "الإجراءات",
-                        ].map((heading) => (
-                          <th
-                            key={heading}
-                            scope="col"
-                            className="whitespace-nowrap px-4 py-3 text-start font-medium"
-                          >
-                            {heading}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {list.data.rows.map((row) => (
-                        <tr key={row.id} className="hover:bg-muted/20">
-                          <td className="px-4 py-3">{customerIdentity(row)}</td>
-                          <td className="px-4 py-3">
-                            <bdi
-                              dir="ltr"
-                              className="whitespace-nowrap text-xs"
-                            >
-                              {formatIraqiPhone(row.customer.phone)}
-                            </bdi>
-                          </td>
-                          <td className="px-4 py-3 text-xs">
-                            {serviceLabel(row.serviceKey)}
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className="block whitespace-nowrap text-xs">
-                              {formatFollowupDate(row.followupAt)}
-                            </span>
-                            <DateState row={row} />
-                          </td>
-                          <td className="px-4 py-3">{inquiryStatus(row)}</td>
-                          <td className="px-4 py-3">{employeeIdentity(row)}</td>
-                          <td className="px-3 py-3">{rowActions(row)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+            <section
+              className="min-w-0 overflow-hidden rounded-xl border border-border bg-card"
+              aria-label="قائمة المتابعات"
+              aria-busy={list.isFetching}
+            >
+              <div className="flex flex-wrap items-center gap-2 border-b border-border p-3 md:p-4">
+                <div className="relative min-w-0 basis-full sm:min-w-52 sm:flex-1 sm:basis-auto">
+                  <Search
+                    className="pointer-events-none absolute start-3 top-3.5 size-4 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <Input
+                    type="search"
+                    aria-label="البحث عن عميل أو رقم هاتف"
+                    placeholder="ابحث باسم العميل أو رقم الهاتف..."
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    className="min-h-11 ps-9"
+                  />
                 </div>
-                <div
-                  className="divide-y divide-border xl:hidden"
-                  data-followup-layout="cards"
-                >
-                  {list.data.rows.map((row) => (
-                    <article
-                      key={row.id}
-                      className="space-y-3 p-4"
-                      aria-label={`متابعة ${row.customer.name}`}
+                <div className="min-w-0 flex-1 sm:max-w-44">
+                  <Select
+                    value={service || "all"}
+                    onValueChange={(value) => filter(setService, value)}
+                  >
+                    <SelectTrigger
+                      className="min-h-11"
+                      aria-label="تصفية حسب الخدمة"
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        {customerIdentity(row)}
-                        {inquiryStatus(row)}
-                      </div>
-                      <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-xs">
-                        <div>
-                          <dt className="text-muted-foreground">رقم الهاتف</dt>
-                          <dd className="mt-1">
-                            <bdi dir="ltr">
-                              {formatIraqiPhone(row.customer.phone)}
-                            </bdi>
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">الخدمة</dt>
-                          <dd className="mt-1">
-                            {serviceLabel(row.serviceKey)}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">
-                            موعد المتابعة
-                          </dt>
-                          <dd className="mt-1 space-y-1">
-                            <span className="block">
-                              {formatFollowupDate(row.followupAt)}
-                            </span>
-                            <DateState row={row} />
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="mb-1 text-muted-foreground">
-                            الموظف المسؤول
-                          </dt>
-                          <dd>{employeeIdentity(row)}</dd>
-                        </div>
-                      </dl>
-                      {rowActions(row)}
-                    </article>
-                  ))}
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">كل الخدمات</SelectItem>
+                      {FOLLOWUP_SERVICES.map((option) => (
+                        <SelectItem key={option.key} value={option.key}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-              </>
-            ) : (
-              <div className="px-4 py-12 text-center">
-                <UserRound
-                  className="mx-auto mb-3 size-7 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <h2 className="font-semibold">
-                  لا توجد متابعات{" "}
-                  {query || service || status || bucket || employee
-                    ? "مطابقة للبحث"
-                    : "حالياً"}
-                </h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {capabilities?.canCreate
-                    ? "أضف استفسار العميل وحدد موعد التواصل والمسؤول عنه."
-                    : "ستظهر هنا المتابعات المسندة إليك عند إضافتها."}
-                </p>
-                {query || service || status || employee || bucket ? (
+                <div className="min-w-0 flex-1 sm:max-w-44">
+                  <Select
+                    value={status || "all"}
+                    onValueChange={(value) => filter(setStatus, value)}
+                  >
+                    <SelectTrigger
+                      className="min-h-11"
+                      aria-label="تصفية حسب حالة الاستفسار"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">كل الحالات</SelectItem>
+                      {FOLLOWUP_STATUS_OPTIONS.map((option) => (
+                        <SelectItem key={option.key} value={option.key}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {canManage ? (
+                  <div className="w-full sm:w-48">
+                    <EmployeeSelect
+                      employees={employeeOptions(roster.data?.employees ?? [])}
+                      value={employee}
+                      onValueChange={(value) => filter(setEmployee, value)}
+                      disabled={roster.isLoading || roster.isError}
+                      emptyLabel="كل الموظفين"
+                      aria-label="تصفية حسب الموظف"
+                    />
+                  </div>
+                ) : null}
+                {bucket ? (
                   <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-4"
+                    type="button"
+                    variant="ghost"
+                    className="text-xs"
                     onClick={() => {
-                      setSearch("");
-                      setQuery("");
-                      setService("");
-                      setStatus("");
-                      setEmployee("");
                       setBucket("");
                       setPage(1);
                     }}
                   >
-                    مسح التصفية
+                    إلغاء تصفية الموعد
                   </Button>
                 ) : null}
               </div>
-            )}
-            <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
-              <span>
-                {list.data.total} متابعة · صفحة {list.data.page} من{" "}
-                {Math.max(1, Math.ceil(list.data.total / list.data.pageSize))}
-              </span>
-              <div className="flex gap-1">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  className="size-9"
-                  aria-label="الصفحة السابقة"
-                  disabled={busy || page <= 1}
-                  onClick={() => setPage(page - 1)}
-                >
-                  <ChevronRight className="size-4" />
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  className="size-9"
-                  aria-label="الصفحة التالية"
-                  disabled={
-                    busy || page * list.data.pageSize >= list.data.total
-                  }
-                  onClick={() => setPage(page + 1)}
-                >
-                  <ChevronLeft className="size-4" />
-                </Button>
-              </div>
-            </footer>
-          </section>
-          {capabilities?.canCreate && list.data.suggestions.length ? (
-            <section aria-label="متابعات مقترحة" className="space-y-2">
-              <h2 className="text-sm font-semibold">فرص متابعة مقترحة</h2>
-              <div className="divide-y divide-border rounded-lg border border-border bg-card">
-                {list.data.suggestions.map((item) => (
+              {roster.isError ? (
+                <div className="p-3">
+                  <ErrorMessage
+                    error={roster.error}
+                    onRetry={() => {
+                      void roster.refetch();
+                    }}
+                  />
+                </div>
+              ) : null}
+              {mutation.isError && !actionDialog && !addOpen && !assigning ? (
+                <div className="p-3">
+                  <ErrorMessage
+                    error={mutation.error}
+                    onRetry={() => {
+                      if (mutation.variables)
+                        mutation.mutate(mutation.variables);
+                    }}
+                  />
+                </div>
+              ) : null}
+              {list.data.rows.length ? (
+                <>
                   <div
-                    key={item.key}
-                    className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+                    className="hidden overflow-x-auto xl:block"
+                    data-followup-layout="table"
                   >
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium">
-                        {item.customer.name}{" "}
-                        <span className="font-normal text-muted-foreground">
-                          · {serviceLabel(item.serviceKey)}
-                        </span>
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {item.reason}
-                      </p>
-                    </div>
+                    <table className="w-full text-start text-sm">
+                      <caption className="sr-only">
+                        متابعات العملاء، مواعيدها وحالة الاستفسار والموظف
+                        المسؤول
+                      </caption>
+                      <thead className="bg-muted/30 text-xs text-muted-foreground">
+                        <tr>
+                          {[
+                            "العميل",
+                            "رقم الهاتف",
+                            "المناسبة السابقة / القادمة",
+                            "التاريخ المتوقع",
+                            "موعد المتابعة",
+                            "حالة الاستفسار",
+                            "الموظف المسؤول",
+                            "الإجراءات",
+                          ].map((heading) => (
+                            <th
+                              key={heading}
+                              scope="col"
+                              className="whitespace-nowrap px-4 py-3 text-start font-medium"
+                            >
+                              {heading}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {list.data.rows.map((row) => (
+                          <tr key={row.id} className="hover:bg-muted/20">
+                            <td className="px-4 py-3">
+                              {customerIdentity(row)}
+                            </td>
+                            <td className="px-4 py-3">
+                              <bdi
+                                dir="ltr"
+                                className="whitespace-nowrap text-xs"
+                              >
+                                {formatIraqiPhone(row.customer.phone)}
+                              </bdi>
+                            </td>
+                            <td className="px-4 py-3 text-xs">
+                              {row.sourceBooking ? (
+                                <a
+                                  className="block text-muted-foreground underline"
+                                  href={row.sourceBooking.href}
+                                >
+                                  الحجز السابق {row.sourceBooking.number}
+                                </a>
+                              ) : null}
+                              {row.occasionKey === "marriage_contract"
+                                ? "عقد قران"
+                                : serviceLabel(row.serviceKey)}
+                            </td>
+                            <td className="px-4 py-3 text-xs">
+                              <bdi>{row.expectedEventDate || "غير محدد"}</bdi>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="block whitespace-nowrap text-xs">
+                                {formatFollowupDate(row.followupAt)}
+                              </span>
+                              <DateState row={row} />
+                            </td>
+                            <td className="px-4 py-3">{inquiryStatus(row)}</td>
+                            <td className="px-4 py-3">
+                              {employeeIdentity(row)}
+                            </td>
+                            <td className="px-3 py-3">{rowActions(row)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div
+                    className="divide-y divide-border xl:hidden"
+                    data-followup-layout="cards"
+                  >
+                    {list.data.rows.map((row) => (
+                      <article
+                        key={row.id}
+                        className="space-y-3 p-4"
+                        aria-label={`متابعة ${row.customer.name}`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          {customerIdentity(row)}
+                          {inquiryStatus(row)}
+                        </div>
+                        <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-xs">
+                          <div>
+                            <dt className="text-muted-foreground">
+                              رقم الهاتف
+                            </dt>
+                            <dd className="mt-1">
+                              <bdi dir="ltr">
+                                {formatIraqiPhone(row.customer.phone)}
+                              </bdi>
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-muted-foreground">الخدمة</dt>
+                            <dd className="mt-1">
+                              {serviceLabel(row.serviceKey)}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-muted-foreground">
+                              موعد المتابعة
+                            </dt>
+                            <dd className="mt-1 space-y-1">
+                              <span className="block">
+                                {formatFollowupDate(row.followupAt)}
+                              </span>
+                              <DateState row={row} />
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="mb-1 text-muted-foreground">
+                              الموظف المسؤول
+                            </dt>
+                            <dd>{employeeIdentity(row)}</dd>
+                          </div>
+                        </dl>
+                        {rowActions(row)}
+                      </article>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="px-4 py-12 text-center">
+                  <UserRound
+                    className="mx-auto mb-3 size-7 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <h2 className="font-semibold">
+                    لا توجد متابعات{" "}
+                    {query || service || status || bucket || employee
+                      ? "مطابقة للبحث"
+                      : "حالياً"}
+                  </h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {capabilities?.canCreate
+                      ? "أضف استفسار العميل وحدد موعد التواصل والمسؤول عنه."
+                      : "ستظهر هنا المتابعات المسندة إليك عند إضافتها."}
+                  </p>
+                  {query || service || status || employee || bucket ? (
                     <Button
-                      type="button"
                       variant="outline"
                       size="sm"
-                      onClick={() => openAdd(item)}
+                      className="mt-4"
+                      onClick={() => {
+                        setSearch("");
+                        setQuery("");
+                        setService("");
+                        setStatus("");
+                        setEmployee("");
+                        setBucket("");
+                        setPage(1);
+                      }}
                     >
-                      إضافة متابعة
+                      مسح التصفية
                     </Button>
-                  </div>
-                ))}
-              </div>
+                  ) : null}
+                </div>
+              )}
+              <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
+                <span>
+                  {list.data.total} متابعة · صفحة {list.data.page} من{" "}
+                  {Math.max(1, Math.ceil(list.data.total / list.data.pageSize))}
+                </span>
+                <div className="flex gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="size-9"
+                    aria-label="الصفحة السابقة"
+                    disabled={busy || page <= 1}
+                    onClick={() => setPage(page - 1)}
+                  >
+                    <ChevronRight className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="size-9"
+                    aria-label="الصفحة التالية"
+                    disabled={
+                      busy || page * list.data.pageSize >= list.data.total
+                    }
+                    onClick={() => setPage(page + 1)}
+                  >
+                    <ChevronLeft className="size-4" />
+                  </Button>
+                </div>
+              </footer>
             </section>
-          ) : null}
-          <details className="rounded-lg border border-border bg-card px-4 py-3">
-            <summary className="cursor-pointer text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              ملخص المتابعة
-            </summary>
-            <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-3 text-sm">
-              <div>
-                <dt className="text-xs text-muted-foreground">
-                  إجمالي الاستفسارات
-                </dt>
-                <dd className="mt-1 font-semibold">
-                  {list.data.summary.total}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">
-                  متابعات مكتملة
-                </dt>
-                <dd className="mt-1 font-semibold">
-                  {list.data.summary.completed}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">
-                  حجوزات ناتجة عن المتابعة
-                </dt>
-                <dd className="mt-1 font-semibold">
-                  {list.data.summary.converted}
-                </dd>
-              </div>
-            </dl>
-          </details>
-        </>
-      ) : null}
+            {capabilities?.canCreate && list.data.suggestions.length ? (
+              <section aria-label="متابعات مقترحة" className="space-y-2">
+                <h2 className="text-sm font-semibold">فرص متابعة مقترحة</h2>
+                <div className="divide-y divide-border rounded-lg border border-border bg-card">
+                  {list.data.suggestions.map((item) => (
+                    <div
+                      key={item.key}
+                      className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">
+                          {item.customer.name}{" "}
+                          <span className="font-normal text-muted-foreground">
+                            · {serviceLabel(item.serviceKey)}
+                          </span>
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {item.reason}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openAdd(item)}
+                      >
+                        إضافة متابعة
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            <details className="rounded-lg border border-border bg-card px-4 py-3">
+              <summary className="cursor-pointer text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                ملخص المتابعة
+              </summary>
+              <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-3 text-sm">
+                <div>
+                  <dt className="text-xs text-muted-foreground">
+                    إجمالي الاستفسارات
+                  </dt>
+                  <dd className="mt-1 font-semibold">
+                    {list.data.summary.total}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">
+                    متابعات مكتملة
+                  </dt>
+                  <dd className="mt-1 font-semibold">
+                    {list.data.summary.completed}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">
+                    حجوزات ناتجة عن المتابعة
+                  </dt>
+                  <dd className="mt-1 font-semibold">
+                    {list.data.summary.converted}
+                  </dd>
+                </div>
+              </dl>
+            </details>
+          </>
+        ) : null}
+      </div>
       {addOpen && capabilities?.canCreate ? (
         <AddFollowupDialog
           mode={mode}
@@ -961,7 +1019,7 @@ export default function CustomerFollowupsPage({
         />
       ) : null}
       {preview ? (
-        <CustomerPreview
+        <FollowupEventDetails
           row={preview}
           scope={scope}
           onClose={() => setPreview(null)}
@@ -1010,6 +1068,8 @@ function AddFollowupDialog({
     suggestion?.serviceKey ?? "photography",
   );
   const [date, setDate] = useState("");
+  const [expected, setExpected] = useState("");
+  const [occasion, setOccasion] = useState("");
   const [employee, setEmployee] = useState("");
   const [note, setNote] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
@@ -1040,6 +1100,8 @@ function AddFollowupDialog({
       serviceKey: service,
       followupAt: followupDateTimeToIso(date),
       assignedStaffId: Number(employee),
+      ...(expected ? { expectedEventDate: expected } : {}),
+      ...(occasion ? { occasionKey: occasion } : {}),
       ...(note.trim() ? { note: note.trim() } : {}),
       ...(suggestion
         ? {
@@ -1205,6 +1267,32 @@ function AddFollowupDialog({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="followup-date">موعد المتابعة</Label>
+              <div className="grid gap-3 sm:grid-cols-2 pb-3">
+                <label className="space-y-1 text-sm">
+                  المناسبة القادمة (اختياري)
+                  <select
+                    className="w-full min-h-11 rounded-md border bg-background px-3"
+                    value={occasion}
+                    onChange={(e) => setOccasion(e.target.value)}
+                  >
+                    <option value="">حسب الخدمة</option>
+                    <option value="engagement">خطوبة</option>
+                    <option value="henna">حنة</option>
+                    <option value="wedding">زفاف</option>
+                    <option value="marriage_contract">عقد قران</option>
+                    <option value="graduation">تخرج</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-sm">
+                  تاريخ المناسبة المتوقع
+                  <Input
+                    nativePicker
+                    type="date"
+                    value={expected}
+                    onChange={(e) => setExpected(e.target.value)}
+                  />
+                </label>
+              </div>
               <DateField
                 id="followup-date"
                 type="datetime-local"

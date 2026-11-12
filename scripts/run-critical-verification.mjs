@@ -28,6 +28,8 @@ const steps = [
   ["Graduation group confirmation navigation", "pnpm", ["run", "test:graduation-group-step-flow"]],
   ["Calendar event target", "pnpm", ["run", "test:calendar-event-target"]],
   ["Customer followup scope, canonical booking conversion and simple UI", "pnpm", ["run", "test:customer-followups"]],
+  ["Occasion messaging templates and signed provider delivery", "pnpm", ["run", "test:event-messaging"]],
+  ["Occasion campaigns PostgreSQL concurrency and consent", "pnpm", ["run", "test:event-messaging-db"]],
   ["Booking center read preflight", "pnpm", ["run", "test:booking-center-read"]],
   ["Calendar read preflight", "pnpm", ["run", "test:calendar-read"]],
   ["Shared Arabic date field", "pnpm", ["run", "test:date-field"]],
