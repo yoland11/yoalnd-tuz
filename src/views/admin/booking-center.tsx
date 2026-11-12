@@ -2317,6 +2317,7 @@ function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: num
   const saved = () => {
     queryClient.invalidateQueries({ queryKey: ["admin", "booking-workspace"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "booking-center"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "booking-operations", source, id] });
     closeEditor();
   };
   return <>

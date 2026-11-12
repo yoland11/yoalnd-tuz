@@ -9,6 +9,7 @@ import { approveWarehouseTransfer, createWarehouseTransfer, rejectWarehouseTrans
 import { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest, warehouseApprovalDocument } from "./warehouse-approvals";
 import { approvalRecordHref } from "@/lib/approval-records";
 import { resolveBookedKosha, type BookedKoshaPhoto } from "@/lib/booking-kosha-photo";
+import { bookingPhotoProductIds } from "@/lib/booking-workspace-photos";
 import { ApprovalRequestError, OPEN_APPROVAL_STATUSES, WAREHOUSE_APPROVAL_TYPES, approvalDecisionNotice, approvalTypeCategory, approvalTypeNeedsMainManager, runApprovalDecision, type ApprovalExecution, type ApprovalExecutionPlan } from "./approval-requests";
 import { bookingCashSummary, bookingRowShares, bookingTransactionCondition } from "./booking-cash-link";
 import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence, rowsOf as attendanceDatabaseRows } from "./attendance";
@@ -32703,6 +32704,22 @@ async function bookingOperationsKoshaPhoto(reference: BookingOperationsReference
   };
 }
 
+// Read only the products actually selected on this booking, including legacy
+// service lines. Their existing media proxy remains the source of image URLs.
+async function bookingServiceProductPhotos(fields: Record<string, unknown>, items: Array<{ productId?: unknown }>) {
+  const ids = bookingPhotoProductIds(fields, items);
+  if (!ids.length) return [];
+  const products = await db.select({ id: productsTable.id, name: productsTable.name, nameAr: productsTable.nameAr, images: productsTable.images, updatedAt: productsTable.updatedAt })
+    .from(productsTable).where(inArray(productsTable.id, ids)).limit(200);
+  const byId = new Map(products.map(product => [product.id, product]));
+  return ids.flatMap(id => {
+    const product = byId.get(id);
+    if (!product) return [];
+    const imageUrl = publicMediaList("product", product, product.images)[0] ?? null;
+    return imageUrl ? [{ productId: id, name: product.nameAr || product.name, imageUrl }] : [];
+  });
+}
+
 async function saveBookingOperations(
   reference: BookingOperationsReference,
   operations: Record<string, any>,
@@ -36710,12 +36727,15 @@ async function handleCentralBookingCenter(
       db.select().from(serviceOrderItemsTable).where(eq(serviceOrderItemsTable.serviceOrderId, row.id)),
       collectionLastPayments("service_order", [row.id]),
     ]);
+    const bookedProductPhotos = await bookingServiceProductPhotos((row.customFields ?? {}) as Record<string, unknown>, itemRows);
     return json({
       id: row.id,
       trackingCode: row.trackingCode,
       serviceId: row.serviceId,
       serviceName: service?.nameAr ?? "",
       serviceType: service?.type ?? null,
+      serviceImage: service ? publicMediaValue("service", service, service.image) : null,
+      bookedProductPhotos,
       customerName: row.customerName,
       phone: row.phone,
       eventDate: row.eventDate,

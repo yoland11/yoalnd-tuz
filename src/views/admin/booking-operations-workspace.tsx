@@ -118,6 +118,8 @@ import { AccountSummaryCard, PAYMENT_STATUS_LABELS, effectivePaymentStatus } fro
 import { CustomerFinancialSummary } from "./customer-financial-summary";
 import { BookingGroupPhotos } from "@/components/booking-group-photos";
 import { BookingKoshaPhoto } from "@/components/booking-kosha-photo";
+import { BookingReferencePhotos } from "@/components/booking-reference-photos";
+import { bookingWorkspacePhotos } from "@/lib/booking-workspace-photos";
 import type { BookedKoshaPhoto } from "@/lib/booking-kosha-photo";
 import "./booking-operations-workspace.css";
 
@@ -513,6 +515,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
   };
 
   const overview = useQuery<OverviewData>({ queryKey: [...key, "overview"], queryFn: () => adminFetch(`${base}/overview`) });
+  const referencePhotos = bookingWorkspacePhotos(booking.source, booking.raw, overview.data?.bookedKosha?.imageUrl);
   const readinessQuery = useQuery<ReadinessDisplay>({ queryKey: [...key,"readiness"], queryFn: () => adminFetch(`${base}/readiness`), refetchInterval:30_000 });
   const transportation = useQuery<{ transportation: Partial<TransportValue> | null; transportPlan:TransportPlanView; dispatchVehicle?: DispatchVehicle | null }>({ queryKey: [...key, "transportation"], queryFn: () => adminFetch(`${base}/transportation`) });
   const attendees = useQuery<{ attendees: GroupAttendee[] }>({ queryKey: [...key, "group-attendees"], queryFn: () => adminFetch(`${base}/group-attendees`) });
@@ -660,6 +663,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
     <TransportReceiptDialog reference={transportReceipt} onClose={() => setTransportReceipt(null)} onOpenTransport={openTransportCard} />
 
     {booking.source === "kosha" || booking.services.some(service => service.type === "kosha") || overview.data?.bookedKosha ? <BookingKoshaPhoto kosha={overview.data?.bookedKosha} loading={overview.isLoading} error={overview.error} onRetry={() => void overview.refetch()} /> : null}
+    {referencePhotos.length || !overview.data?.bookedKosha ? <BookingReferencePhotos photos={referencePhotos} onEdit={booking.source === "service" ? onEdit : undefined} /> : null}
 
     <BookingServicesSection booking={booking} onAdd={onAddServices} transport={transportation.isSuccess ? transportation.data.transportation ?? null : undefined}>
       {booking.source === "service" && booking.services.some((service) => service.type === "photography") ? <PhotographyProductionPanel bookingId={booking.id} /> : null}
