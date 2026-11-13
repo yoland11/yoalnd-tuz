@@ -10,6 +10,7 @@ import { ImageUploadEditor, type ImageEditResult } from "@/components/image-uplo
 import { usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, apiErrorMessage, apiErrorStatus, formatCurrency } from "./_lib";
 import { shortBookingNumber } from "@/lib/booking-number";
+import { BookingEventTypeSelector } from "@/components/booking-event-type";
 import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory, KoshaPackage } from "@/views/koshas";
@@ -2107,6 +2108,7 @@ function BookingProductionSection({ bookingId }: { bookingId: number }) {
 
 export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBooking; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
+  const [eventTypeError, setEventTypeError] = useState("");
   const [previewReady, setPreviewReady] = useState(false);
   const [editorTab, setEditorTab] = useState<"details" | "products">("details");
   const savedPricing = ((booking.bookingDetails ?? {}) as any).pricing ?? {};
@@ -2211,7 +2213,10 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
       }),
     }),
     onSuccess: () => { toast({ title: "تم حفظ التعديلات", description: `بقي الحجز على نفس الرقم ${shortBookingNumber("kosha", booking.id, booking.trackingCode) || `KB-${booking.id}`}.` }); onSaved(); },
-    onError: (error: any) => toast({ title: "تعذر حفظ التعديل", description: error?.message, variant: "destructive" }),
+    onError: (error: any) => {
+      if (error?.fieldErrors?.eventType) setEventTypeError(error.fieldErrors.eventType);
+      toast({ title: "تعذر حفظ التعديل", description: error?.message, variant: "destructive" });
+    },
   });
   const projectedTotal = pricedTotal;
 
@@ -2245,7 +2250,6 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
             <Field label="تاريخ المناسبة" type="date" value={form.eventDate} onChange={(value) => setForm({ ...form, eventDate: value })} />
             <Field label="وقت المناسبة" type="time" value={form.eventTime} onChange={(value) => setForm({ ...form, eventTime: value })} />
             <Field label="القاعة / الموقع" value={form.hallLocation} onChange={(value) => setForm({ ...form, hallLocation: value })} />
-            <Field label="نوع الحفل" value={form.eventType} onChange={(value) => setForm({ ...form, eventType: value })} />
             <Field label="مستوى الخدمة" value={form.serviceLevel} onChange={(value) => setForm({ ...form, serviceLevel: value })} />
             <Field label="نوع المكان" value={form.venueType} onChange={(value) => setForm({ ...form, venueType: value })} />
             <Field label="لون الثيم" value={form.themeColor} onChange={(value) => setForm({ ...form, themeColor: value })} />
@@ -2259,6 +2263,8 @@ export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: 
             <div><label className="mb-1 block text-xs text-muted-foreground">حالة التتبع</label><select value={form.trackingStatus} onChange={(event) => setForm({ ...form, trackingStatus: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{!KOSHA_TRACKING_STAGES.some((stage) => stage.key === form.trackingStatus) ? <option value={form.trackingStatus}>حالة قديمة — محفوظة كما هي</option> : null}{KOSHA_TRACKING_STAGES.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></div>
             <Field label="تاريخ استحقاق المتبقي" type="date" value={form.dueDate} onChange={(value) => setForm({ ...form, dueDate: value })} />
           </div>
+
+          <BookingEventTypeSelector id="edit-kosha-event-type" value={form.eventType} error={eventTypeError} onChange={value => { setForm(current => ({ ...current, eventType: value })); setEventTypeError(""); }} />
 
           <KoshaBookingOptionPicker title="الخدمات الإضافية" options={options?.addons ?? []} selected={form.selectedAddons} onToggle={(name) => toggle("selectedAddons", name)} />
           <KoshaBookingOptionPicker title="بورد الترحيب" options={options?.welcomeBoards ?? []} selected={form.welcomeBoards} single onToggle={(name) => setForm({ ...form, welcomeBoards: form.welcomeBoards.includes(name) ? [] : [name] })} />

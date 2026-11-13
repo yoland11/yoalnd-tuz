@@ -10,6 +10,8 @@ import { closeWarehouseApprovalRequests, decideWarehouseApprovalRequest, warehou
 import { approvalRecordHref } from "@/lib/approval-records";
 import { resolveBookedKosha, type BookedKoshaPhoto } from "@/lib/booking-kosha-photo";
 import { bookingPhotoProductIds } from "@/lib/booking-workspace-photos";
+import { readBookingEventType } from "@/lib/booking-event-types";
+import { bookingEventTypeNeedsFollowups, bookingEventTypeWrite, type BookingEventTypeWriteOptions } from "./booking-event-type-validation";
 import { ApprovalRequestError, OPEN_APPROVAL_STATUSES, WAREHOUSE_APPROVAL_TYPES, approvalDecisionNotice, approvalTypeCategory, approvalTypeNeedsMainManager, runApprovalDecision, type ApprovalExecution, type ApprovalExecutionPlan } from "./approval-requests";
 import { bookingCashSummary, bookingRowShares, bookingTransactionCondition } from "./booking-cash-link";
 import { approveEventCompensation, approveOvertime, attendanceDashboard, attendanceRecords, attendanceReport, attendanceToday, AttendanceError, cancelShift, createBookingShift, createCorrection, createKiosk, createShifts, kioskDisplay, listCorrections, listKiosks, listLocations, readAttendancePolicy, readEmployeeSettings, recordAttendance, reviewCorrection, revokeKiosk, saveEmployeeSettings, saveLocation, shiftsBetween, sweepLocationEvidence, rowsOf as attendanceDatabaseRows } from "./attendance";
@@ -7776,7 +7778,7 @@ async function formatRoutedKoshaServiceBooking(
     packagePrice: fields.packagePrice ?? null,
     customerId: fields.customerId ?? null,
     eventTime: fields.eventTime ?? "",
-    eventType: fields.eventType ?? service?.nameAr ?? service?.name ?? "",
+    eventType: fields.eventType ?? "",
     serviceLevel: fields.serviceLevel ?? "",
     venueType: fields.venueType ?? "",
     themeColor: fields.themeColor ?? "",
@@ -7941,6 +7943,8 @@ async function updateRoutedKoshaServiceBooking(
   const fields: Record<string, any> = {
     ...((order.customFields ?? {}) as Record<string, any>),
   };
+  if (data.eventType !== undefined) data.eventType = admitBookingEventType(data.eventType, { mode: "edit", previous: fields.eventType });
+  else delete fields.eventType;
   const update: Partial<typeof serviceOrdersTable.$inferInsert> = {};
   for (const key of [
     "koshaId",
@@ -8025,13 +8029,17 @@ async function updateRoutedKoshaServiceBooking(
     serviceOrdersTable.customFields,
     fields,
   );
-  const [row] = await db.transaction(async tx=>guardBookingResourceWrite(tx,{source:"service",id:order.id},async()=>{
+  const [row] = await db.transaction(async tx=>guardBookingResourceWrite(tx,{source:"service",id:order.id},async(live)=>{
     const saved=await tx
     .update(serviceOrdersTable)
     .set(update)
     .where(eq(serviceOrdersTable.id, order.id))
     .returning();
     await syncCentralBookingToPhotography(order.id,{id:auth.id,name:auth.fullName||auth.username},tx);
+    const savedEventType = (saved[0]?.customFields as Record<string, unknown> | null)?.eventType;
+    if (typeof savedEventType === "string" && bookingEventTypeNeedsFollowups(live.details.eventType, savedEventType)) {
+      await recordOccasionFollowups(tx, { source: "service", id: order.id, staffId: auth.id });
+    }
     return saved;
   }));
   if (update.status !== undefined && row.status !== order.status) {
@@ -9273,6 +9281,14 @@ const UNIFIED_BOOKING_SERVICE_STATUSES = new Set([
   "returned",
   "cancelled",
 ]);
+
+function admitBookingEventType(value: unknown, options: BookingEventTypeWriteOptions): any {
+  const result = bookingEventTypeWrite(value, options);
+  if (!result.ok) throw new CheckoutError(result.message, 422, {
+    code: "BOOKING_INVALID", fieldErrors: { eventType: result.message },
+  });
+  return result.value;
+}
 
 function normalizeUnifiedBookingCustomFields(fields: Record<string, any>) {
   const hasBookingPhotos =
@@ -15864,6 +15880,7 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
     if (!parsed.success)
       return validationError("kosha-bookings.create", parsed);
     const data = parsed.data;
+    data.eventType = admitBookingEventType(data.eventType, { mode: "create" });
     const kosha = await db.query.koshasTable.findFirst({
       where: and(
         eq(koshasTable.id, data.koshaId),
@@ -16770,6 +16787,11 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
         normalizeDetailsInput(data.customFields),
       ),
     );
+    if (Object.hasOwn(customFields, "eventType") || Number(customFields.bookingCenterVersion) >= 2) {
+      customFields.eventType = admitBookingEventType(customFields.eventType, {
+        mode: "create", required: Number(customFields.bookingCenterVersion) >= 2,
+      });
+    }
     const eventLocation =
       data.eventLocation ??
       primaryLocationFromDetails(service.type, customFields) ??
@@ -22741,6 +22763,7 @@ async function handleAdminKoshas(
         const parsed = KoshaBookingUpdateSchema.safeParse(compatiblePatch);
         if (!parsed.success)
           return validationError("admin.kosha-bookings.update", parsed);
+        if (parsed.data.eventType !== undefined) parsed.data.eventType = admitBookingEventType(parsed.data.eventType, { mode: "edit", previous: existing.eventType });
         const update: any = { updatedAt: new Date() };
         for (const key of [
           "customerName",
@@ -23143,6 +23166,12 @@ async function handleAdminKoshas(
         }
         let transportPlanReplayed=false;
         let [row] = await db.transaction(async tx=>guardBookingResourceWrite(tx,{source:"kosha",id},async()=>{
+          const occasionBefore = Object.hasOwn(update, "eventType")
+            ? await tx.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id), columns: { eventType: true } })
+            : undefined;
+          if (Object.hasOwn(update, "eventType") && !occasionBefore) {
+            throw new CheckoutError("الحجز غير موجود", 404, { code: "NOT_FOUND" });
+          }
           let canonicalPlan:TransportPlan|undefined;
           if(transportPlanChange){
             const latest=await tx.query.koshaBookingsTable.findFirst({where:eq(koshaBookingsTable.id,id)});
@@ -23165,6 +23194,9 @@ async function handleAdminKoshas(
           if(canonicalPlan){
             await reconcilePaymentState(tx,{sourceType:"kosha_booking",sourceId:id});
             await tx.execute(sql`INSERT INTO entity_timeline(entity_type,entity_id,type,title,actor_id,actor_name,metadata) VALUES('kosha_booking',${id},'transportation_set','تحديث خطة رحلات النقل',${auth.id},${auth.fullName||auth.username},${JSON.stringify({revision:canonicalPlan.revision,feeMode:canonicalPlan.feeMode,trips:canonicalPlan.trips.length,fee:transportPlanChange?.fee})}::jsonb)`);
+          }
+          if (occasionBefore && rows[0] && bookingEventTypeNeedsFollowups(occasionBefore.eventType, rows[0].eventType)) {
+            await recordOccasionFollowups(tx, { source: "kosha", id, staffId: auth.id });
           }
           return rows;
         }));
@@ -36736,6 +36768,7 @@ async function handleCentralBookingCenter(
       serviceType: service?.type ?? null,
       serviceImage: service ? publicMediaValue("service", service, service.image) : null,
       bookedProductPhotos,
+      eventType: (row.customFields as Record<string, unknown> | null)?.eventType ?? null,
       customerName: row.customerName,
       phone: row.phone,
       eventDate: row.eventDate,
@@ -36838,6 +36871,9 @@ async function listCentralBookingCenterRows(rowCap: number) {
     ...serviceOrders.map((order) => {
       const fields = (order.customFields ?? {}) as Record<string, any>;
       const service = serviceMap.get(order.serviceId);
+      const graduationOrderId = (typeof fields.graduationOrderId === "number" || typeof fields.graduationOrderId === "string") &&
+        Number.isSafeInteger(Number(fields.graduationOrderId)) && Number(fields.graduationOrderId) > 0 && Number(fields.graduationOrderId) <= 2147483647
+        ? Number(fields.graduationOrderId) : null;
       return {
         source: "service",
         id: order.id,
@@ -36848,6 +36884,8 @@ async function listCentralBookingCenterRows(rowCap: number) {
         phone: order.phone,
         bookingSource: fields.bookingSource === "store" ? "المتجر" : "الخدمات",
         departments: serviceOrderDepartments(fields, service),
+        eventType: readBookingEventType("service", order),
+        ...(graduationOrderId ? { graduationOrderId } : {}),
         eventDate: order.eventDate ?? "",
         eventTime: fields.eventTime ?? "",
         hall: order.eventLocation ?? "",
@@ -36876,6 +36914,7 @@ async function listCentralBookingCenterRows(rowCap: number) {
       phone: booking.phone,
       bookingSource: "الكوشات",
       departments: koshaBookingDepartments((booking.bookingDetails ?? {}) as Record<string, any>),
+      eventType: booking.eventType ?? null,
       eventDate: booking.eventDate ?? "",
       eventTime: booking.eventTime ?? "",
       hall: booking.hallLocation ?? "",
@@ -36904,6 +36943,7 @@ async function listCentralBookingCenterRows(rowCap: number) {
         phone: order.customerPhone,
         bookingSource: "المتجر",
         departments: centralBookingDepartments(order.serviceType),
+        eventType: null,
         eventDate: "",
         eventTime: "",
         hall: [order.governorate, order.area, order.address]
@@ -36928,6 +36968,8 @@ async function listCentralBookingCenterRows(rowCap: number) {
       phone: order.phone,
       bookingSource: "التخرج",
       departments: ["graduation"],
+      eventType: "تخرج",
+      graduationOrderId: order.id,
       eventDate: "",
       eventTime: "",
       hall: "",
@@ -36950,6 +36992,7 @@ async function listCentralBookingCenterRows(rowCap: number) {
       phone: order.phone,
       bookingSource: "التصوير",
       departments: ["photography"],
+      eventType: null,
       eventDate: "",
       eventTime: "",
       hall: "",
@@ -36974,6 +37017,7 @@ async function listCentralBookingCenterRows(rowCap: number) {
         phone: order.phone,
         bookingSource: "الإيجار",
         departments: ["rental"],
+        eventType: null,
         eventDate: String(order.startDate ?? ""),
         eventTime: "",
         hall: "",
@@ -53279,6 +53323,11 @@ async function handleAdmin(
           normalizeDetailsInput(rawBody?.customFields ?? data.customFields),
         ),
       );
+      if (Object.hasOwn(customFields, "eventType") || Number(customFields.bookingCenterVersion) >= 2) {
+        customFields.eventType = admitBookingEventType(customFields.eventType, {
+          mode: "create", required: Number(customFields.bookingCenterVersion) >= 2,
+        });
+      }
       const servicePaymentMethod = String(
         rawBody?.paymentMethod ?? (customFields as any)?.paymentMethod ?? "",
       ).trim();
@@ -53711,12 +53760,19 @@ async function handleAdmin(
         update.phoneLast4 = phoneLast4(phone);
       }
       if (b?.customFields !== undefined) {
+        const previousFields = normalizeDetailsInput(prev.customFields);
+        const requestedFields = normalizeDetailsInput(b.customFields);
         update.customFields = normalizeUnifiedBookingCustomFields(
           withDerivedServiceDetails(
             nextService?.type,
-            normalizeDetailsInput(b.customFields),
+            requestedFields,
           ),
         );
+        if (Object.hasOwn(requestedFields, "eventType")) {
+          update.customFields.eventType = admitBookingEventType(requestedFields.eventType, {
+            mode: "edit", provided: Object.hasOwn(requestedFields, "eventType"), previous: previousFields.eventType,
+          });
+        }
         if (b?.eventLocation === undefined) {
           update.eventLocation =
             primaryLocationFromDetails(nextService?.type, update.customFields) ||
@@ -53785,12 +53841,13 @@ async function handleAdmin(
         }
       }
       if (update.customFields !== undefined) {
+        if (!Object.hasOwn(normalizeDetailsInput(b?.customFields), "eventType")) delete update.customFields.eventType;
         update.customFields = routedKoshaCustomFieldsSql(
           serviceOrdersTable.customFields,
           update.customFields,
         );
       }
-      const [row,photographySync] = await db.transaction(async (tx) => guardBookingResourceWrite(tx,{source:"service",id},async()=>{
+      const [row,photographySync] = await db.transaction(async (tx) => guardBookingResourceWrite(tx,{source:"service",id},async(live)=>{
         const [updated] = await tx
           .update(serviceOrdersTable)
           .set(update)
@@ -53812,6 +53869,10 @@ async function handleAdmin(
           }
         }
         const photographySync=await syncCentralBookingToPhotography(id,{id:auth.id,name:auth.fullName||auth.username,ipAddress:req.headers.get("x-forwarded-for"),userAgent:req.headers.get("user-agent")},tx);
+        const savedEventType = (updated?.customFields as Record<string, unknown> | null)?.eventType;
+        if (typeof savedEventType === "string" && bookingEventTypeNeedsFollowups(live.details.eventType, savedEventType)) {
+          await recordOccasionFollowups(tx, { source: "service", id, staffId: auth.id });
+        }
         return [updated,photographySync] as const;
       }));
       if (

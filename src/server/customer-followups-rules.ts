@@ -1,17 +1,12 @@
 import type { FollowupServiceKey } from "../lib/customer-followups";
+import { normalizeBookingEventType } from "../lib/booking-event-types";
 
 export function followupOccasion(
   value: unknown,
 ): "engagement" | "henna" | "wedding" | "graduation" | null {
-  const key = String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[أإآ]/g, "ا");
-  if (["engagement", "خطوبة", "خطوبه"].includes(key)) return "engagement";
-  if (["henna", "حنة", "حنه"].includes(key)) return "henna";
-  if (["wedding", "زفاف", "عرس", "زواج"].includes(key)) return "wedding";
-  if (["graduation", "تخرج", "حفل تخرج"].includes(key)) return "graduation";
-  return null;
+  const key = normalizeBookingEventType(value);
+  // Birthday/other occasions do not imply another sale or follow-up workflow.
+  return key === "engagement" || key === "henna" || key === "wedding" || key === "graduation" ? key : null;
 }
 export function suggestedFollowupServices(input: {
   eventType: unknown;

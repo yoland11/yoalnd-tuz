@@ -19,7 +19,9 @@ export async function recordOccasionFollowups(
       ? sql`SELECT id,customer_id,custom_fields->>'eventType' AS event_type FROM service_orders WHERE id=${input.id} AND archived_at IS NULL AND lower(status) NOT IN ('cancelled','canceled','deleted','archived')`
       : sql`SELECT id,customer_id,event_type FROM kosha_bookings WHERE id=${input.id} AND archived_at IS NULL AND lower(status) NOT IN ('cancelled','canceled','deleted','archived')`,
   );
-  if (!b?.customer_id || followupOccasion(b.event_type) !== "engagement")
+  const occasion = followupOccasion(b?.event_type);
+  const nextServices = occasion === "engagement" ? ["henna", "wedding"] : occasion === "henna" ? ["wedding"] : [];
+  if (!b?.customer_id || !nextServices.length)
     return { status: "not_applicable", created: 0 };
   const [c] = await messageRows(
     tx,
@@ -34,12 +36,12 @@ export async function recordOccasionFollowups(
   );
   if (!staff) return { status: "assignee_unavailable", created: 0 };
   let created = 0;
-  for (const service of ["henna", "wedding"]) {
+  for (const service of nextServices) {
     const token = `auto:${input.source}:${input.id}:${service}`;
     const [saved] = await messageRows(
       tx,
       sql`INSERT INTO customer_followups(customer_id,service_key,assigned_staff_id,followup_at,note,status,contact_stage,occasion_key,created_by,create_token,payload_hash,suggestion_key,source_booking_source,source_booking_id)
-      SELECT ${c.id},${service},${staff.id},now()+interval '7 days','متابعة مناسبة بعد حجز الخطوبة','waiting','new',${service},${staff.id},${token},${digest({ source: input.source, id: input.id, service })},${`${input.source}:${input.id}:${service}`},${input.source},${input.id}
+      SELECT ${c.id},${service},${staff.id},now()+interval '7 days',${occasion === "henna" ? "متابعة الزفاف بعد حجز الحنة" : "متابعة مناسبة بعد حجز الخطوبة"},'waiting','new',${service},${staff.id},${token},${digest({ source: input.source, id: input.id, service })},${`${input.source}:${input.id}:${service}`},${input.source},${input.id}
       WHERE NOT EXISTS(SELECT 1 FROM customer_followups f WHERE f.customer_id=${c.id} AND f.service_key=${service} AND (f.status IN ('converted','uninterested') OR f.completed_at IS NULL)) ON CONFLICT DO NOTHING RETURNING id`,
     );
     if (saved) {
@@ -77,8 +79,8 @@ export async function sweepOccasionFollowups(db: FollowupDatabase) {
   // Only recent sources, bounded. No migration/backfill of historical bookings.
   const sources = await messageRows(
     db,
-    sql`SELECT * FROM ((SELECT 'service' AS source,id,created_at FROM service_orders WHERE created_at>=now()-interval '7 days' AND archived_at IS NULL AND custom_fields->>'eventType' IN ('engagement','خطوبة','خطوبه') ORDER BY id DESC LIMIT 40)
-    UNION ALL (SELECT 'kosha' AS source,id,created_at FROM kosha_bookings WHERE created_at>=now()-interval '7 days' AND archived_at IS NULL AND event_type IN ('engagement','خطوبة','خطوبه') ORDER BY id DESC LIMIT 40)) b ORDER BY created_at DESC LIMIT 60`,
+    sql`SELECT * FROM ((SELECT 'service' AS source,id,created_at FROM service_orders WHERE created_at>=now()-interval '7 days' AND archived_at IS NULL AND lower(btrim(custom_fields->>'eventType')) IN ('engagement','خطوبة','خطوبه','henna','حنة','حنه') ORDER BY id DESC LIMIT 40)
+    UNION ALL (SELECT 'kosha' AS source,id,created_at FROM kosha_bookings WHERE created_at>=now()-interval '7 days' AND archived_at IS NULL AND lower(btrim(event_type)) IN ('engagement','خطوبة','خطوبه','henna','حنة','حنه') ORDER BY id DESC LIMIT 40)) b ORDER BY created_at DESC LIMIT 60`,
   );
   let created = 0;
   for (const b of sources)

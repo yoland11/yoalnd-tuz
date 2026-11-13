@@ -19,6 +19,7 @@ import {
 } from "@/lib/service-details";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import { shortBookingNumber } from "@/lib/booking-number";
+import { BookingEventTypeSelector } from "@/components/booking-event-type";
 import { serviceOrderFocusId } from "@/lib/orders-route";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -1562,7 +1563,10 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
       onSaved?.();
       onClose();
     },
-    onError: (err: any) => toast({ title: "تعذر حفظ تعديل الحجز", description: err?.message, variant: "destructive" }),
+    onError: (err: any) => {
+      if (err?.fieldErrors?.eventType) setErrors(current => ({ ...current, eventType: err.fieldErrors.eventType }));
+      toast({ title: "تعذر حفظ تعديل الحجز", description: err?.message, variant: "destructive" });
+    },
   });
 
   function submit() {
@@ -1648,6 +1652,10 @@ export function EditServiceOrderModal({ order, onClose, onSaved }: { order: Serv
             </div>
             <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2"><span className="block text-xs text-muted-foreground">المتبقي وحالة الدفع</span><strong className="mt-1 block text-sm">{formatCurrency(remainingAmount)} · {computedPaymentStatus === "paid" ? "مدفوع بالكامل" : computedPaymentStatus === "partial" ? "مدفوع جزئياً" : "غير مدفوع"}</strong></div>
           </div>
+          <BookingEventTypeSelector id="edit-service-event-type" value={form.customFields.eventType} error={errors.eventType} onChange={value => {
+            setForm(current => ({ ...current, customFields: { ...current.customFields, eventType: value } }));
+            setErrors(current => ({ ...current, eventType: "" }));
+          }} />
           <ServiceDetailFields
             serviceType={selectedServiceType}
             value={form.customFields}

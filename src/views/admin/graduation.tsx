@@ -44,6 +44,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -802,7 +803,7 @@ function DashboardWithGroups() {
 function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
   const { toast } = useToast();
   const client = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["admin", "graduation", "order", id],
     queryFn: () => adminFetch<any>(`/admin/graduation/orders/${id}`),
   });
@@ -836,7 +837,16 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
         variant: "destructive",
       }),
   });
-  if (isLoading || !order)
+  if (error || (!isLoading && !order))
+    return (
+      <Dialog open onOpenChange={(open) => !open && onClose()}>
+        <DialogContent dir="rtl">
+          <DialogHeader><DialogTitle>تعذر فتح طلب التخرج</DialogTitle><DialogDescription>{error ? apiErrorMessage(error) : "استجابة طلب التخرج غير مكتملة."}</DialogDescription></DialogHeader>
+          <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" onClick={() => void refetch()}><RefreshCw className="h-4 w-4" />إعادة المحاولة</Button><Button type="button" variant="outline" onClick={onClose}>إغلاق</Button></div>
+        </DialogContent>
+      </Dialog>
+    );
+  if (isLoading)
     return (
       <Dialog open onOpenChange={onClose}>
         <DialogContent dir="rtl">
@@ -1359,6 +1369,14 @@ function Info({
   );
 }
 
+// Open the original authorized order reader; query IDs never create/link orders.
+function initialGraduationOrderId(search = typeof window === "undefined" ? "" : window.location.search): number | null {
+  const value = new URLSearchParams(search).get("order");
+  if (!value || !/^[1-9]\d*$/.test(value)) return null;
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id <= 2147483647 ? id : null;
+}
+
 function Orders({
   measurementOnly = false,
   deliveryOnly = false,
@@ -1371,7 +1389,7 @@ function Orders({
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [measurementStatus, setMeasurementStatus] = useState("");
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(initialGraduationOrderId);
   const me = useQuery({queryKey:["admin", "me"], queryFn:() => fetchAdminMe(), staleTime:60_000});
   const archive = useGraduationOrderArchive(me.data);
   const stage = deliveryOnly ? "ready" : "";

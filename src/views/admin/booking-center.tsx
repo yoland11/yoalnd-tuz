@@ -84,6 +84,8 @@ import {
   fieldsWithBookingPhotos,
   type BookingPhoto,
 } from "@/lib/booking-photos";
+import { BOOKING_EVENT_TYPES, bookingEventTypeLabel, bookingEventTypeMatches, bookingEventTypeStorage, bookingGraduationHref, normalizeBookingEventType, readBookingEventType, type BookingEventFilter } from "@/lib/booking-event-types";
+import { BookingEventTypeBadge, BookingEventTypeFilter, BookingEventTypeSelector } from "@/components/booking-event-type";
 import "./booking-center.css";
 
 type ServiceKey =
@@ -280,6 +282,7 @@ type UnifiedBooking = {
   phone: string;
   eventDate: string;
   eventTime: string;
+  eventType?: unknown;
   hall: string;
   mapUrl?: string;
   status: string;
@@ -439,6 +442,7 @@ function unify(serviceOrders: ServiceOrder[], koshaBookings: KoshaBooking[]): Un
     phone: order.phone,
     eventDate: dateOnly(order.eventDate),
     eventTime: String(order.customFields?.eventTime ?? ""),
+    eventType: readBookingEventType("service", order),
     hall: String(order.customFields?.hallName ?? order.eventLocation ?? ""),
     mapUrl: String(order.customFields?.mapUrl ?? ""),
     status: order.status,
@@ -479,6 +483,7 @@ function unify(serviceOrders: ServiceOrder[], koshaBookings: KoshaBooking[]): Un
     phone: booking.phone,
     eventDate: dateOnly(booking.eventDate),
     eventTime: booking.eventTime || "",
+    eventType: readBookingEventType("kosha", booking),
     hall: booking.hallLocation || [booking.province, booking.area].filter(Boolean).join(" / "),
     mapUrl: String(booking.bookingDetails?.mapUrl ?? booking.bookingDetails?.googleMap ?? ""),
     status: booking.status,
@@ -545,6 +550,7 @@ type BookingReportOptions = {
   from: string;
   to: string;
   truncated?: boolean;
+  eventType?: BookingEventFilter;
 };
 
 function isoDateOffset(days: number): string {
@@ -576,7 +582,7 @@ type ReportColumn = {
 // Builds a self-contained printable booking report. Read-only: works on the
 // rows it is given (fetched with ?scope=report so nothing is capped) and never
 // hides a failure — an empty result is shown as "لا توجد حجوزات مطابقة".
-function buildBookingReport(options: BookingReportOptions, all: UnifiedBooking[]): string {
+export function buildBookingReport(options: BookingReportOptions, all: UnifiedBooking[]): string {
   const today = isoDateOffset(0);
   const { from, to } = bookingReportWindow(options);
   const inDepartment = (booking: UnifiedBooking) =>
@@ -587,7 +593,7 @@ function buildBookingReport(options: BookingReportOptions, all: UnifiedBooking[]
     if (!date) return false;
     return (!from || date >= from) && (!to || date <= to);
   };
-  const scoped = all.filter((booking) => inDepartment(booking) && inWindow(booking));
+  const scoped = all.filter((booking) => inDepartment(booking) && inWindow(booking) && bookingEventTypeMatches(booking.eventType, options.eventType ?? "all"));
   const departmentLabel =
     options.department === "all"
       ? "كل الأقسام"
@@ -605,6 +611,7 @@ function buildBookingReport(options: BookingReportOptions, all: UnifiedBooking[]
   const col = {
     number: { label: "رقم الحجز", cell: (b: UnifiedBooking) => `<span dir="ltr">${escapeReportHtml(b.number)}</span>` },
     customer: { label: "العميل", cell: (b: UnifiedBooking) => escapeReportHtml(b.customerName) },
+    eventType: { label: "نوع المناسبة", cell: (b: UnifiedBooking) => escapeReportHtml(bookingEventTypeLabel(b.eventType)) },
     phone: { label: "الهاتف", cell: (b: UnifiedBooking) => `<span dir="ltr">${escapeReportHtml(b.phone)}</span>` },
     department: { label: "القسم", cell: (b: UnifiedBooking) => escapeReportHtml(reportDepartmentLabels(b)) },
     date: {
@@ -622,6 +629,8 @@ function buildBookingReport(options: BookingReportOptions, all: UnifiedBooking[]
   } satisfies Record<string, ReportColumn>;
 
   const table = (rows: UnifiedBooking[], columns: ReportColumn[], rowClass?: (b: UnifiedBooking) => string) => {
+    const customerColumn = columns.indexOf(col.customer);
+    columns = [...columns.slice(0, customerColumn + 1), col.eventType, ...columns.slice(customerColumn + 1)];
     const head = columns.map((column) => `<th>${column.label}</th>`).join("");
     const bodyRows = rows.length
       ? rows
@@ -706,6 +715,7 @@ function buildBookingReport(options: BookingReportOptions, all: UnifiedBooking[]
   const period = from || to
     ? `تاريخ المناسبة: ${from ? `من ${escapeReportHtml(from)}` : ""} ${to ? `إلى ${escapeReportHtml(to)}` : ""}`
     : "كل الفترات";
+  if (options.eventType && options.eventType !== "all") chips.unshift(chip("نوع المناسبة", bookingEventTypeLabel(options.eventType)));
   const title = `${typeLabel} — ${departmentLabel}`;
   const warning = options.truncated
     ? `<div class="warn">تنبيه: عدد الحجوزات تجاوز حد التقرير (20,000 لكل نوع)، لذلك قد لا تظهر أقدم الحجوزات.</div>`
@@ -751,9 +761,10 @@ function buildBookingReport(options: BookingReportOptions, all: UnifiedBooking[]
 
 // "التقارير" dialog: pick a report type, a department (or all) and an optional
 // event-date window, then print. Always fetches the uncapped report dataset.
-function BookingReportsDialog({ initialDepartment, onClose }: { initialDepartment: ServiceKey | "all"; onClose: () => void }) {
+function BookingReportsDialog({ initialDepartment, initialEventType = "all", onClose }: { initialDepartment: ServiceKey | "all"; initialEventType?: BookingEventFilter; onClose: () => void }) {
   const [type, setType] = useState<BookingReportType>("summary");
   const [department, setDepartment] = useState<ServiceKey | "all">(initialDepartment);
+  const [eventType, setEventType] = useState<BookingEventFilter>(initialEventType);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [busy, setBusy] = useState(false);
@@ -766,7 +777,7 @@ function BookingReportsDialog({ initialDepartment, onClose }: { initialDepartmen
     try {
       const data = await adminFetch<{ rows: any[]; truncated: boolean }>("/admin/booking-center?scope=report");
       const rows = (Array.isArray(data?.rows) ? data.rows : []).map(toUnifiedBooking);
-      printStandaloneDocument(buildBookingReport({ type, department, from, to, truncated: Boolean(data?.truncated) }, rows));
+      printStandaloneDocument(buildBookingReport({ type, department, eventType, from, to, truncated: Boolean(data?.truncated) }, rows));
     } catch (cause) {
       setError(apiErrorMessage(cause));
     } finally {
@@ -816,6 +827,7 @@ function BookingReportsDialog({ initialDepartment, onClose }: { initialDepartmen
             <div className="space-y-1.5"><Label htmlFor="report-from">تاريخ المناسبة من</Label><Input id="report-from" type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></div>
             <div className="space-y-1.5"><Label htmlFor="report-to">إلى</Label><Input id="report-to" type="date" value={to} onChange={(event) => setTo(event.target.value)} /></div>
           </div>
+          <div className="space-y-1.5"><Label htmlFor="report-event-type">نوع المناسبة</Label><select id="report-event-type" value={eventType} onChange={event => setEventType(event.target.value as BookingEventFilter)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="all">كل المناسبات</option>{BOOKING_EVENT_TYPES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></div>
           <p className="text-xs text-muted-foreground">
             {window7 ? "بدون تاريخ: المناسبات القادمة خلال 7 أيام من اليوم." : from || to ? "يُطبَّق على تاريخ المناسبة." : "بدون تاريخ: كل الفترات."}
           </p>
@@ -843,6 +855,7 @@ function toUnifiedBooking(row: any): UnifiedBooking {
     : [];
   return {
     ...row,
+    eventType: row.eventType ?? readBookingEventType(row.source, row),
     services: (departments.length ? departments : (["decorations"] as ServiceKey[])).map((type: ServiceKey) => ({
       type,
       status: normalizeServiceStatus(row.status),
@@ -870,6 +883,7 @@ function BookingDashboard() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [serviceFilter, setServiceFilter] = useState<ServiceKey | "all">("all");
+  const [eventFilter, setEventFilter] = useState<BookingEventFilter>("all");
   const [showCreate, setShowCreate] = useState(false);
   useEffect(() => {
     if (followupToken != null) {
@@ -901,12 +915,14 @@ function BookingDashboard() {
   const month = today.slice(0, 7);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const searchedEvent = normalizeBookingEventType(q);
     return bookings.filter((booking) => {
       if (serviceFilter !== "all" && !booking.services.some((service) => service.type === serviceFilter)) return false;
+      if (!bookingEventTypeMatches(booking.eventType, eventFilter)) return false;
       if (!q) return true;
-      return [booking.number, booking.trackingCode, booking.customerName, booking.phone, booking.hall, booking.eventDate].join(" ").toLowerCase().includes(q);
+      return [booking.number, booking.trackingCode, booking.customerName, booking.phone, booking.hall, booking.eventDate, booking.eventType, bookingEventTypeLabel(booking.eventType)].join(" ").toLowerCase().includes(q) || Boolean(searchedEvent && bookingEventTypeMatches(booking.eventType, searchedEvent));
     });
-  }, [bookings, search, serviceFilter]);
+  }, [bookings, search, serviceFilter, eventFilter]);
   const cards = SERVICE_META.map((meta) => {
     const rows = bookings.filter((booking) => booking.services.some((service) => service.type === meta.key));
     const inProgress = rows.filter((booking) => ["processing", "preparing", "active", "confirmed"].includes(booking.status)).length;
@@ -978,7 +994,7 @@ function BookingDashboard() {
 
   return (
     <div className="ajn-booking-center" dir="rtl">
-      {reportFor !== null ? <BookingReportsDialog key={reportFor} initialDepartment={reportFor} onClose={() => setReportFor(null)} /> : null}
+      {reportFor !== null ? <BookingReportsDialog key={reportFor} initialDepartment={reportFor} initialEventType={eventFilter} onClose={() => setReportFor(null)} /> : null}
       <header className="ajn-booking-hero">
         <div>
           <div className="ajn-kicker"><Sparkles className="h-4 w-4" /> مركز العمليات والمناسبات</div>
@@ -1013,6 +1029,7 @@ function BookingDashboard() {
           return <div key={item.label} className={`ajn-metric ajn-tone-${item.tone}`}><span><Icon className="h-5 w-5" /></span><div><small>{item.label}</small><strong>{item.value}</strong></div></div>;
         })}
       </section>
+      <section className="ajn-booking-event-filter" aria-label="تصفية الحجوزات حسب المناسبة"><BookingEventTypeFilter value={eventFilter} onChange={setEventFilter} /></section>
 
       {followupToken != null && !followupId ? <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">مرجع المتابعة غير صحيح. افتح الحجز من مركز المتابعة.</div> : null}
       {followupId && followupContext.isPending ? <div role="status" className="rounded-xl border border-border p-4 text-sm">جارٍ تحميل العميل المرتبط بالمتابعة…</div> : null}
@@ -1106,7 +1123,7 @@ function BookingPreview({ booking, penalty, onDelete, deleting = false,selected,
     <article className="ajn-booking-preview">
       <TransportReceiptDialog reference={transportReceipt} onClose={() => setTransportReceipt(null)} />
       <div className="flex items-start justify-between gap-3">
-        <div><small>{booking.number}</small><h3>{booking.customerName}</h3><p>{booking.eventDate || "الموعد غير محدد"} {booking.eventTime && `· ${booking.eventTime}`}</p></div>
+        <div className="min-w-0"><small>{booking.number}</small><h3>{booking.customerName}</h3><p>{booking.eventDate || "الموعد غير محدد"} {booking.eventTime && `· ${booking.eventTime}`}</p><div className="mt-2 flex flex-wrap items-center gap-2"><BookingEventTypeBadge value={booking.eventType} />{normalizeBookingEventType(booking.eventType) === "graduation" ? <Link href={bookingGraduationHref(booking.raw)} className="text-xs font-medium text-primary underline underline-offset-4">إدارة التخرج</Link> : null}</div></div>
         <div className="flex items-center gap-3"><StatusBadge status={booking.status} />{onSelect?<Checkbox aria-label={`تحديد الحجز ${booking.number}`} checked={selected??false} onCheckedChange={value=>onSelect(value===true)}/>:null}</div>
       </div>
       {penalty ? (
@@ -1253,6 +1270,7 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
   const [recoveryBooking, setRecoveryBooking] = useState<FollowupBooking | null>(null);
   const [eventDate, setEventDate] = useState("");
   const [eventTime, setEventTime] = useState("");
+  const [eventType, setEventType] = useState(() => bookingEventTypeStorage(followup ? followupBookingPreset(followup).eventType : null) ?? "");
   const [hallName, setHallName] = useState("");
   const [mapUrl, setMapUrl] = useState("");
   const [contractNumber, setContractNumber] = useState("");
@@ -1329,6 +1347,7 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
       customer: "booking-customer-search",
       phone: "booking-customer-search",
       eventDate: "booking-date",
+      eventType: "booking-event-type",
       totalAmount: "booking-total",
       depositAmount: "booking-deposit",
       serviceId: "booking-service-picker",
@@ -1336,9 +1355,11 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
       videoItems: "booking-video-items-search",
       aerialPrice: "booking-aerial-photography-price",
     };
-    window.requestAnimationFrame(() =>
-      document.getElementById(fieldId[field] ?? "booking-date")?.focus(),
-    );
+    window.requestAnimationFrame(() => {
+      const target = document.getElementById(fieldId[field] ?? "booking-date");
+      if (field === "eventType") target?.querySelector<HTMLInputElement>('input[type="radio"]')?.focus();
+      else target?.focus();
+    });
   };
   const failField = (field: string, message: string): never => {
     setFieldErrors({ [field]: message });
@@ -1357,6 +1378,7 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
         throw new Error("اختر العميل أولاً");
       }
       if (!adding && !eventDate) failField("eventDate", "حدد تاريخ المناسبة");
+      if (!adding && !bookingEventTypeStorage(eventType)) failField("eventType", "اختر نوع المناسبة");
       if (!adding && !selected.length) failField("serviceId", "اختر خدمة واحدة على الأقل");
       if (!adding && servicesLoading) failField("serviceId", "قائمة الخدمات ما زالت قيد التحميل. انتظر قليلاً ثم أعد المحاولة.");
       if (!adding && servicesError) failField("serviceId", `تعذر تحميل قائمة الخدمات: ${servicesError}`);
@@ -1489,9 +1511,10 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
                 : "partial",
           notes,
           customFields: {
-            bookingCenterVersion: 1,
+            bookingCenterVersion: 2,
             customerId: selectedCustomer.id,
             ...(followup ? followupBookingMetadata(followup, selectedCustomer.id) : {}),
+            eventType: bookingEventTypeStorage(eventType),
             eventTime,
             hallName,
             mapUrl,
@@ -1589,6 +1612,7 @@ export function UnifiedBookingForm({ services, servicesLoading, servicesError, o
             <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">المتبقي بعد الإضافة</dt><dd className="tabular-nums">{formatCurrency(Math.max(0, existingTotal + totalValue - existingPaid))}</dd></div>
           </dl>
         </section></div> : <div className="space-y-4">
+          <div className="space-y-2"><BookingEventTypeSelector id="booking-event-type" value={eventType} required error={fieldErrors.eventType} onChange={value => { setEventType(value); setFieldErrors(current => ({ ...current, eventType: "" })); }} />{normalizeBookingEventType(eventType) === "graduation" ? <Button type="button" variant="outline" size="sm" asChild><Link href={bookingGraduationHref({})}><GraduationCap className="h-4 w-4" />فتح إدارة التخرج</Link></Button> : null}</div>
           <div className="grid gap-4 sm:grid-cols-2">
             {followup ? <div className="space-y-2 rounded-xl border border-border bg-card p-3"><Label>العميل المرتبط بالمتابعة</Label><p className="font-semibold">{customer?.name}</p><p className="text-sm tabular-nums" dir="ltr">{customer?.phone}</p><p className="text-xs text-muted-foreground">{FOLLOWUP_SERVICES.find(service => service.key === followup.serviceKey)?.label} · يبقى العميل نفسه عند التحويل. اختر الخدمات الفعلية وراجع تفاصيل الحجز.</p></div> : <BookingCustomerSelector value={customer} onChange={setCustomer} error={fieldErrors.customer || fieldErrors.phone} />}
             <div className="space-y-2"><Label htmlFor="booking-contract">رقم العقد</Label><Input id="booking-contract" value={contractNumber} onChange={(event) => setContractNumber(event.target.value)} placeholder="يُترك فارغاً عند عدم وجود عقد" /></div>

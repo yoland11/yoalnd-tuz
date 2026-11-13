@@ -120,6 +120,8 @@ import { BookingGroupPhotos } from "@/components/booking-group-photos";
 import { BookingKoshaPhoto } from "@/components/booking-kosha-photo";
 import { BookingReferencePhotos } from "@/components/booking-reference-photos";
 import { bookingWorkspacePhotos } from "@/lib/booking-workspace-photos";
+import { BookingEventTypeBadge } from "@/components/booking-event-type";
+import { bookingGraduationHref, normalizeBookingEventType, readBookingEventType } from "@/lib/booking-event-types";
 import type { BookedKoshaPhoto } from "@/lib/booking-kosha-photo";
 import "./booking-operations-workspace.css";
 
@@ -132,6 +134,7 @@ export type BookingOperationsBooking = {
   phone: string;
   eventDate: string;
   eventTime: string;
+  eventType?: unknown;
   hall: string;
   status: string;
   total: number;
@@ -489,6 +492,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const base = `/admin/booking-operations/${booking.source}/${booking.id}`;
+  const eventType = booking.eventType ?? readBookingEventType(booking.source, booking.raw);
   const key = ["admin", "booking-operations", booking.source, booking.id];
   const [tab, setTab] = useState("overview");
   const [confirm, setConfirm] = useState<{ kind: "booking" | "warehouse"; stage: string; label: string } | null>(null);
@@ -603,7 +607,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
     <header className="ajn-op-head">
       <div className="ajn-op-head-top">
         <div className="ajn-op-head-identity">
-          <div className="ajn-op-head-tags"><span className="ajn-op-number" dir="ltr">{booking.number}</span><OperationStatus value={overview.data?.bookingStage ?? booking.status} /></div>
+          <div className="ajn-op-head-tags"><span className="ajn-op-number" dir="ltr">{booking.number}</span><OperationStatus value={overview.data?.bookingStage ?? booking.status} /><BookingEventTypeBadge value={eventType} />{normalizeBookingEventType(eventType) === "graduation" ? <Link href={bookingGraduationHref(booking.raw)} className="text-xs font-medium text-primary underline underline-offset-4">إدارة التخرج</Link> : null}</div>
           <h1>{booking.customerName}</h1>
           <p className="ajn-op-head-meta">
             <span><CalendarDays />{readableDate(booking.eventDate)}{booking.eventTime ? ` · ${booking.eventTime}` : ""}</span>

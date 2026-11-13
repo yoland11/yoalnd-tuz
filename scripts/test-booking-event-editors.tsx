@@ -1,0 +1,38 @@
+import assert from "node:assert/strict";
+import * as React from "react";
+import { createRequire } from "node:module";
+import { renderToStaticMarkup } from "react-dom/server";
+import { BookingEventTypeSelector, BookingEventTypeBadge, BookingEventTypeFilter } from "../src/components/booking-event-type";
+import { EditServiceOrderModal } from "../src/views/admin/orders";
+import { EditKoshaBookingModal } from "../src/views/admin/koshas";
+const { QueryClient, QueryClientProvider } = createRequire(import.meta.url)("@tanstack/react-query") as typeof import("@tanstack/react-query");
+(globalThis as any).React = React;
+
+const selection = renderToStaticMarkup(React.createElement(BookingEventTypeSelector, { value: "عرس", onChange() {}, required: true }));
+assert.equal((selection.match(/type="radio"/g) ?? []).length, 6);
+assert.match(selection.match(/<input\b[^>]*>/g)?.find(input => input.includes('value="wedding"')) ?? "", /\schecked=/);
+assert.match(selection, /aria-required="true"/);
+assert.doesNotMatch(selection, /<svg[^>]*role="img"/);
+const legacy = renderToStaticMarkup(React.createElement(BookingEventTypeSelector, { value: "مؤتمر سنوي", onChange() {} }));
+assert.match(legacy, /نوع المناسبة المحفوظ: مؤتمر سنوي/);
+assert.doesNotMatch(legacy, /checked=/);
+assert.doesNotMatch(legacy, /required=/);
+assert.match(renderToStaticMarkup(React.createElement(BookingEventTypeBadge, { value: null })), /غير محدد/);
+assert.match(renderToStaticMarkup(React.createElement(BookingEventTypeFilter, { value: "henna", onChange() {} })), /aria-pressed="true"/);
+
+const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+const render = (element: React.ReactElement) => renderToStaticMarkup(React.createElement(QueryClientProvider, { client }, element));
+const service = { id: 4, serviceId: 1, serviceType: "sound", serviceName: "الصوت", customerName: "عميل قديم", phone: "07701234567", status: "pending", eventDate: "2026-11-15", totalAmount: 50000, depositAmount: 10000, customFields: { eventType: "مؤتمر سنوي" } };
+const serviceHtml = render(React.createElement(EditServiceOrderModal, { order: service as any, onClose() {} }));
+assert.equal((serviceHtml.match(/type="radio"/g) ?? []).length, 6);
+assert.match(serviceHtml, /مؤتمر سنوي/);
+assert.doesNotMatch(serviceHtml, /aria-required="true"/);
+assert.match(serviceHtml, /value="50000"/);
+assert.match(serviceHtml, /value="10000"/);
+const native = { id: 3, koshaId: 1, customerName: "عميل الكوشة", phone: "07701234567", eventDate: "2026-11-15", eventType: "عرس", status: "new", trackingStatus: "booked", executionStage: "preparing", totalAmount: 50000, paidAmount: 10000, bookingDetails: {}, selectedAddons: [], selectedAccessories: [], welcomeBoards: [] };
+const nativeHtml = render(React.createElement(EditKoshaBookingModal, { booking: native as any, onClose() {}, onSaved() {} }));
+assert.equal((nativeHtml.match(/type="radio"/g) ?? []).length, 6);
+assert.match(nativeHtml.match(/<input\b[^>]*>/g)?.find(input => input.includes('value="wedding"')) ?? "", /\schecked=/);
+assert.doesNotMatch(nativeHtml, /aria-required="true"/);
+client.clear();
+console.log("PASS original booking editors: shared six icon choices, aliases selected, missing/custom legacy values preserved and existing price fields retained");
