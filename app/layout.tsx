@@ -114,7 +114,14 @@ export default async function RootLayout({
             <p className="ajn-intro__welcome">أهلاً وسهلاً بكم</p>
             <p className="ajn-intro__tagline">{settings.receipt_brand?.tagline || "لتنظيم كافة المناسبات"}</p>
           </div>
-          <button type="button" className="ajn-intro__skip" aria-label="تخطي الافتتاحية والدخول إلى الموقع">تخطي</button>
+          <div className="ajn-intro__controls">
+            <button type="button" id="ajn-intro-sound" className="ajn-intro__sound" data-sound="blocked" aria-pressed="false" aria-label="تشغيل صوت الافتتاحية">
+              <svg className="ajn-intro__sound-icon is-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z" /><path d="M15.5 8.6a4.6 4.6 0 0 1 0 6.8M18.2 6a8.3 8.3 0 0 1 0 12" /></svg>
+              <svg className="ajn-intro__sound-icon is-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z" /><path d="m16 9.5 5 5m0-5-5 5" /></svg>
+              <span className="ajn-intro__sound-label">تشغيل الصوت</span>
+            </button>
+            <button type="button" className="ajn-intro__skip" aria-label="تخطي الافتتاحية والدخول إلى الموقع">تخطي</button>
+          </div>
         </div>
         <script id="ajn-intro-control" dangerouslySetInnerHTML={{ __html: INTRO_CONTROL }} />
         {/* Radix falls back to ltr without a provider; give it the document's

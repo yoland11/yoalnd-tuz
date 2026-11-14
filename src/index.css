@@ -900,10 +900,25 @@ html[data-ajn-intro="skip"] .ajn-intro * { animation-play-state: paused; }
   animation: ajn-intro-rise 650ms var(--ajn-intro-out) 2250ms both;
 }
 
-.ajn-intro__skip {
+/* Sound and skip, side by side at the bottom. */
+.ajn-intro__controls {
   position: absolute;
+  right: 0;
   bottom: max(1.25rem, env(safe-area-inset-bottom));
-  left: 50%;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  animation: ajn-intro-rise 500ms var(--ajn-intro-out) 900ms both;
+}
+.ajn-intro__skip,
+.ajn-intro__sound {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-width: 44px;
   min-height: 44px;
   padding: 0 1.4rem;
   border: 1px solid rgba(212, 175, 79, 0.35);
@@ -912,14 +927,30 @@ html[data-ajn-intro="skip"] .ajn-intro * { animation-play-state: paused; }
   color: rgba(246, 238, 219, 0.78);
   font: 600 0.85rem/1 var(--font-cairo), Cairo, Tahoma, sans-serif;
   cursor: pointer;
-  transform: translateX(-50%);
-  animation: ajn-intro-rise 500ms var(--ajn-intro-out) 900ms both;
-  transition: color 160ms ease, border-color 160ms ease;
+  transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease;
 }
-.ajn-intro__skip:focus-visible { outline: 2px solid var(--ajn-intro-gold); outline-offset: 3px; }
+.ajn-intro__skip:focus-visible,
+.ajn-intro__sound:focus-visible { outline: 2px solid var(--ajn-intro-gold); outline-offset: 3px; }
 @media (hover: hover) and (pointer: fine) {
-  .ajn-intro__skip:hover { color: #fffaf0; border-color: rgba(212, 175, 79, 0.7); }
+  .ajn-intro__skip:hover,
+  .ajn-intro__sound:hover { color: #fffaf0; border-color: rgba(212, 175, 79, 0.7); }
 }
+.ajn-intro__sound-icon { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.ajn-intro__sound-icon path:first-child { fill: currentColor; }
+.ajn-intro__sound .is-off,
+.ajn-intro__sound[data-sound="muted"] .is-on { display: none; }
+.ajn-intro__sound[data-sound="muted"] .is-off { display: block; }
+.ajn-intro__sound:not([data-sound="blocked"]) { width: 44px; padding: 0; }
+.ajn-intro__sound:not([data-sound="blocked"]) .ajn-intro__sound-label { display: none; }
+/* The browser held the sound back: invite one tap, twice, then stay quiet. */
+.ajn-intro__sound[data-sound="blocked"] {
+  padding: 0 1.1rem;
+  color: #fffaf0;
+  border-color: rgba(212, 175, 79, 0.7);
+  background: rgba(212, 175, 79, 0.12);
+  animation: ajn-intro-sound-invite 1600ms var(--ajn-intro-out) 1200ms 2;
+}
+.ajn-intro__sound[hidden] { display: none; }
 
 @keyframes ajn-intro-glow { from { opacity: 0; transform: translate(-50%, -50%) scale(0.6); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
 @keyframes ajn-intro-draw { to { stroke-dashoffset: 0; } }
@@ -947,6 +978,7 @@ html[data-ajn-intro="skip"] .ajn-intro * { animation-play-state: paused; }
 }
 @keyframes ajn-intro-skip { to { opacity: 0; visibility: hidden; pointer-events: none; } }
 @keyframes ajn-intro-fade-out { to { opacity: 0; visibility: hidden; pointer-events: none; } }
+@keyframes ajn-intro-sound-invite { from { box-shadow: 0 0 0 0 rgba(212, 175, 79, 0.55); } to { box-shadow: 0 0 0 14px rgba(212, 175, 79, 0); } }
 
 /* Reduced motion: no drawing, glint, sparks or zoom — the logo and welcome simply show, then leave. */
 @media (prefers-reduced-motion: reduce) {
