@@ -167,6 +167,7 @@
     "test:calendar-event-target": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-calendar-event-target.ts",
     "test:booking-center-delete": "node ./scripts/verify-booking-center-delete.mjs",
     "test:booking-add-services": "node ./scripts/test-booking-add-services.mjs",
+    "test:site-intro": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-site-intro.ts",
     "test:booking-invoice-lines": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-invoice-lines.ts",
     "test:booking-center-read": "node ./scripts/test-booking-center-read-preflight.mjs",
     "test:calendar-read": "node ./scripts/test-calendar-read-preflight.mjs",

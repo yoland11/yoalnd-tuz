@@ -723,285 +723,240 @@ a:hover {
   }
 }
 
-/* First-open AJN welcome layer. It sits above the existing app without affecting layout or routes. */
-.ajn-splash {
-  --ajn-splash-gold: #d4af4f;
-  --ajn-splash-gold-soft: #f1d98a;
-  --ajn-splash-ink: #050403;
-  --ajn-splash-ease: cubic-bezier(0.23, 1, 0.32, 1);
+/* AJN opening intro — server-rendered over the page while the app loads, once per visit.
+   Shown only while <html data-ajn-intro> is set by the head script (public pages and the
+   login pages, never inside the admin). Pure CSS timeline: it stays smooth while the app's
+   JavaScript is still loading; a small inline script only skips it and clears the flag. */
+@property --ajn-iris {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: -10%;
+}
+
+.ajn-intro {
+  --ajn-intro-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ajn-intro-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ajn-intro-gold: #d4af4f;
+  --ajn-intro-ink: #070504;
   position: fixed;
   inset: 0;
-  z-index: 1000;
-  isolation: isolate;
-  display: grid;
+  z-index: 2147483000;
+  display: none;
   place-items: center;
-  min-height: 100dvh;
   overflow: hidden;
-  padding:
-    max(1.5rem, env(safe-area-inset-top))
-    max(1.25rem, env(safe-area-inset-right))
-    max(1.5rem, env(safe-area-inset-bottom))
-    max(1.25rem, env(safe-area-inset-left));
-  background: var(--ajn-splash-ink);
-  color: #f7f0dc;
-  contain: layout paint style;
-  opacity: 1;
-  transition: opacity 220ms var(--ajn-splash-ease);
-}
-
-.ajn-splash[data-phase="leaving"] {
-  pointer-events: none;
-  opacity: 0;
-}
-
-.ajn-splash__ambient {
-  position: absolute;
-  inset: -28%;
-  z-index: -2;
+  isolation: isolate;
+  padding: max(1.25rem, env(safe-area-inset-top)) 1rem max(1.25rem, env(safe-area-inset-bottom));
   background:
-    radial-gradient(circle at 50% 47%, rgb(197 155 50 / 16%) 0, transparent 28%),
-    radial-gradient(circle at 50% 52%, rgb(255 224 132 / 7%) 0, transparent 42%),
-    conic-gradient(from 214deg at 50% 50%, transparent 0 10%, rgb(214 176 76 / 5%) 12%, transparent 17% 54%, rgb(214 176 76 / 4%) 57%, transparent 62% 100%);
-  opacity: 0.82;
-  transform: rotate(-3deg) scale(1.08);
-  animation: ajn-splash-rays 5.2s cubic-bezier(0.77, 0, 0.175, 1) infinite alternate;
-  will-change: transform, opacity;
+    radial-gradient(ellipse 70% 60% at 50% 42%, #1b130b 0%, rgba(27, 19, 11, 0) 70%),
+    var(--ajn-intro-ink);
+  color: #f6eedb;
+  font-family: var(--font-cairo), Cairo, Tahoma, sans-serif;
+  cursor: pointer;
+  -webkit-mask-image: radial-gradient(circle at 50% 42%, rgba(0, 0, 0, 0) var(--ajn-iris), #000 calc(var(--ajn-iris) + 8%));
+  mask-image: radial-gradient(circle at 50% 42%, rgba(0, 0, 0, 0) var(--ajn-iris), #000 calc(var(--ajn-iris) + 8%));
+  animation: ajn-intro-exit 750ms var(--ajn-intro-out) 3200ms forwards;
 }
+html[data-ajn-intro] { overflow: hidden; }
+html[data-ajn-intro] .ajn-intro { display: grid; }
+html[data-ajn-intro="skip"] .ajn-intro { animation: ajn-intro-skip 320ms var(--ajn-intro-out) forwards; }
+html[data-ajn-intro="skip"] .ajn-intro * { animation-play-state: paused; }
 
-.ajn-splash__particles {
+/* Warm light that blooms behind the emblem. */
+.ajn-intro__glow {
   position: absolute;
-  inset: 0;
+  top: 42%;
+  left: 50%;
   z-index: -1;
-  overflow: hidden;
+  width: min(130vmin, 980px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(212, 175, 79, 0.3) 0%, rgba(212, 175, 79, 0.09) 34%, rgba(212, 175, 79, 0) 62%);
+  transform: translate(-50%, -50%);
+  animation: ajn-intro-glow 1600ms var(--ajn-intro-out) 100ms both;
 }
 
-.ajn-splash__particles i {
-  position: absolute;
-  top: var(--ajn-particle-y);
-  left: var(--ajn-particle-x);
-  width: 3px;
-  height: 3px;
-  border-radius: 999px;
-  background: var(--ajn-splash-gold-soft);
-  box-shadow: 0 0 7px rgb(226 190 94 / 52%);
-  opacity: 0;
-  transform: translate3d(0, 16px, 0) scale(0.9);
-  animation: ajn-splash-particle var(--ajn-particle-duration) linear var(--ajn-particle-delay) infinite;
-  will-change: transform, opacity;
-}
-
-.ajn-splash__content {
+.ajn-intro__stage {
+  position: relative;
   display: flex;
-  width: min(88vw, 31rem);
   flex-direction: column;
   align-items: center;
+  width: min(72vmin, 430px);
+  margin-top: -4vh;
   text-align: center;
+  animation: ajn-intro-stage-out 450ms var(--ajn-intro-out) 3120ms forwards;
 }
 
-.ajn-splash__brand-mark {
+.ajn-intro__emblem {
   position: relative;
-  display: grid;
-  width: min(48vw, 11.5rem);
-  min-width: 8.5rem;
-  aspect-ratio: 2 / 1;
-  place-items: center;
-}
-
-.ajn-splash__halo {
-  position: absolute;
-  inset: -56%;
-  z-index: -1;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgb(212 175 79 / 22%) 0, rgb(212 175 79 / 7%) 38%, transparent 69%);
-  opacity: 0;
-  transform: scale(0.94);
-  animation: ajn-splash-halo 1100ms var(--ajn-splash-ease) 180ms forwards;
-  will-change: transform, opacity;
-}
-
-.ajn-splash__logo-frame {
-  position: relative;
-  display: grid;
   width: 100%;
-  height: 100%;
-  place-items: center;
-  overflow: hidden;
-  opacity: 0;
-  transform: translate3d(0, 0, 0) scale(0.94);
-  animation: ajn-splash-logo 760ms var(--ajn-splash-ease) 90ms forwards;
-  will-change: transform, opacity;
+  aspect-ratio: 794 / 735;
 }
-
-.ajn-splash__logo-frame img {
-  display: block;
+.ajn-intro__emblem-img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
-  filter: drop-shadow(0 0 12px rgb(212 175 79 / 24%));
+  animation: ajn-intro-emblem 950ms var(--ajn-intro-out) 550ms both;
 }
 
-.ajn-splash__shine {
+/* The ring draws itself: gold clockwise, silver counter-clockwise, meeting at the base. */
+.ajn-intro__ring {
   position: absolute;
-  top: 0;
-  left: 50%;
-  display: block;
-  width: 50%;
-  height: 100%;
-  overflow: hidden;
-  border-radius: 50%;
-  transform: translate3d(-50%, 0, 0);
-  mix-blend-mode: screen;
-}
-
-.ajn-splash__shine::after {
-  content: "";
-  position: absolute;
-  inset-block: -24%;
-  left: -72%;
-  width: 42%;
-  background: linear-gradient(90deg, transparent, rgb(255 239 185 / 58%), transparent);
-  opacity: 0;
-  transform: translate3d(0, 0, 0) skewX(-17deg);
-  animation: ajn-splash-shine 920ms cubic-bezier(0.77, 0, 0.175, 1) 720ms forwards;
-  will-change: transform, opacity;
-}
-
-.ajn-splash__copy {
-  margin-top: 1.8rem;
-}
-
-.ajn-splash__copy h1,
-.ajn-splash__copy p,
-.ajn-splash__copy strong {
-  color: inherit;
-  opacity: 0;
-  transform: translate3d(0, 8px, 0);
-  animation: ajn-splash-line 540ms var(--ajn-splash-ease) forwards;
-  will-change: transform, opacity;
-}
-
-.ajn-splash__copy h1 {
-  margin: 0;
-  font-size: clamp(1.5rem, 5vw, 2.25rem);
-  font-weight: 700;
-  line-height: 1.35;
-  letter-spacing: 0.01em;
-  text-wrap: balance;
-  animation-delay: 540ms;
-}
-
-.ajn-splash__copy p {
-  margin: 0.45rem 0 0;
-  color: #d9c58b;
-  font-size: clamp(0.9rem, 2.7vw, 1.05rem);
-  font-weight: 500;
-  line-height: 1.6;
-  animation-delay: 610ms;
-}
-
-.ajn-splash__copy strong {
-  display: block;
-  margin-top: 0.8rem;
-  color: #fff8e7;
-  font-size: 1rem;
-  font-weight: 600;
-  line-height: 1.6;
-  animation-delay: 680ms;
-}
-
-.ajn-splash__progress {
-  position: relative;
-  width: min(15rem, 62vw);
-  height: 2px;
-  margin-top: 1.9rem;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #2a2417;
-  opacity: 0;
-  animation: ajn-splash-progress-appear 280ms var(--ajn-splash-ease) 760ms forwards;
-}
-
-.ajn-splash__progress span {
-  display: block;
+  inset: 0;
   width: 100%;
   height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #9d7b2e, #f1d98a 52%, #c49b39);
-  box-shadow: 0 0 8px rgb(212 175 79 / 45%);
-  transform: scaleX(0);
-  transform-origin: right center;
-  animation: ajn-splash-progress 1760ms cubic-bezier(0.23, 1, 0.32, 1) 790ms forwards;
-  will-change: transform;
+  overflow: visible;
+  animation: ajn-intro-ring-fade 520ms var(--ajn-intro-out) 1080ms both;
+}
+.ajn-intro__ring ellipse {
+  fill: none;
+  stroke-width: 10;
+  stroke-linecap: round;
+  stroke-dasharray: 0.5 1;
+  stroke-dashoffset: 0.5;
+  animation: ajn-intro-draw 900ms var(--ajn-intro-in-out) 120ms forwards;
+}
+.ajn-intro__flare {
+  position: absolute;
+  bottom: -3%;
+  left: 51.3%;
+  width: 34%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fffaf0 0%, rgba(246, 220, 139, 0.85) 18%, rgba(212, 175, 79, 0) 62%);
+  transform: translate(-50%, 50%) scale(0.2);
+  opacity: 0;
+  animation: ajn-intro-flare 760ms var(--ajn-intro-out) 960ms both;
 }
 
-@keyframes ajn-splash-logo {
-  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+/* A glint of light crossing the metal; masked to the emblem's own pixels. */
+.ajn-intro__shine {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  -webkit-mask: url("/images/intro/ajn-emblem.webp") center / contain no-repeat;
+  mask: url("/images/intro/ajn-emblem.webp") center / contain no-repeat;
+  pointer-events: none;
+}
+.ajn-intro__shine::before {
+  content: "";
+  position: absolute;
+  top: -10%;
+  bottom: -10%;
+  left: 0;
+  width: 38%;
+  background: linear-gradient(100deg, rgba(255, 252, 240, 0) 0%, rgba(255, 252, 240, 0.85) 50%, rgba(255, 252, 240, 0) 100%);
+  transform: translateX(-130%) skewX(-12deg);
+  animation: ajn-intro-shine 900ms var(--ajn-intro-in-out) 1320ms both;
 }
 
-@keyframes ajn-splash-halo {
-  to { opacity: 1; transform: scale(1); }
+.ajn-intro__sparks i {
+  position: absolute;
+  width: 6.5%;
+  aspect-ratio: 1;
+  background: radial-gradient(circle, #fffaf0 0%, #f6dc8b 38%, rgba(212, 175, 79, 0) 72%);
+  clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.4) rotate(0deg);
+  animation: ajn-intro-spark 900ms var(--ajn-intro-out) both;
+}
+.ajn-intro__sparks i:nth-child(1) { top: 2%; left: 72%; animation-delay: 1180ms; }
+.ajn-intro__sparks i:nth-child(2) { top: 30%; left: 97%; animation-delay: 1260ms; width: 5%; }
+.ajn-intro__sparks i:nth-child(3) { top: 70%; left: 95%; animation-delay: 1340ms; }
+.ajn-intro__sparks i:nth-child(4) { top: 86%; left: 18%; animation-delay: 1420ms; width: 5%; }
+.ajn-intro__sparks i:nth-child(5) { top: 22%; left: 6%; animation-delay: 1500ms; }
+.ajn-intro__sparks i:nth-child(6) { top: 48%; left: 58%; animation-delay: 1700ms; width: 4.5%; }
+
+/* The group's name, revealed right to left as Arabic reads. */
+.ajn-intro__wordmark {
+  display: block;
+  width: min(110%, 88vw);
+  height: auto;
+  margin-top: 5%;
+  animation: ajn-intro-wordmark 850ms var(--ajn-intro-out) 1500ms both;
+}
+.ajn-intro__rule {
+  width: min(46vmin, 210px);
+  height: 1px;
+  margin-top: 1.1rem;
+  background: linear-gradient(90deg, rgba(212, 175, 79, 0), var(--ajn-intro-gold), rgba(212, 175, 79, 0));
+  animation: ajn-intro-rule 700ms var(--ajn-intro-out) 1950ms both;
+}
+.ajn-intro__welcome {
+  margin: 0.85rem 0 0;
+  color: #f6eedb;
+  font-size: clamp(1.05rem, 3.8vmin, 1.5rem);
+  font-weight: 700;
+  line-height: 1.4;
+  animation: ajn-intro-rise 650ms var(--ajn-intro-out) 2050ms both;
+}
+.ajn-intro__tagline {
+  margin: 0.2rem 0 0;
+  color: var(--ajn-intro-gold);
+  font-size: clamp(0.82rem, 2.7vmin, 1rem);
+  font-weight: 600;
+  line-height: 1.5;
+  animation: ajn-intro-rise 650ms var(--ajn-intro-out) 2250ms both;
 }
 
-@keyframes ajn-splash-line {
-  to { opacity: 1; transform: translate3d(0, 0, 0); }
+.ajn-intro__skip {
+  position: absolute;
+  bottom: max(1.25rem, env(safe-area-inset-bottom));
+  left: 50%;
+  min-height: 44px;
+  padding: 0 1.4rem;
+  border: 1px solid rgba(212, 175, 79, 0.35);
+  border-radius: 999px;
+  background: rgba(7, 5, 4, 0.5);
+  color: rgba(246, 238, 219, 0.78);
+  font: 600 0.85rem/1 var(--font-cairo), Cairo, Tahoma, sans-serif;
+  cursor: pointer;
+  transform: translateX(-50%);
+  animation: ajn-intro-rise 500ms var(--ajn-intro-out) 900ms both;
+  transition: color 160ms ease, border-color 160ms ease;
+}
+.ajn-intro__skip:focus-visible { outline: 2px solid var(--ajn-intro-gold); outline-offset: 3px; }
+@media (hover: hover) and (pointer: fine) {
+  .ajn-intro__skip:hover { color: #fffaf0; border-color: rgba(212, 175, 79, 0.7); }
 }
 
-@keyframes ajn-splash-shine {
-  0% { opacity: 0; transform: translate3d(0, 0, 0) skewX(-17deg); }
-  18% { opacity: 0.82; }
-  72% { opacity: 0.45; }
-  100% { opacity: 0; transform: translate3d(420%, 0, 0) skewX(-17deg); }
+@keyframes ajn-intro-glow { from { opacity: 0; transform: translate(-50%, -50%) scale(0.6); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+@keyframes ajn-intro-draw { to { stroke-dashoffset: 0; } }
+@keyframes ajn-intro-ring-fade { from { opacity: 1; } to { opacity: 0; } }
+@keyframes ajn-intro-flare {
+  0% { opacity: 0; transform: translate(-50%, 50%) scale(0.2); }
+  35% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, 50%) scale(1.5); }
 }
-
-@keyframes ajn-splash-progress-appear {
-  to { opacity: 1; }
+@keyframes ajn-intro-emblem { from { opacity: 0; transform: scale(0.92); filter: blur(14px); } to { opacity: 1; transform: scale(1); filter: blur(0); } }
+@keyframes ajn-intro-shine { from { transform: translateX(-130%) skewX(-12deg); } to { transform: translateX(300%) skewX(-12deg); } }
+@keyframes ajn-intro-spark {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4) rotate(0deg); }
+  40% { opacity: 1; transform: translate(-50%, -50%) scale(1.15) rotate(30deg); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.6) rotate(60deg); }
 }
-
-@keyframes ajn-splash-progress {
-  to { transform: scaleX(1); }
+@keyframes ajn-intro-wordmark { from { opacity: 0; clip-path: inset(0 0 0 100%); transform: translateY(8px); } to { opacity: 1; clip-path: inset(0 0 0 0); transform: translateY(0); } }
+@keyframes ajn-intro-rule { from { opacity: 0; transform: scaleX(0); } to { opacity: 1; transform: scaleX(1); } }
+@keyframes ajn-intro-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes ajn-intro-stage-out { to { opacity: 0; transform: scale(1.06); } }
+@keyframes ajn-intro-exit {
+  0% { --ajn-iris: -10%; opacity: 1; }
+  75% { opacity: 1; }
+  100% { --ajn-iris: 115%; opacity: 0; visibility: hidden; pointer-events: none; }
 }
+@keyframes ajn-intro-skip { to { opacity: 0; visibility: hidden; pointer-events: none; } }
+@keyframes ajn-intro-fade-out { to { opacity: 0; visibility: hidden; pointer-events: none; } }
 
-@keyframes ajn-splash-particle {
-  0% { opacity: 0; transform: translate3d(0, 16px, 0) scale(0.9); }
-  18% { opacity: 0.42; }
-  74% { opacity: 0.18; }
-  100% { opacity: 0; transform: translate3d(0, -28px, 0) scale(1.08); }
-}
-
-@keyframes ajn-splash-rays {
-  from { opacity: 0.68; transform: rotate(-3deg) scale(1.08); }
-  to { opacity: 0.9; transform: rotate(2deg) scale(1.13); }
-}
-
-@media (max-width: 420px) {
-  .ajn-splash__copy { margin-top: 1.45rem; }
-  .ajn-splash__progress { margin-top: 1.55rem; }
-}
-
+/* Reduced motion: no drawing, glint, sparks or zoom — the logo and welcome simply show, then leave. */
 @media (prefers-reduced-motion: reduce) {
-  .ajn-splash {
-    transition-duration: 90ms !important;
-  }
-
-  .ajn-splash__ambient,
-  .ajn-splash__particles,
-  .ajn-splash__shine {
-    display: none;
-  }
-
-  .ajn-splash__logo-frame,
-  .ajn-splash__halo,
-  .ajn-splash__copy h1,
-  .ajn-splash__copy p,
-  .ajn-splash__copy strong,
-  .ajn-splash__progress {
-    opacity: 1;
-    transform: none;
-  }
-
-  .ajn-splash__progress span {
-    transform: scaleX(1);
-  }
+  .ajn-intro *,
+  .ajn-intro *::before { animation: none !important; }
+  .ajn-intro__ring,
+  .ajn-intro__flare,
+  .ajn-intro__shine,
+  .ajn-intro__sparks { display: none; }
+  .ajn-intro { -webkit-mask-image: none; mask-image: none; animation: ajn-intro-fade-out 300ms ease 1400ms forwards; }
 }
 
 /* Bouquet Designer: photographic product composition. Every visible material is

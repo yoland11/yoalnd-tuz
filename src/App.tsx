@@ -19,7 +19,6 @@ import Login from "@/views/login";
 import { registerServiceWorker } from "@/lib/pwa";
 import { ThemeVariables } from "@/components/theme-variables";
 import { DesktopRuntime } from "@/components/desktop-runtime";
-import { AjnSplashScreen } from "@/components/ajn-splash-screen";
 import { PrintProvider } from "@/components/print/print-provider";
 
 // Admin — lazy (large bundle, staff-only)
@@ -376,7 +375,6 @@ function App() {
       <TooltipProvider>
         <PrintProvider>
           <DesktopRuntime />
-          <AjnSplashScreen />
           <WouterRouter>
             <Router />
           </WouterRouter>
