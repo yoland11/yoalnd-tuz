@@ -6,6 +6,7 @@ import { apiErrorMessage, fetchAdminMe, loginAdmin, hasPerm, isSessionDecision, 
 import { ADMIN_NAV } from "./_layout";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { adminLoginDestination } from "@/lib/representative-login-routing";
+import { SessionLoadError } from "@/components/session-load-error";
 
 export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => void }) {
   const [, setLocation] = useLocation();
@@ -13,6 +14,8 @@ export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => v
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [sessionError, setSessionError] = useState<unknown>(null);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
   const { data: settings } = usePublicSettings();
 
   useEffect(() => {
@@ -24,9 +27,9 @@ export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => v
         const first = ADMIN_NAV.find(n => hasPerm(me, n.perm));
         setLocation(adminLoginDestination(me, first?.href));
       }
-    });
+    }).catch((cause) => { if (alive) setSessionError(cause); });
     return () => { alive = false; };
-  }, [setLocation]);
+  }, [setLocation, sessionAttempt]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -57,6 +60,8 @@ export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => v
       setSubmitting(false);
     }
   }
+
+  if (sessionError) return <SessionLoadError error={sessionError} onRetry={() => { setSessionError(null); setSessionAttempt((value) => value + 1); }} />;
 
   return (
     <div className="min-h-dvh bg-background flex items-center justify-center p-4" dir="rtl">

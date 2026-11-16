@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmployeeAvatar } from "@/components/employee-avatar";
+import { SessionLoadError } from "@/components/session-load-error";
 import { WorkCommandCenter } from "@/components/work-commands/command-center";
 import {StaffPreparationGroups} from "@/components/staff-preparation-groups";
 import { Input } from "@/components/ui/input";
@@ -192,6 +193,8 @@ export default function UnifiedStaffPortal() {
   const [, navigate] = useLocation();
   const portalSearch = useSearch();
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
+  const [sessionLoadError, setSessionLoadError] = useState<unknown>(null);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
   const [tab, setTab] = useState<Tab>(() => {
     const value = new URLSearchParams(window.location.search).get("tab");
     return (PORTAL_TABS as readonly string[]).includes(value ?? "") ? value as Tab : "home";
@@ -213,9 +216,9 @@ export default function UnifiedStaffPortal() {
       // login screen so the employee lands where they were going.
       if (user && onLoginRoute) navigate(`/staff${requestedTabQuery()}`, { replace: true });
       if (!user && !onLoginRoute) navigate(`/staff/login${requestedTabQuery()}`, { replace: true });
-    });
+    }).catch((cause) => { if (active) setSessionLoadError(cause); });
     return () => { active = false; };
-  }, [navigate]);
+  }, [navigate, sessionAttempt]);
   const dashboard = useQuery({ queryKey: ["staff-portal", "dashboard"], queryFn: () => adminFetch<any>("/staff/portal/dashboard"), enabled: Boolean(me) });
   const bookings = useQuery({ queryKey: ["staff-portal", "bookings"], queryFn: () => adminFetch<{ today: string; data: Booking[] }>("/staff/portal/bookings"), enabled: Boolean(me) });
   const notifications = useQuery({ queryKey: ["staff-portal", "notifications"], queryFn: () => adminFetch<{ data: Notice[] }>("/staff/portal/notifications"), enabled: Boolean(me) });
@@ -253,6 +256,7 @@ export default function UnifiedStaffPortal() {
     { id: "home" as Tab, label: "الرئيسية", icon: Home }, { id: "attendance" as Tab, label: "حضوري", icon: Clock3 }, { id: "followups" as Tab, label: "متابعات العملاء", icon: CalendarDays }, { id: "tasks" as Tab, label: "مهامي", icon: ClipboardCheck }, { id: "work" as Tab, label: "الأوامر", icon: MessagesSquare }, { id: "bookings" as Tab, label: "حجوزاتي", icon: CalendarDays }, { id: "salary" as Tab, label: "راتبي", icon: WalletCards }, { id: "notifications" as Tab, label: "الإشعارات", icon: Bell }, { id: "account" as Tab, label: "حسابي", icon: UserRound },
   ], []);
 
+  if (sessionLoadError) return <SessionLoadError error={sessionLoadError} onRetry={() => { setSessionLoadError(null); setSessionAttempt((value) => value + 1); }} />;
   if (me === undefined) return <div className="grid min-h-dvh place-items-center bg-background"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
   if (!me) return <PortalLogin onDone={(user) => { setMe(user); navigate(`/staff${requestedTabQuery()}`, { replace: true }); }} />;
 

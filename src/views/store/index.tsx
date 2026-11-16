@@ -5,6 +5,7 @@ import { useListProducts, type Product } from "@workspace/api-client-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { ReadFailure } from "@/components/read-failure";
 import { Input } from "@/components/ui/input";
 import { Search, Filter, Grid3X3, ChevronLeft, Heart, ImageOff, Star } from "lucide-react";
 import { ProductColorDots } from "@/components/product-colors";
@@ -53,19 +54,19 @@ export default function Store() {
   const t = useT();
   const cl = useContentLocalizer();
 
-  const { data: mainCategories, isLoading: mainLoading } = useQuery({
+  const { data: mainCategories, isLoading: mainLoading, isError: mainError, error: mainFailure, refetch: retryMain } = useQuery({
     queryKey: ["/api/products/store-categories"],
     queryFn: () => fetchStoreCategories(),
     staleTime: 5 * 60_000,
   });
-  const { data: subcategories, isLoading: subLoading } = useQuery({
+  const { data: subcategories, isLoading: subLoading, isError: subError, error: subFailure, refetch: retrySub } = useQuery({
     queryKey: ["/api/products/store-categories", categorySlug],
     queryFn: () => fetchStoreCategories(categorySlug),
     enabled: !!categorySlug,
     staleTime: 5 * 60_000,
   });
 
-  const { data: products, isLoading: productsLoading } = useListProducts(
+  const { data: products, isLoading: productsLoading, isError: productsError, error: productsFailure, refetch: retryProducts } = useListProducts(
     {
       search: deferredSearch || undefined,
       category: categorySlug || undefined,
@@ -149,6 +150,9 @@ export default function Store() {
       {!showingProducts ? (
         <CategoryGrid
           isLoading={categoriesLoading}
+          isError={categorySlug ? subError : mainError}
+          error={categorySlug ? subFailure : mainFailure}
+          onRetry={() => void (categorySlug ? retrySub() : retryMain())}
           categories={rows}
           parentSlug={categorySlug}
         />
@@ -172,6 +176,9 @@ export default function Store() {
           />
           <ProductsGrid
             isLoading={productsLoading}
+            isError={productsError}
+            error={productsFailure}
+            onRetry={() => void retryProducts()}
             products={displayedProducts}
             onClearSearch={() => { setSearch(""); clearFilters(); }}
           />
@@ -181,9 +188,10 @@ export default function Store() {
   );
 }
 
-function CategoryGrid({ isLoading, categories, parentSlug }: { isLoading: boolean; categories: StoreCategory[]; parentSlug?: string }) {
+function CategoryGrid({ isLoading, isError, error, onRetry, categories, parentSlug }: { isLoading: boolean; isError?: boolean; error?: unknown; onRetry?: () => void; categories: StoreCategory[]; parentSlug?: string }) {
   const t = useT();
   const cl = useContentLocalizer();
+  if (isError) return <ReadFailure title="تعذر تحميل أقسام المتجر" error={error} onRetry={onRetry ?? (() => {})} />;
   if (isLoading) {
     return (
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
@@ -246,8 +254,9 @@ function CategoryGrid({ isLoading, categories, parentSlug }: { isLoading: boolea
   );
 }
 
-function ProductsGrid({ isLoading, products, onClearSearch }: { isLoading: boolean; products: Product[]; onClearSearch: () => void }) {
+function ProductsGrid({ isLoading, isError, error, onRetry, products, onClearSearch }: { isLoading: boolean; isError?: boolean; error?: unknown; onRetry?: () => void; products: Product[]; onClearSearch: () => void }) {
   const t = useT();
+  if (isError) return <ReadFailure title="تعذر تحميل المنتجات" error={error} onRetry={onRetry ?? (() => {})} />;
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
       {isLoading ? (

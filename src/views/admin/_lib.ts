@@ -1119,8 +1119,8 @@ export async function fetchAdminMe(
         adminMeCache = null;
         return null;
       }
-      adminMeCache = null;
-      return null;
+      // Service/network failures do not invalidate an authenticated session.
+      throw e;
     })
     .finally(() => {
       adminMePromise = null;

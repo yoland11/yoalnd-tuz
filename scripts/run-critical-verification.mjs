@@ -8,6 +8,7 @@ const deploy = process.argv.includes("--deploy");
 const strict = process.argv.includes("--strict");
 const steps = [
   ["TypeScript", "pnpm", ["run", "typecheck"]],
+  ["Site audit: purchase, salary, private previews, session and read-failure regressions", "pnpm", ["run", "test:site-audit-regressions"]],
   ["Database contracts", "pnpm", ["run", "test:db-contracts"]],
   ["Production write guard", "pnpm", ["run", "test:production-lock"]],
   ["Runtime DDL protection", "pnpm", ["run", "test:no-runtime-ddl"]],

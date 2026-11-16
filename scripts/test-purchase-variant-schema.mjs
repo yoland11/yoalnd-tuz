@@ -19,7 +19,8 @@ assert.match(schema, /variantLabel: text\("variant_label"\)/);
 assert.match(schema, /variantSku: varchar\("variant_sku"/);
 assert.ok((api.match(/preparePurchaseInvoiceVariantItemsInTransaction\(/g) ?? []).length >= 3, "helper, create, and edit must validate variant rows");
 assert.match(api, /UPDATE product_variants\s+SET stock = stock \+[\s\S]*?WHERE id = \$\{variantId\}\s+RETURNING product_id/);
-assert.match(api, /UPDATE product_variants\s+SET stock = GREATEST\(0, stock -/);
+// Reversal and replacement stock behavior is exercised by
+// test-purchase-reconciliation.mjs; clamping consumed stock is unsafe.
 assert.match(api, /variantId: item\.variantId \?\? null/);
 assert.match(api, /metadata: \{[\s\S]*?variantLabel: item\.variantLabel/);
 assert.match(api, /reversePurchaseInvoiceStockInTransaction\(tx, items as any\[\], id, a, "purchase_invoice_deleted_reversal"\)/);

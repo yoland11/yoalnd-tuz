@@ -12,6 +12,7 @@ import {
 import { AdminLayout, NoPermission, ADMIN_NAV } from "./_layout";
 import AdminLogin from "./login";
 import { SessionDevicesPanel } from "@/components/session-devices";
+import { SessionLoadError } from "@/components/session-load-error";
 
 const DashboardPage = lazy(() => import("./dashboard"));
 const NotificationsPage = lazy(() => import("./notifications"));
@@ -287,6 +288,8 @@ export default function Admin() {
     cached !== undefined ? cached : null,
   );
   const [loading, setLoading] = useState(() => cached === undefined);
+  const [sessionError, setSessionError] = useState<unknown>(null);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
   const [, setLocation] = useLocation();
 
   useEffect(() => {
@@ -297,11 +300,16 @@ export default function Admin() {
       if (!alive) return;
       setMe(u);
       setLoading(false);
+      setSessionError(null);
+    }).catch((cause) => {
+      if (!alive) return;
+      setSessionError(cause);
+      setLoading(false);
     });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [sessionAttempt]);
 
   // Login route is always reachable. Lift the authenticated user into state so the app
   // renders immediately after login (no manual refresh needed).
@@ -311,9 +319,12 @@ export default function Admin() {
         onAuthed={(u) => {
           setMe(u);
           setLoading(false);
+          setSessionError(null);
         }}
       />
     );
+
+  if (sessionError) return <SessionLoadError error={sessionError} onRetry={() => { setSessionError(null); setLoading(true); setSessionAttempt((value) => value + 1); }} />;
 
   if (loading) {
     return (

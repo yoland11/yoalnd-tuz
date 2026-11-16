@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 /**
  * Client-gallery access rules and the operational alert engine.
@@ -72,6 +72,34 @@ export function evaluateGalleryAccess(input: GalleryAccessInput): GalleryAccess 
   }
 
   return { ok: true };
+}
+
+type PreviewGallery = {
+  id: number;
+  slug: string;
+  passwordHash: string | null;
+  passwordSalt: string | null;
+};
+
+function previewSignature(gallery: PreviewGallery, itemId: number, expires: number, secret: string) {
+  return createHmac("sha256", secret).update(JSON.stringify([
+    "ajn-gallery-preview-v1", gallery.id, gallery.slug, itemId,
+    gallery.passwordHash, gallery.passwordSalt, expires,
+  ])).digest("hex");
+}
+
+/** Issued only after the gallery listing has authorized the visitor. Never carries the password. */
+export function createGalleryPreviewToken(gallery: PreviewGallery, itemId: number, secret: string, now = Date.now()): string {
+  const expires = now + 24 * 60 * 60 * 1000;
+  return `${expires}.${previewSignature(gallery, itemId, expires, secret)}`;
+}
+
+/** Binding to the current password makes password changes revoke already-issued preview URLs. */
+export function verifyGalleryPreviewToken(gallery: PreviewGallery, itemId: number, token: string, secret: string, now = Date.now()): boolean {
+  const [expiryText, signature, extra] = token.split(".");
+  const expires = Number(expiryText);
+  if (extra !== undefined || !Number.isSafeInteger(expires) || expires <= now || !/^[a-f0-9]{64}$/.test(signature ?? "")) return false;
+  return timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(previewSignature(gallery, itemId, expires, secret), "hex"));
 }
 
 /**

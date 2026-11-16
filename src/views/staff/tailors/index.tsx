@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { SessionLoadError } from "@/components/session-load-error";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 import {
@@ -1044,11 +1045,14 @@ function Shell({ me, children }: { me: AdminMe; children: React.ReactNode }) {
 
 export default function TailorsPortal() {
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
+  const [sessionError, setSessionError] = useState<unknown>(null);
   const refresh = useCallback(() => {
-    fetchAdminMe({ force: true }).then((u) => setMe(u ? { ...u, permissions: Array.isArray(u.permissions) ? u.permissions : [] } : null));
+    setSessionError(null);
+    fetchAdminMe({ force: true }).then((u) => setMe(u ? { ...u, permissions: Array.isArray(u.permissions) ? u.permissions : [] } : null)).catch(setSessionError);
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
 
+  if (sessionError) return <SessionLoadError error={sessionError} onRetry={refresh} />;
   if (me === undefined) return <Spinner />;
   if (!me) return <Login onDone={refresh} />;
   if (!hasPerm(me, "tailoring.portal.access")) {

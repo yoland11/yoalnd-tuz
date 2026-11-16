@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ReadFailure } from "@/components/read-failure";
 import { Link, useLocation } from "wouter";
 import { Bell, Check, Copy, Download, FileText, Heart, KeyRound, Loader2, LogOut, Package, Receipt, ShieldCheck, Upload, User, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,7 +15,7 @@ type AuthResult = { account: Account; recoveryCode?: string; requiresRecoverySav
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { credentials: "include", ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || "تعذر إتمام العملية");
+  if (!response.ok) throw Object.assign(new Error(typeof body.error === "string" ? body.error : body.error?.message || body.message || "تعذر إتمام العملية"), { status: response.status, requestId: body.requestId || body.error?.requestId || response.headers.get("x-request-id") });
   return body as T;
 }
 
@@ -42,8 +44,8 @@ function Auth({ complete }: { complete: (result: AuthResult) => void }) {
 }
 
 function Dashboard({ account, logout, profile }: { account: Account; logout: () => Promise<void>; profile: () => void }) {
-  const [orders, setOrders] = useState<any[]>([]); const [loading, setLoading] = useState(true);
-  useEffect(() => { request<any[]>("/api/orders/my").then(setOrders).catch(() => setOrders([])).finally(() => setLoading(false)); }, []);
+  const ordersQuery = useQuery({ queryKey: ["customer-portal", "orders", account.customerId], queryFn: () => request<any[]>("/api/orders/my") });
+  const orders = ordersQuery.data ?? []; const loading = ordersQuery.isPending;
   // Bride portal entry: shown when the customer has a confirmed booking. If the
   // check itself fails the entry is still shown, so an error never hides it —
   // the bride page then reports the real reason.
@@ -51,6 +53,8 @@ function Dashboard({ account, logout, profile }: { account: Account; logout: () 
   useEffect(() => { if (account.linkStatus !== "linked") return; request<{ available: boolean; eventDate: string | null }>("/api/customer/bride/status").then(setBride).catch(() => setBride("error")); }, [account.linkStatus]);
   const showBride = bride === "error" || (bride !== null && bride.available);
   const brideDate = bride !== "error" && bride?.eventDate ? bride.eventDate : null;
+  if (ordersQuery.isError) return <main className="mx-auto max-w-3xl px-4 py-8" dir="rtl"><ReadFailure title="تعذر تحميل حسابك وطلباتك" error={ordersQuery.error} busy={ordersQuery.isFetching} onRetry={() => void ordersQuery.refetch()} /><Button variant="outline" className="mt-4" onClick={() => void logout()}>تسجيل الخروج</Button></main>;
+  if (loading) return <main className="p-8 text-center" role="status" dir="rtl">جارٍ تحميل طلباتك وحسابك…</main>;
   const sums = orders.reduce((total, row) => ({ paid: total.paid + Number(row.paidAmount ?? row.depositAmount ?? 0), remaining: total.remaining + Number(row.remainingAmount ?? 0), ready: total.ready + (["ready", "delivered"].includes(row.status) ? 1 : 0) }), { paid: 0, remaining: 0, ready: 0 });
   return <main className="min-h-dvh bg-background pb-24" dir="rtl"><header className="border-b border-border/30 bg-card px-4 py-4"><div className="mx-auto flex max-w-6xl items-center justify-between"><div><p className="text-xs text-primary">مرحباً بك</p><h1 className="text-lg font-bold">{account.fullName}</h1></div><Button variant="ghost" className="grid h-10 w-10 place-items-center rounded-full bg-primary/10 text-primary" onClick={profile}><User className="h-5 w-5" /></Button></div></header><section className="mx-auto max-w-6xl space-y-5 px-4 py-5">{account.linkStatus !== "linked" && <div className="rounded-xl border border-status-warning/30 bg-status-warning/10 p-4 text-sm">حسابك بانتظار اعتماد ربط سجل العميل. ستظهر طلباتك بعد المراجعة.</div>}<div className="rounded-2xl bg-primary p-5 text-primary-foreground"><p className="text-sm opacity-80">مطلوب منك</p><p className="mt-1 text-xl font-bold">{sums.remaining > 0 ? "لديك مبلغ متبقٍ " + formatCurrency(sums.remaining) : "لا توجد إجراءات مالية معلقة"}</p><p className="mt-2 text-xs opacity-80">رقم العميل: {account.customerCode}</p></div>{showBride && <div className="rounded-2xl border border-primary/30 bg-card p-4"><div className="flex items-center gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><Heart className="h-5 w-5" /></span><div><p className="font-bold">بوابة العروس</p><p className="text-xs text-muted-foreground">تابعي حجزك والمدفوعات والجدول وتواصلي مع فريق AJN{brideDate ? " · يوم الحفل " + brideDate : ""}</p></div></div><div className="mt-3 grid grid-cols-2 gap-2"><Link href="/bride" className="rounded-xl bg-primary px-3 py-2.5 text-center text-sm font-semibold text-primary-foreground">لوحة العروس</Link><Link href="/wedding" className="rounded-xl border border-primary/30 px-3 py-2.5 text-center text-sm font-semibold text-primary">مساحة زفافنا</Link></div></div>}<div className="grid grid-cols-2 gap-3 lg:grid-cols-4"><Card icon={Package} label="الطلبات الحالية" value={String(orders.length)} /><Card icon={Wallet} label="إجمالي المتبقي" value={formatCurrency(sums.remaining)} /><Card icon={Receipt} label="إجمالي المدفوع" value={formatCurrency(sums.paid)} /><Card icon={Check} label="جاهز للاستلام" value={String(sums.ready)} /></div><section className="rounded-2xl border border-border/40 bg-card p-4"><h2 className="mb-3 font-bold">طلباتي وفواتيري</h2>{loading ? <Loader2 className="mx-auto my-7 animate-spin text-primary" /> : orders.length ? <div className="space-y-2">{orders.slice(0, 8).map((row) => <div key={String(row.kind) + String(row.id)} className="flex items-center justify-between rounded-xl border border-border/30 p-3"><div><p className="font-mono text-sm font-bold">{row.bookingNumber || row.trackingCode || row.orderNo || "#" + row.id}</p><p className="mt-1 text-xs text-muted-foreground">{row.serviceName || row.productName || "طلب AJN"}</p></div><div className="text-left"><p className="text-sm font-bold">{formatCurrency(row.remainingAmount ?? 0)}</p><p className="text-xs text-muted-foreground">{row.paymentStatus === "paid" ? "مدفوع بالكامل" : row.paymentStatus === "partial" ? "مدفوع جزئياً" : "غير مدفوع"}</p></div></div>)}</div> : <p className="py-8 text-center text-sm text-muted-foreground">لا توجد طلبات مرتبطة بهذا الحساب بعد.</p>}</section><Button variant="outline" className="w-full" onClick={async () => { await logout(); }}><LogOut className="ml-2 h-4 w-4" />تسجيل الخروج</Button></section><nav className="fixed inset-x-0 bottom-0 grid grid-cols-5 border-t border-border/30 bg-card/95 pb-[env(safe-area-inset-bottom)]"><div className="flex min-h-16 flex-col items-center justify-center gap-1 text-[11px] font-bold text-primary"><Package className="h-5 w-5" />الرئيسية</div><div className="flex min-h-16 flex-col items-center justify-center gap-1 text-[11px] text-muted-foreground"><Receipt className="h-5 w-5" />الفواتير</div><div className="flex min-h-16 flex-col items-center justify-center gap-1 text-[11px] text-muted-foreground"><Bell className="h-5 w-5" />الإشعارات</div><Button variant="ghost" onClick={profile} className="col-span-2 flex min-h-16 flex-col items-center justify-center gap-1 text-[11px] text-muted-foreground"><User className="h-5 w-5" />حسابي</Button></nav></main>;
 }
@@ -66,10 +70,18 @@ function Profile({ account, close, update }: { account: Account; close: () => vo
 
 export default function CustomerPortal() {
   const [, navigate] = useLocation(); const [account, setAccount] = useState<Account | null>(null); const [recoveryCode, setRecoveryCode] = useState<string | null>(null); const [loading, setLoading] = useState(true); const [profile, setProfile] = useState(false);
-  useEffect(() => { request<Account>("/api/auth/customer/me").then(setAccount).catch(() => setAccount(null)).finally(() => setLoading(false)); }, []);
+  const [sessionError, setSessionError] = useState<unknown>(null);
+  const loadSession = useCallback(async () => {
+    setLoading(true); setSessionError(null);
+    try { setAccount(await request<Account>("/api/auth/customer/me")); }
+    catch (error) { if ([401, 403].includes((error as { status?: number }).status ?? 0)) setAccount(null); else setSessionError(error); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void loadSession(); }, [loadSession]);
   const authenticated = (result: AuthResult) => { setAccount(result.account); setRecoveryCode(result.recoveryCode ?? null); };
   const logout = async () => { await request("/api/auth/customer/logout", { method: "POST", body: "{}" }); setAccount(null); setRecoveryCode(null); navigate("/account"); };
   if (loading) return <div className="grid min-h-dvh place-items-center" dir="rtl"><Loader2 className="animate-spin text-primary" /></div>;
+  if (sessionError) return <main className="mx-auto max-w-3xl p-6" dir="rtl"><ReadFailure title="تعذر التحقق من حسابك" error={sessionError} onRetry={() => void loadSession()} /></main>;
   if (!account) return <Auth complete={authenticated} />;
   if (recoveryCode) return <RecoverySave account={account} recoveryCode={recoveryCode} complete={async () => { await request("/api/auth/customer/recovery-acknowledge", { method: "POST", body: "{}" }); setRecoveryCode(null); setAccount({ ...account, recoveryAcknowledged: true }); }} />;
   return profile ? <Profile account={account} close={() => setProfile(false)} update={setAccount} /> : <Dashboard account={account} logout={logout} profile={() => setProfile(true)} />;

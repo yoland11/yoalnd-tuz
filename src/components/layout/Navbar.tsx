@@ -124,7 +124,7 @@ export function Navbar() {
           </div>
         </div>
       </div>
-      <div className="mx-auto flex h-16 min-w-0 w-full items-center justify-between gap-2 px-4 md:h-[86px] md:w-[min(1420px,calc(100%-112px))] md:px-0">
+      <div className="mx-auto flex h-16 min-w-0 w-full items-center justify-between gap-2 px-4 md:h-auto md:min-h-[86px] md:flex-wrap md:gap-y-3 md:py-3 md:w-[min(1420px,calc(100%-112px))] md:px-0">
         {/* Logo */}
         <Link href="/" className="flex min-w-0 shrink items-center" aria-label={settings?.site_name ?? "AJN"}>
           <img
@@ -140,7 +140,7 @@ export function Navbar() {
         </Link>
 
         {/* Desktop Navigation — driven by the shared navigationItems source. */}
-        <nav className="hidden md:flex items-center gap-8">
+        <nav aria-label="أقسام الموقع" className="hidden w-full order-last md:flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
           {desktopNavItems.map((item) => (
             <Link
               key={item.key}
@@ -154,8 +154,8 @@ export function Navbar() {
         </nav>
 
         {/* Actions */}
-        <div className="ajn-mobile-header-actions flex shrink-0 items-center gap-1 md:gap-3">
-          <Link href="/store" className="hidden lg:flex h-10 w-60 items-center gap-2 rounded-full bg-[#f7f5f2] px-4 text-sm text-[#9a948c] transition-colors hover:bg-[#f3efe9]">
+        <div className="ajn-mobile-header-actions flex shrink-0 items-center gap-1 md:gap-2">
+          <Link href="/store" className="hidden lg:flex h-10 w-48 items-center gap-2 rounded-full bg-[#f7f5f2] px-4 text-sm text-[#9a948c] transition-colors hover:bg-[#f3efe9]">
             <Search className="h-[18px] w-[18px] shrink-0 stroke-[1.5]" aria-hidden="true" />
             <span>ابحث عن منتج…</span>
           </Link>

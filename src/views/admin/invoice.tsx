@@ -6,6 +6,7 @@ import JsBarcode from "jsbarcode";
 import QRCode from "qrcode";
 import { toast } from "sonner";
 import { adminFetch, fetchAdminMe, hasPerm } from "./_lib";
+import { SessionLoadError } from "@/components/session-load-error";
 import { formatIraqiPhone } from "@/lib/phone";
 import { handleDefaultLogoError, logoSrc, usePublicSettings, type PublicSettings } from "@/lib/public-settings";
 import { downloadElementPdf } from "@/lib/pdf";
@@ -46,6 +47,8 @@ export default function Invoice() {
   const [data, setData] = useState<InvoiceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<unknown>(null);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
   const [downloading, setDownloading] = useState(false);
   const [websiteQr, setWebsiteQr] = useState("");
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -56,7 +59,9 @@ export default function Invoice() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const me = await fetchAdminMe();
+      let me;
+      try { me = await fetchAdminMe(); }
+      catch (cause) { if (alive) { setSessionError(cause); setLoading(false); } return; }
       if (!alive) return;
       if (!me || !hasPerm(me, type === "kosha" ? "orders" : "invoices")) { window.location.href = "/admin/login"; return; }
       if (!id) { setLoading(false); return; }
@@ -65,7 +70,7 @@ export default function Invoice() {
       finally { if (alive) setLoading(false); }
     })();
     return () => { alive = false; };
-  }, [id, type]);
+  }, [id, type, sessionAttempt]);
 
   // Short, readable booking number for bookings (store orders keep their code).
   const displayNumber = data
@@ -110,6 +115,7 @@ export default function Invoice() {
     finally { setDownloading(false); }
   }
 
+  if (sessionError) return <SessionLoadError error={sessionError} onRetry={() => { setSessionError(null); setLoading(true); setSessionAttempt((value) => value + 1); }} />;
   if (loading) return <div className="flex min-h-dvh items-center justify-center gap-2 text-muted-foreground" dir="rtl"><Loader2 className="h-5 w-5 animate-spin" />جارٍ تحميل الفاتورة…</div>;
   if (error || !data || !model) return <div className="flex min-h-dvh items-center justify-center text-muted-foreground" dir="rtl">{error || (type === "kosha" ? "حجز الكوشة غير موجود" : type === "booking" ? "الحجز غير موجود" : "الطلب غير موجود")}</div>;
 

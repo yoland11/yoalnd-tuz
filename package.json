@@ -200,7 +200,8 @@
     "verify:critical": "node ./scripts/run-critical-verification.mjs",
     "verify:deploy": "node ./scripts/run-critical-verification.mjs --deploy",
     "verify:strict": "node ./scripts/run-critical-verification.mjs --strict",
-    "verify:strict-deploy": "node ./scripts/run-critical-verification.mjs --deploy --strict"
+    "verify:strict-deploy": "node ./scripts/run-critical-verification.mjs --deploy --strict",
+    "test:site-audit-regressions": "node ./scripts/test-purchase-reconciliation.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-simple-salary-write.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-simple-salary-load-ui.tsx && node ./scripts/test-gallery-media-access.mjs && node ./scripts/test-admin-session-transient.mjs && node ./scripts/test-audit-read-errors.cjs && node ./scripts/test-booking-list-pages.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

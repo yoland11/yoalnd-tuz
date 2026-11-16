@@ -1,11 +1,14 @@
 import { CustomerFollowupReminder } from "@/components/customer-followup-reminder";
 import { Button } from "@/components/ui/button";
+import { useQuery } from "@tanstack/react-query";
+import { ReadFailure } from "@/components/read-failure";
 import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 import { Armchair, Bell, BusFront, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff, User, WalletCards } from "lucide-react";
 import { apiErrorMessage, fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, isSessionDecision, type AdminMe } from "@/views/admin/_lib";
 import { SessionDevicesPanel } from "@/components/session-devices";
 import { EmployeeAvatar } from "@/components/employee-avatar";
+import { SessionLoadError } from "@/components/session-load-error";
 import { BUCKET_LABEL, STAGE_LABEL, isKoshaPendingPricing, money, staffApi, type Bucket, type CrewBooking } from "./lib";
 import { KoshaOpsBoardPage, KoshaOpsReportsPage } from "./operations";
 import { countOps, flushQueue } from "./offline";
@@ -447,22 +450,27 @@ function Reports() {
 }
 
 function Approvals() {
-  const [rows, setRows] = useState<Awaited<ReturnType<typeof staffApi.paymentRequests>> | null>(null);
+  const pending = useQuery({ queryKey: ["kosha-staff", "payment-requests", "pending"], queryFn: () => staffApi.paymentRequests("pending") });
+  const rows = pending.data ?? null;
   const [busy, setBusy] = useState<number | null>(null);
-  const load = useCallback(() => staffApi.paymentRequests("pending").then(setRows).catch(() => setRows([])), []);
-  useEffect(() => { load(); }, [load]);
+  const [actionError, setActionError] = useState<unknown>(null);
+  const load = () => pending.refetch({ throwOnError: true });
   async function act(id: number, kind: "approve" | "reject") {
     setBusy(id);
+    setActionError(null);
     try {
       const reason = kind === "reject" ? window.prompt("سبب رفض التحصيل مطلوب")?.trim() : "";
       if (kind === "reject" && (!reason || reason.length < 3)) return;
       kind === "approve" ? await staffApi.approve(id) : await staffApi.reject(id, reason!);
       await load();
     }
+    catch (error) { setActionError(error); }
     finally { setBusy(null); }
   }
+  if (pending.isError) return <div className="p-4"><ReadFailure title="تعذر تحميل طلبات التحصيل" error={pending.error} busy={pending.isFetching} onRetry={() => void pending.refetch()} /></div>;
   return (
     <div className="space-y-3 p-4">
+      {actionError ? <ReadFailure title="تعذر إكمال إجراء التحصيل" error={actionError} onRetry={() => { setActionError(null); void pending.refetch(); }} /> : null}
       <h1 className="flex items-center gap-2 text-lg font-bold"><ShieldCheck className="h-5 w-5 text-primary" /> طلبات التحصيل</h1>
       {!rows ? <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>
         : rows.length === 0 ? <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">لا توجد طلبات بانتظار الموافقة</div>
@@ -511,15 +519,17 @@ export default function StaffPortal() {
 
 function StaffPortalContent() {
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
+  const [sessionError, setSessionError] = useState<unknown>(null);
   const [unread, setUnread] = useState(0);
   const [pendingOps, setPendingOps] = useState(0);
   const [location, nav] = useLocation();
   const lastNotifIds = useRef<Set<number>>(new Set());
 
   const refreshMe = useCallback(() => {
+    setSessionError(null);
     fetchAdminMe({ force: true }).then((user) => {
       setMe(user ? { ...user, permissions: Array.isArray(user.permissions) ? user.permissions : [] } : null);
-    });
+    }).catch(setSessionError);
   }, []);
   useEffect(() => { refreshMe(); }, [refreshMe]);
 
@@ -566,6 +576,7 @@ function StaffPortalContent() {
     return () => { window.removeEventListener("online", onOnline); window.removeEventListener("ajn-queue-changed", update); };
   }, [allowed]);
 
+  if (sessionError) return <SessionLoadError error={sessionError} onRetry={refreshMe} />;
   if (me === undefined) return <Spinner />;
   if (!me) return <Login onDone={refreshMe} />;
   if (!allowed) {

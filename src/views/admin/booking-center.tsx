@@ -1,7 +1,7 @@
 import type { FollowupRow, FollowupBooking } from "@/lib/customer-followups";
 import { FOLLOWUP_SERVICES } from "@/lib/customer-followups";
 import { followupBookingPreset, followupBookingMetadata, recoveredFollowupBooking } from "@/lib/customer-followup-booking";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
@@ -872,6 +872,13 @@ export default function BookingCenterPage() {
   return <BookingDashboard />;
 }
 
+function bookingListPage<T>(rows: T[], requested: number) {
+  const totalPages = Math.max(1, Math.ceil(rows.length / 24));
+  const page = Math.max(1, Math.min(totalPages, Number.isFinite(requested) ? Math.floor(requested) : 1));
+  const start = (page - 1) * 24;
+  return { page, totalPages, start, items: rows.slice(start, start + 24) };
+}
+
 function BookingDashboard() {
   const [, setBookingLocation] = useLocation();
   const bookingSearch = useSearch();
@@ -923,6 +930,21 @@ function BookingDashboard() {
       return [booking.number, booking.trackingCode, booking.customerName, booking.phone, booking.hall, booking.eventDate, booking.eventType, bookingEventTypeLabel(booking.eventType)].join(" ").toLowerCase().includes(q) || Boolean(searchedEvent && bookingEventTypeMatches(booking.eventType, searchedEvent));
     });
   }, [bookings, search, serviceFilter, eventFilter]);
+  const listPage = bookingListPage(filtered, Number(new URLSearchParams(bookingSearch).get("page") ?? 1));
+  const changePage = (page: number) => {
+    const params = new URLSearchParams(bookingSearch);
+    if (page <= 1) params.delete("page"); else params.set("page", String(page));
+    setBookingLocation(`/admin/bookings${params.size ? `?${params}` : ""}`, { replace: true });
+  };
+  const filtersSignature = JSON.stringify([search, serviceFilter, eventFilter]);
+  const previousFilters = useRef(filtersSignature);
+  useEffect(() => {
+    if (previousFilters.current === filtersSignature) return;
+    previousFilters.current = filtersSignature;
+    const params = new URLSearchParams(bookingSearch);
+    params.delete("page");
+    setBookingLocation(`/admin/bookings${params.size ? `?${params}` : ""}`, { replace: true });
+  }, [filtersSignature, bookingSearch, setBookingLocation]);
   const cards = SERVICE_META.map((meta) => {
     const rows = bookings.filter((booking) => booking.services.some((service) => service.type === meta.key));
     const inProgress = rows.filter((booking) => ["processing", "preparing", "active", "confirmed"].includes(booking.status)).length;
@@ -1094,9 +1116,13 @@ function BookingDashboard() {
           <div className="ajn-empty"><CalendarDays /><h3>لا توجد حجوزات مطابقة</h3><p>غيّر البحث أو أنشئ أول حجز موحّد لهذه الخدمة.</p></div>
         ) : (
           <div className="ajn-booking-grid">
-            {filtered.map((booking) => <BookingPreview key={`${booking.source}-${booking.id}`} booking={booking} selected={selectedBookings.has(`${booking.source}:${booking.id}`)} onSelect={booking.source==="kosha"||booking.source==="service"?checked=>setSelectedBookings(current=>{const next=new Set(current),key=`${booking.source}:${booking.id}`;if(checked){if(next.size>=50){toast({title:"يمكن تحديد 50 حجزاً في كل عملية",variant:"destructive"});return current}next.add(key)}else next.delete(key);return next}):undefined} penalty={penaltyIndicators.data?.indicators?.[`${booking.source === "kosha" ? "kosha_booking" : "service_order"}:${booking.id}`]} onDelete={requestBookingDeletion} deleting={bookingDeleteMutation.isPending && bookingDeleteMutation.variables?.id === booking.id} />)}
+            {listPage.items.map((booking) => <BookingPreview key={`${booking.source}-${booking.id}`} booking={booking} selected={selectedBookings.has(`${booking.source}:${booking.id}`)} onSelect={booking.source==="kosha"||booking.source==="service"?checked=>setSelectedBookings(current=>{const next=new Set(current),key=`${booking.source}:${booking.id}`;if(checked){if(next.size>=50){toast({title:"يمكن تحديد 50 حجزاً في كل عملية",variant:"destructive"});return current}next.add(key)}else next.delete(key);return next}):undefined} penalty={penaltyIndicators.data?.indicators?.[`${booking.source === "kosha" ? "kosha_booking" : "service_order"}:${booking.id}`]} onDelete={requestBookingDeletion} deleting={bookingDeleteMutation.isPending && bookingDeleteMutation.variables?.id === booking.id} />)}
           </div>
         )}
+        {!centralBookingsQuery.isLoading && !centralBookingsQuery.isError && filtered.length > 0 ? <nav aria-label="صفحات الحجوزات" className="flex flex-wrap items-center justify-between gap-3 border-t p-4">
+          <p className="text-sm text-muted-foreground" aria-live="polite">عرض {listPage.start + 1}–{listPage.start + listPage.items.length} من {filtered.length} حجز · صفحة {listPage.page} من {listPage.totalPages}</p>
+          <div className="flex gap-2"><Button variant="outline" disabled={listPage.page <= 1} onClick={() => changePage(listPage.page - 1)}>السابق</Button><Button variant="outline" disabled={listPage.page >= listPage.totalPages} onClick={() => changePage(listPage.page + 1)}>التالي</Button></div>
+        </nav> : null}
       </section>
     </div>
   );

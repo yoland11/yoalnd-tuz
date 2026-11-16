@@ -678,6 +678,8 @@ import {
 import {
   deriveOperationalAlerts,
   evaluateGalleryAccess,
+  createGalleryPreviewToken,
+  verifyGalleryPreviewToken,
   galleryShareUrl,
   hashGalleryPassword,
   newGallerySlug,
@@ -5490,7 +5492,8 @@ function publicMediaValue(
     kind === "product-video" ||
     kind === "product-preview" ||
     kind === "product-preview-cutout" ||
-    kind === "product-ready-made-preview"
+    kind === "product-ready-made-preview" ||
+    kind === "photography-gallery"
   )
     return mediaRoute(kind, row.id, index, mediaVersion(row));
   if (isDataUrl(value))
@@ -16246,6 +16249,32 @@ async function mediaResponseFromValue(req: NextRequest, value: unknown) {
   return error("الصورة غير موجودة", 404);
 }
 
+function privateGalleryResponse(response: NextResponse): NextResponse {
+  response.headers.set("Cache-Control", "private, no-store, max-age=0");
+  response.headers.set("Vary", "Cookie, Authorization");
+  response.headers.set("Referrer-Policy", "no-referrer");
+  return response;
+}
+
+async function canReadPhotographyGalleryMedia(req: NextRequest, gallery: Pick<typeof photographyGalleriesTable.$inferSelect, "shootId">): Promise<boolean> {
+  const user = await getAdminUser(req);
+  if (!user || !hasPermission(user, "photography")) return false;
+  if (isPhotographyManager(user)) return true;
+  const shoot = await db.query.photographyShootsTable.findFirst({ where: eq(photographyShootsTable.id, gallery.shootId) });
+  if (!shoot) return false;
+  const event = await db.query.photographyEventsTable.findFirst({ where: eq(photographyEventsTable.id, shoot.eventId) });
+  if (!event) return false;
+  if (canAccessPhotographyEvent(user, event)) return true;
+  const crew = await db.query.photographyShootCrewTable.findFirst({ where: and(
+    eq(photographyShootCrewTable.shootId, shoot.id), eq(photographyShootCrewTable.staffId, user.id),
+    or(isNull(photographyShootCrewTable.assignmentStatus), and(
+      ne(photographyShootCrewTable.assignmentStatus, "rejected"),
+      ne(photographyShootCrewTable.assignmentStatus, "revoked"),
+    )),
+  ) });
+  return Boolean(crew);
+}
+
 async function handleMedia(req: NextRequest, parts: string[]) {
   if (req.method !== "GET") return null;
   const kind = parts[1];
@@ -16391,21 +16420,34 @@ async function handleMedia(req: NextRequest, parts: string[]) {
     );
   }
 
-  // Client-gallery previews. Public on purpose: the gallery slug guards the listing, and a
-  // preview id is useless without it.
+  // Client previews carry a grant issued by the authorized listing; staff retain
+  // their existing event assignment/manager access even when a client link is disabled.
   if (kind === "photography-gallery") {
     await ensurePhotographyGalleryTables();
     const item = (await db.query.photographyGalleryItemsTable.findFirst({
       where: eq(photographyGalleryItemsTable.id, id),
     })) as any;
-    return mediaResponseFromValue(
-      req,
-      await upgradeStoredMedia(
-        "photography-gallery",
-        id,
-        item?.previewImage ?? item?.preview_image,
-      ),
-    );
+    if (!item) return privateGalleryResponse(error("الصورة غير موجودة", 404));
+    const gallery = await db.query.photographyGalleriesTable.findFirst({
+      where: eq(photographyGalleriesTable.id, item.galleryId),
+    });
+    if (!gallery) return privateGalleryResponse(error("المعرض غير موجود", 404));
+    const slug = req.nextUrl.searchParams.get("gallery");
+    if (slug === gallery.slug) {
+      const token = req.nextUrl.searchParams.get("access") ?? "";
+      const granted = verifyGalleryPreviewToken(gallery, id, token, sessionSecret());
+      const access = evaluateGalleryAccess({
+        isActive: gallery.isActive, expiresAt: gallery.expiresAt,
+        passwordHash: granted ? null : gallery.passwordHash,
+        passwordSalt: granted ? null : gallery.passwordSalt, suppliedPassword: null,
+      });
+      if (!access.ok) return privateGalleryResponse(error(access.reason, access.status));
+      if (!granted) return privateGalleryResponse(error("غير مخول", 401));
+    } else if (!(await canReadPhotographyGalleryMedia(req, gallery))) {
+      return privateGalleryResponse(error("غير مخول", 401));
+    }
+    // No lazy storage migration on this private GET; access is rechecked on every request.
+    return privateGalleryResponse(await mediaResponseFromValue(req, item.previewImage ?? item.preview_image));
   }
 
   if (kind === "photography-order") {
@@ -28696,6 +28738,24 @@ async function handleHrAdmin(
     const payload = await body(req);
     const salaryInputSchema = z.object({ employeeId: z.coerce.number().int().positive(), month: z.string().regex(/^\d{4}-\d{2}$/), baseSalary: z.coerce.number().min(0).max(1_000_000_000), bonus: z.coerce.number().min(0).max(1_000_000_000).default(0), deduction: z.coerce.number().min(0).max(1_000_000_000).default(0), notes: z.string().trim().max(2000).optional().default("") });
     const paymentNotesSchema = z.object({ notes: z.string().trim().max(2000).optional().default("") });
+    class SimpleSalaryEditConflict extends Error {
+      constructor() { super("لا يمكن تعديل راتب مرتبط بدفعة أو طلب صرف؛ استخدم تصحيح/تسوية الراتب"); }
+    }
+    const assertSimpleSalaryEditable = async (tx: any, line: any) => {
+      // The line lock is shared with payEmployeeSalary. Neither a stale zero
+      // cache nor an old record missing its status can erase financial history.
+      if (Number(line.amount_paid ?? 0) !== 0 || String(line.payment_status || "unpaid") !== "unpaid") throw new SimpleSalaryEditConflict();
+      const payments = simpleRows<any>(await tx.execute(sql`select id,financial_transaction_id from employee_salary_payments where payroll_line_id=${line.id} and coalesce(status,'paid') not in ('reversed','cancelled','rejected') for update`));
+      if (payments.length) throw new SimpleSalaryEditConflict();
+      const financials = simpleRows<any>(await tx.execute(sql`select f.id from financial_transactions f where ((f.source_type='payroll_line' and f.source_id=${String(line.id)}) or f.id=${line.financial_transaction_id ?? null} or f.id in (select p.financial_transaction_id from employee_salary_payments p where p.payroll_line_id=${line.id})) and coalesce(f.approval_status,'executed') not in ('rejected','cancelled') for update of f`));
+      if (financials.length) throw new SimpleSalaryEditConflict();
+    };
+    const salaryEditConflictResponse = (cause: unknown, lineId?: number) => {
+      if (!(cause instanceof SimpleSalaryEditConflict)) throw cause;
+      const requestId = makeRequestId(req.headers.get("x-request-id"));
+      console.warn("[SIMPLE_SALARY_EDIT_CONFLICT]", { requestId, lineId, code: "CONFLICT" });
+      return error(cause.message, 409, { code: "CONFLICT", requestId, retryable: false });
+    };
     const paySimpleSalary = async (lineId: number, notes: string) => {
       const row = simpleRows<any>(await db.execute(sql`
         select l.id,l.payroll_run_id as "runId",l.staff_id as "employeeId",
@@ -28769,16 +28829,20 @@ async function handleHrAdmin(
       const netSalary = Math.max(0, Math.round((input.baseSalary + input.bonus - input.deduction) * 100) / 100);
       const employee = simpleRows<any>(await db.execute(sql`select id,full_name,username from staff where id=${input.employeeId} and is_active=true limit 1`))[0];
       if (!employee) return error("الموظف غير موجود أو غير نشط", 404);
-      const result = await db.transaction(async (tx) => {
-        const run = simpleRows<any>(await tx.execute(sql`insert into payroll_runs(run_no,period,period_type,period_key,run_kind,status,notes,period_start_date,period_end_date,created_by,created_by_name) values(${`SAL-${input.month.replace("-", "")}`},${input.month},'monthly',${`simple:${input.month}`},'simple','approved','سجل رواتب مبسط',${`${input.month}-01`},(${`${input.month}-01`}::date + interval '1 month - 1 day')::date,${actor.id},${actor.name}) on conflict (period_key) where deleted_at is null do update set updated_at=now() returning *`))[0];
-        const existing = simpleRows<any>(await tx.execute(sql`select id,payment_status from payroll_lines where payroll_run_id=${run.id} and staff_id=${input.employeeId} for update`))[0];
-        if (existing?.payment_status === "paid") throw new Error("تم صرف راتب هذا الموظف لهذا الشهر؛ استخدم تصحيح الراتب");
-        const line = existing ? simpleRows<any>(await tx.execute(sql`update payroll_lines set base_salary=${input.baseSalary},bonus_amount=${input.bonus},penalty_amount=${input.deduction},gross_salary=${input.baseSalary + input.bonus},net_salary=${netSalary},line_notes=${input.notes || null},payment_status='unpaid',amount_paid=0 where id=${existing.id} returning *`))[0] : simpleRows<any>(await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,bonus_amount,penalty_amount,gross_salary,net_salary,payment_status,amount_paid,line_notes,calculation_details) values(${run.id},${input.employeeId},${input.baseSalary},${input.bonus},${input.deduction},${input.baseSalary + input.bonus},${netSalary},'unpaid',0,${input.notes || null},${JSON.stringify({ simpleSalary: true })}::jsonb) returning *`))[0];
-        await tx.execute(sql`update payroll_runs set status='approved',total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${run.id}),total_deductions=(select coalesce(sum(penalty_amount),0) from payroll_lines where payroll_run_id=${run.id}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${run.id}),updated_at=now() where id=${run.id}`);
-        return { run, line, action: existing ? "salary_updated" : "salary_created" };
-      });
-      void logAdminActivity(req, result.action, "salary", result.line.id, { employeeId: input.employeeId, month: input.month, baseSalary: input.baseSalary, bonus: input.bonus, deduction: input.deduction, netSalary });
-      return json(result, 201);
+      try {
+        const result = await db.transaction(async (tx) => {
+          const run = simpleRows<any>(await tx.execute(sql`insert into payroll_runs(run_no,period,period_type,period_key,run_kind,status,notes,period_start_date,period_end_date,created_by,created_by_name) values(${`SAL-${input.month.replace("-", "")}`},${input.month},'monthly',${`simple:${input.month}`},'simple','approved','سجل رواتب مبسط',${`${input.month}-01`},(${`${input.month}-01`}::date + interval '1 month - 1 day')::date,${actor.id},${actor.name}) on conflict (period_key) where deleted_at is null do update set updated_at=now() returning *`))[0];
+          const existing = simpleRows<any>(await tx.execute(sql`select id,payment_status,amount_paid,financial_transaction_id from payroll_lines where payroll_run_id=${run.id} and staff_id=${input.employeeId} for update`))[0];
+          if (existing) await assertSimpleSalaryEditable(tx, existing);
+          const line = existing ? simpleRows<any>(await tx.execute(sql`update payroll_lines set base_salary=${input.baseSalary},bonus_amount=${input.bonus},penalty_amount=${input.deduction},gross_salary=${input.baseSalary + input.bonus},net_salary=${netSalary},line_notes=${input.notes || null} where id=${existing.id} returning *`))[0] : simpleRows<any>(await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,bonus_amount,penalty_amount,gross_salary,net_salary,payment_status,amount_paid,line_notes,calculation_details) values(${run.id},${input.employeeId},${input.baseSalary},${input.bonus},${input.deduction},${input.baseSalary + input.bonus},${netSalary},'unpaid',0,${input.notes || null},${JSON.stringify({ simpleSalary: true })}::jsonb) returning *`))[0];
+          await tx.execute(sql`update payroll_runs set status='approved',total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${run.id}),total_deductions=(select coalesce(sum(penalty_amount),0) from payroll_lines where payroll_run_id=${run.id}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${run.id}),updated_at=now() where id=${run.id}`);
+          return { run, line, action: existing ? "salary_updated" : "salary_created" };
+        });
+        void logAdminActivity(req, result.action, "salary", result.line.id, { employeeId: input.employeeId, month: input.month, baseSalary: input.baseSalary, bonus: input.bonus, deduction: input.deduction, netSalary });
+        return json(result, 201);
+      } catch (cause) {
+        return salaryEditConflictResponse(cause);
+      }
     }
     const lineId = parts[3] ? int(parts[3]) : 0;
     if (!lineId) return error("معرف سجل الراتب غير صحيح", 400);
@@ -28788,12 +28852,21 @@ async function handleHrAdmin(
       if (!parsedInput.success) return validationError("admin.hr.simple-salaries", parsedInput);
       const input = parsedInput.data;
       const netSalary = Math.max(0, Math.round((input.baseSalary + input.bonus - input.deduction) * 100) / 100);
-      const current = simpleRows<any>(await db.execute(sql`select l.*,r.period from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id where l.id=${lineId} and r.run_kind='simple' and r.deleted_at is null limit 1`))[0];
-      if (!current) return error("سجل الراتب غير موجود", 404);
-      if (current.payment_status === "paid") return error("تم صرف الراتب؛ استخدم تصحيح الراتب", 409);
-      const updated = simpleRows<any>(await db.execute(sql`update payroll_lines set base_salary=${input.baseSalary},bonus_amount=${input.bonus},penalty_amount=${input.deduction},gross_salary=${input.baseSalary + input.bonus},net_salary=${netSalary},line_notes=${input.notes || null} where id=${lineId} returning *`))[0];
-      void logAdminActivity(req, "salary_updated", "salary", lineId, { oldValues: { baseSalary: current.base_salary, bonus: current.bonus_amount, deduction: current.penalty_amount }, newValues: { baseSalary: input.baseSalary, bonus: input.bonus, deduction: input.deduction, netSalary } });
-      return json(updated);
+      try {
+        const result = await db.transaction(async (tx) => {
+          const current = simpleRows<any>(await tx.execute(sql`select l.*,r.period from payroll_lines l join payroll_runs r on r.id=l.payroll_run_id where l.id=${lineId} and r.run_kind='simple' and r.deleted_at is null limit 1 for update of l`))[0];
+          if (!current) return null;
+          await assertSimpleSalaryEditable(tx, current);
+          const updated = simpleRows<any>(await tx.execute(sql`update payroll_lines set base_salary=${input.baseSalary},bonus_amount=${input.bonus},penalty_amount=${input.deduction},gross_salary=${input.baseSalary + input.bonus},net_salary=${netSalary},line_notes=${input.notes || null} where id=${lineId} returning *`))[0];
+          return { current, updated };
+        });
+        if (!result) return error("سجل الراتب غير موجود", 404);
+        const { current, updated } = result;
+        void logAdminActivity(req, "salary_updated", "salary", lineId, { oldValues: { baseSalary: current.base_salary, bonus: current.bonus_amount, deduction: current.penalty_amount }, newValues: { baseSalary: input.baseSalary, bonus: input.bonus, deduction: input.deduction, netSalary } });
+        return json(updated);
+      } catch (cause) {
+        return salaryEditConflictResponse(cause, lineId);
+      }
     }
     if (method === "DELETE") {
       if (!canSimpleSalary("manage")) return error("لا تملك صلاحية حذف الرواتب", 403);
@@ -56400,6 +56473,7 @@ async function addPurchaseInvoiceStockInTransaction(
   }>,
   invoiceId: number,
   actorInfo: { id: number | null; name: string },
+  updateStock = true,
 ) {
   const { productQuantities, variantQuantities } = groupPurchaseInvoiceStockChanges(items);
   const productIds = [...productQuantities.keys()];
@@ -56412,14 +56486,25 @@ async function addPurchaseInvoiceStockInTransaction(
     const ownerId = ownerIds.get(productId)!;
     ownerQuantities.set(ownerId, (ownerQuantities.get(ownerId) ?? 0) + quantity);
   }
-  for (const [ownerId, quantity] of ownerQuantities) {
+  // Lock variant parents before changing their children so a concurrent
+  // purchase cannot overwrite the parent's aggregate with a stale sum.
+  const lockIds = [...new Set([
+    ...ownerQuantities.keys(),
+    ...items.filter((item) => item.variantId && item.productId).map((item) => item.productId!),
+  ])].sort((left, right) => left - right);
+  if (updateStock && lockIds.length) await tx.execute(sql`
+    SELECT id FROM products
+    WHERE id IN (${sql.join(lockIds.map((id) => sql`${id}`), sql`, `)})
+    ORDER BY id FOR UPDATE
+  `);
+  for (const [ownerId, quantity] of updateStock ? ownerQuantities : []) {
     await tx.execute(sql`
       UPDATE products SET stock = stock::numeric + ${quantity}, updated_at = now()
       WHERE id = ${ownerId}
     `);
   }
   const variantParents = new Set<number>();
-  for (const [variantId, quantity] of variantQuantities) {
+  for (const [variantId, quantity] of updateStock ? [...variantQuantities].sort(([left], [right]) => left - right) : []) {
     const updated: any = await tx.execute(sql`
       UPDATE product_variants
       SET stock = stock + ${quantity}, updated_at = now()
@@ -56466,47 +56551,75 @@ async function addPurchaseInvoiceStockInTransaction(
   if (movements.length) await tx.insert(stockMovementsTable).values(movements);
 }
 
-/** Reverse a purchase's stock inside the same transaction as its replacement.
- * An edit is a replacement, never two independently committed stock actions. */
+/** Reconcile old stock with its replacement in one delta. Consumed units must
+ * never be clamped away and then recreated by an unchanged invoice edit. */
 async function reversePurchaseInvoiceStockInTransaction(
   tx: any,
   items: Array<{ id: number; productId: number | null; variantId?: number | null; variantLabel?: string | null; variantSku?: string | null; barcode?: string | null; quantity: string | number }>,
   invoiceId: number,
   actorInfo: { id: number | null; name: string },
   reason = "purchase_invoice_edit_reversal",
+  replacementItems: Array<{ productId: number | null; variantId?: number | null; quantity: string | number }> = [],
 ) {
-  const plainProductIds = [...new Set(items.filter((item) => !item.variantId).map((item) => Number(item.productId ?? 0)).filter((id) => id > 0))];
-  const { variantQuantities } = groupPurchaseInvoiceStockChanges(items);
+  const allItems = [...items, ...replacementItems];
+  const plainProductIds = [...new Set(allItems.filter((item) => !item.variantId).map((item) => Number(item.productId ?? 0)).filter((id) => id > 0))];
+  const previous = groupPurchaseInvoiceStockChanges(items);
+  const replacement = groupPurchaseInvoiceStockChanges(replacementItems);
   const productIds = plainProductIds;
   const ownerIds = await stockOwnerProductIdsInTransaction(tx, productIds);
-  for (const item of items) {
+  for (const item of allItems) {
     if (!item.productId || item.variantId || Number(item.quantity) <= 0) continue;
     const ownerId = ownerIds.get(item.productId);
     if (!ownerId) throw new CheckoutError("Product not found", 404);
   }
   const ownerQuantities = new Map<number, number>();
-  for (const item of items) {
-    if (!item.productId || item.variantId || Number(item.quantity) <= 0) continue;
-    const ownerId = ownerIds.get(item.productId)!;
-    ownerQuantities.set(ownerId, (ownerQuantities.get(ownerId) ?? 0) + Number(item.quantity));
+  for (const [quantities, sign] of [[previous.productQuantities, -1], [replacement.productQuantities, 1]] as const) {
+    for (const [productId, quantity] of quantities) {
+      const ownerId = ownerIds.get(productId)!;
+      // Purchase/product quantities persist at scale 3. Integer thousandths
+      // prevent equal decimal regroupings (0.1 + 0.2 -> 0.3) becoming reductions.
+      ownerQuantities.set(ownerId, (ownerQuantities.get(ownerId) ?? 0) + sign * Math.round(quantity * 1000));
+    }
   }
-  for (const [ownerId, quantity] of ownerQuantities) {
-    await tx.execute(sql`
+  const variantQuantities = new Map<number, number>();
+  for (const [quantities, sign] of [[previous.variantQuantities, -1], [replacement.variantQuantities, 1]] as const) {
+    for (const [variantId, quantity] of quantities)
+      variantQuantities.set(variantId, (variantQuantities.get(variantId) ?? 0) + sign * quantity);
+  }
+  const lockIds = [...new Set([
+    ...ownerQuantities.keys(),
+    ...allItems.filter((item) => item.variantId && item.productId).map((item) => item.productId!),
+  ])].sort((left, right) => left - right);
+  if (lockIds.length) await tx.execute(sql`
+    SELECT id FROM products
+    WHERE id IN (${sql.join(lockIds.map((id) => sql`${id}`), sql`, `)})
+    ORDER BY id FOR UPDATE
+  `);
+  for (const [ownerId, quantityMilli] of [...ownerQuantities].sort(([left], [right]) => left - right)) {
+    if (quantityMilli === 0) continue;
+    const quantity = quantityMilli / 1000;
+    const updated: any = await tx.execute(sql`
       UPDATE products
-      SET stock = GREATEST(0, stock::numeric - ${quantity}), updated_at = now()
-      WHERE id = ${ownerId}
+      SET stock = stock::numeric + ${quantity}, updated_at = now()
+      WHERE id = ${ownerId} AND stock::numeric + ${quantity} >= 0
+      RETURNING id
     `);
+    if (!(updated?.rows ?? updated ?? []).length)
+      throw new CheckoutError("لا يمكن تخفيض كمية الشراء لأن المخزون المتبقي غير كافٍ", 422);
   }
   const variantParents = new Set<number>();
-  for (const [variantId, quantity] of variantQuantities) {
+  for (const [variantId, quantity] of [...variantQuantities].sort(([left], [right]) => left - right)) {
+    if (quantity === 0) continue;
     const updated: any = await tx.execute(sql`
       UPDATE product_variants
-      SET stock = GREATEST(0, stock - ${quantity}), updated_at = now()
-      WHERE id = ${variantId}
+      SET stock = stock + ${quantity}, updated_at = now()
+      WHERE id = ${variantId} AND stock + ${quantity} >= 0
       RETURNING product_id
     `);
     const productId = Number((updated?.rows ?? updated ?? [])[0]?.product_id ?? 0);
-    if (productId) variantParents.add(productId);
+    if (!productId)
+      throw new CheckoutError("لا يمكن تخفيض كمية الشراء لأن مخزون المتغير المتبقي غير كافٍ", 422);
+    variantParents.add(productId);
   }
   for (const productId of variantParents) {
     await tx.execute(sql`
@@ -56562,12 +56675,17 @@ function purchaseInvoiceItems(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value
     .map((item: any) => {
-      const quantity = Math.max(
+      const rawQuantity = Math.max(
         Number.parseFloat(String(item?.quantity ?? "0")) || 0,
         0,
       );
-      const costPrice = money(item?.costPrice);
-      const discount = money(item?.discount);
+      // Ordinary quantities persist at numeric(12,3), rounded per line. Keep
+      // variant fractions intact so strict integer validation still rejects them.
+      const quantity = item?.variantId != null && item.variantId !== ""
+        ? rawQuantity
+        : Math.round(rawQuantity * 1000) / 1000;
+      const costPrice = Math.round(money(item?.costPrice) * 100) / 100;
+      const discount = Math.round(money(item?.discount) * 100) / 100;
       const productName = textFallback(item?.productName, item?.productNameAr);
       return {
         productId:
@@ -56589,9 +56707,9 @@ function purchaseInvoiceItems(value: unknown) {
         variantSku: normalizeProductBarcode(item?.variantSku ?? item?.variant_sku) || null,
         quantity,
         costPrice,
-        salePrice: money(item?.salePrice),
+        salePrice: Math.round(money(item?.salePrice) * 100) / 100,
         discount,
-        total: Math.max(quantity * costPrice - discount, 0),
+        total: Math.max(Math.round((quantity * costPrice - discount) * 100) / 100, 0),
       };
     })
     .filter((item) => item.productName && item.quantity > 0);
@@ -60026,16 +60144,17 @@ async function handlePurchaseInvoices(
     if (koshaItemsError) return error(koshaItemsError, 422);
     const dateVal = b.date ?? new Date().toISOString().slice(0, 10);
     const subtotal = items.reduce(
-      (sum, item) => sum + item.quantity * item.costPrice,
+      (sum, item) => sum + Math.round(item.total * 100),
       0,
-    );
-    const discountAmount = parseFloat(b.discountAmount ?? "0") || 0;
-    const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
-    const shippingCost = parseFloat(b.shippingCost ?? "0") || 0;
+    ) / 100;
+    const discountAmount = Math.round(money(b.discountAmount) * 100) / 100;
+    const taxAmount = Math.round(money(b.taxAmount) * 100) / 100;
+    const shippingCost = Math.round(money(b.shippingCost) * 100) / 100;
     const total = Math.max(
-      subtotal - discountAmount + taxAmount + shippingCost,
+      Math.round(subtotal * 100) - Math.round(discountAmount * 100)
+        + Math.round(taxAmount * 100) + Math.round(shippingCost * 100),
       0,
-    );
+    ) / 100;
     const paymentMethod = b.paymentMethod ?? "cash";
     const hasExplicitPaidAmount =
       b.paidAmount !== undefined &&
@@ -60283,16 +60402,17 @@ async function handlePurchaseInvoices(
     if (koshaItemsError) return error(koshaItemsError, 422);
 
     const subtotal = newItems.reduce(
-      (sum, item) => sum + item.quantity * item.costPrice,
+      (sum, item) => sum + Math.round(item.total * 100),
       0,
-    );
-    const discountAmount = parseFloat(b.discountAmount ?? "0") || 0;
-    const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
-    const shippingCost = parseFloat(b.shippingCost ?? "0") || 0;
+    ) / 100;
+    const discountAmount = Math.round(money(b.discountAmount) * 100) / 100;
+    const taxAmount = Math.round(money(b.taxAmount) * 100) / 100;
+    const shippingCost = Math.round(money(b.shippingCost) * 100) / 100;
     const total = Math.max(
-      subtotal - discountAmount + taxAmount + shippingCost,
+      Math.round(subtotal * 100) - Math.round(discountAmount * 100)
+        + Math.round(taxAmount * 100) + Math.round(shippingCost * 100),
       0,
-    );
+    ) / 100;
     const paymentMethod = b.paymentMethod ?? existing.paymentMethod;
     const payment = paymentSummary(
       total,
@@ -60306,11 +60426,19 @@ async function handlePurchaseInvoices(
       return error("لا يمكن تخفيض مبلغ مسدد ومعتمد من تعديل الفاتورة", 422);
     if (officiallyPaid > total + 0.005)
       return error("لا يمكن تخفيض إجمالي الفاتورة تحت المبلغ المسدد والمعتمد", 422);
-    const officialPayment = paymentSummary(total, officiallyPaid);
-    // Keep the invoice, its lines, the stock reversal and the replacement
-    // stock movement atomic. A failed edit must leave the original invoice and
-    // inventory untouched rather than temporarily zeroing a product.
+    // Serialize edits/deletion before reading old lines. Stock is reconciled by
+    // the quantity difference; full reversal/replacement records remain history.
     const { final, finalItems } = await db.transaction(async (tx) => {
+      const locked: any = await tx.execute(sql`
+        SELECT id, status, paid_amount FROM purchase_invoices WHERE id = ${id} FOR UPDATE
+      `);
+      const lockedInvoice = (locked?.rows ?? locked ?? [])[0];
+      if (!lockedInvoice || lockedInvoice.status === "deleted")
+        throw new CheckoutError("الفاتورة غير موجودة", 404);
+      const lockedPaid = Math.max(0, Number(lockedInvoice.paid_amount ?? 0));
+      if (requestedPaidAmount + 0.005 < lockedPaid || lockedPaid > total + 0.005)
+        throw new CheckoutError("لا يمكن تخفيض إجمالي الفاتورة أو المبلغ المسدد تحت المبلغ المعتمد", 422);
+      const officialPayment = paymentSummary(total, lockedPaid);
       const oldItems = await tx.select().from(purchaseInvoiceItemsTable)
         .where(eq(purchaseInvoiceItemsTable.invoiceId, id));
       const processedItems: typeof newItems = [];
@@ -60351,7 +60479,7 @@ async function handlePurchaseInvoices(
         paidAmount: String(officialPayment.deposit), remainingAmount: String(officialPayment.remaining),
         paymentMethod, paymentStatus: officialPayment.status, notes: b.notes ?? existing.notes,
       } as any).where(eq(purchaseInvoicesTable.id, id));
-      await reversePurchaseInvoiceStockInTransaction(tx, oldItems, id, a);
+      await reversePurchaseInvoiceStockInTransaction(tx, oldItems, id, a, "purchase_invoice_edit_reversal", processedItems);
       await tx.delete(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, id));
       const insertedItems = await tx.insert(purchaseInvoiceItemsTable).values(
         processedItems.map((item: any) => ({
@@ -60365,7 +60493,9 @@ async function handlePurchaseInvoices(
           salePrice: String(item.salePrice), discount: String(item.discount), total: String(item.total),
         })),
       ).returning();
-      await addPurchaseInvoiceStockInTransaction(tx, insertedItems, id, a);
+      // The difference was applied before replacing lines; only append the
+      // replacement movement records here, without adding the full stock again.
+      await addPurchaseInvoiceStockInTransaction(tx, insertedItems, id, a, false);
       for (const item of processedItems) {
         if (!item.productId || item.quantity <= 0) continue;
         if (item.variantId) {
@@ -66163,6 +66293,8 @@ async function handlePhotographyStaffPortal(
     if (!canAccessPhotographyEvent(auth, eventRow, crewEventIds))
       return error("هذه المهمة غير مُسندة إليك", 403);
     const shootRow = await ensureShootRow(eventRow, auth.id);
+    if (!(await canReadPhotographyGalleryMedia(req, { shootId: shootRow.id })))
+      return error("هذه المهمة غير مُسندة إليك", 403);
 
     const existing = await db.query.photographyGalleriesTable.findFirst({
       where: eq(photographyGalleriesTable.shootId, shootRow.id),
@@ -77046,6 +77178,7 @@ async function handleClientGallery(
         title: gallery.title,
       },
       access.status,
+      { "Cache-Control": "private, no-store, max-age=0" },
     );
   }
 
@@ -77074,15 +77207,13 @@ async function handleClientGallery(
         id: item.id,
         title: item.title,
         kind: item.kind,
-        previewImage: publicMediaValue(
-          "photography-gallery",
-          item,
-          item.previewImage,
-        ),
+        previewImage: item.previewImage
+          ? `${mediaRoute("photography-gallery", item.id, undefined, mediaVersion(item))}&gallery=${encodeURIComponent(gallery.slug)}&access=${encodeURIComponent(createGalleryPreviewToken(gallery, item.id, sessionSecret()))}`
+          : null,
         downloadUrl: item.downloadUrl,
         favoriteCount: item.favoriteCount,
       })),
-    });
+    }, 200, { "Cache-Control": "private, no-store, max-age=0", "Referrer-Policy": "no-referrer" });
   }
 
   if (

@@ -18,6 +18,7 @@ import { ToastAction } from "@/components/ui/toast";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { processImageFile } from "@/lib/image-tools";
 import { apiErrorMessage, apiErrorStatus, fetchAdminMe, hasPerm, isSessionDecision, loginAdmin, logoutAdmin, type AdminMe } from "@/views/admin/_lib";
+import { SessionLoadError } from "@/components/session-load-error";
 import { SessionDevicesPanel } from "@/components/session-devices";
 import { usePrint } from "@/components/print/print-provider";
 import { buildBrandedReceiptHtml, type BrandedReceiptDoc } from "@/lib/branded-receipt";
@@ -747,11 +748,13 @@ function Info({ label, value }: { label: string; value: string }) { return <div 
 
 export default function PhotographyStaffPortal() {
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined); const [unread, setUnread] = useState(0); const [pendingOps, setPendingOps] = useState(0); const [location, navigate] = useLocation(); const knownNotifications = useRef(new Set<number>());
-  const refreshMe = useCallback(() => { fetchAdminMe({ force: true }).then(setMe); }, []);
+  const [sessionError, setSessionError] = useState<unknown>(null);
+  const refreshMe = useCallback(() => { setSessionError(null); fetchAdminMe({ force: true }).then(setMe).catch(setSessionError); }, []);
   useEffect(() => { refreshMe(); }, [refreshMe]);
   const allowed = !!me && hasPerm(me, "photography");
   useEffect(() => { if (!allowed) return; let active = true; async function poll() { try { const rows = await photographyApi.notifications(); if (!active) return; setUnread(rows.filter((item) => !item.readAt).length); for (const item of rows) { if (!knownNotifications.current.has(item.id)) { knownNotifications.current.add(item.id); if (!item.readAt && knownNotifications.current.size > rows.length && "Notification" in window && Notification.permission === "granted") new Notification(item.title, { body: item.body }); } } } catch { /* polling is best effort */ } } poll(); const timer = setInterval(poll, 30000); if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {}); return () => { active = false; clearInterval(timer); }; }, [allowed]);
   useEffect(() => { if (!allowed) return; const update = () => countOps().then(setPendingOps).catch(() => {}); const online = () => flushQueue().then(update); update(); flushQueue().then(update); window.addEventListener("online", online); window.addEventListener("ajn-queue-changed", update); return () => { window.removeEventListener("online", online); window.removeEventListener("ajn-queue-changed", update); }; }, [allowed]);
+  if (sessionError) return <SessionLoadError error={sessionError} onRetry={refreshMe} />;
   if (me === undefined) return <Spinner />; if (!me) return <PortalLogin onDone={refreshMe} />; if (!allowed) return <div className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-background p-5 text-center" dir="rtl"><Camera className="h-8 w-8 text-primary" /><p className="text-muted-foreground">حسابك لا يملك صلاحية بوابة المصورين.</p><Button variant="outline" onClick={() => logoutAdmin().then(refreshMe)}>تسجيل الخروج</Button></div>;
   const tabs = [
     { href: "/staff/photography", label: "الرئيسية", icon: Home, active: location === "/staff/photography" },
