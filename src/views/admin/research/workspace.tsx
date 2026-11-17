@@ -5,12 +5,10 @@ import {
   CheckCircle2,
   Edit3,
   ExternalLink,
-  FileDown,
   FileText,
   History,
   Loader2,
   Plus,
-  Printer,
   Save,
   Send,
   ShieldCheck,
@@ -34,11 +32,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmployeeSelect } from "@/components/employee-select";
 import { ACADEMIC_LEVELS, RESEARCH_CATEGORIES } from "@/lib/research-contract";
-import { printStandaloneDocument } from "@/lib/pdf";
-import { downloadReportPdf } from "@/lib/pdf-report";
 import { useToast } from "@/hooks/use-toast";
 import { apiErrorMessage, type AdminMe } from "../_lib";
-import { researchOrderSheetHtml } from "../research-print";
 import { researchAccess } from "./ui-model";
 import {
   Choice,
@@ -57,6 +52,7 @@ import {
 } from "./shared";
 import { ResearchOrderForm } from "./order-form";
 import { ResearchFinancialPanel } from "./finance";
+import { ResearchOrderActions } from "./order-actions";
 
 export function ResearchWorkspace({
   id,
@@ -71,7 +67,6 @@ export function ResearchWorkspace({
   const cache = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [delivery, setDelivery] = useState(false);
-  const [printing, setPrinting] = useState(false);
   const query = useQuery<ResearchRecord>({
     queryKey: ["research", "order", id],
     queryFn: () => researchFetch(`/orders/${id}`),
@@ -96,39 +91,6 @@ export function ResearchWorkspace({
         variant: "destructive",
       }),
   });
-  async function print(mode: "print" | "download") {
-    if (!query.data) return;
-    setPrinting(true);
-    try {
-      const account = financial
-        ? await researchFetch<ResearchRecord>(`/orders/${id}/financials`)
-        : undefined;
-      const html = researchOrderSheetHtml(
-        {
-          ...query.data.order,
-          customerName:
-            query.data.customer?.fullName || query.data.customer?.name,
-          customerPhone: query.data.customer?.phone,
-        },
-        account,
-      );
-      if (mode === "print") printStandaloneDocument(html, 1122);
-      else
-        await downloadReportPdf(
-          html,
-          `${query.data.order.researchNo}.pdf`,
-          "landscape",
-        );
-    } catch (error) {
-      toast({
-        title: "تعذر طباعة ملخص البحث",
-        description: apiErrorMessage(error),
-        variant: "destructive",
-      });
-    } finally {
-      setPrinting(false);
-    }
-  }
   if (query.isPending) return <ResearchLoading />;
   if (query.isError)
     return (
@@ -152,6 +114,13 @@ export function ResearchWorkspace({
   };
   if (editing)
     return (
+      <div className="flex flex-col gap-5">
+      <Panel
+        title="طباعة ومشاركة الطلب"
+        action={<div className="flex flex-wrap gap-2"><ResearchOrderActions order={order} financial={financial} /></div>}
+      >
+        <p className="text-sm text-muted-foreground">الطباعة والمشاركة تعتمد آخر نسخة محفوظة؛ احفظ تعديلاتك أولاً لتظهر فيها.</p>
+      </Panel>
       <ResearchOrderForm
         key={id}
         financial={financial}
@@ -163,6 +132,7 @@ export function ResearchWorkspace({
           void query.refetch();
         }}
       />
+      </div>
     );
   const finalFiles = data.files.filter(
     (file: any) => file.fileType === "final" && file.isCustomerVisible,
@@ -190,24 +160,7 @@ export function ResearchWorkspace({
                 تعديل
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={printing}
-              onClick={() => void print("print")}
-            >
-              <Printer data-icon="inline-start" />
-              طباعة A4
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={printing}
-              onClick={() => void print("download")}
-            >
-              <FileDown data-icon="inline-start" />
-              PDF
-            </Button>
+            <ResearchOrderActions order={order} financial={financial} />
           </div>
         }
       >

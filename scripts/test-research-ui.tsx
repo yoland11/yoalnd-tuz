@@ -8,6 +8,8 @@ import {
   researchOrderPayload,
   researchPaymentPayload,
   reminderPreview,
+  researchOrderShareText,
+  whatsappLink,
 } from "../src/views/admin/research/ui-model";
 import {
   ResearchFailure,
@@ -19,11 +21,33 @@ import {
   researchStudentStatementThermalHtml,
   researchStatementShareText,
 } from "../src/views/admin/research-print";
+import { ResearchOrderActions } from "../src/views/admin/research/order-actions";
 const statementFixture={customer:{name:'طالب <script>',phone:'07700000000'},openingBalance:500,closingBalance:300,documentsRemaining:300,from:'2026-11-01',to:'2026-11-16',entries:[{date:'2026-11-16',reference:'PAY-1',description:'دفعة معتمدة',receivedByName:'المستلم أحمد',debit:0,credit:200,balance:300}]};
 const thermalStatement=researchStudentStatementThermalHtml(statementFixture);
 assert.match(thermalStatement,/كشف حساب الطالب/);assert.ok(!thermalStatement.includes('<script>'));assert.match(thermalStatement,/PAY-1/);
 assert.match(thermalStatement,/المستلم أحمد/);
 assert.match(researchStatementShareText(statementFixture),/300/);assert.match(researchStatementShareText(statementFixture),/دفعة معتمدة/);
+
+const shareOrder = { researchNo: 'RS-9', title: 'مشروع الطالب العلمي', customerName: 'محمد علي', universityName: 'جامعة بغداد', deadline: '2026-12-01', qrToken: 'track/token', totalAmount: 999999, paidAmount: 888888, remainingAmount: 777777, notes: 'ملاحظات داخلية سرية', internalNotes: 'خاصة بالموظفين' };
+const operationalShare = researchOrderShareText(shareOrder, undefined, 'https://ajn.example');
+assert.match(operationalShare, /RS-9/);
+assert.match(operationalShare, /محمد علي/);
+assert.match(operationalShare, /https:\/\/ajn\.example\/research\/track\/track%2Ftoken/);
+assert.doesNotMatch(operationalShare, /999|888|777|سرية|الموظفين|admin\//);
+const financialShare = researchOrderShareText(shareOrder, { totalAmount: 500000, approvedPaidAmount: 200000, paidAmount: 350000, remainingAmount: 300000, pendingAmount: 150000 }, 'https://ajn.example');
+assert.match(financialShare, /500,000/);
+assert.match(financialShare, /200,000/);
+assert.match(financialShare, /300,000/);
+assert.doesNotMatch(financialShare, /350,000|150,000|999|سرية/);
+assert.throws(() => researchOrderShareText(shareOrder, { totalAmount: 500000 }, 'https://ajn.example'), /المالية/);
+assert.equal(new URL(whatsappLink('07701234567', financialShare)!).searchParams.get('text'), financialShare);
+assert.match(whatsappLink('07701234567', financialShare)!, /^https:\/\/wa\.me\/9647701234567\?/);
+assert.equal(whatsappLink('123', financialShare), null);
+const orderActions = renderToStaticMarkup(createElement(ResearchOrderActions, { order: { ...shareOrder, id: 9 }, financial: false }));
+assert.match(orderActions, /طباعة A4/);
+assert.match(orderActions, /PDF/);
+assert.match(orderActions, /إرسال إلى واتساب/);
+assert.doesNotMatch(orderActions, /type="submit"/);
 
 const reader = {
   id: 3,

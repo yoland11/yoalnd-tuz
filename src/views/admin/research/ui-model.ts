@@ -1,4 +1,5 @@
 import type { AdminMe } from "../_lib";
+import { formatCurrency } from "@/lib/money";
 
 export function researchAccess(
   me: AdminMe | null | undefined,
@@ -142,4 +143,33 @@ export function whatsappLink(phone: string, message: string) {
   return /^\d{10,15}$/.test(digits)
     ? `https://wa.me/${digits}?text=${encodeURIComponent(message)}`
     : null;
+}
+
+/** Customer-facing summary only. Financial snapshots on the order are not used. */
+export function researchOrderShareText(
+  order: Record<string, any>,
+  financials?: Record<string, any>,
+  origin?: string,
+) {
+  const lines = [
+    "مجموعة علي جان نهاد — قسم البحوث العلمية",
+    `رقم الطلب: ${order.researchNo}`,
+    `الطالب: ${order.customerName || "—"}`,
+    `عنوان البحث: ${order.title || "—"}`,
+  ];
+  if (order.universityName) lines.push(`الجامعة: ${order.universityName}`);
+  if (order.deadline) lines.push(`موعد التسليم: ${String(order.deadline).slice(0, 10)}`);
+  if (financials) {
+    const paid = financials.approvedPaidAmount ?? financials.paidAmount;
+    if ([financials.totalAmount, paid, financials.remainingAmount].some(value => value == null || value === "" || !Number.isFinite(Number(value))))
+      throw new Error("تعذرت قراءة المعلومات المالية للبحث");
+    lines.push(
+      `المبلغ المتفق عليه: ${formatCurrency(financials.totalAmount)}`,
+      `المبلغ المستلم المعتمد: ${formatCurrency(paid)}`,
+      `المبلغ المتبقي: ${formatCurrency(financials.remainingAmount)}`,
+    );
+  }
+  if (origin && order.qrToken)
+    lines.push(`متابعة الطلب: ${new URL(`/research/track/${encodeURIComponent(order.qrToken)}`, origin).href}`);
+  return lines.join("\n");
 }
