@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { lockGraduationPaymentSource } from "@/server/graduation-write-guard";
+import { lockResearchPaymentSources } from "@/server/research-payment-state";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import { db, entityTimelineTable, notificationsTable, salesInvoicesTable } from "@workspace/db";
@@ -74,6 +75,7 @@ export async function handleInstallments(req: NextRequest, parts: string[], user
     const token = randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", "");
     const contract = await db.transaction(async (tx) => {
       await lockGraduationPaymentSource(tx, {sourceType:"sales_invoice", sourceId:invoice.id});
+      await lockResearchPaymentSources(tx, {sourceType:"sales_invoice", sourceId:invoice.id});
       const lockedInvoice = (await tx.execute(sql`SELECT status, remaining_amount FROM sales_invoices WHERE id=${invoice.id} FOR UPDATE`)).rows[0] as any;
       if (!lockedInvoice || lockedInvoice.status !== "active" || money(lockedInvoice.remaining_amount) !== balance)
         throw new Error("تغيّر رصيد الفاتورة أو حالتها؛ حدّث الصفحة قبل إنشاء عقد الأقساط");
@@ -160,6 +162,7 @@ export async function postInstallmentPayment(contractId:number,data:any,user:Use
   const key=data.idempotencyKey||randomUUID();
   const paymentResult=await db.transaction(async tx=>{
     await lockGraduationPaymentSource(tx,{sourceType:"installment_contract",sourceId:contractId});
+    await lockResearchPaymentSources(tx,{sourceType:"installment_contract",sourceId:contractId});
     const contract=(await tx.execute(sql`SELECT * FROM installment_contracts WHERE id=${contractId} FOR UPDATE`)).rows[0] as any;
     if(!contract)return {error:"العقد غير موجود",status:404};
     const duplicate=(await tx.execute(sql`SELECT * FROM installment_payments WHERE idempotency_key=${key} FOR UPDATE`)).rows[0] as any;
@@ -211,6 +214,7 @@ export async function postInstallmentPayment(contractId:number,data:any,user:Use
 
 async function reconcileInstallmentPaymentsInTransaction(tx:Tx,contractId:number,user:User,lockedContract?:any){
   await lockGraduationPaymentSource(tx,{sourceType:"installment_contract",sourceId:contractId});
+  await lockResearchPaymentSources(tx,{sourceType:"installment_contract",sourceId:contractId});
   const contract=lockedContract??((await tx.execute(sql`SELECT * FROM installment_contracts WHERE id=${contractId} FOR UPDATE`)).rows[0] as any);
   if(!contract)throw new Error("عقد الأقساط غير موجود");
   const payments=(await tx.execute(sql`SELECT * FROM installment_payments WHERE contract_id=${contractId} AND status='posted' AND reversed_at IS NULL ORDER BY id FOR UPDATE`)).rows as any[];

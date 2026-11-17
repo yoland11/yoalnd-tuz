@@ -24,7 +24,7 @@ export type SmartCustomer = {
  * duplicate-safe create (server enforces one customer per phone). Drop into any
  * invoice/POS/booking form; `onSelect` returns the chosen customer (link by id).
  */
-export function SmartCustomerSearch({ onSelect, autoFocus }: { onSelect: (c: SmartCustomer) => void; autoFocus?: boolean }) {
+export function SmartCustomerSearch({ onSelect, autoFocus, showFinancial = true, allowCreate = true }: { onSelect: (c: SmartCustomer) => void; autoFocus?: boolean; showFinancial?: boolean; allowCreate?: boolean }) {
   const { toast } = useToast();
   const [q, setQ] = useState("");
   const [results, setResults] = useState<SmartCustomer[] | null>(null);
@@ -71,7 +71,7 @@ export function SmartCustomerSearch({ onSelect, autoFocus }: { onSelect: (c: Sma
           {results.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border/50 p-4 text-center">
               <p className="text-sm text-muted-foreground">لا يوجد عميل مطابق.</p>
-              <Button size="sm" className="mt-2 gap-1.5" onClick={() => setCreating(true)}><UserPlus className="h-4 w-4" /> إنشاء عميل جديد</Button>
+              {allowCreate && <Button type="button" size="sm" className="mt-2 gap-1.5" onClick={() => setCreating(true)}><UserPlus className="h-4 w-4" /> إنشاء عميل جديد</Button>}
             </div>
           ) : (
             <>
@@ -89,13 +89,13 @@ export function SmartCustomerSearch({ onSelect, autoFocus }: { onSelect: (c: Sma
                       {c.lastInvoice ? <span>📅 {c.lastInvoice}</span> : null}
                     </div>
                   </div>
-                  <div className="text-left">
+                  {showFinancial && <div className="text-left">
                     <div className={`text-sm font-bold ${c.remaining > 0 ? "text-destructive" : "text-status-success"}`}>{formatCurrency(c.remaining)}</div>
                     <div className="text-[10px] text-muted-foreground">المتبقي</div>
-                  </div>
+                  </div>}
                 </Button>
               ))}
-              <Button size="sm" variant="outline" className="w-full gap-1.5" onClick={() => setCreating(true)}><UserPlus className="h-4 w-4" /> عميل جديد بدل هؤلاء</Button>
+              {allowCreate && <Button type="button" size="sm" variant="outline" className="w-full gap-1.5" onClick={() => setCreating(true)}><UserPlus className="h-4 w-4" /> عميل جديد بدل هؤلاء</Button>}
             </>
           )}
         </div>

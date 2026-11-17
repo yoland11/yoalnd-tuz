@@ -1,16 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import QRCode from "qrcode";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod/v4";
-import { readRequestBody } from "@/server/request-body";
+import { InvalidJsonBodyError, RequestBodyTooLargeError, readRequestBody } from "@/server/request-body";
 import {
   adminActivityLogsTable,
   customersTable,
   db,
   entityTimelineTable,
-  financialLedgerEntriesTable,
-  financialTransactionsTable,
   notificationsTable,
   researchAiGenerationsTable,
   researchAssignmentsTable,
@@ -31,11 +29,13 @@ import {
   staffTable,
 } from "@workspace/db";
 import { normalizeIraqiPhone } from "@/lib/phone";
-import {
-  createAndExecuteSourceFinancialTransaction,
-  type FinancialActor,
-} from "@/server/master-cash-box";
+import { RESEARCH_WORKFLOW_STAGES, RESEARCH_CATEGORIES, ACADEMIC_LEVELS } from "@/lib/research-contract";
+import { createApiErrorPayload, makeRequestId, mapWriteError } from "@/server/write-safety";
+import { reconcilePaymentState } from "@/server/payment-state";
+import { assertResearchPriceChange, createResearchPaymentRequest, requestResearchPayment, getResearchFinancialAccount, getResearchStudentStatement, listResearchExpenses, createResearchExpense, ResearchFinanceError } from "@/server/research-finance";
+import { handleResearchAnalytics } from "@/server/research-analytics";
 import { ensureResearchCenterTables } from "@/server/research-center-schema";
+import {getResearchPurchases,linkResearchPurchase} from './research-purchases';
 
 export type ResearchAdminUser = {
   id: number;
@@ -86,24 +86,39 @@ const optionalUniversityId = z.preprocess((value) => {
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }, z.number().int().positive().nullable());
-const orderSchema = z.object({
-  customerName: z.string().trim().min(2).max(160), phone: z.string().trim().min(10).max(30), title: z.string().trim().min(5).max(500),
+const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => { const date = new Date(`${value}T00:00:00Z`); return Number.isFinite(date.getTime()) && date.toISOString().slice(0,10) === value; }, "التاريخ غير صحيح");
+const nullableDate = z.preprocess(value => value === "" || value === null ? null : value, calendarDate.nullable().optional());
+const optionalId = z.preprocess(value => value === undefined ? undefined : value === "" || value === null ? null : value, z.coerce.number().int().positive().nullable().optional());
+const moneyField=z.coerce.number().finite().min(0).max(999999999999.99).multipleOf(0.01);
+const academicLevel = z.enum(["bachelor", "master", "phd"]);
+const researchCategory = z.enum(["theoretical", "software", "hardware", "data_analysis", "matlab", "python", "arduino", "proofreading", "other"]);
+export const researchOrderSchema = z.object({
+  customerId: optionalId, assignedWriterId: optionalId,
+  titleEnglish: z.string().trim().max(500).nullable().optional(), academicLevel: academicLevel.nullable().optional(), researchCategory: researchCategory.nullable().optional(),
+  paymentDueDate: nullableDate, idempotencyKey: z.string().trim().regex(/^[A-Za-z0-9:_-]{8,120}$/).optional(),
+  initialPaymentMethod: z.enum(["cash", "transfer", "card", "pos", "other"]).default("cash"), initialPaymentDate: nullableDate, initialPaymentNotes: z.string().trim().max(2000).optional(),
+  customerName: z.string().trim().min(2).max(160).optional(), phone: z.string().trim().min(10).max(30).optional(), title: z.string().trim().min(5).max(500),
   researchType: z.enum(["graduation", "diploma", "bachelor", "master", "phd", "article", "conference", "report"]),
   universityId: optionalUniversityId, universityName: z.string().trim().min(2).max(240), college: optionalString, department: optionalString,
   supervisorName: optionalString, language: z.enum(["ar", "en", "ku", "other"]).default("ar"), researchField: z.string().trim().max(240).optional().default(""),
   keywords: z.union([z.array(z.string()), z.string()]).transform((value) => Array.isArray(value) ? value.map(String).filter(Boolean) : value.split(/[,،]/).map((item) => item.trim()).filter(Boolean)).default([]),
-  requiredPages: z.coerce.number().int().min(1).max(2000), deadline: optionalString, citationStyle: z.enum(["APA7", "IEEE", "MLA", "Harvard", "Chicago"]).default("APA7"),
-  urgency: z.enum(["normal", "urgent", "critical"]).default("normal"), estimatedPrice: z.coerce.number().min(0).default(0), deposit: z.coerce.number().min(0).default(0), notes: optionalString,
+  requiredPages: z.coerce.number().int().min(1).max(2000), deadline: nullableDate, citationStyle: z.enum(["APA7", "IEEE", "MLA", "Harvard", "Chicago"]).default("APA7"),
+  urgency: z.enum(["normal", "urgent", "critical"]).default("normal"), estimatedPrice: moneyField.default(0), deposit: moneyField.default(0), notes: optionalString,
   files: z.array(z.object({ title: z.string().trim().min(1).max(300), fileName: z.string().trim().min(1).max(255), fileUrl: z.string().min(1).max(9_000_000), mimeType: optionalString, fileType: z.string().trim().max(80).default("customer_upload") })).max(10).default([]),
-});
-const patchSchema = z.object({
-  title: z.string().trim().min(5).max(500).optional(), status: z.enum(RESEARCH_STATUSES).optional(), progress: z.coerce.number().int().min(0).max(100).optional(), deadline: optionalString,
+}).superRefine((data,ctx)=>{if(!data.customerId){if(!data.customerName)ctx.addIssue({code:"custom",path:["customerName"],message:"اسم الزبون مطلوب"});if(!data.phone)ctx.addIssue({code:"custom",path:["phone"],message:"رقم الهاتف مطلوب"});}});
+export const researchPatchSchema = z.object({
+  titleEnglish:z.string().trim().max(500).nullable().optional(),academicLevel:academicLevel.nullable().optional(),researchCategory:researchCategory.nullable().optional(),paymentDueDate:nullableDate,
+  workflowStage:z.enum(["new","requirements_review","in_progress","quality_review","ready","completed"]).optional(),
+  researchType:z.enum(["graduation","diploma","bachelor","master","phd","article","conference","report"]).optional(),
+  universityName:z.string().trim().min(2).max(240).optional(),college:z.string().trim().max(240).optional(),department:z.string().trim().max(240).optional(),supervisorName:z.string().trim().max(240).nullable().optional(),
+  requiredPages:z.coerce.number().int().min(1).max(2000).optional(),language:z.enum(["ar","en","ku","other"]).optional(),urgency:z.enum(["normal","urgent","critical"]).optional(),
+  title: z.string().trim().min(5).max(500).optional(), status: z.enum(RESEARCH_STATUSES).optional(), progress: z.coerce.number().int().min(0).max(100).optional(), deadline: nullableDate,
   assignedWriterId: z.coerce.number().int().positive().nullable().optional(), assignedReviewerId: z.coerce.number().int().positive().nullable().optional(), assignedProofreaderId: z.coerce.number().int().positive().nullable().optional(), assignedFormatterId: z.coerce.number().int().positive().nullable().optional(), assignedSupervisorId: z.coerce.number().int().positive().nullable().optional(),
-  estimatedPrice: z.coerce.number().min(0).optional(), discountAmount: z.coerce.number().min(0).optional(), notes: optionalString,
+  estimatedPrice: moneyField.optional(), discountAmount: moneyField.optional(), notes: optionalString,
 });
 
 function json(data: unknown, status = 200) { return NextResponse.json(data, { status }); }
-function error(message: string, status = 400, details?: unknown) { return NextResponse.json({ error: message, details }, { status }); }
+function error(message: string, status = 400, details?: unknown) { return structuredError(message, { status, details }); }
 
 const FIELD_LABELS: Record<string, string> = {
   customerName: "اسم الزبون", phone: "رقم الهاتف", title: "عنوان البحث", researchType: "نوع البحث",
@@ -134,12 +149,21 @@ function fieldErrorsFromZod(zodError: z.ZodError): Record<string, string> {
 }
 // Structured API error. Keeps `error` for backward-compatible clients (apiErrorMessage)
 // while adding success/message/fieldErrors/errorCode.
-function structuredError(message: string, opts: { status?: number; fieldErrors?: Record<string, string>; errorCode?: string } = {}) {
-  return NextResponse.json(
-    { success: false, error: message, message, fieldErrors: opts.fieldErrors ?? {}, errorCode: opts.errorCode ?? "RESEARCH_ORDER_ERROR" },
-    { status: opts.status ?? 400 },
-  );
+function structuredError(message: string, opts: { status?: number; fieldErrors?: Record<string, string>; errorCode?: string; requestId?: string; details?: unknown } = {}) {
+  const payload = createApiErrorPayload({ message, status: opts.status ?? 400, requestId: opts.requestId ?? makeRequestId(), fieldErrors: opts.fieldErrors });
+  return NextResponse.json({ ...payload, errorCode: opts.errorCode ?? payload.code, ...(opts.details ? { details: opts.details } : {}) }, {status: opts.status ?? 400, headers:{"x-request-id":payload.requestId}});
 }
+class ResearchOperationError extends Error { constructor(message:string, public status = 422, public code = "VALIDATION_ERROR") { super(message); } }
+function researchFailure(err:unknown, operation:string, user?:ResearchAdminUser|null) {
+  const requestId = makeRequestId();
+  if(err instanceof InvalidJsonBodyError || err instanceof RequestBodyTooLargeError)return structuredError(err instanceof RequestBodyTooLargeError?"حجم الطلب أكبر من المسموح":"صيغة JSON غير صحيحة",{status:err instanceof RequestBodyTooLargeError?413:400,requestId,errorCode:"VALIDATION_ERROR"});
+  const known = err instanceof ResearchOperationError || err instanceof ResearchFinanceError;
+  const databaseCode = String((err as any)?.code || (err as any)?.cause?.code || "UNKNOWN").replace(/[^A-Z0-9_-]/gi, "").slice(0,32);
+  console.error("[research] operation failed", { requestId, operation, actorId:user?.id ?? null, databaseCode, status:known ? err.status : 500 });
+  const mapped=mapWriteError((err as any)?.cause ?? err);
+  return structuredError(known ? err.message : mapped.message, {status:known ? err.status : mapped.status,errorCode:known ? err.code : mapped.code,requestId});
+}
+export function researchNonfinancialOrder<T extends Record<string,unknown>>(record:T) { const {estimatedPrice,discountAmount,totalAmount,paidAmount,remainingAmount,paymentStatus,creationKey,...safe} = record; return safe; }
 function fieldError(field: string, message: string, errorCode = "VALIDATION_ERROR") {
   return structuredError(message, { fieldErrors: { [field]: message }, errorCode });
 }
@@ -147,24 +171,26 @@ async function requestBody(req: NextRequest) { return readRequestBody(req); }
 function actorName(user?: ResearchAdminUser | null) { return user ? user.fullName || user.username : "الموقع"; }
 function allowed(user: ResearchAdminUser, permission: string) { return user.role === "admin" || user.permissions.includes("research") || user.permissions.includes(permission); }
 function denied(user: ResearchAdminUser, permission: string) { return allowed(user, permission) ? null : error("لا تملك صلاحية تنفيذ هذا الإجراء", 403); }
-function financialActor(user: ResearchAdminUser): FinancialActor { return { id: user.id, name: actorName(user), role: user.role }; }
 function numeric(value: unknown) { const n = Number(value ?? 0); return Number.isFinite(n) ? n : 0; }
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Baghdad",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date()); }
 
-async function trace(orderId: number, action: string, description: string, user?: ResearchAdminUser | null, metadata: Record<string, unknown> = {}) {
+async function traceTx(executor: Executor, orderId: number, action: string, description: string, user?: ResearchAdminUser | null, metadata: Record<string, unknown> = {}) {
   await Promise.all([
-    db.insert(entityTimelineTable).values({ entityType: "research_order", entityId: orderId, type: action, title: description, body: description, actorId: user?.id ?? null, actorName: actorName(user), metadata }),
-    db.insert(adminActivityLogsTable).values({ staffId: user?.id ?? null, userName: actorName(user), action, entityType: "research_order", entityId: orderId, metadata }),
+    executor.insert(entityTimelineTable).values({ entityType: "research_order", entityId: orderId, type: action, title: description, body: description, actorId: user?.id ?? null, actorName: actorName(user), metadata }),
+    executor.insert(adminActivityLogsTable).values({ staffId: user?.id ?? null, userName: actorName(user), action, entityType: "research_order", entityId: orderId, metadata }),
   ]);
 }
-async function notifyCustomer(customerId: number, orderId: number, token: string, type: string, title: string, body: string) {
-  await db.insert(notificationsTable).values({ audienceType: "customer", customerId, type, title, body, entityType: "research_order", entityId: orderId, href: `/research/track/${token}` });
-}
+async function trace(orderId:number,action:string,description:string,user?:ResearchAdminUser|null,metadata:Record<string,unknown>={}) { return traceTx(db,orderId,action,description,user,metadata); }
 type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 // `normalized` is the already-normalized phone; reuses an existing customer to
 // avoid duplicates, otherwise creates one. Runs inside the caller's transaction.
-async function ensureCustomerTx(tx: Executor, normalized: string, name: string) {
-  const [existing] = await tx.select().from(customersTable).where(eq(customersTable.phone, normalized)).limit(1);
+async function ensureCustomerTx(tx: Executor, normalized: string, name: string, customerId?: number | null) {
+  if (customerId) { const [selected] = await tx.select().from(customersTable).where(eq(customersTable.id,customerId)).limit(1); if (!selected) throw new ResearchOperationError("الزبون المختار غير موجود",404,"NOT_FOUND"); return selected; }
+  await tx.execute(sql`select pg_advisory_xact_lock(82178, hashtext(${normalized}))`);
+  const digits=sql`regexp_replace(translate(${customersTable.phone},'٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹','01234567890123456789'),'[^0-9]','','g')`;
+  const matches=await tx.select().from(customersTable).where(sql`${digits} IN (${normalized},${`0${normalized.slice(3)}`},${`00${normalized}`},${`9640${normalized.slice(3)}`})`).orderBy(asc(customersTable.id)).limit(2);
+  const existing=matches.find(customer=>customer.phone===normalized) ?? (matches.length===1?matches[0]:null);
+  if(!existing && matches.length>1)throw new ResearchOperationError("يوجد أكثر من زبون بهذا الهاتف؛ اختر الزبون الموجود",409,"CUSTOMER_AMBIGUOUS");
   if (existing) {
     if (!existing.name && name) await tx.update(customersTable).set({ name, fullName: name, updatedAt: new Date() }).where(eq(customersTable.id, existing.id));
     return existing;
@@ -205,26 +231,32 @@ export function validateResearchFileData(value: string, fileName: string, claime
 }
 
 async function persistFile(value: string, fileName: string, orderId: number, claimedMime?: string | null) {
-  const validated = validateResearchFileData(value, fileName, claimedMime);
-  if (validated.existingUrl) return validated.existingUrl;
-  if (!STORAGE_URL || !STORAGE_SERVICE_KEY || !RESEARCH_PRIVATE_BUCKET) throw new Error("خدمة تخزين الملفات الخاصة غير مهيأة");
+  let validated:ReturnType<typeof validateResearchFileData>;
+  try{validated=validateResearchFileData(value,fileName,claimedMime);}catch(err){throw new ResearchOperationError(err instanceof Error?err.message:"بيانات الملف غير صحيحة");}
+  if (validated.existingUrl) throw new ResearchOperationError("ارفع محتوى الملف لإصدار جديد بدلاً من ربط ملف عام");
+  if (!STORAGE_URL || !STORAGE_SERVICE_KEY || !RESEARCH_PRIVATE_BUCKET) throw new ResearchOperationError("خدمة تخزين الملفات الخاصة غير مهيأة",503,"STORAGE_UNAVAILABLE");
   const path = `research/${orderId}/${Date.now()}-${randomUUID()}.${validated.extension}`;
   const response = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${RESEARCH_PRIVATE_BUCKET}/${path}`, { method: "POST", headers: { authorization: `Bearer ${STORAGE_SERVICE_KEY}`, apikey: STORAGE_SERVICE_KEY, "content-type": validated.mime!, "x-upsert": "false" }, body: validated.bytes! });
-  if (!response.ok) throw new Error("تعذر حفظ الملف في التخزين");
-  return `private:${path}`;
+  if (!response.ok) throw new ResearchOperationError("تعذر حفظ الملف في التخزين",502,"STORAGE_UPLOAD_FAILED");
+  return {fileUrl:`private:${path}`, mimeType:validated.mime!, fileSize:validated.bytes!.length, checksum:createHash("sha256").update(validated.bytes!).digest("hex")};
 }
 
 function encodedStoragePath(path: string) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
-async function authorizedResearchFileUrl(stored: string) {
+export function validResearchPrivatePath(stored:string, orderId:number) {
+  if (!stored.startsWith(`private:research/${orderId}/`)) return false;
+  const path = stored.slice(8);
+  return !path.includes("%") && !path.includes("\\") && !path.split("/").some(segment => segment === ".." || segment === "." || !segment);
+}
+async function authorizedResearchFileUrl(stored: string, orderId:number) {
   if (!stored.startsWith("private:")) return stored;
   if (!STORAGE_URL || !STORAGE_SERVICE_KEY || !RESEARCH_PRIVATE_BUCKET)
-    throw new Error("خدمة تخزين الملفات الخاصة غير مهيأة");
+    throw new ResearchOperationError("خدمة تخزين الملفات الخاصة غير مهيأة",503,"STORAGE_UNAVAILABLE");
   const path = stored.slice("private:".length);
-  if (!path.startsWith("research/") || path.includes(".."))
-    throw new Error("مسار ملف البحث غير صالح");
+  if (!validResearchPrivatePath(stored,orderId))
+    throw new ResearchOperationError("مسار ملف البحث غير صالح",409,"INVALID_FILE_PATH");
   const response = await fetch(
     `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/sign/${RESEARCH_PRIVATE_BUCKET}/${encodedStoragePath(path)}`,
     {
@@ -237,15 +269,15 @@ async function authorizedResearchFileUrl(stored: string) {
       body: JSON.stringify({ expiresIn: 900 }),
     },
   );
-  if (!response.ok) throw new Error("تعذر إصدار رابط آمن لملف البحث");
+  if (!response.ok) throw new ResearchOperationError("تعذر إصدار رابط آمن لملف البحث",502,"STORAGE_SIGNING_FAILED");
   const payload = await response.json() as { signedURL?: string; signedUrl?: string };
   const signed = payload.signedURL || payload.signedUrl;
-  if (!signed) throw new Error("تعذر إصدار رابط آمن لملف البحث");
+  if (!signed) throw new ResearchOperationError("تعذر إصدار رابط آمن لملف البحث",502,"STORAGE_SIGNING_FAILED");
   return new URL(signed, `${STORAGE_URL.replace(/\/$/, "")}/`).toString();
 }
 
 async function createInvoiceTx(tx: Executor, order: any, customer: any, user?: ResearchAdminUser | null) {
-  const [invoice] = await tx.insert(salesInvoicesTable).values({ invoiceNo: `RS-TMP-${randomUUID().replace(/-/g, "")}`, qrToken: order.qrToken, date: today(), customerName: customer.fullName || customer.name, customerPhone: customer.phone, customerId: customer.id, subtotal: String(order.estimatedPrice), discountAmount: String(order.discountAmount), total: String(order.totalAmount), paidAmount: "0", remainingAmount: String(order.totalAmount), paymentMethod: "cash", paymentStatus: numeric(order.totalAmount) ? "unpaid" : "paid", dueDate: order.deadline, status: "active", isInternal: 0, stockApplied: 0, notes: `فاتورة خدمة بحث أكاديمي ${order.researchNo}`, createdBy: user?.id ?? null, createdByName: actorName(user) }).returning();
+  const [invoice] = await tx.insert(salesInvoicesTable).values({ invoiceNo: `RS-TMP-${randomUUID().replace(/-/g, "")}`, qrToken: order.qrToken, date: today(), customerName: customer.fullName || customer.name, customerPhone: customer.phone, customerId: customer.id, subtotal: String(order.estimatedPrice), discountAmount: String(order.discountAmount), total: String(order.totalAmount), paidAmount: "0", remainingAmount: String(order.totalAmount), paymentMethod: "cash", paymentStatus: numeric(order.totalAmount) ? "unpaid" : "paid", dueDate: order.paymentDueDate ?? null, status: "active", isInternal: 0, stockApplied: 0, notes: `فاتورة خدمة بحث أكاديمي ${order.researchNo}`, createdBy: user?.id ?? null, createdByName: actorName(user) }).returning();
   const invoiceNo = `AJN-RS-INV-${String(invoice.id).padStart(6, "0")}`;
   await tx.update(salesInvoicesTable).set({ invoiceNo }).where(eq(salesInvoicesTable.id, invoice.id));
   await tx.insert(salesInvoiceItemsTable).values({ invoiceId: invoice.id, productName: `خدمة بحث أكاديمي - ${order.title}`, quantity: "1", unitPrice: String(order.estimatedPrice), discount: String(order.discountAmount), total: String(order.totalAmount), costPrice: "0" });
@@ -254,151 +286,64 @@ async function createInvoiceTx(tx: Executor, order: any, customer: any, user?: R
 
 async function createResearchOrder(raw: unknown, user?: ResearchAdminUser | null) {
   await ensureResearchCenterTables();
-  const parsed = orderSchema.safeParse(raw);
+  const parsed = researchOrderSchema.safeParse(raw);
   if (!parsed.success) {
     return { response: structuredError("تحقق من بيانات طلب البحث", { fieldErrors: fieldErrorsFromZod(parsed.error), errorCode: "VALIDATION_ERROR" }) };
   }
   const data = parsed.data;
-  const normalizedPhone = normalizeIraqiPhone(data.phone);
-  if (!normalizedPhone) return { response: fieldError("phone", "رقم الهاتف غير صحيح") };
-  const total = Math.max(0, data.estimatedPrice);
+  const normalizedPhone = data.phone ? normalizeIraqiPhone(data.phone) : null;
+  if (!data.customerId && !normalizedPhone) return { response: fieldError("phone", "رقم الهاتف غير صحيح") };
+  if (!user && (data.customerId || data.assignedWriterId || data.deposit)) return {response:error("البيانات المالية واختيار الزبائن والتكليف متاح للفريق المخول فقط",403)};
+  if (data.assignedWriterId && user && !allowed(user,"research.assign")) return {response:error("لا تملك صلاحية توزيع فريق البحث",403)};
+  if (user && (data.estimatedPrice > 0 || data.deposit > 0) && !allowed(user,"research.financials.view")) return {response:error("لا تملك صلاحية إدارة مالية البحث",403)};
+  if (data.deposit > 0 && user && !allowed(user,"research.payment.receive")) return {response:error("لا تملك صلاحية استلام الدفعات",403)};
+  const total = data.estimatedPrice;
   if (data.deposit > total) return { response: fieldError("deposit", "العربون لا يمكن أن يتجاوز إجمالي الطلب") };
-  // 32-char token (128-bit) — unique enough and fits every qr_token column
-  // (research_orders varchar(96) and the shared sales_invoices qr_token).
   const token = randomUUID().replace(/-/g, "");
-  let failureStage = "transaction_start";
+  const fingerprint = createHash("sha256").update(JSON.stringify(data)).digest("hex");
+  const creationKey = data.idempotencyKey ? `${user?.id ?? "public"}:${data.idempotencyKey}` : null;
   try {
-    // Customer, order, chapters, invoice and attachments are created atomically:
-    // any failure rolls the whole thing back (no orphan orders/invoices/customers).
-    const { customer, order, invoice } = await db.transaction(async (tx) => {
-      failureStage = "customer";
-      const customer = await ensureCustomerTx(tx, normalizedPhone, data.customerName);
-      failureStage = "order";
-      const [draft] = await tx.insert(researchOrdersTable).values({ researchNo: `RS-TMP-${randomUUID()}`, qrToken: token, customerId: customer.id, title: data.title, researchType: data.researchType, universityId: data.universityId ?? null, universityName: data.universityName, college: data.college || "", department: data.department || "", supervisorName: data.supervisorName || null, language: data.language, researchField: data.researchField, keywords: data.keywords, requiredPages: data.requiredPages, deadline: data.deadline || null, citationStyle: data.citationStyle, urgency: data.urgency, notes: data.notes || null, estimatedPrice: String(data.estimatedPrice), totalAmount: String(total), paidAmount: "0", remainingAmount: String(total), paymentStatus: total ? "unpaid" : "paid", chapterCount: CHAPTERS.length, createdBy: user?.id ?? null, createdByName: actorName(user) }).returning();
+    const result = await db.transaction(async (tx) => {
+      if (creationKey) {
+        await tx.execute(sql`select pg_advisory_xact_lock(82179, hashtext(${creationKey}))`);
+        const [existing] = await tx.select().from(researchOrdersTable).where(eq(researchOrdersTable.creationKey,creationKey)).limit(1);
+        if (existing) {
+          const [event] = await tx.select().from(adminActivityLogsTable).where(and(eq(adminActivityLogsTable.entityType,"research_order"),eq(adminActivityLogsTable.entityId,existing.id),eq(adminActivityLogsTable.action,"research_created"))).limit(1);
+          if ((event?.metadata as any)?.creationFingerprint !== fingerprint) throw new ResearchOperationError("معرف الإنشاء مستخدم ببيانات مختلفة",409,"IDEMPOTENCY_CONFLICT");
+          const [invoice] = existing.invoiceId ? await tx.select().from(salesInvoicesTable).where(eq(salesInvoicesTable.id,existing.invoiceId)).limit(1) : [];
+          return {order:existing,invoice,duplicate:true};
+        }
+      }
+      const customer = await ensureCustomerTx(tx, normalizedPhone || "", data.customerName || "", data.customerId);
+      if (data.assignedWriterId) await validateResearchAssignee(tx,data.assignedWriterId);
+      const [draft] = await tx.insert(researchOrdersTable).values({ researchNo: `RS-TMP-${randomUUID()}`, qrToken: token, creationKey, customerId: customer.id, title: data.title, titleEnglish:data.titleEnglish || null, academicLevel:data.academicLevel ?? null, researchCategory:data.researchCategory ?? null,paymentDueDate:data.paymentDueDate ?? null, assignedWriterId:data.assignedWriterId ?? null, researchType: data.researchType, universityId: data.universityId ?? null, universityName: data.universityName, college: data.college || "", department: data.department || "", supervisorName: data.supervisorName || null, language: data.language, researchField: data.researchField, keywords: data.keywords, requiredPages: data.requiredPages, deadline: data.deadline || null, citationStyle: data.citationStyle, urgency: data.urgency, notes: data.notes || null, estimatedPrice: String(total), totalAmount: String(total), paidAmount: "0", remainingAmount: String(total), paymentStatus: total ? "unpaid" : "paid", chapterCount: CHAPTERS.length, createdBy: user?.id ?? null, createdByName: actorName(user) }).returning();
       const researchNo = `AJN-RS-${new Date().getFullYear()}-${String(draft.id).padStart(6, "0")}`;
       const [order] = await tx.update(researchOrdersTable).set({ researchNo, updatedAt: new Date() }).where(eq(researchOrdersTable.id, draft.id)).returning();
-      failureStage = "chapters";
-      await tx.insert(researchChaptersTable).values(CHAPTERS.map(([chapterType, title], sortOrder) => ({ researchOrderId: order.id, chapterType, title, sortOrder })));
-      failureStage = "invoice";
+      await tx.insert(researchChaptersTable).values(CHAPTERS.map(([chapterType,title],sortOrder)=>({researchOrderId:order.id,chapterType,title,sortOrder,assignedWriterId:data.assignedWriterId ?? null})));
+      if (data.assignedWriterId) await tx.insert(researchAssignmentsTable).values({researchOrderId:order.id,staffId:data.assignedWriterId,role:"writer",assignedBy:user?.id ?? null});
       const invoice = await createInvoiceTx(tx, order, customer, user);
-      await tx.update(researchOrdersTable).set({ invoiceId: invoice.id }).where(eq(researchOrdersTable.id, order.id));
+      await tx.update(researchOrdersTable).set({invoiceId:invoice.id}).where(eq(researchOrdersTable.id,order.id));
+      const initialVersions=new Map<string,number>();
       for (const file of data.files) {
-        const fileUrl = await persistFile(file.fileUrl, file.fileName, order.id, file.mimeType);
-        await tx.insert(researchFilesTable).values({ researchOrderId: order.id, fileType: file.fileType, title: file.title, fileUrl, fileName: file.fileName, mimeType: file.mimeType || null, isCustomerVisible: true, uploadedBy: user?.id ?? null, uploadedByName: actorName(user) });
+        const identity=JSON.stringify([file.fileType,file.title]);const version=(initialVersions.get(identity)??0)+1;initialVersions.set(identity,version);
+        const metadata = await persistFile(file.fileUrl,file.fileName,order.id,file.mimeType);
+        await tx.insert(researchFilesTable).values({researchOrderId:order.id,fileType:file.fileType,title:file.title,version,...metadata,fileName:file.fileName,isCustomerVisible:true,uploadedBy:user?.id ?? null,uploadedByName:actorName(user)});
       }
-      await tx.insert(researchStatusEventsTable).values({ researchOrderId: order.id, toStatus: "new", changedBy: user?.id ?? null, changedByName: actorName(user) });
-      if (data.deposit > 0 && user) {
-        failureStage = "deposit_finance";
-        await createAndExecuteSourceFinancialTransaction(tx, {
-          direction: "revenue",
-          amount: data.deposit,
-          department: "research",
-          transactionType: "research_payment",
-          description: `عربون طلب البحث ${order.researchNo}`,
-          paymentMethod: "cash",
-          sourceType: "research_order",
-          sourceId: String(order.id),
-          sourceEvent: "payment",
-          idempotencyKey: `research-payment:${order.id}:${data.deposit.toFixed(2)}:v1`,
-          customerId: customer.id,
-          customerName: data.customerName,
-          dueDate: data.deadline || null,
-          attachments: [],
-        }, financialActor(user));
-      }
-      // A recorded deposit is an approval request, not an official payment.
-      // The central cash-box executor updates the order and invoice together
-      // only after the main financial approval succeeds.
-      const postedDeposit = 0;
-      const remaining = Math.max(0, total - postedDeposit);
-      const paymentStatus = remaining <= 0 ? "paid" : postedDeposit > 0 ? "partial" : "unpaid";
-      return {
-        customer,
-        order: { ...order, invoiceId: invoice.id, paidAmount: String(postedDeposit), remainingAmount: String(remaining), paymentStatus },
-        invoice: { ...invoice, paidAmount: String(postedDeposit), remainingAmount: String(remaining), paymentStatus },
-      };
+      await tx.insert(researchStatusEventsTable).values({researchOrderId:order.id,toStatus:"new",changedBy:user?.id ?? null,changedByName:actorName(user)});
+      if (data.deposit > 0 && user) await createResearchPaymentRequest(tx,{orderId:order.id,amount:data.deposit,paymentMethod:data.initialPaymentMethod,paymentDate:data.initialPaymentDate ?? undefined,notes:data.initialPaymentNotes,idempotencyKey:`initial:${data.idempotencyKey ?? order.id}`},user);
+      await traceTx(tx,order.id,"research_created",`تم إنشاء طلب البحث ${researchNo}`,user,{invoiceId:invoice.id,creationFingerprint:fingerprint});
+      await tx.insert(notificationsTable).values([{audienceType:"admin",type:"research_order_new",title:"طلب بحث أكاديمي جديد",body:`${researchNo} - ${order.title}`,entityType:"research_order",entityId:order.id,href:"/admin/research/orders"},{audienceType:"customer",customerId:customer.id,type:"research_created",title:"تم استلام طلب البحث",body:`${researchNo} قيد المراجعة`,entityType:"research_order",entityId:order.id,href:`/research/track/${order.qrToken}`}]);
+      return {order:{...order,invoiceId:invoice.id},invoice,duplicate:false};
     });
-    // Post-commit side effects (activity log, notifications). Failures here must
-    // not roll back a committed order, so they are best-effort.
-    await Promise.allSettled([
-      trace(order.id, "research_created", `تم إنشاء طلب البحث ${order.researchNo}`, user, { invoiceId: invoice.id }),
-      db.insert(notificationsTable).values({ audienceType: "admin", type: "research_order_new", title: "طلب بحث أكاديمي جديد", body: `${order.researchNo} - ${order.title}`, entityType: "research_order", entityId: order.id, href: "/admin/research/orders" }),
-      notifyCustomer(customer.id, order.id, token, "research_created", "تم استلام طلب البحث", `${order.researchNo} قيد المراجعة`),
-    ]);
-    return { order: { ...order, trackingUrl: `/research/track/${token}` }, invoice };
-  } catch (err: any) {
-    const databaseCode = String(err?.code || err?.cause?.code || "UNKNOWN").replace(/[^A-Z0-9_-]/gi, "").slice(0, 32);
-    // Drizzle query errors contain SQL parameters, so never log the raw object.
-    console.error("[research.createOrder] failed", {
-      databaseCode,
-      operation: "research_order_create",
-      stage: failureStage,
-      actorId: user?.id ?? null,
-    });
-    if (databaseCode === "23505") return { response: structuredError("تعذر إنشاء طلب مكرر، حدّث الصفحة ثم حاول مجدداً", { status: 409, errorCode: "DUPLICATE_ORDER" }) };
-    return { response: structuredError("تعذر إنشاء طلب البحث بسبب خطأ غير متوقع", { status: 500, errorCode: "RESEARCH_ORDER_CREATE_FAILED" }) };
-  }
+    const visibleOrder = user && !allowed(user,"research.financials.view") ? researchNonfinancialOrder(result.order) : result.order;
+    const {creationKey: _private, ...safeOrder} = visibleOrder as any;
+    return {order:{...safeOrder,trackingUrl:`/research/track/${result.order.qrToken}`},...(user && allowed(user,"research.financials.view") ? {invoice:result.invoice} : {}),duplicate:result.duplicate};
+  } catch (err) { return {response:researchFailure(err,"research_order_create",user)}; }
 }
 
-async function applyPayment(orderId: number, amount: number, paymentMethod: string, user: ResearchAdminUser, suppliedIdempotencyKey?: unknown) {
-  if (!Number.isFinite(amount) || amount <= 0) return { response: error("مبلغ الدفعة غير صحيح", 400) };
-  const clientKey = String(suppliedIdempotencyKey ?? "").trim();
-  if (clientKey && !/^[A-Za-z0-9:_-]{8,120}$/.test(clientKey))
-    return { response: error("معرف إعادة المحاولة غير صحيح", 400) };
-  const payment = await db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(82177, ${orderId})`);
-    const [lockedOrder] = await tx.select().from(researchOrdersTable).where(eq(researchOrdersTable.id, orderId)).limit(1);
-    if (!lockedOrder) return null;
-    const financialKey = clientKey ? `research-payment:${orderId}:${clientKey}` : null;
-    if (financialKey) {
-      const [existing] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.idempotencyKey, financialKey)).limit(1);
-      if (existing) {
-        if (existing.sourceType !== "research_order" || existing.sourceId !== String(orderId) || numeric(existing.amount) !== amount)
-          throw new Error("تعارض معرف إعادة محاولة دفعة البحث");
-        const ledger = await tx.select({ id: financialLedgerEntriesTable.id }).from(financialLedgerEntriesTable).where(eq(financialLedgerEntriesTable.transactionId, existing.id));
-        if (existing.approvalStatus === "executed" && ledger.length < 2)
-          throw new Error("دفعة البحث السابقة غير مكتملة محاسبياً وتحتاج مراجعة");
-        return {
-          invalid: false as const,
-          duplicate: true as const,
-          order: lockedOrder,
-          targetPaid: numeric(lockedOrder.paidAmount),
-          remaining: numeric(lockedOrder.remainingAmount),
-          status: lockedOrder.paymentStatus,
-          transaction: existing,
-        };
-      }
-    }
-    const total = numeric(lockedOrder.totalAmount); const previousPaid = numeric(lockedOrder.paidAmount); const targetPaid = Math.min(total, previousPaid + amount);
-    if (targetPaid <= previousPaid) return { invalid: true as const, order: lockedOrder, targetPaid: previousPaid, remaining: Math.max(0, total - previousPaid), status: lockedOrder.paymentStatus };
-    const remaining = Math.max(0, total - previousPaid); const status = lockedOrder.paymentStatus;
-    const transaction = await createAndExecuteSourceFinancialTransaction(tx, {
-      direction: "revenue",
-      amount: targetPaid - previousPaid,
-      department: "research",
-      transactionType: "research_payment",
-      description: `دفعة طلب البحث ${lockedOrder.researchNo}`,
-      paymentMethod: paymentMethod as "cash" | "transfer" | "card" | "pos" | "other",
-      sourceType: "research_order",
-      sourceId: String(orderId),
-      sourceEvent: "payment",
-      idempotencyKey: financialKey ?? `research-payment:${orderId}:${targetPaid.toFixed(2)}:v1`,
-      customerId: lockedOrder.customerId,
-      customerName: lockedOrder.title,
-      dueDate: lockedOrder.deadline,
-      attachments: [],
-    }, financialActor(user));
-    return { invalid: false as const, duplicate: false as const, order: lockedOrder, targetPaid: previousPaid, remaining, status, transaction };
-  });
-  if (!payment) return { response: error("طلب البحث غير موجود", 404) };
-  if (payment.invalid) return { response: error("تم سداد كامل مبلغ البحث", 400) };
-  const { order, targetPaid, remaining, status, transaction, duplicate } = payment;
-  if (!duplicate)
-    await trace(order.id, "research_payment_received", `تم استلام دفعة بقيمة ${amount}`, user, { amount, targetPaid, transactionId: transaction?.id });
-  return { paidAmount: targetPaid, remainingAmount: remaining, paymentStatus: status, transaction, duplicate };
-}
-
-async function orderDetail(id: number, customerSafe = false) {
+// Payments use createAndExecuteSourceFinancialTransaction via createResearchPaymentRequest;
+// sourceType: "research_order" remains centrally approved and reconciled.
+async function orderDetail(id: number, customerSafe = false, financials = true) {
   const order = await db.query.researchOrdersTable.findFirst({ where: eq(researchOrdersTable.id, id) });
   if (!order) return null;
   const [customer, chapters, sourceRows, citations, files, plagiarism, messages, timeline, assignments] = await Promise.all([
@@ -412,8 +357,8 @@ async function orderDetail(id: number, customerSafe = false) {
     db.select().from(entityTimelineTable).where(and(eq(entityTimelineTable.entityType, "research_order"), eq(entityTimelineTable.entityId, id))).orderBy(asc(entityTimelineTable.createdAt)),
     customerSafe ? Promise.resolve([]) : db.select({ assignment: researchAssignmentsTable, staffName: staffTable.fullName, username: staffTable.username }).from(researchAssignmentsTable).leftJoin(staffTable, eq(staffTable.id, researchAssignmentsTable.staffId)).where(eq(researchAssignmentsTable.researchOrderId, id)),
   ]);
-  const customerRecord = customerSafe ? { name: customer?.fullName || customer?.name || "", phone: customer?.phone || "" } : customer;
-  const authorizedFiles = await Promise.all(files.map(async (file) => ({ ...file, fileUrl: await authorizedResearchFileUrl(file.fileUrl) })));
+  const customerRecord = customerSafe || !financials ? { id:customer?.id,name:customer?.fullName || customer?.name || "",fullName:customer?.fullName,phone:customer?.phone || "" } : customer;
+  const authorizedFiles = await Promise.all(files.map(async (file) => ({ ...file, fileUrl: await authorizedResearchFileUrl(file.fileUrl,id) })));
   if (customerSafe) {
     return {
       order: {
@@ -435,7 +380,8 @@ async function orderDetail(id: number, customerSafe = false) {
       assignments: [],
     };
   }
-  return { order, customer: customerRecord, chapters, sources: sourceRows.map((row) => ({ ...row.source, link: row.link })), citations, files: authorizedFiles, plagiarism, messages, timeline, assignments };
+  const {creationKey: _private, ...safeOrder} = order;
+  return { order: financials ? safeOrder : researchNonfinancialOrder(safeOrder), customer: customerRecord, chapters, sources: sourceRows.map((row) => ({ ...row.source, link: row.link })), citations, files: authorizedFiles, plagiarism, plagiarismReports:plagiarism, messages, timeline:financials ? timeline : timeline.filter(event => !/payment|expense|financial/.test(event.type)).map(({metadata,...event})=>event), assignments:financials ? assignments : assignments.map(({assignment,...rest})=>({ ...rest,assignment:(( {hourlyRate,rating,...safe})=>safe)(assignment)})) };
 }
 
 type SourceResult = { provider: string; externalId: string; title: string; authors: string[]; journal?: string; year?: number; abstract?: string; doi?: string; language?: string; category?: string; url?: string; pdfUrl?: string; openAccess?: boolean; metadata?: Record<string, unknown> };
@@ -462,14 +408,14 @@ async function searchArxiv(query: string, year?: string): Promise<SourceResult[]
   const xml = await fetchText(`https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&start=0&max_results=12&sortBy=relevance&sortOrder=descending`);
   return [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map((match) => match[1]).map((entry) => { const value = (tag: string) => decodeXml(entry.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`))?.[1] || ""); const published = value("published"); const entryYear = Number(published.slice(0, 4)) || undefined; const url = value("id"); const authors = [...entry.matchAll(/<author>[\s\S]*?<name>([\s\S]*?)<\/name>[\s\S]*?<\/author>/g)].map((author) => decodeXml(author[1])); const doi = value("arxiv:doi") || undefined; return { provider: "arxiv", externalId: url.split("/").pop() || url, title: value("title"), authors, journal: value("arxiv:journal_ref") || "arXiv", year: entryYear, abstract: value("summary"), doi, category: entry.match(/<category[^>]*term="([^"]+)"/)?.[1], url, pdfUrl: entry.match(/<link[^>]*title="pdf"[^>]*href="([^"]+)"/)?.[1], openAccess: true, metadata: { published } }; }).filter((item) => !year || String(item.year) === String(year));
 }
-async function searchSources(query: string, provider: string, year?: string) { const adapters: Record<string, () => Promise<SourceResult[]>> = { crossref: () => searchCrossref(query, year), openalex: () => searchOpenAlex(query, year), semantic_scholar: () => searchSemantic(query, year), pubmed: () => searchPubMed(query, year), doaj: () => searchDoaj(query, year), arxiv: () => searchArxiv(query, year) }; if (provider !== "all") return adapters[provider] ? adapters[provider]() : []; const settled = await Promise.allSettled(Object.values(adapters).map((run) => run())); return settled.flatMap((item) => item.status === "fulfilled" ? item.value : []).filter((item, index, rows) => rows.findIndex((other) => (other.doi && other.doi === item.doi) || `${other.provider}:${other.externalId}` === `${item.provider}:${item.externalId}`) === index).slice(0, 36); }
+async function searchSources(query: string, provider: string, year?: string) { const adapters: Record<string, () => Promise<SourceResult[]>> = { crossref: () => searchCrossref(query, year), openalex: () => searchOpenAlex(query, year), semantic_scholar: () => searchSemantic(query, year), pubmed: () => searchPubMed(query, year), doaj: () => searchDoaj(query, year), arxiv: () => searchArxiv(query, year) }; if (provider !== "all") {if(!adapters[provider])throw new ResearchOperationError("مزود المصادر غير معروف"); try{return await adapters[provider]();}catch{throw new ResearchOperationError("تعذر الاتصال بمزود المصادر المحدد",502,"SOURCE_PROVIDER_UNAVAILABLE");}} const settled = await Promise.allSettled(Object.values(adapters).map((run) => run())); if(settled.every(result=>result.status==="rejected"))throw new ResearchOperationError("تعذر الاتصال بمزودي المصادر؛ حاول مجدداً",502,"SOURCE_PROVIDERS_UNAVAILABLE"); return settled.flatMap((item) => item.status === "fulfilled" ? item.value : []).filter((item, index, rows) => rows.findIndex((other) => (other.doi && other.doi === item.doi) || `${other.provider}:${other.externalId}` === `${item.provider}:${item.externalId}`) === index).slice(0, 36); }
 
 function citationFor(source: any, style: string) { const authors = (source.authors || []).join(", ") || "مؤلف غير معروف"; const year = source.publicationYear || "د.ت"; const title = source.title; const journal = source.journal || ""; const doi = source.doi ? `https://doi.org/${source.doi}` : source.url || ""; if (style === "IEEE") return `${authors}, “${title},” ${journal}, ${year}. ${doi}`; if (style === "MLA") return `${authors}. “${title}.” ${journal}, ${year}. ${doi}`; if (style === "Harvard") return `${authors} (${year}) '${title}', ${journal}. ${doi}`; if (style === "Chicago") return `${authors}. “${title}.” ${journal} (${year}). ${doi}`; return `${authors} (${year}). ${title}. ${journal}. ${doi}`; }
 
 async function aiGenerate(raw: unknown, user: ResearchAdminUser) {
   const schema = z.object({ orderId: z.coerce.number().int().positive(), chapterId: z.coerce.number().int().positive().optional(), action: z.string().min(2).max(60), prompt: z.string().min(2).max(12000), sourceIds: z.array(z.coerce.number().int().positive()).min(1, "اختر مصدراً واحداً على الأقل") });
   const parsed = schema.safeParse(raw); if (!parsed.success) return { response: error("يجب اختيار مصادر موثقة قبل استخدام المساعد", 400, parsed.error.issues) };
-  const data = parsed.data; const linked = await db.select({ source: researchSourcesTable }).from(researchOrderSourcesTable).innerJoin(researchSourcesTable, eq(researchSourcesTable.id, researchOrderSourcesTable.sourceId)).where(and(eq(researchOrderSourcesTable.researchOrderId, data.orderId), inArray(researchSourcesTable.id, data.sourceIds)));
+  const data = parsed.data; const order = await db.query.researchOrdersTable.findFirst({where:eq(researchOrdersTable.id,data.orderId)}); if(!order)return {response:error("طلب البحث غير موجود",404)}; if(data.chapterId){const chapter=await db.query.researchChaptersTable.findFirst({where:and(eq(researchChaptersTable.id,data.chapterId),eq(researchChaptersTable.researchOrderId,data.orderId))}); if(!chapter)return {response:error("الفصل غير مرتبط بهذا البحث",404)};} const linked = await db.select({ source: researchSourcesTable }).from(researchOrderSourcesTable).innerJoin(researchSourcesTable, eq(researchSourcesTable.id, researchOrderSourcesTable.sourceId)).where(and(eq(researchOrderSourcesTable.researchOrderId, data.orderId), inArray(researchSourcesTable.id, data.sourceIds)));
   if (linked.length !== data.sourceIds.length) return { response: error("بعض المصادر المختارة غير مرتبطة بهذا البحث", 400) };
   const key = process.env.OPENAI_API_KEY; if (!key) return { response: error("مساعد الذكاء الاصطناعي غير مهيأ حالياً", 503) };
   const sourceBlock = linked.map(({ source }, index) => `[S${index + 1}] ${citationFor(source, "APA7")}\nAbstract: ${source.abstract || "غير متوفر"}`).join("\n\n");
@@ -477,78 +423,190 @@ async function aiGenerate(raw: unknown, user: ResearchAdminUser) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ model, temperature: 0.25, messages: [{ role: "system", content: "أنت مساعد بحث أكاديمي. استخدم حصراً المصادر المرفقة. كل ادعاء من مصدر يجب أن يحمل [S#]. لا تخترع مراجع أو DOI أو معلومات غير موجودة. إذا لم تكفِ المصادر صرّح بذلك." }, { role: "user", content: `الإجراء: ${data.action}\nالمطلوب: ${data.prompt}\n\nالمصادر المسموحة فقط:\n${sourceBlock}` }] }) });
   if (!response.ok) return { response: error("تعذر تشغيل مساعد البحث", 502) };
   const payload = await response.json(); const output = String(payload?.choices?.[0]?.message?.content || "").trim();
+  if(!output)return {response:error("أعاد مساعد البحث استجابة فارغة؛ حاول مجدداً",502)};
   const invalid = [...output.matchAll(/\[S(\d+)\]/g)].some((match) => Number(match[1]) < 1 || Number(match[1]) > linked.length);
   if (invalid) return { response: error("تم رفض النص لأن إشارة مرجعية غير موثقة ظهرت في الناتج", 422) };
-  await db.insert(researchAiGenerationsTable).values({ researchOrderId: data.orderId, chapterId: data.chapterId ?? null, action: data.action, prompt: data.prompt, output, sourceIds: data.sourceIds, model, createdBy: user.id });
-  await trace(data.orderId, "research_ai_generated", `تم تنفيذ ${data.action} بالمصادر المحددة`, user, { sourceIds: data.sourceIds, chapterId: data.chapterId });
+  await db.transaction(async tx=>{await lockedResearchOrder(tx,data.orderId);if(data.chapterId)await ownedResearchChapter(tx,data.chapterId,data.orderId);await tx.insert(researchAiGenerationsTable).values({researchOrderId:data.orderId,chapterId:data.chapterId??null,action:data.action,prompt:data.prompt,output,sourceIds:data.sourceIds,model,createdBy:user.id});await traceTx(tx,data.orderId,"research_ai_generated",`تم تنفيذ ${data.action} بالمصادر المحددة`,user,{sourceIds:data.sourceIds,chapterId:data.chapterId});});
   return { output, citations: linked.map(({ source }, index) => ({ key: `S${index + 1}`, sourceId: source.id, citation: citationFor(source, "APA7") })) };
 }
 
-async function dashboard() {
-  const [summary] = await db.select({ total: sql<number>`count(*)::int`, completed: sql<number>`count(*) filter (where ${researchOrdersTable.status} in ('completed','delivered'))::int`, pending: sql<number>`count(*) filter (where ${researchOrdersTable.status} in ('new','accepted'))::int`, inProgress: sql<number>`count(*) filter (where ${researchOrdersTable.status} not in ('new','accepted','completed','delivered','archived'))::int`, revenue: sql<number>`coalesce(sum(${researchOrdersTable.paidAmount}),0)::numeric`, avgProgress: sql<number>`coalesce(avg(${researchOrdersTable.progress}),0)::numeric` }).from(researchOrdersTable).where(isNull(researchOrdersTable.archivedAt));
-  const byStatus = await db.select({ status: researchOrdersTable.status, count: sql<number>`count(*)::int` }).from(researchOrdersTable).where(isNull(researchOrdersTable.archivedAt)).groupBy(researchOrdersTable.status);
-  const recent = await db.select().from(researchOrdersTable).where(isNull(researchOrdersTable.archivedAt)).orderBy(desc(researchOrdersTable.createdAt)).limit(8);
-  const writers = await db.select({ id: staffTable.id, name: staffTable.fullName, username: staffTable.username, completed: sql<number>`count(${researchAssignmentsTable.id}) filter (where ${researchAssignmentsTable.status}='completed')::int`, minutes: sql<number>`coalesce(sum(${researchAssignmentsTable.workingMinutes}),0)::int` }).from(staffTable).leftJoin(researchAssignmentsTable, eq(researchAssignmentsTable.staffId, staffTable.id)).groupBy(staffTable.id).orderBy(desc(sql`count(${researchAssignmentsTable.id})`)).limit(5);
-  return { summary: { ...summary, revenue: numeric(summary?.revenue), avgProgress: Math.round(numeric(summary?.avgProgress)) }, byStatus, recent, writers, aiAvailable: Boolean(process.env.OPENAI_API_KEY) };
+async function validateResearchAssignee(tx:Executor,id:number) {
+  const [staff] = await tx.select({id:staffTable.id,isActive:staffTable.isActive}).from(staffTable).where(eq(staffTable.id,id)).limit(1);
+  if (!staff?.isActive) throw new ResearchOperationError("الموظف المختار غير موجود أو غير نشط");
+}
+async function lockedResearchOrder(tx:Executor,id:number) {
+  await tx.execute(sql`select pg_advisory_xact_lock(82177, ${id})`);
+  const [order] = await tx.select().from(researchOrdersTable).where(eq(researchOrdersTable.id,id)).for("update").limit(1);
+  if (!order) throw new ResearchOperationError("طلب البحث غير موجود",404,"NOT_FOUND"); return order;
+}
+async function ownedResearchChapter(tx:Executor,chapterId:number,orderId:number) {
+  const [chapter] = await tx.select().from(researchChaptersTable).where(and(eq(researchChaptersTable.id,chapterId),eq(researchChaptersTable.researchOrderId,orderId))).limit(1);
+  if (!chapter) throw new ResearchOperationError("الفصل غير مرتبط بهذا البحث",404,"NOT_FOUND"); return chapter;
+}
+async function updateOrder(id:number,raw:unknown,user:ResearchAdminUser) {
+  const parsed = researchPatchSchema.safeParse(raw); if (!parsed.success) return {response:structuredError("تحقق من بيانات تحديث البحث",{fieldErrors:fieldErrorsFromZod(parsed.error)})};
+  const {workflowStage,...data} = parsed.data;
+  if (workflowStage) data.status = RESEARCH_WORKFLOW_STAGES.find(stage=>stage.key===workflowStage)!.targetStatus;
+  const roles = [["assignedWriterId","writer"],["assignedReviewerId","reviewer"],["assignedProofreaderId","proofreader"],["assignedFormatterId","formatter"],["assignedSupervisorId","supervisor"]] as const;
+  const assignmentNames=new Set<string>(roles.map(([key])=>key));
+  const needsEdit=Object.entries(data).some(([key,value])=>value!==undefined&&!assignmentNames.has(key)&&!(key==="status"&&value==="archived"));
+  if(needsEdit&&!allowed(user,"research.edit"))return {response:error("لا تملك صلاحية تعديل البحث",403)};
+  if (roles.some(([key])=>data[key]!==undefined) && !allowed(user,"research.assign")) return {response:error("لا تملك صلاحية توزيع فريق البحث",403)};
+  if (data.status === "archived" && !allowed(user,"research.archive")) return {response:error("لا تملك صلاحية أرشفة البحث",403)};
+  if ((data.estimatedPrice!==undefined || data.discountAmount!==undefined || data.paymentDueDate!==undefined) && !allowed(user,"research.financials.view")) return {response:error("لا تملك صلاحية تعديل مالية البحث",403)};
+  try {
+    const saved = await db.transaction(async tx=>{
+      const current = await lockedResearchOrder(tx,id);
+      if(current.archivedAt&&data.status&&data.status!=='archived'&&!allowed(user,'research.archive'))throw new ResearchOperationError('لا تملك صلاحية استعادة البحث من الأرشيف',403,'PERMISSION_DENIED');
+      for(const [key] of roles) if(data[key]) await validateResearchAssignee(tx,data[key]!);
+      if(data.status === "delivered" && current.status !== "delivered") {
+        if(current.status !== "completed") throw new ResearchOperationError("يجب تجهيز البحث قبل التسليم",409,"INVALID_TRANSITION");
+        const [file] = await tx.select({id:researchFilesTable.id}).from(researchFilesTable).where(and(eq(researchFilesTable.researchOrderId,id),eq(researchFilesTable.isCustomerVisible,true),eq(researchFilesTable.fileType,"final"))).limit(1);
+        if(!file) throw new ResearchOperationError("أضف نسخة نهائية ظاهرة للزبون قبل التسليم",409,"FINAL_FILE_REQUIRED");
+      }
+      const values:typeof researchOrdersTable.$inferInsert = {...data,researchNo:current.researchNo,qrToken:current.qrToken,customerId:current.customerId,title:data.title ?? current.title,researchType:data.researchType ?? current.researchType,estimatedPrice:undefined,discountAmount:undefined,updatedAt:new Date()};
+      if(current.archivedAt&&data.status&&data.status!=='archived')values.archivedAt=null;
+      const moneyChange = data.estimatedPrice!==undefined || data.discountAmount!==undefined;
+      if(moneyChange) {
+        const estimated = data.estimatedPrice ?? numeric(current.estimatedPrice), discount = data.discountAmount ?? numeric(current.discountAmount);
+        if(discount > estimated) throw new ResearchOperationError("الخصم يتجاوز السعر");
+        const total = (Math.round(estimated*100)-Math.round(discount*100))/100; await assertResearchPriceChange(tx,id,total);
+        Object.assign(values,{estimatedPrice:String(estimated),discountAmount:String(discount),totalAmount:String(total)});
+        if(current.invoiceId) {
+          await tx.update(salesInvoicesTable).set({subtotal:String(estimated),discountAmount:String(discount),total:String(total),updatedAt:new Date()}).where(eq(salesInvoicesTable.id,current.invoiceId));
+          await tx.update(salesInvoiceItemsTable).set({unitPrice:String(estimated),discount:String(discount),total:String(total),productName:`خدمة بحث أكاديمي - ${values.title}`}).where(eq(salesInvoiceItemsTable.invoiceId,current.invoiceId));
+        }
+      }
+      if(data.status){values.progress=data.progress ?? STATUS_PROGRESS[data.status]; if(data.status==="accepted"&&!current.acceptedAt)values.acceptedAt=new Date();if(data.status==="completed"&&!current.completedAt)values.completedAt=new Date();if(data.status==="delivered"&&!current.deliveredAt)values.deliveredAt=new Date();if(data.status==="archived"&&!current.archivedAt)values.archivedAt=new Date();}
+      await tx.update(researchOrdersTable).set(values).where(eq(researchOrdersTable.id,id));
+      if(current.invoiceId && data.title!==undefined)await tx.update(salesInvoiceItemsTable).set({productName:`خدمة بحث أكاديمي - ${data.title}`}).where(eq(salesInvoiceItemsTable.invoiceId,current.invoiceId));
+      if(current.invoiceId && data.paymentDueDate!==undefined) await tx.update(salesInvoicesTable).set({dueDate:data.paymentDueDate,updatedAt:new Date()}).where(eq(salesInvoicesTable.id,current.invoiceId));
+      if(moneyChange) await reconcilePaymentState(tx,{sourceType:"research_order",sourceId:id});
+      if(data.status && data.status!==current.status){ await tx.insert(researchStatusEventsTable).values({researchOrderId:id,fromStatus:current.status,toStatus:data.status,changedBy:user.id,changedByName:actorName(user)}); await tx.insert(notificationsTable).values({audienceType:"customer",customerId:current.customerId,type:`research_${data.status}`,title:RESEARCH_STATUS_LABELS[data.status],body:`${current.researchNo} - ${RESEARCH_STATUS_LABELS[data.status]}`,entityType:"research_order",entityId:id,href:`/research/track/${current.qrToken}`}); }
+      for(const [key,role] of roles){if(data[key]===undefined)continue;await tx.update(researchAssignmentsTable).set({status:"revoked",completedAt:new Date()}).where(and(eq(researchAssignmentsTable.researchOrderId,id),eq(researchAssignmentsTable.role,role),inArray(researchAssignmentsTable.status,["assigned","accepted"])));if(data[key])await tx.insert(researchAssignmentsTable).values({researchOrderId:id,staffId:data[key]!,role,assignedBy:user.id}).onConflictDoUpdate({target:[researchAssignmentsTable.researchOrderId,researchAssignmentsTable.staffId,researchAssignmentsTable.role],set:{status:"assigned",assignedBy:user.id,assignedAt:new Date(),completedAt:null}});}
+      await traceTx(tx,id,"research_updated","تم تحديث طلب البحث",user,{
+        changes:Object.keys(data).filter(key=>(data as Record<string,unknown>)[key]!==undefined),
+        ...((moneyChange||data.paymentDueDate!==undefined)?{financialChanges:{
+          before:{estimatedPrice:current.estimatedPrice,discountAmount:current.discountAmount,totalAmount:current.totalAmount,paymentDueDate:current.paymentDueDate},
+          after:{estimatedPrice:values.estimatedPrice??current.estimatedPrice,discountAmount:values.discountAmount??current.discountAmount,totalAmount:values.totalAmount??current.totalAmount,paymentDueDate:data.paymentDueDate===undefined?current.paymentDueDate:data.paymentDueDate},
+        }}:{}),
+      });
+      const [order]=await tx.select().from(researchOrdersTable).where(eq(researchOrdersTable.id,id));return order;
+    });
+    const {creationKey:_private,...safe}=saved; return {order:allowed(user,"research.financials.view") ? safe : researchNonfinancialOrder(safe)};
+  } catch(err){return {response:researchFailure(err,"research_order_update",user)};}
 }
 
-async function updateOrder(id: number, raw: unknown, user: ResearchAdminUser) {
-  const parsed = patchSchema.safeParse(raw); if (!parsed.success) return { response: error("تحقق من بيانات تحديث البحث", 400, parsed.error.issues) };
-  const current = await db.query.researchOrdersTable.findFirst({ where: eq(researchOrdersTable.id, id) }); if (!current) return { response: error("طلب البحث غير موجود", 404) };
-  const data = parsed.data; const assignmentKeys = ["assignedWriterId", "assignedReviewerId", "assignedProofreaderId", "assignedFormatterId", "assignedSupervisorId"] as const; if (assignmentKeys.some((key) => data[key] !== undefined) && !allowed(user, "research.assign")) return { response: error("لا تملك صلاحية توزيع فريق البحث", 403) }; const estimated = data.estimatedPrice ?? numeric(current.estimatedPrice); const discount = data.discountAmount ?? numeric(current.discountAmount); const total = Math.max(0, estimated - discount); const paid = Math.min(total, numeric(current.paidAmount));
-  const values: any = { ...data, estimatedPrice: String(estimated), discountAmount: String(discount), totalAmount: String(total), paidAmount: String(paid), remainingAmount: String(Math.max(0, total - paid)), paymentStatus: total - paid <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid", updatedAt: new Date() };
-  if (data.status) { values.progress = data.progress ?? STATUS_PROGRESS[data.status]; if (data.status === "accepted") values.acceptedAt = new Date(); if (data.status === "completed") values.completedAt = new Date(); if (data.status === "delivered") values.deliveredAt = new Date(); if (data.status === "archived") values.archivedAt = new Date(); }
-  const [saved] = await db.update(researchOrdersTable).set(values).where(eq(researchOrdersTable.id, id)).returning();
-  if (current.invoiceId) await db.update(salesInvoicesTable).set({ subtotal: String(estimated), discountAmount: String(discount), total: String(total), paidAmount: String(paid), remainingAmount: String(Math.max(0, total - paid)), paymentStatus: values.paymentStatus, dueDate: saved.deadline, updatedAt: new Date() }).where(eq(salesInvoicesTable.id, current.invoiceId));
-  if (data.status && data.status !== current.status) { await db.insert(researchStatusEventsTable).values({ researchOrderId: id, fromStatus: current.status, toStatus: data.status, changedBy: user.id, changedByName: actorName(user) }); await notifyCustomer(saved.customerId, id, saved.qrToken, `research_${data.status}`, RESEARCH_STATUS_LABELS[data.status], `${saved.researchNo} - ${RESEARCH_STATUS_LABELS[data.status]}`); }
-  const roles: Array<[keyof typeof data, string]> = [["assignedWriterId", "writer"], ["assignedReviewerId", "reviewer"], ["assignedProofreaderId", "proofreader"], ["assignedFormatterId", "formatter"], ["assignedSupervisorId", "supervisor"]];
-  for (const [key, role] of roles) { if (data[key] === undefined) continue; if (data[key] === null) { await db.update(researchAssignmentsTable).set({ status: "revoked", completedAt: new Date() }).where(and(eq(researchAssignmentsTable.researchOrderId, id), eq(researchAssignmentsTable.role, role), eq(researchAssignmentsTable.status, "assigned"))); continue; } await db.insert(researchAssignmentsTable).values({ researchOrderId: id, staffId: Number(data[key]), role, assignedBy: user.id }).onConflictDoUpdate({ target: [researchAssignmentsTable.researchOrderId, researchAssignmentsTable.staffId, researchAssignmentsTable.role], set: { status: "assigned", assignedBy: user.id, assignedAt: new Date(), completedAt: null } }); }
-  await trace(id, "research_updated", data.status && data.status !== current.status ? `تغيرت الحالة إلى ${RESEARCH_STATUS_LABELS[data.status]}` : "تم تحديث طلب البحث", user, { changes: Object.keys(data) });
-  return { order: saved };
+export async function handleResearchPublic(req:NextRequest,parts:string[]):Promise<NextResponse>{
+ try{return await handleResearchPublicRequest(req,parts);}catch(err){return researchFailure(err,"research_public_route");}
+}
+async function handleResearchPublicRequest(req:NextRequest,parts:string[]):Promise<NextResponse>{
+ await ensureResearchCenterTables();const method=req.method,resource=parts[1]||"config";
+ if(method==="GET"&&resource==="config"){
+  const universities=await db.select().from(researchUniversitiesTable).where(eq(researchUniversitiesTable.isActive,true)).orderBy(asc(researchUniversitiesTable.nameAr));
+  return json({universities,researchTypes:["graduation","diploma","bachelor","master","phd","article","conference","report"],citationStyles:["APA7","IEEE","MLA","Harvard","Chicago"],academicLevels:ACADEMIC_LEVELS,researchCategories:RESEARCH_CATEGORIES,workflowStages:RESEARCH_WORKFLOW_STAGES});
+ }
+ if(method==="POST"&&resource==="orders"){const result=await createResearchOrder(await requestBody(req));return result.response??json(result,201);}
+ if(resource!=="track"||!parts[2])return error("المسار غير موجود",404);
+ const order=await db.query.researchOrdersTable.findFirst({where:eq(researchOrdersTable.qrToken,parts[2])});if(!order)return error("رمز متابعة البحث غير صحيح",404);
+ if(method==="GET"&&!parts[3]){const detail=await orderDetail(order.id,true);const qrDataUrl=await QRCode.toDataURL(`${req.nextUrl.origin}/research/track/${order.qrToken}`,{width:280,margin:1});return json({...detail,qrDataUrl});}
+ if(method==="POST"&&parts[3]==="sources"&&parts[4]){
+  const sourceId=validId(parts[4]);const body=await requestBody(req);if(body?.selected!==undefined&&typeof body.selected!=="boolean")return error("اختيار المصدر غير صحيح");
+  const saved=await db.transaction(async tx=>{await lockedResearchOrder(tx,order.id);const [link]=await tx.update(researchOrderSourcesTable).set({selectedByCustomer:body?.selected!==false}).where(and(eq(researchOrderSourcesTable.researchOrderId,order.id),eq(researchOrderSourcesTable.sourceId,sourceId))).returning();if(!link)throw new ResearchOperationError("المصدر غير مرتبط بهذا البحث",404,"NOT_FOUND");await traceTx(tx,order.id,link.selectedByCustomer?"research_source_customer_selected":"research_source_customer_unselected",link.selectedByCustomer?"اعتمد الزبون مصدراً للبحث":"ألغى الزبون اعتماد مصدر",null,{sourceId});return link;});
+  return json({source:saved});
+ }
+ if(method==="POST"&&parts[3]==="messages"){
+  const parsed=z.object({message:z.string().trim().min(2).max(10000),senderName:z.string().trim().min(1).max(160).default("الزبون")}).safeParse(await requestBody(req));if(!parsed.success)return error("اكتب رسالة صحيحة");
+  await db.transaction(async tx=>{await lockedResearchOrder(tx,order.id);await tx.insert(researchMessagesTable).values({researchOrderId:order.id,senderType:"customer",senderId:order.customerId,senderName:parsed.data.senderName,message:parsed.data.message});await traceTx(tx,order.id,"research_customer_message","أرسل الزبون رسالة",null);});return json({sent:true},201);
+ }
+ if(method==="POST"&&parts[3]==="chapters"&&parts[4]){
+  const chapterId=validId(parts[4]);const parsed=z.object({action:z.enum(["approve","revision","revision_request","request_revision"]),note:z.string().trim().max(10000).optional()}).safeParse(await requestBody(req));if(!parsed.success)return error("إجراء مراجعة الفصل غير صحيح");
+  const action=parsed.data.action==="approve"?"approved":"revision_requested",note=parsed.data.note||"";if(action==="revision_requested"&&note.length<2)return error("اكتب التعديل المطلوب");
+  await db.transaction(async tx=>{await lockedResearchOrder(tx,order.id);const chapter=await ownedResearchChapter(tx,chapterId,order.id);await tx.update(researchChaptersTable).set({approvalStatus:action,approvedAt:action==="approved"?new Date():null,updatedAt:new Date()}).where(eq(researchChaptersTable.id,chapterId));if(note)await tx.insert(researchMessagesTable).values({researchOrderId:order.id,chapterId,senderType:"customer",senderId:order.customerId,senderName:"الزبون",message:note});await traceTx(tx,order.id,action==="approved"?"research_chapter_approved":"research_chapter_revision_requested",action==="approved"?`اعتمد الزبون ${chapter.title}`:`طلب الزبون تعديل ${chapter.title}`,null,{chapterId,note});});return json({status:action});
+ }
+ return error("المسار غير موجود",404);
 }
 
-export async function handleResearchPublic(req: NextRequest, parts: string[]): Promise<NextResponse> {
-  await ensureResearchCenterTables(); const method = req.method; const resource = parts[1] || "config";
-  if (method === "GET" && resource === "config") { const universities = await db.select().from(researchUniversitiesTable).where(eq(researchUniversitiesTable.isActive, true)).orderBy(asc(researchUniversitiesTable.nameAr)); return json({ universities, researchTypes: ["graduation", "diploma", "bachelor", "master", "phd", "article", "conference", "report"], citationStyles: ["APA7", "IEEE", "MLA", "Harvard", "Chicago"] }); }
-  if (method === "POST" && resource === "orders") { const result = await createResearchOrder(await requestBody(req)); return result.response ?? json(result, 201); }
-  if (resource === "track" && parts[2] && method === "POST" && parts[3] === "sources" && parts[4]) {
-    const order = await db.query.researchOrdersTable.findFirst({ where: eq(researchOrdersTable.qrToken, parts[2]) });
-    if (!order) return error("رمز متابعة البحث غير صحيح", 404);
-    const sourceId = Number(parts[4]); const body = await requestBody(req);
-    const [saved] = await db.update(researchOrderSourcesTable).set({ selectedByCustomer: body?.selected !== false }).where(and(eq(researchOrderSourcesTable.researchOrderId, order.id), eq(researchOrderSourcesTable.sourceId, sourceId))).returning();
-    if (!saved) return error("المصدر غير مرتبط بهذا البحث", 404);
-    await trace(order.id, saved.selectedByCustomer ? "research_source_customer_selected" : "research_source_customer_unselected", saved.selectedByCustomer ? "اعتمد الزبون مصدراً للبحث" : "ألغى الزبون اعتماد مصدر", null, { sourceId });
-    return json({ source: saved });
-  }
-  if (resource === "track" && parts[2]) { const order = await db.query.researchOrdersTable.findFirst({ where: eq(researchOrdersTable.qrToken, parts[2]) }); if (!order) return error("رمز متابعة البحث غير صحيح", 404); if (method === "GET") { const detail = await orderDetail(order.id, true); const qrDataUrl = await QRCode.toDataURL(`${req.nextUrl.origin}/research/track/${order.qrToken}`, { width: 280, margin: 1 }); return json({ ...detail, qrDataUrl }); } if (method === "POST" && parts[3] === "messages") { const body = await requestBody(req); const message = String(body?.message || "").trim(); if (message.length < 2) return error("اكتب الرسالة", 400); await db.insert(researchMessagesTable).values({ researchOrderId: order.id, senderType: "customer", senderId: order.customerId, senderName: String(body?.senderName || "الزبون"), message }); await trace(order.id, "research_customer_message", "أرسل الزبون رسالة", null); return json({ sent: true }, 201); } if (method === "POST" && parts[3] === "chapters" && parts[4]) { const chapterId = Number(parts[4]); const chapter = await db.query.researchChaptersTable.findFirst({ where: and(eq(researchChaptersTable.id, chapterId), eq(researchChaptersTable.researchOrderId, order.id)) }); if (!chapter) return error("الفصل غير موجود", 404); const body = await requestBody(req); const action = body?.action === "approve" ? "approved" : "revision_requested"; const note = String(body?.note || "").trim(); if (action === "revision_requested" && note.length < 2) return error("اكتب التعديل المطلوب", 400); await db.update(researchChaptersTable).set({ approvalStatus: action, approvedAt: action === "approved" ? new Date() : null, updatedAt: new Date() }).where(eq(researchChaptersTable.id, chapterId)); if (note) await db.insert(researchMessagesTable).values({ researchOrderId: order.id, chapterId, senderType: "customer", senderId: order.customerId, senderName: "الزبون", message: note }); await trace(order.id, action === "approved" ? "research_chapter_approved" : "research_chapter_revision_requested", action === "approved" ? `اعتمد الزبون ${chapter.title}` : `طلب الزبون تعديل ${chapter.title}`, null, { chapterId, note }); return json({ status: action }); } }
-  return error("المسار غير موجود", 404);
+function validId(value:unknown) {const id=Number(value);if(!Number.isSafeInteger(id)||id<=0)throw new ResearchOperationError("المعرف غير صحيح");return id;}
+const chapterWriteSchema=z.object({orderId:optionalId,title:z.string().trim().min(1).max(300).optional(),content:z.string().max(2_000_000).optional(),status:z.enum(["not_started","in_progress","writing","review","completed"]).optional(),progress:z.coerce.number().int().min(0).max(100).optional(),assignedWriterId:optionalId,deadline:nullableDate,approvalStatus:z.enum(["pending","approved","revision_requested"]).optional(),changeNote:z.string().trim().max(2000).optional(),versionId:optionalId});
+async function writeResearchChapter(chapterId:number,raw:unknown,user:ResearchAdminUser,restore=false){
+ const parsed=chapterWriteSchema.safeParse(raw);if(!parsed.success)throw new ResearchOperationError("بيانات الفصل غير صحيحة");const data=parsed.data;
+ if(data.assignedWriterId!==undefined&&!allowed(user,"research.assign"))throw new ResearchOperationError("لا تملك صلاحية التكليف",403,"PERMISSION_DENIED");
+ return db.transaction(async tx=>{
+  const [found]=await tx.select().from(researchChaptersTable).where(eq(researchChaptersTable.id,chapterId)).limit(1);if(!found)throw new ResearchOperationError("الفصل غير موجود",404,"NOT_FOUND");
+  if(data.orderId&&data.orderId!==found.researchOrderId)throw new ResearchOperationError("الفصل غير مرتبط بهذا البحث",404,"NOT_FOUND");
+  await lockedResearchOrder(tx,found.researchOrderId); const chapter=await ownedResearchChapter(tx,chapterId,found.researchOrderId);
+  if(data.assignedWriterId)await validateResearchAssignee(tx,data.assignedWriterId);
+  let content=data.content??chapter.content??"";
+  if(restore){if(!data.versionId)throw new ResearchOperationError("اختر الإصدار المطلوب");const [version]=await tx.select().from(researchChapterVersionsTable).where(and(eq(researchChapterVersionsTable.id,data.versionId),eq(researchChapterVersionsTable.chapterId,chapterId))).limit(1);if(!version)throw new ResearchOperationError("الإصدار غير مرتبط بهذا الفصل",404,"NOT_FOUND");content=version.content;}
+  const changed=restore||(data.content!==undefined&&content!==(chapter.content??""));const version=chapter.currentVersion+(changed?1:0);const wordCount=content.trim()?content.trim().split(/\s+/).length:0;
+  if(changed){await tx.insert(researchChapterVersionsTable).values({chapterId,version:chapter.currentVersion,content:chapter.content??"",wordCount:chapter.wordCount,changeNote:"الإصدار السابق",createdBy:user.id,createdByName:actorName(user)}).onConflictDoNothing();await tx.insert(researchChapterVersionsTable).values({chapterId,version,content,wordCount,changeNote:data.changeNote||(restore?"استعادة إصدار سابق":"تحديث الفصل"),createdBy:user.id,createdByName:actorName(user)});}
+  const [saved]=await tx.update(researchChaptersTable).set({title:data.title??chapter.title,status:data.status??chapter.status,progress:data.progress??chapter.progress,assignedWriterId:data.assignedWriterId===undefined?chapter.assignedWriterId:data.assignedWriterId,deadline:data.deadline===undefined?chapter.deadline:data.deadline,content,wordCount,currentVersion:version,approvalStatus:changed?"pending":data.approvalStatus??chapter.approvalStatus,approvedAt:changed?null:data.approvalStatus==="approved"?new Date():data.approvalStatus==="revision_requested"?null:chapter.approvedAt,updatedAt:new Date()}).where(eq(researchChaptersTable.id,chapterId)).returning();
+  await traceTx(tx,chapter.researchOrderId,"research_chapter_updated",`تم تحديث ${saved.title}`,user,{chapterId,version,restored:restore});return {chapter:saved};
+ });
 }
+const fileWriteSchema=z.object({orderId:z.coerce.number().int().positive(),chapterId:optionalId,title:z.string().trim().min(1).max(300),fileName:z.string().trim().min(1).max(255),fileType:z.enum(["draft","final","customer_upload","reference","plagiarism_report","plagiarism","instructions","data","revision","other"]).default("draft"),fileUrl:z.string().max(9_000_000),mimeType:z.string().max(120).optional(),isCustomerVisible:z.boolean().default(false)});
+async function uploadResearchFile(raw:unknown,user:ResearchAdminUser){
+ const parsed=fileWriteSchema.safeParse(raw);if(!parsed.success)throw new ResearchOperationError("بيانات الملف غير صحيحة");const data=parsed.data;
+ return db.transaction(async tx=>{await lockedResearchOrder(tx,data.orderId);if(data.chapterId)await ownedResearchChapter(tx,data.chapterId,data.orderId);
+ const [latest]=await tx.select({version:sql<number>`coalesce(max(${researchFilesTable.version}),0)::int`}).from(researchFilesTable).where(and(eq(researchFilesTable.researchOrderId,data.orderId),eq(researchFilesTable.fileType,data.fileType),eq(researchFilesTable.title,data.title),data.chapterId?eq(researchFilesTable.chapterId,data.chapterId):isNull(researchFilesTable.chapterId)));
+ const metadata=await persistFile(data.fileUrl,data.fileName,data.orderId,data.mimeType);const version=(latest?.version||0)+1;
+ const [saved]=await tx.insert(researchFilesTable).values({researchOrderId:data.orderId,chapterId:data.chapterId??null,title:data.title,fileName:data.fileName,fileType:data.fileType,...metadata,version,isCustomerVisible:data.isCustomerVisible,uploadedBy:user.id,uploadedByName:actorName(user)}).returning();await traceTx(tx,data.orderId,"research_file_uploaded",`تم رفع ${data.title} - الإصدار ${version}`,user,{fileId:saved.id,version,checksum:metadata.checksum});return {file:{...saved,fileUrl:await authorizedResearchFileUrl(saved.fileUrl,data.orderId)}};});
+}
+const messageWriteSchema=z.object({orderId:z.coerce.number().int().positive(),chapterId:optionalId,message:z.string().trim().min(2).max(10000),messageType:z.enum(["message","supervisor_feedback","revision_request"]).default("message"),isInternal:z.boolean().default(false)});
+async function writeResearchMessage(raw:unknown,user:ResearchAdminUser){const parsed=messageWriteSchema.safeParse(raw);if(!parsed.success)throw new ResearchOperationError("بيانات الرسالة غير صحيحة");const data=parsed.data;
+ return db.transaction(async tx=>{await lockedResearchOrder(tx,data.orderId);if(data.chapterId)await ownedResearchChapter(tx,data.chapterId,data.orderId);const message=data.messageType==="supervisor_feedback"?`[ملاحظات المشرف] ${data.message}`:data.messageType==="revision_request"?`[طلب تعديل] ${data.message}`:data.message;
+ const [saved]=await tx.insert(researchMessagesTable).values({researchOrderId:data.orderId,chapterId:data.chapterId??null,senderType:"staff",senderId:user.id,senderName:actorName(user),message,isInternal:data.isInternal}).returning();if(data.messageType==="revision_request"&&data.chapterId)await tx.update(researchChaptersTable).set({approvalStatus:"revision_requested",approvedAt:null,updatedAt:new Date()}).where(eq(researchChaptersTable.id,data.chapterId));await traceTx(tx,data.orderId,"research_staff_message","أرسل فريق البحث رسالة",user,{messageId:saved.id,messageType:data.messageType,internal:data.isInternal});return {message:saved};});
+}
+async function addResearchSource(id:number,body:any,user:ResearchAdminUser){const source=body?.source as SourceResult;if(!source?.provider||!source?.externalId||!source?.title)throw new ResearchOperationError("بيانات المصدر غير مكتملة");
+ return db.transaction(async tx=>{await lockedResearchOrder(tx,id);const [saved]=await tx.insert(researchSourcesTable).values({provider:source.provider,externalId:source.externalId,title:source.title,authors:source.authors||[],journal:source.journal||null,publicationYear:source.year||null,abstract:source.abstract||null,doi:source.doi||null,language:source.language||null,category:source.category||null,url:source.url||null,pdfUrl:source.pdfUrl||null,isOpenAccess:Boolean(source.openAccess),metadata:source.metadata||{}}).onConflictDoUpdate({target:[researchSourcesTable.provider,researchSourcesTable.externalId],set:{title:source.title,authors:source.authors||[],journal:source.journal||null,abstract:source.abstract||null,updatedAt:new Date()}}).returning();await tx.insert(researchOrderSourcesTable).values({researchOrderId:id,sourceId:saved.id,addedBy:user.id}).onConflictDoNothing();const [count]=await tx.select({count:sql<number>`count(*)::int`}).from(researchOrderSourcesTable).where(eq(researchOrderSourcesTable.researchOrderId,id));await tx.update(researchOrdersTable).set({sourceCount:count.count,updatedAt:new Date()}).where(eq(researchOrdersTable.id,id));await traceTx(tx,id,"research_source_added",`تمت إضافة المصدر ${saved.title}`,user,{sourceId:saved.id});return json({source:saved},201);});}
 
-export async function handleAdminResearch(req: NextRequest, parts: string[], user: ResearchAdminUser): Promise<NextResponse | null> {
-  if (parts[1] !== "research") return null; await ensureResearchCenterTables(); const method = req.method; const resource = parts[2] || "dashboard";
-  const gate = denied(user, resource === "ai" ? "research.ai.use" : resource === "sources" || resource === "citations" ? "research.sources.manage" : resource === "reports" ? "research.reports.view" : "research.view"); if (gate) return gate;
-  if (method === "GET" && resource === "dashboard") return json(await dashboard());
-  if (resource === "orders") {
-    if (method === "GET" && !parts[3]) { const search = req.nextUrl.searchParams.get("search")?.trim() || ""; const status = req.nextUrl.searchParams.get("status") || ""; const page = Math.max(1, Number(req.nextUrl.searchParams.get("page") || 1)); const where = and(isNull(researchOrdersTable.archivedAt), status ? eq(researchOrdersTable.status, status) : undefined, search ? or(ilike(researchOrdersTable.researchNo, `%${search}%`), ilike(researchOrdersTable.title, `%${search}%`), ilike(researchOrdersTable.universityName, `%${search}%`), sql`${researchOrdersTable.customerId} in (select id from customers where name ilike ${`%${search}%`} or full_name ilike ${`%${search}%`} or phone ilike ${`%${search}%`})`) : undefined); const [items, count] = await Promise.all([db.select().from(researchOrdersTable).where(where).orderBy(desc(researchOrdersTable.createdAt)).limit(30).offset((page - 1) * 30), db.select({ count: sql<number>`count(*)::int` }).from(researchOrdersTable).where(where)]); return json({ items, pagination: { page, pageSize: 30, total: count[0]?.count || 0 } }); }
-    if (method === "POST" && !parts[3]) { const permission = denied(user, "research.create"); if (permission) return permission; const result = await createResearchOrder(await requestBody(req), user); return result.response ?? json(result, 201); }
-    if (parts[3]) { const id = Number(parts[3]); if (!Number.isFinite(id)) return error("معرف البحث غير صحيح", 400); if (method === "GET") { const detail = await orderDetail(id); return detail ? json(detail) : error("طلب البحث غير موجود", 404); } if (method === "PATCH") { const permission = denied(user, "research.edit"); if (permission) return permission; const result = await updateOrder(id, await requestBody(req), user); return result.response ?? json(result); } if (method === "POST" && parts[4] === "payment") { const permission = denied(user, "research.payment.receive"); if (permission) return permission; const body = await requestBody(req); const result = await applyPayment(id, numeric(body?.amount), String(body?.paymentMethod || "cash"), user, body?.idempotencyKey); return result.response ?? json(result); } if (method === "POST" && parts[4] === "sources") { const permission = denied(user, "research.sources.manage"); if (permission) return permission; const body = await requestBody(req); const source = body?.source as SourceResult; if (!source?.provider || !source?.externalId || !source?.title) return error("بيانات المصدر غير مكتملة", 400); const [saved] = await db.insert(researchSourcesTable).values({ provider: source.provider, externalId: source.externalId, title: source.title, authors: source.authors || [], journal: source.journal || null, publicationYear: source.year || null, abstract: source.abstract || null, doi: source.doi || null, language: source.language || null, category: source.category || null, url: source.url || null, pdfUrl: source.pdfUrl || null, isOpenAccess: Boolean(source.openAccess), metadata: source.metadata || {} }).onConflictDoUpdate({ target: [researchSourcesTable.provider, researchSourcesTable.externalId], set: { title: source.title, authors: source.authors || [], journal: source.journal || null, abstract: source.abstract || null, updatedAt: new Date() } }).returning(); await db.insert(researchOrderSourcesTable).values({ researchOrderId: id, sourceId: saved.id, addedBy: user.id }).onConflictDoNothing(); const [count] = await db.select({ count: sql<number>`count(*)::int` }).from(researchOrderSourcesTable).where(eq(researchOrderSourcesTable.researchOrderId, id)); await db.update(researchOrdersTable).set({ sourceCount: count.count, updatedAt: new Date() }).where(eq(researchOrdersTable.id, id)); await trace(id, "research_source_added", `تمت إضافة المصدر ${saved.title}`, user, { sourceId: saved.id }); return json({ source: saved }, 201); } }
+export async function handleAdminResearch(req:NextRequest,parts:string[],user:ResearchAdminUser):Promise<NextResponse|null> {
+  if(parts[1]!=="research")return null;
+  try{return await handleAdminResearchRequest(req,parts,user);}catch(err){return researchFailure(err,"research_admin_route",user);}
+}
+async function handleAdminResearchRequest(req: NextRequest, parts: string[], user: ResearchAdminUser): Promise<NextResponse | null> {
+  await ensureResearchCenterTables(); const method=req.method, resource=parts[2]||"dashboard";
+  if(!user.isActive)return error("الحساب غير نشط",403);
+  const analytics=await handleResearchAnalytics(req,parts,user); if(analytics)return analytics;
+  const orderSubresource=resource==="orders" ? parts[4] : undefined;
+  if(resource==='orders'&&orderSubresource==='purchases'){
+    const gate=denied(user,'research.financials.view');if(gate)return gate;
+    const id=validId(parts[3]);
+    if(method==='GET')return json(await getResearchPurchases(id,req.nextUrl.searchParams,user));
+    if(method==='POST')return json(await linkResearchPurchase(id,await requestBody(req),user),201);
+    return error('طريقة الطلب غير مسموحة',405);
   }
-  if (resource === "chapters" && parts[3] && method === "PATCH") { const permission = denied(user, "research.chapters.manage"); if (permission) return permission; const chapterId = Number(parts[3]); const chapter = await db.query.researchChaptersTable.findFirst({ where: eq(researchChaptersTable.id, chapterId) }); if (!chapter) return error("الفصل غير موجود", 404); const body = await requestBody(req); const content = body?.content === undefined ? (chapter.content || "") : String(body.content ?? ""); const version = chapter.currentVersion + (body?.content !== undefined && content !== chapter.content ? 1 : 0); if (version !== chapter.currentVersion) await db.insert(researchChapterVersionsTable).values({ chapterId, version, content, wordCount: content.trim() ? content.trim().split(/\s+/).length : 0, changeNote: String(body?.changeNote || "تحديث الفصل"), createdBy: user.id, createdByName: actorName(user) }); const [saved] = await db.update(researchChaptersTable).set({ title: body?.title ?? chapter.title, status: body?.status ?? chapter.status, progress: Math.max(0, Math.min(100, Number(body?.progress ?? chapter.progress))), assignedWriterId: body?.assignedWriterId ?? chapter.assignedWriterId, deadline: body?.deadline ?? chapter.deadline, content, wordCount: content.trim() ? content.trim().split(/\s+/).length : 0, currentVersion: version, approvalStatus: body?.approvalStatus ?? chapter.approvalStatus, approvedAt: body?.approvalStatus === "approved" ? new Date() : chapter.approvedAt, updatedAt: new Date() }).where(eq(researchChaptersTable.id, chapterId)).returning(); await trace(chapter.researchOrderId, "research_chapter_updated", `تم تحديث ${saved.title}`, user, { chapterId, version }); return json({ chapter: saved }); }
-  if (resource === "files" && method === "POST") {
-    const permission = denied(user, "research.files.manage"); if (permission) return permission;
-    const body = await requestBody(req); const orderId = Number(body?.orderId); const title = String(body?.title || body?.fileName || "").trim(); const fileName = String(body?.fileName || "").trim(); const fileType = String(body?.fileType || "draft").trim();
-    if (!Number.isFinite(orderId) || !title || !fileName || !body?.fileUrl) return error("بيانات الملف غير مكتملة", 400);
-    const order = await db.query.researchOrdersTable.findFirst({ where: eq(researchOrdersTable.id, orderId) }); if (!order) return error("طلب البحث غير موجود", 404);
-    const [latest] = await db.select({ version: sql<number>`coalesce(max(${researchFilesTable.version}), 0)::int` }).from(researchFilesTable).where(and(eq(researchFilesTable.researchOrderId, orderId), eq(researchFilesTable.fileType, fileType), eq(researchFilesTable.title, title)));
-    const fileUrl = await persistFile(String(body.fileUrl), fileName, orderId, body?.mimeType); const version = (latest?.version || 0) + 1;
-    const [saved] = await db.insert(researchFilesTable).values({ researchOrderId: orderId, chapterId: body?.chapterId ? Number(body.chapterId) : null, fileType, title, fileUrl, fileName, mimeType: body?.mimeType || null, fileSize: body?.fileSize ? Number(body.fileSize) : null, version, isCustomerVisible: Boolean(body?.isCustomerVisible), uploadedBy: user.id, uploadedByName: actorName(user) }).returning();
-    await trace(orderId, "research_file_uploaded", `تم رفع ${title} - الإصدار ${version}`, user, { fileId: saved.id, fileType, version }); return json({ file: saved }, 201);
+  const permission=resource==="ai"?"research.ai.use":resource==="sources"||resource==="citations"||orderSubresource==="sources"?"research.sources.manage":resource==="plagiarism"?"research.plagiarism.manage":resource==="templates"||resource==="universities"?"research.settings.manage":resource==="chapters"?"research.chapters.manage":resource==="files"?(method==="GET"?"research.view":"research.files.manage"):resource==="messages"?"research.edit":resource==="students"||orderSubresource==="financials"||orderSubresource==="expenses"?"research.financials.view":orderSubresource==="payment"?"research.payment.receive":resource==="orders"&&method==="POST"&&!parts[3]?"research.create":resource==="orders"&&method==="PATCH"?null:"research.view";
+  const contextualRead=resource==="catalog"&&method==="GET"&&["research.view","research.create","research.edit","research.assign","research.financials.view","research.payment.receive","research.reports.view","research.settings.manage"].some(grant=>allowed(user,grant)) || resource==="chapters"&&method==="GET"&&allowed(user,"research.view") || resource==="files"&&method==="GET"&&allowed(user,"research.files.manage");
+  const gate=permission && !contextualRead ? denied(user,permission) : null;if(gate)return gate;
+  if(resource==="students"&&parts[3]&&parts[4]==="statement"&&method==="GET")return json(await getResearchStudentStatement(validId(parts[3]),req.nextUrl.searchParams));
+  if(resource==="orders") {
+    if(method==="POST"&&!parts[3]){const result=await createResearchOrder(await requestBody(req),user);return result.response??json(result,201);}
+    if(parts[3]){
+      const id=validId(parts[3]);
+      if(orderSubresource==="financials"&&method==="GET")return json(await getResearchFinancialAccount(id));
+      if(orderSubresource==="expenses"){if(method==="GET")return json(await listResearchExpenses(id,req.nextUrl.searchParams));if(method==="POST")return json(await createResearchExpense(id,await requestBody(req),user),201);}
+      if(orderSubresource==="payment"&&method==="POST")return json(await requestResearchPayment(id,await requestBody(req),user));
+      if(orderSubresource==="sources"&&method==="POST")return addResearchSource(id,await requestBody(req),user);
+      if(method==="GET"&&!orderSubresource){const detail=await orderDetail(id,false,allowed(user,"research.financials.view"));return detail?json(detail):error("طلب البحث غير موجود",404);}
+      if(method==="PATCH"&&!orderSubresource){const result=await updateOrder(id,await requestBody(req),user);return result.response??json(result);}
+    }
   }
-  if (resource === "messages" && method === "POST") {
-    const body = await requestBody(req); const orderId = Number(body?.orderId); const message = String(body?.message || "").trim(); if (!Number.isFinite(orderId) || message.length < 2) return error("اكتب رسالة صحيحة", 400);
-    const [saved] = await db.insert(researchMessagesTable).values({ researchOrderId: orderId, chapterId: body?.chapterId ? Number(body.chapterId) : null, senderType: "staff", senderId: user.id, senderName: actorName(user), message, isInternal: Boolean(body?.isInternal) }).returning();
-    await trace(orderId, "research_staff_message", "أرسل فريق البحث رسالة", user, { messageId: saved.id, internal: saved.isInternal }); return json({ message: saved }, 201);
+  if(resource==="chapters"&&parts[3]) {
+    const chapterId=validId(parts[3]);
+    if(method==="GET"&&parts[4]==="versions"){
+      const chapter=await db.query.researchChaptersTable.findFirst({where:eq(researchChaptersTable.id,chapterId)});if(!chapter)return error("الفصل غير موجود",404);
+      const versions=await db.select().from(researchChapterVersionsTable).where(eq(researchChapterVersionsTable.chapterId,chapterId)).orderBy(desc(researchChapterVersionsTable.version));return json({chapter,versions});
+    }
+    if(method==="PATCH"||(method==="POST"&&parts[4]==="restore"))return json(await writeResearchChapter(chapterId,await requestBody(req),user,parts[4]==="restore"));
   }
+  if(resource==="files"&&method==="POST")return json(await uploadResearchFile(await requestBody(req),user),201);
+  if(resource==="files"&&method==="GET"&&parts[3]&&parts[4]==="versions"){
+    const file=await db.query.researchFilesTable.findFirst({where:eq(researchFilesTable.id,validId(parts[3]))});if(!file)return error("الملف غير موجود",404);
+    const versions=await db.select().from(researchFilesTable).where(and(eq(researchFilesTable.researchOrderId,file.researchOrderId),eq(researchFilesTable.title,file.title),eq(researchFilesTable.fileType,file.fileType),file.chapterId?eq(researchFilesTable.chapterId,file.chapterId):isNull(researchFilesTable.chapterId))).orderBy(desc(researchFilesTable.version));return json({versions:await Promise.all(versions.map(async version=>({...version,fileUrl:await authorizedResearchFileUrl(version.fileUrl,version.researchOrderId)})))});
+  }
+  if(resource==="messages"&&method==="POST")return json(await writeResearchMessage(await requestBody(req),user),201);
   if (resource === "sources" && parts[3] === "search" && method === "GET") {
     const q = req.nextUrl.searchParams.get("q")?.trim() || ""; if (q.length < 2) return error("اكتب كلمة بحث أو DOI", 400);
     const provider = req.nextUrl.searchParams.get("provider") || "all";
@@ -560,11 +618,17 @@ export async function handleAdminResearch(req: NextRequest, parts: string[], use
     return json({ results, provider, providerLinks: { googleScholar: `https://scholar.google.com/scholar?q=${encodeURIComponent(providerQuery)}`, pubmed: `https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(providerQuery)}`, arxiv: `https://arxiv.org/search/?query=${encodeURIComponent(providerQuery)}&searchtype=all`, doaj: `https://doaj.org/search/articles?ref=homepage-box&q=${encodeURIComponent(providerQuery)}` } });
   }
   if (resource === "ai" && method === "POST") { const result = await aiGenerate(await requestBody(req), user); return result.response ?? json(result); }
-  if (resource === "citations" && parts[3] && method === "POST") { const id = Number(parts[3]); const order = await db.query.researchOrdersTable.findFirst({ where: eq(researchOrdersTable.id, id) }); if (!order) return error("طلب البحث غير موجود", 404); const rows = await db.select({ source: researchSourcesTable }).from(researchOrderSourcesTable).innerJoin(researchSourcesTable, eq(researchSourcesTable.id, researchOrderSourcesTable.sourceId)).where(eq(researchOrderSourcesTable.researchOrderId, id)); const citations = []; for (const { source } of rows) { const text = citationFor(source, order.citationStyle); const [saved] = await db.insert(researchCitationsTable).values({ researchOrderId: id, sourceId: source.id, style: order.citationStyle, citationText: text, bibliographyText: text }).onConflictDoUpdate({ target: [researchCitationsTable.researchOrderId, researchCitationsTable.sourceId, researchCitationsTable.style], set: { citationText: text, bibliographyText: text } }).returning(); citations.push(saved); } return json({ citations }); }
-  if (resource === "plagiarism" && method === "POST") { const permission = denied(user, "research.plagiarism.manage"); if (permission) return permission; const body = await requestBody(req); const percentage = numeric(body?.similarityPercentage); if (percentage < 0 || percentage > 100) return error("نسبة التشابه يجب أن تكون بين 0 و100", 400); const status = percentage <= 20 ? "passed" : percentage <= 40 ? "need_revision" : "rejected"; const [saved] = await db.insert(researchPlagiarismReportsTable).values({ researchOrderId: Number(body?.orderId), similarityPercentage: String(percentage), status, provider: String(body?.provider || "manual"), reportUrl: body?.reportUrl || null, notes: body?.notes || null, checkedBy: user.id }).returning(); await trace(saved.researchOrderId, "research_plagiarism_reported", `تم تسجيل فحص استلال بنسبة ${percentage}%`, user, { status }); return json({ report: saved }, 201); }
+  if(resource==="citations"&&parts[3]&&method==="POST"){
+    const id=validId(parts[3]);const citations=await db.transaction(async tx=>{const order=await lockedResearchOrder(tx,id);const rows=await tx.select({source:researchSourcesTable}).from(researchOrderSourcesTable).innerJoin(researchSourcesTable,eq(researchSourcesTable.id,researchOrderSourcesTable.sourceId)).where(eq(researchOrderSourcesTable.researchOrderId,id));const result=[];
+      for(const {source} of rows){const text=citationFor(source,order.citationStyle);const [saved]=await tx.insert(researchCitationsTable).values({researchOrderId:id,sourceId:source.id,style:order.citationStyle,citationText:text,bibliographyText:text}).onConflictDoUpdate({target:[researchCitationsTable.researchOrderId,researchCitationsTable.sourceId,researchCitationsTable.style],set:{citationText:text,bibliographyText:text}}).returning();result.push(saved);}return result;});return json({citations});
+  }
+  if(resource==="plagiarism"&&method==="POST"){
+    const parsed=z.object({orderId:z.coerce.number().int().positive(),fileId:optionalId,similarityPercentage:z.coerce.number().finite().min(0).max(100),provider:z.string().trim().max(80).default("manual"),reportUrl:z.union([z.literal(""),z.url().refine(url=>/^https?:/.test(url))]).optional(),notes:z.string().trim().max(10000).optional()}).safeParse(await requestBody(req));if(!parsed.success)return error("بيانات تقرير الاستلال غير صحيحة");const data=parsed.data;
+    const saved=await db.transaction(async tx=>{await lockedResearchOrder(tx,data.orderId);if(data.fileId){const [file]=await tx.select({id:researchFilesTable.id}).from(researchFilesTable).where(and(eq(researchFilesTable.id,data.fileId),eq(researchFilesTable.researchOrderId,data.orderId))).limit(1);if(!file)throw new ResearchOperationError("الملف غير مرتبط بهذا البحث",404,"NOT_FOUND");}
+      const status=data.similarityPercentage<=20?"passed":data.similarityPercentage<=40?"need_revision":"rejected";const [report]=await tx.insert(researchPlagiarismReportsTable).values({researchOrderId:data.orderId,fileId:data.fileId??null,similarityPercentage:String(data.similarityPercentage),status,provider:data.provider,reportUrl:data.reportUrl||null,notes:data.notes||null,checkedBy:user.id}).returning();await traceTx(tx,data.orderId,"research_plagiarism_reported",`تم تسجيل فحص استلال بنسبة ${data.similarityPercentage}%`,user,{status,fileId:data.fileId??null});return report;});return json({report:saved},201);
+  }
   if (resource === "catalog") { if (method === "GET") { const [universities, templates, writers] = await Promise.all([db.select().from(researchUniversitiesTable).orderBy(asc(researchUniversitiesTable.nameAr)), db.select().from(researchTemplatesTable).orderBy(desc(researchTemplatesTable.createdAt)), db.select({ id: staffTable.id, name: staffTable.fullName, username: staffTable.username, role: staffTable.role }).from(staffTable).where(eq(staffTable.isActive, true)).orderBy(asc(staffTable.fullName))]); return json({ universities, templates, writers, integrations: { ai: Boolean(process.env.OPENAI_API_KEY), storage: Boolean(STORAGE_URL && STORAGE_SERVICE_KEY), semanticScholarKey: Boolean(process.env.SEMANTIC_SCHOLAR_API_KEY), ncbiKey: Boolean(process.env.NCBI_API_KEY) } }); } }
   if (resource === "templates" && method === "POST") { const permission = denied(user, "research.settings.manage"); if (permission) return permission; const body = await requestBody(req); const name = String(body?.name || "").trim(); if (name.length < 2) return error("اسم القالب مطلوب", 400); const code = String(body?.code || `RST-${randomUUID().slice(0, 8)}`).toUpperCase(); const [saved] = await db.insert(researchTemplatesTable).values({ code, name, researchType: body?.researchType || null, universityId: body?.universityId ? Number(body.universityId) : null, language: String(body?.language || "ar"), citationStyle: String(body?.citationStyle || "APA7"), structure: Array.isArray(body?.structure) ? body.structure : CHAPTERS.map(([chapterType, title], sortOrder) => ({ chapterType, title, sortOrder })), formatting: body?.formatting && typeof body.formatting === "object" ? body.formatting : {}, createdBy: user.id }).returning(); return json({ template: saved }, 201); }
   if (resource === "universities" && method === "POST") { const permission = denied(user, "research.settings.manage"); if (permission) return permission; const body = await requestBody(req); const nameAr = String(body?.nameAr || "").trim(); if (nameAr.length < 2) return error("اسم الجامعة مطلوب", 400); const code = String(body?.code || `UNI-${randomUUID().slice(0, 8)}`).toUpperCase(); const [saved] = await db.insert(researchUniversitiesTable).values({ code, nameAr, nameEn: body?.nameEn || null, country: body?.country || null, city: body?.city || null, colleges: Array.isArray(body?.colleges) ? body.colleges : [], createdBy: user.id }).returning(); return json({ university: saved }, 201); }
-  if (resource === "reports" && method === "GET") return json(await dashboard());
   return error("مسار مركز الأبحاث غير موجود", 404);
 }

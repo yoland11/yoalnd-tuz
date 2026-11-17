@@ -18,6 +18,7 @@ const suites = [
   ["Phase 2 production safety", "test:phase2-safety"],
   ["Phase 3 release readiness and critical writes", "test:phase3-readiness"],
   ["Financial idempotency and rollback safety", "test:production-safety"],
+  ["Scientific research original records, approvals, private files and procurement", "test:research-department-db"],
 ];
 
 console.log(`AJN save smoke run ID: TEST-${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`);

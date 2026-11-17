@@ -1,3 +1,5 @@
+import {lockResearchPaymentSources,guardResearchFinancialApproval} from "../src/server/research-payment-state";
+import {ResearchFinanceError} from "../src/server/research-payment-rules";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import vm from "node:vm";
@@ -15,7 +17,7 @@ const dialect=new PgDialect();let legacyLocks=0;const queries:string[]=[];
 let initial={id:91,sourceType:"vehicle_partnership_unknown",sourceId:"1",approvalStatus:"pending",direction:"expense",amount:"30000.00"};
 const tx={select:()=>({from:()=>({where:()=>({limit:async()=>[initial]})})}),execute:async(statement:any)=>{const q=dialect.sqlToQuery(statement);queries.push(q.sql);assert.ok(!q.sql.includes("master_cash_box"),"missing/unsupported feature source never reaches generic cash");return {rows:[]};}};
 class FinancialApprovalError extends Error{constructor(message:string,public status=409){super(message);}}
-const run=vm.runInNewContext(code,{lockEquipmentRentalReceiptSources,isEquipmentRentalFinancial,executePartnershipFinancialTransaction,PartnershipRepositoryError,PartnershipValidationError,FinancialApprovalError,financialTransactionsTable:{id:"id"},eq:()=>({}),sql,lockGraduationPaymentSource:async()=>{legacyLocks++;throw Error("GENERIC_PATH");}});
+const run=vm.runInNewContext(code,{lockResearchPaymentSources,guardResearchFinancialApproval,ResearchFinanceError,lockEquipmentRentalReceiptSources,isEquipmentRentalFinancial,executePartnershipFinancialTransaction,PartnershipRepositoryError,PartnershipValidationError,FinancialApprovalError,financialTransactionsTable:{id:"id"},eq:()=>({}),sql,lockGraduationPaymentSource:async()=>{legacyLocks++;throw Error("GENERIC_PATH");}});
 const actor={id:7,name:"مدير",role:"admin",permissions:[]};
 await assert.rejects(()=>run(tx,91,actor),(e:any)=>e instanceof FinancialApprovalError&&e.status===409);assert.equal(legacyLocks,0);assert.equal(queries.length,0);
 initial={...initial,sourceType:"vehicle_partnership_activity"};await assert.rejects(()=>run(tx,91,actor),(e:any)=>e instanceof FinancialApprovalError&&e.status===404);assert.equal(legacyLocks,0);assert.equal(queries.length,1);

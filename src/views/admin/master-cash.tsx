@@ -130,6 +130,7 @@ type TransactionDetail = FinancialTransaction & {
 };
 
 const DEPARTMENTS = [
+  { value: "research", label: "قسم البحوث العلمية" },
   { value: "rentals", label: "إيجار المعدات" },
   { value: "general", label: "عام" },
   { value: "store", label: "المتجر" },

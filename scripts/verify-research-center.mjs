@@ -1,13 +1,13 @@
 /** Read-only contract verification for AJN Research Center. */
-import { readFileSync } from "node:fs";
+import { readFileSync,readdirSync } from "node:fs";
 
 const read = (path) => readFileSync(path, "utf8");
 const schema = read("lib/db/src/schema/research-center.ts");
 const migration = read("lib/db/migrations/0069_research_center.sql");
-const server = read("src/server/research-center.ts");
+const server = ["research-center.ts","research-finance.ts","research-payment-state.ts"].map(name=>read(`src/server/${name}`)).join('\n');
 const runtimeSchema = read("src/server/research-center-schema.ts");
 const api = read("src/server/api.ts");
-const adminUi = read("src/views/admin/research-center.tsx");
+const adminUi = [read("src/views/admin/research-center.tsx"),...readdirSync('src/views/admin/research').filter(name=>/\.tsx?$/.test(name)).map(name=>read(`src/views/admin/research/${name}`))].join('\n');
 const publicUi = read("src/views/research.tsx");
 const layout = read("src/views/admin/_layout.tsx");
 const app = read("src/App.tsx");

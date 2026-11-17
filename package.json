@@ -155,6 +155,8 @@
     "test:preparation-requests": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-standalone-preparation.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-existing-booking.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-create-ui.tsx && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-preparation-staff-completion.ts",
     "test:graduation-media": "node ./scripts/verify-graduation-media-gallery.mjs",
     "test:research-center": "node ./scripts/verify-research-center.mjs",
+    "test:research-department": "node ./scripts/verify-research-center.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-research-domain.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-research-analytics.ts && node ./scripts/test-research-customer-search.cjs && node ./scripts/test-research-operations.cjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-research-finance.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-research-payment-state.ts && node ./scripts/test-research-alias-locks.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-research-purchases.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-research-ui.tsx",
+    "test:research-department-db": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-research-db.ts",
     "test:bride-dashboard": "node ./scripts/verify-bride-dashboard.mjs",
     "test:large-image-upload": "node ./scripts/verify-large-image-upload.mjs",
     "test:image-data-url": "node ./scripts/verify-image-data-url-conversion.mjs",

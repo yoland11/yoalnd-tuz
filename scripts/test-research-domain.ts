@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import { RESEARCH_WORKFLOW_STAGES, researchWorkflowStage, researchFinancialStatus, parseResearchFilters, researchDate, RESEARCH_CATEGORIES, researchCostAttributionConflict } from '../src/lib/research-contract';
+
+assert.equal(RESEARCH_WORKFLOW_STAGES.length, 6);
+assert.equal(new Set(RESEARCH_WORKFLOW_STAGES.flatMap(s => [...s.statuses])).size, 9);
+for (const stage of RESEARCH_WORKFLOW_STAGES) for (const status of stage.statuses) assert.equal(researchWorkflowStage(status), stage.key);
+assert.equal(researchWorkflowStage('completed'), 'ready', 'legacy completed means ready, not delivered');
+assert.equal(researchWorkflowStage('delivered'), 'completed');
+assert.equal(researchWorkflowStage('archived'), null);
+assert.equal(researchWorkflowStage('future_legacy'), null, 'unknown statuses must not silently become new');
+assert.equal(Object.keys(RESEARCH_CATEGORIES).length, 9);
+assert.equal(researchCostAttributionConflict(null,[{koshaId:2}]),false,'legacy purchases keep existing cost centers');
+assert.equal(researchCostAttributionConflict(5,[{}]),false,'research purchase without another attribution is valid');
+for(const line of [{koshaId:2},{bookingId:3},{constructionProjectId:4},{costCategory:'investment'}])assert.equal(researchCostAttributionConflict(5,[line]),true,'same original cost cannot enter two cost centers');
+assert.equal(researchDate(new Date('2026-11-15T22:30:00Z')), '2026-11-16', 'Baghdad date rolls over at UTC21');
+assert.equal(researchFinancialStatus({remainingAmount: 300000, paidAmount: 200000, paymentDueDate: null}, '2026-11-16'), 'partial');
+assert.equal(researchFinancialStatus({remainingAmount: 300000, paidAmount: 0, paymentDueDate: null}, '2026-11-16'), 'unpaid');
+assert.equal(researchFinancialStatus({remainingAmount: 300000, paidAmount: 0, paymentDueDate: '2026-11-16'}, '2026-11-16'), 'unpaid', 'due today is not overdue');
+assert.equal(researchFinancialStatus({remainingAmount: 300000, paidAmount: 0, paymentDueDate: '2026-11-15'}, '2026-11-16'), 'overdue');
+assert.equal(researchFinancialStatus({remainingAmount: 0, paidAmount: 0, paymentDueDate: '2020-01-01'}, '2026-11-16'), 'paid', 'approved credits can settle debt without cash');
+assert.equal(researchFinancialStatus({remainingAmount: 300000, paidAmount: 0, totalAmount:500000}, '2026-11-16'), 'partial', 'approved partial credits reduce debt without becoming cash');
+assert.throws(() => researchFinancialStatus({remainingAmount: 'bad', paidAmount: 0}), /قيمة/);
+const parsed = parseResearchFilters(new URLSearchParams('search=طالب&from=2026-11-01&to=2026-11-16&staffId=4&page=2&pageSize=24&stage=quality_review&category=python&financialStatus=overdue'));
+assert.deepEqual([parsed.search, parsed.from, parsed.to, parsed.staffId, parsed.page, parsed.pageSize, parsed.stage, parsed.category, parsed.financialStatus], ['طالب', '2026-11-01', '2026-11-16', 4, 2, 24, 'quality_review', 'python', 'overdue']);
+assert.equal(parseResearchFilters(new URLSearchParams()).pageSize, 30);
+assert.equal(parseResearchFilters(new URLSearchParams('q=%25_%5C')).search, '%_\\');
+for (const input of ['from=2026-02-30', 'from=2026-11-18&to=2026-11-16', 'staffId=-2', 'page=NaN', 'pageSize=1000000', 'stage=invalid', 'category=invalid', 'financialStatus=invalid', 'status=invalid']) assert.throws(() => parseResearchFilters(new URLSearchParams(input)), /غير|تاريخ|فترة|حالة|تصنيف/);
+console.log('PASS scientific research: legacy stage mapping, Baghdad dates, configured due dates, cash vs credits, bounded server filters and invalid inputs');

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { reconcilePartnershipPaymentState, type PartnershipPaymentSource, type PartnershipPaymentState } from "./vehicle-partnership/payment-state";
 import { reconcilePartnershipDriverPaymentState, type DriverPaymentState } from "./vehicle-partnership/driver-payment-state";
+import { readResearchCanonicalPaymentState, researchOrderForInvoice } from "./research-payment-state";
 
 /**
  * The canonical, server-side view of a document's official payment state.
@@ -103,6 +104,17 @@ export async function reconcilePaymentState(
   if (!isPaymentStateSourceType(input.sourceType)) return null;
   const sourceId = Number(input.sourceId);
   if (!Number.isInteger(sourceId) || sourceId <= 0) return null;
+
+  // A research invoice mirrors the original receivable. Either collection
+  // identity (including receipt reversals and approved invoice credits) must
+  // rebuild both snapshots from one disjoint history.
+  if (input.sourceType === "research_order" || input.sourceType === "sales_invoice") {
+    const researchId = input.sourceType === "research_order" ? sourceId : await researchOrderForInvoice(tx, sourceId);
+    if (researchId) {
+      const state = await readResearchCanonicalPaymentState(tx, researchId, true);
+      return { ...state, sourceType: input.sourceType, sourceId };
+    }
+  }
 
   const config = SOURCES[input.sourceType as DocumentPaymentStateSourceType];
   const table = sql.raw(config.table);

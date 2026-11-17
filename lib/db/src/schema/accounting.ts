@@ -8,6 +8,7 @@ import { serviceOrdersTable } from "./services";
 import { koshaBookingsTable, koshasTable } from "./koshas";
 import { suppliersTable } from "./suppliers";
 import { koshaConstructionProjectsTable } from "./kosha-finance";
+import { researchOrdersTable } from "./research-center";
 
 export const expenseCategoriesTable = pgTable("expense_categories", {
   id: serial("id").primaryKey(),
@@ -76,6 +77,7 @@ export const paymentVouchersTable = pgTable("payment_vouchers", {
 });
 
 export const expensesTable = pgTable("expenses", {
+  researchOrderId: integer("research_order_id").references(() => researchOrdersTable.id, { onDelete: "set null" }),
   rentalOrderId: integer("rental_order_id").references(() => rentalOrdersTable.id, { onDelete: "set null" }),
   id: serial("id").primaryKey(),
   date: date("date").notNull().defaultNow(),
@@ -105,6 +107,7 @@ export const expensesTable = pgTable("expenses", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   deletedAt: timestamp("deleted_at"),
 }, (table) => ({
+  researchOrderIdx: index("expenses_research_order_idx").on(table.researchOrderId, table.date),
   koshaCategoryIdx: index("expenses_kosha_category_idx").on(table.koshaId, table.costCategory, table.date),
   bookingIdx: index("expenses_booking_idx").on(table.bookingId),
   costCategoryCheck: check(

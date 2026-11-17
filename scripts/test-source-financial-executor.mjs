@@ -27,6 +27,9 @@ for(const mode of ['new','pending','executed','reversal','zero','audit_failure',
   if(!mode.startsWith('legacy')){db.select=blocked;db.insert=blocked;db.update=blocked;db.query={financialTransactionsTable:{findFirst:blocked}};}
   const context=vm.createContext({db,financialTransactionsTable,financialAuditLogsTable,assertGenericFinancialSourceInput,assertGenericEquipmentRentalInput,isEquipmentRentalFinancial,
     financialTransactionInputSchema:{parse:input=>({...input,attachments:input.attachments??[]})},randomUUID:()=> 'uuid',todayBaghdad:()=> '2026-10-23',transactionNumber:id=>`FIN-${id}`,money:v=>Math.round(Number(v||0)*100)/100,snapshot:v=>v,
+    // These fixtures contain graduation sources only. The new research guard
+    // must keep the same supplied transaction and perform no work for them.
+    lockResearchPaymentSources:async(tx,input)=>{assert.equal(tx,connection);assert.ok((Array.isArray(input)?input:[input]).every(source=>source.sourceType==='graduation_order'));return[];},
     eq:()=>{},and:()=>{},desc:()=>{},sql:(parts,...values)=>({parts,values}),ensureMasterCashBoxTables:async()=>{},isPaymentStateSourceType:v=>v==='graduation_order',reconcilePaymentState:async tx=>{assert.equal(tx,connection);reconciled++;},
   });vm.runInContext(code,context);
   const input={sourceType:'graduation_order',sourceId:42,targetAmount:mode==='zero'?0:mode==='new'||mode==='audit_failure'||mode==='legacy'?40:mode==='reversal'?40:70,normalDirection:'revenue',department:'graduation',transactionType:'graduation_payment',description:'دفعة'};

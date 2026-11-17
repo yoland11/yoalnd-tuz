@@ -1,4 +1,5 @@
 import {masterClosingReversalOptionsSchema} from "../lib/vehicle-partnership/master-reopen";
+import {researchCostAttributionConflict} from '@/lib/research-contract';
 import { revalidateTag, unstable_cache } from "next/cache";
 import { handleEquipmentRentals } from "./equipment-rentals";
 import { lockEquipmentRentalReceiptAllocations } from "./equipment-rental-finance";
@@ -57,6 +58,8 @@ import {readPhotographyResource,savePhotographyResourceWindow,guardPhotographyRe
 import { normalizeRepeatedBookingDetails } from "@/lib/booking-repeat";
 import { loadBookingConflictReport } from "./booking-conflict-report";
 import { GraduationOrderWriteConflict, lockGraduationPaymentSource } from "./graduation-write-guard";
+import { lockResearchPaymentSources } from "./research-payment-state";
+import { ResearchFinanceError } from "./research-payment-rules";
 import { readBookingResourceWindow,bookingResourceOccupancy,bookingResourceSpan,BookingResourceWindowError,parseBookingResourceWindow,resourceWindowCalendar } from "@/lib/booking-resource-window";
 import { getLoadingView, runLoadingRequest } from "./booking-loading";
 import { BookingProfitabilityError, getBookingProfitability } from "./booking-profitability";
@@ -52496,7 +52499,12 @@ async function handleAdmin(
   }
 
   if (section === "customers") {
-    const auth = await requirePermission(req, "customers");
+    // Research order forms reuse this bounded identity lookup. The exception
+    // admits no other customer reads/writes and no global account information.
+    const researchIdentityLookup = method === "GET" && parts[2] === "smart-search" && !parts[3];
+    const auth = researchIdentityLookup
+      ? await requireAnyPermission(req, ["customers", "research", "research.create", "research.edit", "research.financials.view", "research.payment.receive"])
+      : await requirePermission(req, "customers");
     if (isResponse(auth)) return auth;
     await Promise.all([
       ensureCustomerAddressTables(),
@@ -52657,6 +52665,15 @@ async function handleAdmin(
         limit: 15,
       });
       if (!matches.length) return json({ results: [] });
+      if (!hasPermission(auth, "customers")) {
+        return json({ results: matches.map((customer) => ({
+          id: customer.id,
+          name: customer.name || customer.fullName || "زبون",
+          phone: customer.phone,
+          code: `CUS-${String(customer.id).padStart(6, "0")}`,
+          city: customer.city ?? null,
+        })) });
+      }
       const ids = matches.map((m) => m.id);
       const phones = [...new Set(matches.map((m) => m.phone))];
       const [invAgg, ordAgg, koshaAgg]: any = await Promise.all([
@@ -57813,6 +57830,10 @@ async function handleSalesInvoices(
           {sourceType:"sales_invoice", sourceId:id},
           ...(receiptSources.rows as Array<{receipt_voucher_id:number}>).map(row => ({sourceType:"receipt_voucher",sourceId:row.receipt_voucher_id})),
         ], {requireActive:false});
+        await lockResearchPaymentSources(tx, [
+          {sourceType:"sales_invoice", sourceId:id},
+          ...(receiptSources.rows as Array<{receipt_voucher_id:number}>).map(row => ({sourceType:"receipt_voucher",sourceId:row.receipt_voucher_id})),
+        ], false);
         const locked: any = await tx.execute(
           sql`SELECT id FROM sales_invoices WHERE id = ${id} FOR UPDATE`,
         );
@@ -59268,6 +59289,7 @@ async function handleSalesInvoices(
     await ensureAccountingVoucherTables();
     if (deliveryPrep) await ensureDeliveryDetailsTables();
     await db.transaction(async (tx) => {
+      await lockResearchPaymentSources(tx, {sourceType:"sales_invoice",sourceId:id}, false);
       await tx.update(salesInvoicesTable).set({
         date: b.date ?? existing.date,
         customerName: b.customerName ?? existing.customerName,
@@ -60430,11 +60452,13 @@ async function handlePurchaseInvoices(
     // the quantity difference; full reversal/replacement records remain history.
     const { final, finalItems } = await db.transaction(async (tx) => {
       const locked: any = await tx.execute(sql`
-        SELECT id, status, paid_amount FROM purchase_invoices WHERE id = ${id} FOR UPDATE
+        SELECT id, status, paid_amount, to_jsonb(purchase_invoices)->>'research_order_id' AS research_order_id FROM purchase_invoices WHERE id = ${id} FOR UPDATE
       `);
       const lockedInvoice = (locked?.rows ?? locked ?? [])[0];
       if (!lockedInvoice || lockedInvoice.status === "deleted")
         throw new CheckoutError("الفاتورة غير موجودة", 404);
+      if(lockedInvoice.research_order_id && researchCostAttributionConflict(lockedInvoice.research_order_id,newItems))
+        throw new CheckoutError('فاتورة الشراء مرتبطة ببحث علمي؛ لا يمكن احتساب تكلفتها لمركز آخر',422);
       const lockedPaid = Math.max(0, Number(lockedInvoice.paid_amount ?? 0));
       if (requestedPaidAmount + 0.005 < lockedPaid || lockedPaid > total + 0.005)
         throw new CheckoutError("لا يمكن تخفيض إجمالي الفاتورة أو المبلغ المسدد تحت المبلغ المعتمد", 422);
@@ -74200,6 +74224,7 @@ async function handleAccounting(
         await ensureMasterCashBoxTables();
         const updated = await db.transaction(async (tx) => {
           await lockGraduationPaymentSource(tx, allocations);
+          await lockResearchPaymentSources(tx, allocations);
           await lockEquipmentRentalReceiptAllocations(tx, allocations, customer);
           // Legacy Kosha records can legitimately lack customer_id. Link them
           // only inside the voucher transaction, after ownership has been
@@ -74313,6 +74338,7 @@ async function handleAccounting(
         return json(savedVoucher, 201);
       } catch (err: any) {
         if (err instanceof GraduationOrderWriteConflict) throw err;
+        if (err instanceof ResearchFinanceError) throw err;
         if (err instanceof FinancialApprovalError) {
           const requestId = makeRequestId();
           console.warn("receipt voucher financial validation failed", { requestId, actorId: a.id, status: err.status });
@@ -74975,6 +75001,12 @@ async function handleAccounting(
       if (!existingExpense) return error("المصروف غير موجود", 404);
       if (!ownsExpense(existingExpense))
         return error("لا يمكنك تعديل مصروف سجّله موظف آخر", 403);
+      if(existingExpense.researchOrderId && researchCostAttributionConflict(existingExpense.researchOrderId,[{
+        koshaId:b.koshaId===undefined?existingExpense.koshaId:b.koshaId,
+        bookingId:b.bookingId===undefined?existingExpense.bookingId:b.bookingId,
+        constructionProjectId:b.constructionProjectId===undefined?existingExpense.constructionProjectId:b.constructionProjectId,
+        costCategory:b.costCategory===undefined?existingExpense.costCategory:b.costCategory,
+      }]))return error('مصروف البحث مرتبط بمركز تكلفته الأصلي؛ لا يمكن احتسابه مرة أخرى',422);
       const classificationError = await validateExpenseKoshaReferences({
         koshaId: b.koshaId !== undefined ? b.koshaId : existingExpense.koshaId,
         costCategory:
@@ -77731,6 +77763,11 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
+    if (err instanceof ResearchFinanceError) {
+      const requestId = makeRequestId(req.headers.get("x-request-id"));
+      console.warn("AJN research financial alias rejected", {requestId,path:req.nextUrl.pathname,status:err.status,code:err.code});
+      return error(err.message,err.status,{requestId,code:err.status===403?"PERMISSION_DENIED":err.status===404?"NOT_FOUND":err.status===409?"CONFLICT":"VALIDATION_ERROR",retryable:false});
+    }
     if (err instanceof SalesReturnError) {
       const requestId = makeRequestId(req.headers.get("x-request-id"));
       console.warn("AJN sales return operation rejected", {requestId, path:req.nextUrl.pathname, status:err.status, code:err.code});

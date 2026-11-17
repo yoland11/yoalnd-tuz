@@ -34,6 +34,8 @@ import {
 } from "@workspace/db";
 import { isPaymentStateSourceType, reconcilePaymentState } from "./payment-state";
 import { lockGraduationPaymentSource } from "./graduation-write-guard";
+import { guardResearchFinancialApproval, lockResearchPaymentSources as lockResearchPaymentSourcesRaw, researchOrderForInvoice } from "./research-payment-state";
+import { ResearchFinanceError } from "./research-payment-rules";
 import { postApprovedInstallmentPayment, rejectPendingInstallmentPayment, reconcileLegacyInstallmentInvoice, reversePostedInstallmentPayment } from "./installment-payment-posting";
 
 /** A known approval rule (balance, state, missing link) the reviewer can act on.
@@ -42,6 +44,13 @@ export class FinancialApprovalError extends Error {
   constructor(message: string, public status: 403 | 404 | 409 = 409) {
     super(message);
     this.name = "FinancialApprovalError";
+  }
+}
+async function lockResearchPaymentSources(...args: Parameters<typeof lockResearchPaymentSourcesRaw>) {
+  try { return await lockResearchPaymentSourcesRaw(...args); }
+  catch (cause) {
+    if (cause instanceof ResearchFinanceError) throw new FinancialApprovalError(cause.message, cause.status === 404 ? 404 : cause.status === 403 ? 403 : 409);
+    throw cause;
   }
 }
 const iqd = (value: number) => `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value)} د.ع`;
@@ -417,9 +426,9 @@ export async function createFinancialTransaction(
   if (sourceAdapter !== "equipment_rental") assertGenericEquipmentRentalInput(input);
   if (!executor) await ensureMasterCashBoxTables();
   const data = financialTransactionInputSchema.parse(input);
-  if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(data.sourceType ?? ""))
+  if (!executor && ["research_order", "graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(data.sourceType ?? ""))
     return db.transaction(tx => createFinancialTransaction(input, actor, tx));
-  if (executor && data.direction === "revenue") await lockGraduationPaymentSource(executor, data);
+  if (executor && data.direction === "revenue") { await lockGraduationPaymentSource(executor, data); await lockResearchPaymentSources(executor, data); }
   const now = new Date();
   const idempotencyKey =
     data.idempotencyKey || `manual:${actor.id ?? "system"}:${randomUUID()}`;
@@ -585,11 +594,12 @@ export async function syncSourceFinancialRequest(
   if (!existing) throw new Error("المعاملة المالية المرتبطة غير موجودة");
   assertGenericFinancialSourceInput(existing);
   assertGenericEquipmentRentalInput(existing);
-  if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(existing.sourceType ?? ""))
+  if (!executor && ["research_order", "graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(existing.sourceType ?? ""))
     return db.transaction(tx => syncSourceFinancialRequest(id, input, actor, reason, tx));
   if (executor) {
     const initial = existing;
     await lockGraduationPaymentSource(executor, initial, {requireActive:data.direction === "revenue"});
+    await lockResearchPaymentSources(executor, initial, data.direction === "revenue");
     [existing] = await executor.select().from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id,id)).limit(1).for("update");
     if (!existing || existing.sourceType !== initial.sourceType || existing.sourceId !== initial.sourceId)
@@ -667,6 +677,7 @@ export async function cancelFinancialTransactionRequest(
     }
     if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "cancel");
     await lockGraduationPaymentSource(tx, initial, {requireActive:false});
+    await lockResearchPaymentSources(tx, initial, false);
     const [existing] = await tx.select().from(financialTransactionsTable)
       .where(eq(financialTransactionsTable.id,id)).limit(1).for("update");
     if (!existing) return null;
@@ -869,25 +880,7 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
         RETURNING id
       `);
     } else if (allocation.source_type === "research_order") {
-      updated = await tx.execute(sql`
-        UPDATE research_orders SET paid_amount = paid_amount::numeric + ${value},
-          remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${value}, 0),
-          payment_status = CASE WHEN total_amount::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
-          updated_at = now()
-        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
-          AND remaining_amount::numeric >= ${value} RETURNING id
-      `);
-      if ((updated.rows ?? []).length) {
-        await tx.execute(sql`
-          UPDATE sales_invoices invoice SET
-            paid_amount = research.paid_amount,
-            remaining_amount = research.remaining_amount,
-            payment_status = research.payment_status,
-            updated_at = now()
-          FROM research_orders research
-          WHERE research.id = ${allocation.source_id} AND invoice.id = research.invoice_id
-        `);
-      }
+      updated = await tx.execute(sql`SELECT id FROM research_orders WHERE id=${allocation.source_id} AND customer_id=${allocation.customer_id} FOR UPDATE`);
     } else {
       throw new Error("نوع توزيع سند القبض غير مدعوم.");
     }
@@ -951,6 +944,7 @@ async function executePendingFinancialTransaction(
     if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "execute");
     if (!partnershipCash) {
       await lockGraduationPaymentSource(tx, initial, {requireActive:initial.direction === "revenue"});
+      await lockResearchPaymentSources(tx, initial, initial.direction === "revenue");
       await lockEquipmentRentalReceiptSources(tx, initial, {requireActive:initial.direction === "revenue"});
     }
     // Source writers acquire the original order before changing their pending
@@ -965,6 +959,14 @@ async function executePendingFinancialTransaction(
       throw new FinancialApprovalError("تغيّرت هوية المعاملة أثناء الاعتماد؛ حدّث الصفحة وأعد المحاولة");
     if (transaction.approvalStatus !== "pending")
       throw new FinancialApprovalError("يجب إرسال المعاملة للموافقة أولاً");
+
+    // Validate the original research receivable before cash or journal writes.
+    // This covers its mirror invoice and both receipt-allocation identities.
+    try { await guardResearchFinancialApproval(tx, transaction); }
+    catch (cause) {
+      if (cause instanceof ResearchFinanceError) throw new FinancialApprovalError(cause.message, cause.status === 404 ? 404 : cause.status === 403 ? 403 : 409);
+      throw cause;
+    }
 
     const locked = await tx.execute(
       sql`SELECT * FROM master_cash_box WHERE code = 'MASTER' FOR UPDATE`,
@@ -1203,31 +1205,9 @@ async function executePendingFinancialTransaction(
           `);
         }
       } else if (transaction.sourceType === "research_order") {
-        const posted = await tx.execute(sql`
-          WITH updated_order AS (
-            UPDATE research_orders
-            SET paid_amount = least(total_amount::numeric, coalesce(paid_amount::numeric, 0) + ${amount}),
-                remaining_amount = greatest(total_amount::numeric - least(total_amount::numeric, coalesce(paid_amount::numeric, 0) + ${amount}), 0),
-                payment_status = CASE
-                  WHEN least(total_amount::numeric, coalesce(paid_amount::numeric, 0) + ${amount}) >= total_amount::numeric THEN 'paid'
-                  ELSE 'partial'
-                END,
-                updated_at = now()
-            WHERE id = ${sourceId}
-            RETURNING invoice_id, paid_amount, remaining_amount, payment_status
-          )
-          UPDATE sales_invoices invoice
-          SET paid_amount = updated_order.paid_amount,
-              remaining_amount = updated_order.remaining_amount,
-              payment_status = updated_order.payment_status,
-              payment_method = ${transaction.paymentMethod},
-              updated_at = now()
-          FROM updated_order
-          WHERE invoice.id = updated_order.invoice_id
-          RETURNING invoice.id
-        `);
-        if (!(posted.rows ?? []).length)
-          throw new FinancialApprovalError("طلب البحث أو فاتورته المرتبطة غير موجودة");
+        // Canonical reconciliation below projects original and mirror state.
+        const linked = await tx.execute(sql`SELECT id FROM research_orders WHERE id=${sourceId}`);
+        if (!(linked.rows ?? []).length) throw new FinancialApprovalError("طلب البحث المرتبط غير موجود");
       } else if (transaction.sourceType === "receipt_voucher") {
         await tx.execute(
           sql`UPDATE receipt_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
@@ -1368,7 +1348,7 @@ export async function createAndExecuteSourceFinancialTransaction(
     ...input,
     approvalStatus: "pending",
   });
-  if (data.direction === "revenue") await lockGraduationPaymentSource(tx, data);
+  if (data.direction === "revenue") { await lockGraduationPaymentSource(tx, data); await lockResearchPaymentSources(tx, data); }
   const idempotencyKey = input.idempotencyKey;
   const [existing] = await tx
     .select()
@@ -1475,6 +1455,7 @@ export async function rejectFinancialTransaction(
   }
   if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "reject");
   await lockGraduationPaymentSource(tx, initial, {requireActive:false});
+  await lockResearchPaymentSources(tx, initial, false);
   const [existing] = await tx.select().from(financialTransactionsTable)
     .where(eq(financialTransactionsTable.id, id)).limit(1).for("update");
   if (!existing) throw new Error("المعاملة غير موجودة");
@@ -1621,6 +1602,7 @@ export async function reverseFinancialTransaction(
     if (initial.sourceType === "vehicle_expense") await lockPartnershipOriginalVehicleExpense(tx, initial, "reverse");
     if (!partnershipReversal) {
       await lockGraduationPaymentSource(tx, initial, {requireActive:false});
+      await lockResearchPaymentSources(tx, initial, false);
       await lockEquipmentRentalReceiptSources(tx, initial, {requireActive:false});
     }
     const [original] = await tx
@@ -1981,10 +1963,14 @@ export async function reverseFinancialTransaction(
         );
         sourceFlagged = { type: "service_order", id: sid };
       } else if (original.sourceType === "sales_invoice") {
-        await tx.execute(
-          sql`UPDATE sales_invoices SET financially_reversed = true WHERE id = ${sid}`,
-        );
-        sourceFlagged = { type: "sales_invoice", id: sid };
+        // Reversing one research collection restores its receivable; it never
+        // voids the original research invoice or hides it from statements.
+        if (!(await researchOrderForInvoice(tx, sid))) {
+          await tx.execute(
+            sql`UPDATE sales_invoices SET financially_reversed = true WHERE id = ${sid}`,
+          );
+          sourceFlagged = { type: "sales_invoice", id: sid };
+        }
       } else if (original.sourceType === "photography_order") {
         // Restore the photography order so it can be cancelled once its collection is reversed:
         // mark the linked approved payment request as reversed, then recompute paid/remaining from
@@ -2409,10 +2395,12 @@ export async function syncSourcePaymentTarget(
   executor?: FinancialTransactionExecutor,
 ): Promise<typeof financialTransactionsTable.$inferSelect | null> {
   if (!executor) await ensureMasterCashBoxTables();
-  if (!executor && ["graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(input.sourceType))
+  if (!executor && ["research_order", "graduation_order", "sales_invoice", "receipt_voucher", "installment_contract", "installment_payment"].includes(input.sourceType))
     return db.transaction(tx => syncSourcePaymentTarget(input, actor, tx));
-  if (executor && input.normalDirection === "revenue" && input.targetAmount > 0)
+  if (executor && input.normalDirection === "revenue" && input.targetAmount > 0) {
     await lockGraduationPaymentSource(executor, input);
+    await lockResearchPaymentSources(executor, input);
+  }
   const sourceId = String(input.sourceId);
   const sourceEvent = input.sourceEvent ?? "payment";
   const connection = executor ?? db;

@@ -16,9 +16,11 @@ import { staffTable } from "./staff";
 import { productsTable } from "./products";
 import { koshaConstructionProjectsTable } from "./kosha-finance";
 import { koshaBookingsTable, koshasTable } from "./koshas";
+import { researchOrdersTable } from "./research-center";
 
 export const purchaseInvoicesTable = pgTable("purchase_invoices", {
   id: serial("id").primaryKey(),
+  researchOrderId: integer("research_order_id").references(() => researchOrdersTable.id, { onDelete: "set null" }),
   invoiceNo: varchar("invoice_no", { length: 40 }).notNull().unique(),
   idempotencyKey: varchar("idempotency_key", { length: 120 }).unique(),
   date: date("date").notNull(),
@@ -55,7 +57,7 @@ export const purchaseInvoicesTable = pgTable("purchase_invoices", {
   createdByName: text("created_by_name").notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => ({ researchOrderIdx: index("purchase_invoices_research_order_idx").on(table.researchOrderId) }));
 
 export const purchaseInvoiceItemsTable = pgTable("purchase_invoice_items", {
   id: serial("id").primaryKey(),

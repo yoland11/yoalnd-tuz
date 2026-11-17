@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sql, type SQL } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { reconcilePaymentState } from "./payment-state";
+import { lockResearchPaymentSources } from "./research-payment-state";
 import { cancelFinancialTransactionRequest, createSourceFinancialRequest, type FinancialActor } from "./master-cash-box";
 import type { ApiErrorCode } from "./write-safety";
 import {
@@ -1108,6 +1109,7 @@ export async function reverseSettlement(database: SalesReturnDatabase, actor: Sa
     const [locked] = rows(await tx.execute(sql`SELECT * FROM sales_return_settlements WHERE id = ${settlementId} FOR UPDATE`));
     if (locked.status === "reversed") return { replayed: true };
     if (locked.kind !== "invoice_credit" || locked.status !== "applied") throw new SalesReturnError("يمكن عكس الخصم من المديونية فقط؛ الرصيد والاسترجاع يُعكسان مع المرتجع", 409);
+    await lockResearchPaymentSources(tx, {sourceType:"sales_invoice",sourceId:Number(locked.invoice_id)}, false);
     await tx.execute(sql`SELECT id FROM sales_invoices WHERE id = ${Number(locked.invoice_id)} FOR UPDATE`);
     await tx.execute(sql`UPDATE sales_return_settlements SET status = 'reversed', reversed_at = now(), reversed_by = ${actor.id}, reversal_reason = ${text(reason)} WHERE id = ${settlementId}`);
     await reconcilePaymentState(tx, { sourceType: "sales_invoice", sourceId: Number(locked.invoice_id) });
@@ -1138,6 +1140,9 @@ export async function reverseSalesReturn(database: SalesReturnDatabase, actor: S
       WHERE s.return_id = ${returnId} AND s.parent_settlement_id IS NULL
       ORDER BY s.id FOR UPDATE OF s
     `));
+    // Preserved invoice credits can point at research mirrors. Acquire their
+    // sorted originals before any invoice lock, matching collection approval.
+    await lockResearchPaymentSources(tx, settlements.filter(settlement => settlement.kind === "invoice_credit" && settlement.status === "applied").map(settlement => ({sourceType:"sales_invoice",sourceId:Number(settlement.invoice_id)})), false);
     const blockers: string[] = [];
     for (const settlement of settlements) {
       if (settlement.kind === "refund" && settlement.tx_status === "executed")

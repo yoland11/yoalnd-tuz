@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
+import {researchNoOpGuards} from './lib/research-unrelated-fixture.mjs';
 import ts from 'typescript';
 import {isEquipmentRentalFinancial,lockEquipmentRentalReceiptSources} from './lib/equipment-rental-financial-guard-test.mjs';
 const ast=ts.createSourceFile('finance.ts',readFileSync('src/server/master-cash-box.ts','utf8'),ts.ScriptTarget.Latest,true),fn=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='executePendingFinancialTransaction');
@@ -13,7 +14,7 @@ for(const mode of ['changed_amount','already_executed','changed_source','archive
   const tx={select:()=>({from:table=>({where:()=>({limit:()=>{const result=Promise.resolve(table===financialTransactionsTable?[{...pending}]:[{id:1}]);result.for=async kind=>{assert.equal(kind,'update');assert.ok(guarded);locked=true;return[{...fresh}];};return result;}})})}),
     execute:async()=>{cashReads++;return{rows:[{id:1,current_balance:'100'}]};},update:()=>({set:values=>{updates++;assert.ok(locked,'approval must lock and re-read the financial request after the original-order lock');assert.equal(values.balanceAfter,'170','approval must use the latest pending amount, not a pre-lock snapshot');throw Error('verified latest amount');}}),
   };
-  const context=vm.createContext({lockEquipmentRentalReceiptSources,isEquipmentRentalFinancial,financialTransactionsTable,financialAccountsTable,money:v=>Number(v),sql:()=>({}),eq:()=>{},counterAccountCode:()=> '4060',
+  const context=vm.createContext({...researchNoOpGuards,lockEquipmentRentalReceiptSources,isEquipmentRentalFinancial,financialTransactionsTable,financialAccountsTable,money:v=>Number(v),sql:()=>({}),eq:()=>{},counterAccountCode:()=> '4060',
     FinancialApprovalError:class extends Error{constructor(message,status=409){super(message);this.status=status;}},iqd:v=>`${v} د.ع`,
     lockGraduationPaymentSource:async(connection)=>{assert.equal(connection,tx);guarded=true;if(mode==='archived')throw Error('source inactive');},
   });vm.runInContext(code,context);

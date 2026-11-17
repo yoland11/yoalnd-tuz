@@ -560,14 +560,14 @@ export default function Admin() {
           <Route path="/admin/research/:section">
             {() => (
               <Guard me={me} anyPerm={RESEARCH_PERMS}>
-                <ResearchCenterPage />
+                <ResearchCenterPage me={me} />
               </Guard>
             )}
           </Route>
           <Route path="/admin/research">
             {() => (
               <Guard me={me} anyPerm={RESEARCH_PERMS}>
-                <ResearchCenterPage />
+                <ResearchCenterPage me={me} />
               </Guard>
             )}
           </Route>

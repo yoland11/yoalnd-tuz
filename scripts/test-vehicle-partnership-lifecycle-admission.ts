@@ -1,3 +1,5 @@
+import {lockResearchPaymentSources,guardResearchFinancialApproval} from "../src/server/research-payment-state";
+import {ResearchFinanceError} from "../src/server/research-payment-rules";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import vm from "node:vm";
@@ -18,7 +20,7 @@ const actor={id:7,name:"مدير",role:"admin",permissions:[]};
 for(const name of ["cancelFinancialTransactionRequest","rejectFinancialTransaction","reverseFinancialTransaction"]){
  const node=tree.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name)!;
  const code=ts.transpileModule(node.getText(tree)+`\n${name}`,{compilerOptions:{module:ts.ModuleKind.None,target:ts.ScriptTarget.ES2022}}).outputText;
- const run=vm.runInNewContext(code,{...context,exports:{}});
+ const run=vm.runInNewContext(code,{lockResearchPaymentSources,guardResearchFinancialApproval,ResearchFinanceError,...context,exports:{}});
  const invoke=()=>name==="cancelFinancialTransactionRequest"?run(91,actor,"تصحيح المصدر",tx):name==="reverseFinancialTransaction"?run(91,actor,"تصحيح المصدر",async()=>{callbacks++;},tx):run(91,actor,"تصحيح المصدر");
  await assert.rejects(invoke,(e:any)=>e instanceof FinancialApprovalError&&e.status===409,`${name} must reject unknown namespace before legacy writes`);
  initial={...initial,sourceType:"vehicle_partnership_activity"};

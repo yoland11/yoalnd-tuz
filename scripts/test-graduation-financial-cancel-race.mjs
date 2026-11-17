@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
+import {researchNoOpGuards} from './lib/research-unrelated-fixture.mjs';
 import ts from 'typescript';
 import {assertGenericFinancialSourceInput} from './lib/vehicle-partnership-financial-guard-test.mjs';
 import {assertGenericEquipmentRentalInput,isEquipmentRentalFinancial,lockEquipmentRentalReceiptSources} from './lib/equipment-rental-financial-guard-test.mjs';
@@ -12,7 +13,7 @@ for(const name of ['cancelFinancialTransactionRequest','rejectFinancialTransacti
   const tx={execute:async()=>({rows:[]}),query:{financialTransactionsTable:{findFirst:async()=>({...row})}},select:()=>({from:()=>({where:()=>({limit:()=>{
     const result=Promise.resolve([{...row}]);result.for=async()=>{assert.ok(guarded,`${name}: original sources must lock before financial row`);locked=true;if(name==='reverseFinancialTransaction')throw Error('fresh executed row');return[{...row}];};return result;
   }})})}),update:()=>{writes++;assert.fail('a stale cancellation cannot overwrite an approved transaction');}};
-  const context=vm.createContext({db:{...tx,transaction:fn=>fn(tx)},financialTransactionsTable:{id:'id'},eq:()=>{},ensureMasterCashBoxTables:async()=>{},canApproveFinancialTransactions:()=>true,financialTransactionInputSchema:{parse:value=>value},lockEquipmentRentalReceiptSources,assertGenericFinancialSourceInput,assertGenericEquipmentRentalInput,isEquipmentRentalFinancial,
+  const context=vm.createContext({...researchNoOpGuards,db:{...tx,transaction:fn=>fn(tx)},financialTransactionsTable:{id:'id'},eq:()=>{},ensureMasterCashBoxTables:async()=>{},canApproveFinancialTransactions:()=>true,financialTransactionInputSchema:{parse:value=>value},lockEquipmentRentalReceiptSources,assertGenericFinancialSourceInput,assertGenericEquipmentRentalInput,isEquipmentRentalFinancial,
     lockGraduationPaymentSource:async(connection,source,options)=>{assert.equal(connection,tx);assert.equal(source.sourceType,'receipt_voucher');assert.equal(options.requireActive,name==='syncSourceFinancialRequest');guarded=true;row.approvalStatus='executed';},
   });
   vm.runInContext(ts.transpileModule(fn.getText(ast).replace(/^export /,'')+`\nglobalThis.run=${name};`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText,context);

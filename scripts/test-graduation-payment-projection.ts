@@ -6,12 +6,13 @@ import {reconcilePaymentState} from "../src/server/payment-state";
 const dialect=new PgDialect();
 for(const sourceType of ["graduation_order","sales_invoice","purchase_invoice"] as const){
  const queries:ReturnType<PgDialect["sqlToQuery"]>[]=[];
- const tx={execute:async(q:SQL)=>{queries.push(dialect.sqlToQuery(q));return {rows:[{id:42,total_amount:"100",approved_paid_amount:"40",remaining_amount:"60",payment_status:"partial"}]};}};
+ const tx={execute:async(q:SQL)=>{const rendered=dialect.sqlToQuery(q);queries.push(rendered);if(rendered.sql.includes('to_regclass'))return {rows:[{ready:false}]};return {rows:[{id:42,total_amount:"100",approved_paid_amount:"40",remaining_amount:"60",payment_status:"partial"}]};}};
  const state=await reconcilePaymentState(tx,{sourceType,sourceId:42});
  assert.equal(state!.approvedPaidAmount,"40");
- // Sales invoices first run a read-only to_regclass probe for migration 0130 (sales-return credits).
- const statements=queries.filter((query)=>!/^SELECT to_regclass\('public\.sales_return_settlements'\) IS NOT NULL AS ready$/.test(query.sql));
- assert.equal(queries.length-statements.length,sourceType==="sales_invoice"?1:0,"only sales invoices probe for sales-return credits");
+ // Sales invoices probe optional return-credit and research-owner schemas;
+ // this legacy fixture has neither. Read-only probes cannot change projection.
+ const statements=queries.filter((query)=>!query.sql.includes('to_regclass'));
+ assert.equal(queries.length-statements.length,sourceType==="sales_invoice"?2:0,"only sales invoices probe optional linked-source schemas");
  assert.equal(statements.length,sourceType==="graduation_order"?2:1,"graduation canonical approval must also project its linked invoice; unrelated sources unchanged");
  if(sourceType==="graduation_order"){
   const {sql,params}=statements[1];assert.match(sql,/UPDATE sales_invoices/);assert.match(sql,/invoice\.id = source\.invoice_id/);

@@ -234,8 +234,8 @@ export async function getCustomerStatement(
       SELECT d->>'t' AS source_type, (d->>'id')::int AS source_id
       FROM jsonb_array_elements(${keys}::jsonb) d
     ), mirrors AS (
-      -- A graduation/research order owns its mirror invoice's balance; its money
-      -- is posted on the order. Only when the invoice has no history of its own.
+      -- Research combines both identities. Graduation keeps its existing rule:
+      -- project original money only when the invoice has no history of its own.
       SELECT 'graduation_order'::text AS money_type, g.id AS money_id, d.source_id AS invoice_id
       FROM docs d
       JOIN sales_invoices invoice ON invoice.id = d.source_id
@@ -247,11 +247,11 @@ export async function getCustomerStatement(
       WHERE d.source_type = 'sales_invoice'
     ), owned AS (
       SELECT m.* FROM mirrors m
-      WHERE NOT EXISTS (SELECT 1 FROM financial_transactions f
+      WHERE m.money_type = 'research_order' OR (NOT EXISTS (SELECT 1 FROM financial_transactions f
           WHERE f.source_type = 'sales_invoice' AND f.source_id = m.invoice_id::text)
         AND NOT EXISTS (SELECT 1 FROM receipt_voucher_allocations a
           WHERE a.source_type = 'sales_invoice' AND a.source_id = m.invoice_id)
-        AND NOT EXISTS (SELECT 1 FROM installment_contracts c WHERE c.sales_invoice_id = m.invoice_id)
+        AND NOT EXISTS (SELECT 1 FROM installment_contracts c WHERE c.sales_invoice_id = m.invoice_id))
     ), targets AS (
       SELECT source_type AS money_type, source_id AS money_id, source_type, source_id FROM docs
       UNION ALL

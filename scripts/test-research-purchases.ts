@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {PgDialect} from 'drizzle-orm/pg-core';
+const {getResearchPurchases,linkResearchPurchase}=await import('../src/server/research-purchases');
+const dialect=new PgDialect();const queries:any[]=[];
+const executor={async execute(query:any){const q=dialect.sqlToQuery(query);queries.push(q);if(q.sql.includes('purchase:order'))return {rows:[{id:5,status:'new'}]};if(q.sql.includes('purchase:totals'))return{rows:[{purchaseCost:'100',paidToSuppliers:'20',supplierRemaining:'80',invoiceCount:1}]};return {rows:[]}}};
+const result=await getResearchPurchases(5,new URLSearchParams(),undefined,executor);
+assert.deepEqual(result.costSummary,{purchaseCost:100,paidToSuppliers:20,supplierRemaining:80,invoiceCount:1});
+await assert.rejects(()=>getResearchPurchases(5,new URLSearchParams('search=PI'),{role:'employee',permissions:['research.financials.view'],isActive:true} as any,executor),/صلاحية/);
+assert.ok(queries.every(q=>!q.sql.includes('INSERT')&&!q.sql.includes('UPDATE')),'viewing purchase cost does not create expenses or supplier payments');
+await assert.rejects(()=>linkResearchPurchase(5,{purchaseInvoiceId:1},{role:'employee',permissions:['research.financials.view'],isActive:true} as any),/صلاحية/);
+await assert.rejects(()=>getResearchPurchases(-2,new URLSearchParams(),undefined,executor),/غير/);
+console.log('PASS research purchase attribution: existing invoice cost/payable separate, no financial posting, bounded reads and procurement grant');
