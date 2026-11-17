@@ -21,6 +21,7 @@ import {
   researchStudentStatementThermalHtml,
   researchStatementShareText,
 } from "../src/views/admin/research-print";
+import * as researchPrint from "../src/views/admin/research-print";
 import { ResearchOrderActions } from "../src/views/admin/research/order-actions";
 const statementFixture={customer:{name:'طالب <script>',phone:'07700000000'},openingBalance:500,closingBalance:300,documentsRemaining:300,from:'2026-11-01',to:'2026-11-16',entries:[{date:'2026-11-16',reference:'PAY-1',description:'دفعة معتمدة',receivedByName:'المستلم أحمد',debit:0,credit:200,balance:300}]};
 const thermalStatement=researchStudentStatementThermalHtml(statementFixture);
@@ -45,6 +46,7 @@ assert.match(whatsappLink('07701234567', financialShare)!, /^https:\/\/wa\.me\/9
 assert.equal(whatsappLink('123', financialShare), null);
 const orderActions = renderToStaticMarkup(createElement(ResearchOrderActions, { order: { ...shareOrder, id: 9 }, financial: false }));
 assert.match(orderActions, /طباعة A4/);
+assert.match(orderActions, /طباعة 80mm/);
 assert.match(orderActions, /PDF/);
 assert.match(orderActions, /إرسال إلى واتساب/);
 assert.doesNotMatch(orderActions, /type="submit"/);
@@ -153,8 +155,42 @@ const reversedReceipt = researchReceiptHtml(printOrder, printAccount, {
 });
 assert.match(reversedReceipt, /صافي الدفعة بعد العكس/);
 const orderSheet = researchOrderSheetHtml(printOrder);
-assert.match(orderSheet, /A4 landscape/);
+assert.match(orderSheet, /A4 portrait/);
 assert.doesNotMatch(orderSheet, /<th[^>]*>المقبوض/);
+const detailedOrder = {
+  ...printOrder, titleEnglish: 'Smart Irrigation', academicLevel: 'master',
+  researchCategory: 'software', researchType: 'graduation', universityName: 'جامعة بغداد',
+  college: 'كلية الهندسة', department: 'قسم الحاسبات', supervisorName: 'د. أحمد',
+  researchField: 'إنترنت الأشياء', language: 'en', requiredPages: 45, citationStyle: 'APA7',
+  keywords: ['حساسات', 'ري'], urgency: 'urgent', status: 'writing', progress: 35,
+  deadline: '2026-12-01', paymentDueDate: '2026-11-30', createdAt: '2026-11-17T10:00:00Z',
+  assignedWriterId: 8, notes: 'متطلبات الطالب <script>\nتنفيذ المشروع كاملاً',
+  internalNotes: 'PRIVATE-INTERNAL', qrToken: 'PRIVATE-TOKEN',
+  totalAmount: 999999, paidAmount: 888888, remainingAmount: 777777,
+};
+const printAssignments = [
+  { assignment: { role: 'writer', staffId: 7 }, staffName: 'المسؤول السابق' },
+  { assignment: { role: 'writer', staffId: 8 }, staffName: 'المسؤول الحالي' },
+];
+const detailedAccount = { totalAmount: 500000, approvedPaidAmount: 200000, paidAmount: 350000, remainingAmount: 300000, pendingAmount: 150000 };
+const { researchOrderThermalHtml } = researchPrint;
+for (const builder of [researchOrderSheetHtml, researchOrderThermalHtml]) {
+  const full = builder(detailedOrder, detailedAccount, printAssignments);
+  for (const value of ['Smart Irrigation', 'ماجستير', 'مشروع برمجي', 'مشروع تخرج', 'جامعة بغداد', 'كلية الهندسة', 'قسم الحاسبات', 'د. أحمد', 'إنترنت الأشياء', 'الإنجليزية', '45', 'APA7', 'حساسات', 'ري', 'مستعجل', 'الكتابة', '35%', '2026-12-01', '2026-11-30', 'المسؤول الحالي', 'متطلبات الطالب &lt;script&gt;', 'تنفيذ المشروع كاملاً', '500,000', '200,000', '300,000', '150,000'])
+    assert.ok(full.includes(value), `Full research document missing ${value}`);
+  assert.doesNotMatch(full, /<script>|PRIVATE-|999,999|888,888|777,777|350,000|المسؤول السابق/);
+  const nonfinancial = builder(detailedOrder, undefined, printAssignments);
+  assert.doesNotMatch(nonfinancial, /999,999|888,888|777,777|المقبوض المعتمد|المتبقي|2026-11-30|الدفعات المعلقة/);
+  assert.match(nonfinancial, /تنفيذ المشروع كاملاً/);
+  assert.throws(() => builder(detailedOrder, { totalAmount: 500000 }), /المالية/);
+  for (const remainingAmount of [-1, ' ', 'invalid'])
+    assert.throws(() => builder(detailedOrder, { ...detailedAccount, remainingAmount }), /المالية/);
+  assert.match(builder({ ...printOrder, language: 'ku' }), /الكردية/);
+  assert.match(builder({ ...printOrder, status: 'legacy_status', researchType: 'نوع قديم' }), /legacy_status/);
+}
+const fullThermal = researchOrderThermalHtml(detailedOrder, detailedAccount);
+assert.match(fullThermal, /max-width:72mm/);
+assert.doesNotMatch(fullThermal, /size:\s*A4/);
 const failed = renderToStaticMarkup(
   createElement(ResearchFailure, {
     error: new Error("request failed"),

@@ -1,4 +1,6 @@
-import { buildBrandedReceiptHtml } from "@/lib/branded-receipt";
+import { buildBrandedReceiptHtml, receiptEsc, type ReceiptSection } from "@/lib/branded-receipt";
+import { ACADEMIC_LEVELS, RESEARCH_CATEGORIES } from "@/lib/research-contract";
+import { RESEARCH_STATUSES, RESEARCH_TYPES } from "./research/shared";
 import {
   buildReportDocumentHtml,
   downloadReportPdf,
@@ -218,27 +220,106 @@ export function researchStatementShareText(statement:Row){
  return [`مجموعة علي جان نهاد — قسم البحوث العلمية`,`كشف حساب الطالب: ${statement.customer?.fullName||statement.customer?.name||''}`,`الفترة: ${statement.from||'البداية'} — ${statement.to||'اليوم'}`,`الرصيد الافتتاحي: ${formatCurrency(statement.openingBalance)}`,
   ...(statement.entries||[]).map((entry:Row)=>`${String(entry.date||'').slice(0,10)} | ${entry.reference||''} | ${entry.description||''} | مدين: ${formatCurrency(entry.debit)} | دائن: ${formatCurrency(entry.credit)}`),`الرصيد الختامي: ${formatCurrency(statement.closingBalance)}`].join('\n');
 }
-export function researchOrderSheetHtml(order: Row, financials?: Row) {
-  const row = {
-    ...order,
-    ...(financials
-      ? {
-          totalAmount: financials.totalAmount,
-          paidAmount: financials.paidAmount,
-          remainingAmount: financials.remainingAmount,
-        }
-      : {}),
-  };
-  return buildReportDocumentHtml(
-    researchReportOptions(
-      "ملخص بحث علمي",
-      undefined,
-      undefined,
-      `رقم البحث: ${order.researchNo}`,
-    ),
-    researchOrderColumns.filter(
-      (column) => financials || column.kind !== "money",
-    ),
-    [row],
-  );
+/** Saved, authorized order fields only; never fall back to financial snapshots. */
+function researchOrderPrintSections(order: Row, financials?: Row, assignments: readonly Row[] = []): ReceiptSection[] {
+  const label = (labels: Record<string, string>, value: unknown) => value == null ? "—" : labels[String(value)] || String(value);
+  const date = (value: unknown) => value ? String(value).slice(0, 10) : "—";
+  const sections: ReceiptSection[] = [
+    { title: "بيانات الطالب", facts: [
+      { label: "الطالب", value: order.customerName || "—" },
+      { label: "رقم الهاتف", value: order.customerPhone || "—" },
+      { label: "الجامعة", value: order.universityName || "—" },
+      { label: "الكلية", value: order.college || "—" },
+      { label: "القسم / التخصص", value: order.department || "—" },
+      { label: "المرحلة الأكاديمية", value: label(ACADEMIC_LEVELS, order.academicLevel) },
+      { label: "المشرف الأكاديمي", value: order.supervisorName || "—" },
+    ] },
+    { title: "تفاصيل البحث", facts: [
+      { label: "العنوان بالعربية", value: order.title || "—" },
+      { label: "العنوان بالإنجليزية", value: order.titleEnglish || "—" },
+      { label: "نوع البحث", value: label(RESEARCH_TYPES, order.researchType) },
+      { label: "تصنيف البحث", value: label(RESEARCH_CATEGORIES, order.researchCategory) },
+      { label: "المجال العلمي", value: order.researchField || "—" },
+      { label: "لغة البحث", value: label({ ar: "العربية", en: "الإنجليزية", ku: "الكردية", other: "أخرى", mixed: "العربية والإنجليزية" }, order.language) },
+      { label: "الصفحات المطلوبة", value: order.requiredPages ?? "—" },
+      { label: "نمط التوثيق", value: order.citationStyle || "—" },
+      { label: "الكلمات المفتاحية", value: (Array.isArray(order.keywords) ? order.keywords.join("، ") : order.keywords) || "—" },
+    ] },
+    { title: "التنفيذ والمواعيد", facts: [
+      { label: "الحالة", value: label(RESEARCH_STATUSES, order.status) },
+      { label: "نسبة الإنجاز", value: order.progress == null ? "—" : `${order.progress}%` },
+      { label: "الأولوية", value: label({ normal: "اعتيادي", urgent: "مستعجل", critical: "عاجل جداً" }, order.urgency) },
+      { label: "تاريخ الطلب", value: date(order.createdAt) },
+      { label: "موعد التسليم", value: date(order.deadline) },
+    ] },
+  ];
+  const employeeFacts = [
+    ["assignedWriterId", "الكاتب / المسؤول"], ["assignedReviewerId", "المراجع"],
+    ["assignedProofreaderId", "المدقق اللغوي"], ["assignedFormatterId", "المنسق"],
+    ["assignedSupervisorId", "المشرف الداخلي"],
+  ].flatMap(([key, title]) => {
+    const assigned = order[key] && assignments.find(row => String(row.assignment?.staffId) === String(order[key]));
+    const name = assigned?.staffName || assigned?.username || (key === "assignedWriterId" ? order.assignedEmployeeName : null);
+    return name ? [{ label: title, value: name }] : [];
+  });
+  if (employeeFacts.length) sections.push({ title: "فريق العمل", facts: employeeFacts });
+  if (financials) {
+    const paid = financials.approvedPaidAmount ?? financials.paidAmount;
+    const amounts = [financials.totalAmount, paid, financials.remainingAmount,
+      ...(financials.pendingAmount == null ? [] : [financials.pendingAmount])];
+    if (amounts.some(value => value == null || String(value).trim() === "" || !Number.isFinite(Number(value)) || Number(value) < 0))
+      throw new Error("تعذرت قراءة المعلومات المالية للبحث");
+    sections.push({ title: "الملخص المالي", facts: [
+      { label: "المبلغ المتفق عليه", value: formatCurrency(financials.totalAmount) },
+      { label: "المقبوض المعتمد", value: formatCurrency(paid) },
+      { label: "المتبقي", value: formatCurrency(financials.remainingAmount) },
+      ...(financials.pendingAmount == null ? [] : [{ label: "الدفعات المعلقة (ليست تسديداً)", value: formatCurrency(financials.pendingAmount) }]),
+      { label: "موعد استحقاق الدفع", value: date(order.paymentDueDate) },
+    ] });
+  }
+  return sections;
+}
+
+export function researchOrderSheetHtml(order: Row, financials?: Row, assignments: readonly Row[] = []) {
+  const sections = researchOrderPrintSections(order, financials, assignments);
+  const rows = sections.flatMap(section => (section.facts || []).map((fact, index) => ({
+    section: index === 0 ? section.title : "", label: fact.label, value: fact.value,
+  })));
+  const html = buildResearchReportHtml({
+    ...researchReportOptions("تفاصيل طلب بحث علمي"),
+    orientation: "portrait", meta: [{ label: "رقم الطلب", value: String(order.researchNo || "—") }],
+    footerNote: financials ? "تفاصيل الطلب المحفوظة. المقبوض من سجل الدفعات المعتمد؛ المعلق لا يعد تسديداً. ليست إيصال قبض جديداً." : "تفاصيل الطلب المحفوظة — قسم البحوث العلمية.",
+  }, [
+    { key: "section", header: "القسم", width: 19 },
+    { key: "label", header: "البيان", width: 26 },
+    { key: "value", header: "التفاصيل", width: 55 },
+  ], rows);
+  // Long requirements may span pages. Keep them outside non-splitting table rows.
+  const notes = `<section class="research-requirements"><h2>المتطلبات والملاحظات</h2><p>${receiptEsc(order.notes || "لم تسجل متطلبات أو ملاحظات.")}</p></section>`;
+  return html.replace("</style>", `
+    @font-face{font-family:"AJN Cairo";src:url("/fonts/Cairo-Variable.ttf") format("truetype");font-weight:200 1000;font-display:block}
+    html,body{font-family:"AJN Cairo",Cairo,Tahoma,Arial,sans-serif}
+    .rpt-table td:first-child,.rpt-table td:nth-child(2){font-weight:700}
+    .rpt-table td:last-child{white-space:pre-wrap;unicode-bidi:plaintext}
+    .research-requirements{margin-top:14px;overflow-wrap:anywhere}
+    .research-requirements h2{font-size:13px;border-bottom:1px solid #111827;padding-bottom:5px;break-after:avoid}
+    .research-requirements p{white-space:pre-wrap;margin:0;line-height:1.8;orphans:3;widows:3}
+  </style>`).replace('<div class="rpt-doc-footer">', `${notes}<div class="rpt-doc-footer">`);
+}
+
+/** Dedicated 80mm composition, sharing the same saved fields as A4. */
+export function researchOrderThermalHtml(order: Row, financials?: Row, assignments: readonly Row[] = []) {
+  return buildBrandedReceiptHtml({
+    documentTitle: `تفاصيل طلب البحث ${order.researchNo || ""}`, title: "تفاصيل طلب بحث علمي",
+    icon: "graduation", compact: true, hideQr: true,
+    facts: [{ label: "رقم الطلب", value: order.researchNo || "—", icon: "hash" }],
+    sections: [...researchOrderPrintSections(order, financials, assignments),
+      { title: "المتطلبات والملاحظات", text: order.notes || "لم تسجل متطلبات أو ملاحظات." }],
+    footNote: financials ? "المعلق ليس تسديداً. تفاصيل طلب وليست إيصال قبض جديداً." : "تفاصيل الطلب المحفوظة.",
+  }, "80mm").replace("<body>", '<body class="research-order-thermal">').replace("</head>", `<style>
+    .research-order-thermal .ajn-r .section{break-inside:auto}
+    .research-order-thermal .ajn-r .block-title{break-after:avoid}
+    .research-order-thermal .ajn-r .fact{grid-template-columns:minmax(0,45%) minmax(0,55%);break-inside:avoid}
+    .research-order-thermal .ajn-r .section p{orphans:3;widows:3}
+  </style></head>`);
 }

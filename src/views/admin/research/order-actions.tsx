@@ -8,20 +8,20 @@ import { printStandaloneDocument } from "@/lib/pdf";
 import { downloadReportPdf } from "@/lib/pdf-report";
 import { useToast } from "@/hooks/use-toast";
 import { apiErrorMessage } from "../_lib";
-import { researchOrderSheetHtml } from "../research-print";
+import { researchOrderSheetHtml, researchOrderThermalHtml } from "../research-print";
 import { researchFetch, type ResearchRecord } from "./shared";
 import { researchOrderShareText, whatsappLink } from "./ui-model";
 
 /** Read-only actions for the saved original research order, including edit mode. */
-export function ResearchOrderActions({ order, financial }: { order: ResearchRecord; financial: boolean }) {
+export function ResearchOrderActions({ order, financial, assignments = [] }: { order: ResearchRecord; financial: boolean; assignments?: readonly ResearchRecord[] }) {
   const { toast } = useToast();
   const busyRef = useRef(false);
-  const [busy, setBusy] = useState<"print" | "download" | "share" | null>(null);
+  const [busy, setBusy] = useState<"print" | "thermal" | "download" | "share" | null>(null);
   const [shareText, setShareText] = useState<string | null>(null);
   const [phone, setPhone] = useState("");
   const shareUrl = whatsappLink(phone, shareText || "");
 
-  async function run(action: "print" | "download" | "share") {
+  async function run(action: "print" | "thermal" | "download" | "share") {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(action);
@@ -30,10 +30,12 @@ export function ResearchOrderActions({ order, financial }: { order: ResearchReco
       if (action === "share") {
         setPhone(order.customerPhone || "");
         setShareText(researchOrderShareText(order, account, window.location.origin));
+      } else if (action === "thermal") {
+        printStandaloneDocument(researchOrderThermalHtml(order, account, assignments), 380);
       } else {
-        const html = researchOrderSheetHtml(order, account);
-        if (action === "print") printStandaloneDocument(html, 1122);
-        else await downloadReportPdf(html, `${order.researchNo}.pdf`, "landscape");
+        const html = researchOrderSheetHtml(order, account, assignments);
+        if (action === "print") printStandaloneDocument(html, 794);
+        else await downloadReportPdf(html, `${order.researchNo}.pdf`, "portrait");
       }
     } catch (error) {
       toast({ title: action === "share" ? "تعذرت مشاركة الطلب" : "تعذرت طباعة الطلب", description: apiErrorMessage(error), variant: "destructive" });
@@ -46,6 +48,9 @@ export function ResearchOrderActions({ order, financial }: { order: ResearchReco
   return <>
     <Button type="button" size="sm" variant="outline" disabled={busy !== null} onClick={() => void run("print")}>
       {busy === "print" ? <Loader2 className="animate-spin" /> : <Printer data-icon="inline-start" />}طباعة A4
+    </Button>
+    <Button type="button" size="sm" variant="outline" disabled={busy !== null} onClick={() => void run("thermal")}>
+      {busy === "thermal" ? <Loader2 className="animate-spin" /> : <Printer data-icon="inline-start" />}طباعة 80mm
     </Button>
     <Button type="button" size="sm" variant="outline" disabled={busy !== null} onClick={() => void run("download")}>
       {busy === "download" ? <Loader2 className="animate-spin" /> : <FileDown data-icon="inline-start" />}PDF

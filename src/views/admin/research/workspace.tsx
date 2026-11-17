@@ -117,7 +117,7 @@ export function ResearchWorkspace({
       <div className="flex flex-col gap-5">
       <Panel
         title="طباعة ومشاركة الطلب"
-        action={<div className="flex flex-wrap gap-2"><ResearchOrderActions order={order} financial={financial} /></div>}
+        action={<div className="flex flex-wrap gap-2"><ResearchOrderActions order={order} financial={financial} assignments={data.assignments} /></div>}
       >
         <p className="text-sm text-muted-foreground">الطباعة والمشاركة تعتمد آخر نسخة محفوظة؛ احفظ تعديلاتك أولاً لتظهر فيها.</p>
       </Panel>
@@ -160,7 +160,7 @@ export function ResearchWorkspace({
                 تعديل
               </Button>
             )}
-            <ResearchOrderActions order={order} financial={financial} />
+            <ResearchOrderActions order={order} financial={financial} assignments={data.assignments} />
           </div>
         }
       >
