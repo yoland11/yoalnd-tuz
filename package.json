@@ -10,6 +10,7 @@
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "typecheck": "tsc --noEmit",
+    "test:booking-share": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-booking-share.tsx",
     "test:customer-followups": "node ./scripts/test-customer-followups.mjs",
     "test:event-messaging": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-event-messaging.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-event-messaging-provider.ts",
     "test:event-messaging-db": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-event-messaging-db.ts",

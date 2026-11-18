@@ -119,6 +119,8 @@ import { CustomerFinancialSummary } from "./customer-financial-summary";
 import { BookingGroupPhotos } from "@/components/booking-group-photos";
 import { BookingKoshaPhoto } from "@/components/booking-kosha-photo";
 import { BookingReferencePhotos } from "@/components/booking-reference-photos";
+import { BookingShareDialog } from "@/components/booking-share-dialog";
+import { bookingSharePhotos } from "@/lib/booking-share";
 import { bookingWorkspacePhotos } from "@/lib/booking-workspace-photos";
 import { BookingEventTypeBadge } from "@/components/booking-event-type";
 import { bookingGraduationHref, normalizeBookingEventType, readBookingEventType } from "@/lib/booking-event-types";
@@ -160,6 +162,7 @@ type OverviewData = {
 
 type ProductLine = {
   id: number;
+  imageUrl?: string | null;
   productId: number;
   variantId: number | null;
   productName: string;
@@ -497,6 +500,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
   const [tab, setTab] = useState("overview");
   const [confirm, setConfirm] = useState<{ kind: "booking" | "warehouse"; stage: string; label: string } | null>(null);
   const [labelOpen, setLabelOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [transportReceipt, setTransportReceipt] = useState<TransportReceiptReference|null>(null);
   const printReceipt = useBookingThermalReceiptPrint();
   const preparation = usePreparationListPrint(base, booking);
@@ -504,6 +508,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
   useEffect(() => {
     const value = new URLSearchParams(window.location.search).get("tab");
     if (value && TAB_LABELS.some(([id]) => id === value)) setTab(value);
+    if (new URLSearchParams(window.location.search).get("share") === "1") setShareOpen(true);
   }, []);
 
   const changeTab = (value: string) => {
@@ -519,7 +524,9 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
   };
 
   const overview = useQuery<OverviewData>({ queryKey: [...key, "overview"], queryFn: () => adminFetch(`${base}/overview`) });
+  const shareProducts = useQuery<{ items: ProductLine[] }>({ queryKey: [...key, "share-products"], enabled: shareOpen, queryFn: async () => { const result = await adminFetch<{ items: ProductLine[] }>(`${base}/products?photos=1`); if (!Array.isArray(result.items)) throw Error("تعذر قراءة المواد المحجوزة"); return result; } });
   const referencePhotos = bookingWorkspacePhotos(booking.source, booking.raw, overview.data?.bookedKosha?.imageUrl);
+  const sharePhotos = useMemo(() => bookingSharePhotos({ ...booking, bookedItems: shareProducts.data?.items }, overview.data?.bookedKosha), [booking, overview.data?.bookedKosha, shareProducts.data?.items]);
   const readinessQuery = useQuery<ReadinessDisplay>({ queryKey: [...key,"readiness"], queryFn: () => adminFetch(`${base}/readiness`), refetchInterval:30_000 });
   const transportation = useQuery<{ transportation: Partial<TransportValue> | null; transportPlan:TransportPlanView; dispatchVehicle?: DispatchVehicle | null }>({ queryKey: [...key, "transportation"], queryFn: () => adminFetch(`${base}/transportation`) });
   const attendees = useQuery<{ attendees: GroupAttendee[] }>({ queryKey: [...key, "group-attendees"], queryFn: () => adminFetch(`${base}/group-attendees`) });
@@ -571,7 +578,6 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
   const paymentUrl = booking.source === "kosha" ? `/admin/kosha-bookings?booking=${booking.id}` : `/admin/orders?serviceOrder=${booking.id}`;
   const department = booking.raw?.departmentName || booking.raw?.department || booking.services[0]?.type || "تنظيم المناسبات";
   const responsibleTeam = booking.raw?.teamName || booking.raw?.assignedTeam || booking.raw?.assignedStaffName || "فريق العمليات";
-  const whatsappNumber = String(booking.phone || "").replace(/\D/g, "").replace(/^0/, "964");
   const transportationMode = transportation.data?.transportation?.mode ?? (booking.source === "kosha" ? booking.raw?.transportationMode : null) ?? null;
   const transportationFee = Number(transportation.data?.transportation?.fee ?? (booking.source === "kosha" ? booking.raw?.transportationFee : 0) ?? 0);
   const transportationLabel = transportationMode === "ajn"
@@ -650,7 +656,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
             </DropdownMenuContent>
           </DropdownMenu>
           <IssueWorkOrderButton defaults={{ booking: { type: booking.source === "kosha" ? "kosha_booking" : "service_order", id: booking.id }, customerId: booking.customerId ?? null, customerName: booking.customerName, contextLabel: `الحجز ${booking.number} · ${booking.customerName}` }} />
-          <DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu">{whatsappNumber ? <DropdownMenuItem onSelect={() => window.open(`https://wa.me/${whatsappNumber}`, "_blank", "noopener,noreferrer")}><MessageCircle /> إرسال للزبون بالواتساب</DropdownMenuItem> : null}<DropdownMenuItem onSelect={() => changeTab("group-photos")}><Camera /> لقطات جماعية</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          <DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem onSelect={() => setShareOpen(true)}><MessageCircle /> إرسال التفاصيل وصور المحجوزات</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("group-photos")}><Camera /> لقطات جماعية</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
         </div>
       </div>
       <div className="ajn-op-head-bottom">
@@ -665,6 +671,7 @@ export function BookingOperationsWorkspace({ booking, onEdit, onAddServices }: {
     </header>
     <BookingThermalPrintAction booking={booking} open={labelOpen} onOpenChange={setLabelOpen} hideTrigger />
     <TransportReceiptDialog reference={transportReceipt} onClose={() => setTransportReceipt(null)} onOpenTransport={openTransportCard} />
+    {shareOpen ? <BookingShareDialog key={`${booking.source}:${booking.id}`} booking={{ ...booking, bookedItems: shareProducts.data?.items }} photos={sharePhotos} photosLoading={overview.isPending || shareProducts.isPending} photosError={overview.error || shareProducts.error} onRetryPhotos={() => { void overview.refetch(); void shareProducts.refetch(); }} onClose={() => { setShareOpen(false); const url = new URL(window.location.href); url.searchParams.delete("share"); window.history.replaceState({}, "", `${url.pathname}${url.search}`); }} /> : null}
 
     {booking.source === "kosha" || booking.services.some(service => service.type === "kosha") || overview.data?.bookedKosha ? <BookingKoshaPhoto kosha={overview.data?.bookedKosha} loading={overview.isLoading} error={overview.error} onRetry={() => void overview.refetch()} /> : null}
     {referencePhotos.length || !overview.data?.bookedKosha ? <BookingReferencePhotos photos={referencePhotos} onEdit={booking.source === "service" ? onEdit : undefined} /> : null}

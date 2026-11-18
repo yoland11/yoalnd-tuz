@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import ts from "typescript";
 
 // A booking payment reaches the Main Cash Box on the day it is taken and is
 // visible from the booking itself.
@@ -23,9 +24,21 @@ assert.match(api, /"تحصيل مباشر من الإدارة"/);
 
 // 3. The booking's movement log and the ledger's booking filter share one definition of a
 //    booking's movements, including receipt vouchers, penalties and group photos.
-const finance = api.slice(api.indexOf('if (resource === "finance" && method === "GET") {'));
+// Inspect the complete actual handler, not a character window whose meaning
+// changes when an optional read projection is added before the existing log.
+const source = ts.createSourceFile("api.ts", api, ts.ScriptTarget.Latest, true);
+let finance = "";
+function findFinance(node) {
+  if (ts.isIfStatement(node) && node.expression.getText(source).replace(/\s+/g, "") === 'resource==="finance"&&method==="GET"') {
+    finance = node.getText(source);
+    return;
+  }
+  ts.forEachChild(node, findFinance);
+}
+findFinance(source);
+assert.ok(finance, "the original booking finance GET handler exists");
 const link = readFileSync("src/server/booking-cash-link.ts", "utf8");
-assert.match(finance.slice(0, 600), /where: await bookingTransactionCondition\(db as any, reference\.entityType, reference\.id\)/);
+assert.match(finance, /where: await bookingTransactionCondition\(db as any, reference\.entityType, reference\.id\)/);
 assert.match(link, /SELECT v\.id FROM receipt_vouchers v[\s\S]*v\.kosha_booking_id = \$\{id\}[\s\S]*receipt_voucher_allocations a/);
 assert.match(link, /eq\(table\.sourceType, "receipt_voucher"\), inArray\(table\.sourceId, voucherIds\)/);
 assert.match(link, /eq\(table\.sourceType, "booking_penalty"\), inArray\(table\.sourceId, penaltyIds\)/);
@@ -33,9 +46,9 @@ assert.match(link, /eq\(table\.sourceType, "group_photo"\)/);
 const cashBox = readFileSync("src/server/master-cash-box.ts", "utf8");
 assert.match(cashBox, /conditions\.push\(await bookingTransactionCondition\(db, bookingEntityType\(filters\.bookingSource\)!, filters\.bookingId\)\)/, "the ledger filters by the same definition");
 // The tab states the stored total: products are already in it and damage is a separate due.
-assert.match(finance.slice(0, 3000), /const finalAmount = total;/);
-assert.doesNotMatch(finance.slice(0, 3000), /total \+ productCharges/, "product charges are not counted twice");
-assert.match(finance.slice(0, 3000), /cash: await bookingCashSummary\(/);
+assert.match(finance, /const finalAmount = total;/);
+assert.doesNotMatch(finance, /total \+ productCharges/, "product charges are not counted twice");
+assert.match(finance, /cash: await bookingCashSummary\(/);
 
 // 4. The finance tab says when a payment is waiting for approval and which date the cash box uses.
 assert.match(workspace, /دفعة بانتظار الاعتماد: \{money\(cash\.waiting\)\}/);

@@ -34543,8 +34543,14 @@ async function handleBookingOperations(
   if (resource === "products") {
     if (method === "GET") {
       const items = await bookingOperationProducts(reference);
+      let visibleItems = items;
+      if (req.nextUrl.searchParams.get("photos") === "1") {
+        const photos = await bookingServiceProductPhotos({}, items.filter((item: any) => item.status !== "released"));
+        const byProduct = new Map(photos.map(photo => [photo.productId, photo.imageUrl]));
+        visibleItems = items.map((item: any) => ({ ...item, imageUrl: byProduct.get(item.productId) ?? null }));
+      }
       return json({
-        items,
+        items: visibleItems,
         stage:
           reference.operations.productsStage ??
           (items.length ? "reserved" : "draft"),
@@ -36173,6 +36179,13 @@ async function handleBookingOperations(
   if (resource === "finance" && method === "GET") {
     if (!can("booking_finance_view"))
       return error("ليس لديك صلاحية عرض مالية الحجز", 403);
+    if (req.nextUrl.searchParams.get("summary") === "1") {
+      const summary = await getBookingFinancialSummary(reference.source, reference.id);
+      if (!summary) return error("الحجز غير موجود أو مؤرشف", 404);
+      const response = json({ summary });
+      response.headers.set("Cache-Control", "private, no-store");
+      return response;
+    }
     // Vouchers, penalties and group photos post under their own source, so the
     // shared condition lists them with the booking (read-only, no new entries).
     const transactions = await db.query.financialTransactionsTable.findMany({
@@ -51505,6 +51518,13 @@ async function handleAdmin(
   if (section === "staff") {
     const auth = await requirePermission(req, "staff.view");
     if (isResponse(auth)) return auth;
+    if (method === "GET" && req.nextUrl.searchParams.get("view") === "directory") {
+      const directory = await db.select({ id: staffTable.id, fullName: staffTable.fullName, username: staffTable.username, photoUrl: staffTable.photoUrl, department: staffTable.department, jobTitle: staffTable.jobTitle, role: staffTable.role })
+        .from(staffTable).where(eq(staffTable.isActive, true)).orderBy(asc(staffTable.fullName), asc(staffTable.id)).limit(500);
+      const response = json(directory);
+      response.headers.set("Cache-Control", "private, no-store");
+      return response;
+    }
     await ensureStaffTableShape();
 
     // Manager action: revoke ALL sessions for one employee (requires a reason;

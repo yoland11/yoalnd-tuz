@@ -68,6 +68,7 @@ const steps = [
   ["Shared asset status and repair retry safety", "pnpm", ["run", "test:asset-status-safety"]],
   ["Asset list thumbnails", "pnpm", ["run", "test:asset-list"]],
   ["Booked Kosha workspace photo", "pnpm", ["run", "test:booking-kosha-photo"]],
+  ["Booking WhatsApp details and original booked photos", "pnpm", ["run", "test:booking-share"]],
   ["Unified booking occasions, legacy edits and existing follow-up integration", "pnpm", ["run", "test:booking-event-types"]],
   ["Report PDF download", "pnpm", ["run", "test:report-pdf"]],
   ["Product details analytics", "pnpm", ["run", "test:product-insights"]],
