@@ -775,6 +775,7 @@ export default function ResearchCenterPage({ me }: { me: AdminMe | null }) {
   }, []);
   const financial = researchAccess(me, "research.financials.view");
   const editable = researchAccess(me, "research.edit");
+  const archivable = researchAccess(me, "research.archive");
   function openOrder(id: number) {
     const url = new URL(window.location.href);
     url.searchParams.set("order", String(id));
@@ -823,6 +824,7 @@ export default function ResearchCenterPage({ me }: { me: AdminMe | null }) {
         library={mode === "library"}
         financial={financial}
         editable={editable}
+        archivable={archivable}
         onOpen={openOrder}
       />
     );
@@ -849,6 +851,7 @@ export default function ResearchCenterPage({ me }: { me: AdminMe | null }) {
       <ResearchDashboard
         financial={financial}
         editable={editable}
+        archivable={archivable}
         onOpen={openOrder}
       />
     );

@@ -94,6 +94,7 @@ export function ResearchOrderForm({
     setFieldErrors((current) => ({ ...current, [key]: "" }));
   }
   const save = useMutation({
+    mutationKey: ["research", "order-write", existing?.id ?? "new"],
     mutationFn: () => {
       const payload = researchOrderPayload(
         form,

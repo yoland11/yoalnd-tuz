@@ -36,6 +36,8 @@ import { assertResearchPriceChange, createResearchPaymentRequest, requestResearc
 import { handleResearchAnalytics } from "@/server/research-analytics";
 import { ensureResearchCenterTables } from "@/server/research-center-schema";
 import {getResearchPurchases,linkResearchPurchase} from './research-purchases';
+import { readResearchCanonicalPaymentState, readResearchPendingAmount } from "./research-payment-state";
+import { researchMoney } from "./research-payment-rules";
 
 export type ResearchAdminUser = {
   id: number;
@@ -107,6 +109,7 @@ export const researchOrderSchema = z.object({
   files: z.array(z.object({ title: z.string().trim().min(1).max(300), fileName: z.string().trim().min(1).max(255), fileUrl: z.string().min(1).max(9_000_000), mimeType: optionalString, fileType: z.string().trim().max(80).default("customer_upload") })).max(10).default([]),
 }).superRefine((data,ctx)=>{if(!data.customerId){if(!data.customerName)ctx.addIssue({code:"custom",path:["customerName"],message:"اسم الزبون مطلوب"});if(!data.phone)ctx.addIssue({code:"custom",path:["phone"],message:"رقم الهاتف مطلوب"});}});
 export const researchPatchSchema = z.object({
+  archiveFromActive: z.literal(true).optional(),
   titleEnglish:z.string().trim().max(500).nullable().optional(),academicLevel:academicLevel.nullable().optional(),researchCategory:researchCategory.nullable().optional(),paymentDueDate:nullableDate,
   workflowStage:z.enum(["new","requirements_review","in_progress","quality_review","ready","completed"]).optional(),
   researchType:z.enum(["graduation","diploma","bachelor","master","phd","article","conference","report"]).optional(),
@@ -445,8 +448,9 @@ async function ownedResearchChapter(tx:Executor,chapterId:number,orderId:number)
 }
 async function updateOrder(id:number,raw:unknown,user:ResearchAdminUser) {
   const parsed = researchPatchSchema.safeParse(raw); if (!parsed.success) return {response:structuredError("تحقق من بيانات تحديث البحث",{fieldErrors:fieldErrorsFromZod(parsed.error)})};
-  const {workflowStage,...data} = parsed.data;
+  const {workflowStage,archiveFromActive,...data} = parsed.data;
   if (workflowStage) data.status = RESEARCH_WORKFLOW_STAGES.find(stage=>stage.key===workflowStage)!.targetStatus;
+  if(archiveFromActive&&(data.status!=="archived"||Object.entries(data).some(([key,value])=>key!=="status"&&value!==undefined)))return {response:error("حذف البحث لا يُدمج مع تعديلات أخرى",400)};
   const roles = [["assignedWriterId","writer"],["assignedReviewerId","reviewer"],["assignedProofreaderId","proofreader"],["assignedFormatterId","formatter"],["assignedSupervisorId","supervisor"]] as const;
   const assignmentNames=new Set<string>(roles.map(([key])=>key));
   const needsEdit=Object.entries(data).some(([key,value])=>value!==undefined&&!assignmentNames.has(key)&&!(key==="status"&&value==="archived"));
@@ -457,6 +461,17 @@ async function updateOrder(id:number,raw:unknown,user:ResearchAdminUser) {
   try {
     const saved = await db.transaction(async tx=>{
       const current = await lockedResearchOrder(tx,id);
+      if(archiveFromActive&&current.status==="archived"&&current.archivedAt)return current;
+      if(archiveFromActive) {
+        if(current.status==="delivered"||current.deliveredAt)throw new ResearchOperationError("لا يمكن حذف بحث سبق تسليمه؛ يبقى محفوظاً في سجل الإنجاز والتقارير",409,"RESEARCH_DELETE_DELIVERED");
+        const canonical=await readResearchCanonicalPaymentState(tx,id);
+        const pending=await readResearchPendingAmount(tx,id,canonical.invoiceId);
+        if([canonical.totalAmount,canonical.approvedPaidAmount,canonical.remainingAmount,canonical.creditAmount,pending].some(amount=>researchMoney(amount)>0))throw new ResearchOperationError("الطلب مرتبط بمبالغ أو دفعات؛ راجع حساباته وسوِّ الالتزامات قبل الحذف",409,"RESEARCH_DELETE_FINANCIAL_COMMITMENTS");
+        const blockers=await tx.execute(sql`/* research safe delete:costs */ SELECT EXISTS(SELECT 1 FROM expenses WHERE research_order_id=${id} AND deleted_at IS NULL) OR EXISTS(SELECT 1 FROM purchase_invoices WHERE research_order_id=${id} AND status='active') AS blocked`);
+        const blocked=blockers.rows?.[0]?.blocked;
+        if(typeof blocked!=="boolean")throw new Error("Research delete cost guard did not return a boolean");
+        if(blocked)throw new ResearchOperationError("الطلب مرتبط بمصاريف أو مشتريات؛ راجعها قبل الحذف",409,"RESEARCH_DELETE_COST_COMMITMENTS");
+      }
       if(current.archivedAt&&data.status&&data.status!=='archived'&&!allowed(user,'research.archive'))throw new ResearchOperationError('لا تملك صلاحية استعادة البحث من الأرشيف',403,'PERMISSION_DENIED');
       for(const [key] of roles) if(data[key]) await validateResearchAssignee(tx,data[key]!);
       if(data.status === "delivered" && current.status !== "delivered") {
@@ -477,7 +492,7 @@ async function updateOrder(id:number,raw:unknown,user:ResearchAdminUser) {
           await tx.update(salesInvoiceItemsTable).set({unitPrice:String(estimated),discount:String(discount),total:String(total),productName:`خدمة بحث أكاديمي - ${values.title}`}).where(eq(salesInvoiceItemsTable.invoiceId,current.invoiceId));
         }
       }
-      if(data.status){values.progress=data.progress ?? STATUS_PROGRESS[data.status]; if(data.status==="accepted"&&!current.acceptedAt)values.acceptedAt=new Date();if(data.status==="completed"&&!current.completedAt)values.completedAt=new Date();if(data.status==="delivered"&&!current.deliveredAt)values.deliveredAt=new Date();if(data.status==="archived"&&!current.archivedAt)values.archivedAt=new Date();}
+      if(data.status){values.progress=archiveFromActive ? current.progress : data.progress ?? STATUS_PROGRESS[data.status]; if(data.status==="accepted"&&!current.acceptedAt)values.acceptedAt=new Date();if(data.status==="completed"&&!current.completedAt)values.completedAt=new Date();if(data.status==="delivered"&&!current.deliveredAt)values.deliveredAt=new Date();if(data.status==="archived"&&!current.archivedAt)values.archivedAt=new Date();}
       await tx.update(researchOrdersTable).set(values).where(eq(researchOrdersTable.id,id));
       if(current.invoiceId && data.title!==undefined)await tx.update(salesInvoiceItemsTable).set({productName:`خدمة بحث أكاديمي - ${data.title}`}).where(eq(salesInvoiceItemsTable.invoiceId,current.invoiceId));
       if(current.invoiceId && data.paymentDueDate!==undefined) await tx.update(salesInvoicesTable).set({dueDate:data.paymentDueDate,updatedAt:new Date()}).where(eq(salesInvoicesTable.id,current.invoiceId));

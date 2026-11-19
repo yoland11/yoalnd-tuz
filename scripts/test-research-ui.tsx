@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createElement } from "react";
+import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createRequire } from "node:module";
+import { ResearchOrderTable } from "../src/views/admin/research/overview";
 import {
   researchAccess,
   researchFilterParams,
@@ -23,6 +26,8 @@ import {
 } from "../src/views/admin/research-print";
 import * as researchPrint from "../src/views/admin/research-print";
 import { ResearchOrderActions } from "../src/views/admin/research/order-actions";
+Object.assign(globalThis, { React });
+const { QueryClient, QueryClientProvider } = createRequire(import.meta.url)("@tanstack/react-query") as typeof import("@tanstack/react-query");
 const statementFixture={customer:{name:'طالب <script>',phone:'07700000000'},openingBalance:500,closingBalance:300,documentsRemaining:300,from:'2026-11-01',to:'2026-11-16',entries:[{date:'2026-11-16',reference:'PAY-1',description:'دفعة معتمدة',receivedByName:'المستلم أحمد',debit:0,credit:200,balance:300}]};
 const thermalStatement=researchStudentStatementThermalHtml(statementFixture);
 assert.match(thermalStatement,/كشف حساب الطالب/);assert.ok(!thermalStatement.includes('<script>'));assert.match(thermalStatement,/PAY-1/);
@@ -59,6 +64,10 @@ const reader = {
   permissions: ["research.view"],
   isActive: true,
 };
+const renderResearchRows = (archivable: boolean, archived = false) => renderToStaticMarkup(createElement(QueryClientProvider, { client: new QueryClient() }, createElement(ResearchOrderTable, { items: [{ id: 9, researchNo: "RS-9", title: "بحث الطالب الأصلي", customerName: "محمد علي", status: archived ? "archived" : "new", archivedAt: archived ? "2026-11-19" : null }], financial: false, archivable, onOpen: () => {} })));
+assert.match(renderResearchRows(true), /حذف الطلب RS-9/, "authorized active rows expose an explicit safe-delete action");
+assert.doesNotMatch(renderResearchRows(false), /حذف الطلب/, "read-only rows never expose deletion");
+assert.doesNotMatch(renderResearchRows(true, true), /حذف الطلب/, "already archived rows cannot be deleted again");
 assert.equal(researchAccess(reader, "research.financials.view"), false);
 assert.equal(
   researchAccess({ ...reader, permissions: ["research"] }, "research.edit"),

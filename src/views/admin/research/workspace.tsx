@@ -53,6 +53,7 @@ import {
 import { ResearchOrderForm } from "./order-form";
 import { ResearchFinancialPanel } from "./finance";
 import { ResearchOrderActions } from "./order-actions";
+import { ResearchDeleteAction } from "./delete-action";
 
 export function ResearchWorkspace({
   id,
@@ -74,6 +75,7 @@ export function ResearchWorkspace({
   const financial = researchAccess(me, "research.financials.view");
   const editable = researchAccess(me, "research.edit");
   const patch = useMutation({
+    mutationKey: ["research", "order-write", id],
     mutationFn: (changes: ResearchRecord) =>
       researchFetch(`/orders/${id}`, {
         method: "PATCH",
@@ -117,7 +119,7 @@ export function ResearchWorkspace({
       <div className="flex flex-col gap-5">
       <Panel
         title="طباعة ومشاركة الطلب"
-        action={<div className="flex flex-wrap gap-2"><ResearchOrderActions order={order} financial={financial} assignments={data.assignments} /></div>}
+        action={<div className="flex flex-wrap gap-2"><ResearchOrderActions order={order} financial={financial} assignments={data.assignments} /><ResearchDeleteAction order={order} archivable={researchAccess(me, "research.archive")} onDeleted={onClose} disabled={patch.isPending} /></div>}
       >
         <p className="text-sm text-muted-foreground">الطباعة والمشاركة تعتمد آخر نسخة محفوظة؛ احفظ تعديلاتك أولاً لتظهر فيها.</p>
       </Panel>
@@ -161,6 +163,7 @@ export function ResearchWorkspace({
               </Button>
             )}
             <ResearchOrderActions order={order} financial={financial} assignments={data.assignments} />
+            <ResearchDeleteAction order={order} archivable={researchAccess(me, "research.archive")} onDeleted={onClose} disabled={patch.isPending} />
           </div>
         }
       >

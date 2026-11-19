@@ -24,6 +24,12 @@ assert.ok(queries.some(q=>q.sql.includes('Asia/Baghdad')), 'day boundaries must 
 const hidden=await readResearchOrders(executor,parseResearchFilters(new URLSearchParams()),false,'2026-11-16');
 assert.equal(Object.hasOwn(hidden.items[0],'paidAmount'),false);assert.equal(Object.hasOwn(hidden.items[0],'pendingAmount'),false);
 assert.equal(Object.hasOwn(hidden.items[0],'financialStatus'),false);
+const archivedStart=queries.length;
+await readResearchOrders(executor,parseResearchFilters(new URLSearchParams('status=archived')),true,'2026-11-16');
+assert.ok(queries.slice(archivedStart).some(query=>query.sql.includes('r.archived_at IS NOT NULL')),'deleted orders stay reachable through the existing archived filter');
+const accountStart=queries.length;
+await readResearchOrders(executor,parseResearchFilters(new URLSearchParams()),true,'2026-11-16',true);
+assert.ok(queries.slice(accountStart).every(query=>!query.sql.includes('r.archived_at IS NULL')),'existing financial account reads keep archived research liabilities');
 await assert.rejects(()=>readResearchOrders(executor,parseResearchFilters(new URLSearchParams('financialStatus=overdue')),false),/صلاحية/);
 const before=queries.length; const board=await readResearchBoard(executor,parseResearchFilters(new URLSearchParams()),false,'2026-11-16');
 assert.equal(board.columns.length,6);assert.ok(queries.slice(before).every(q=>!q.sql.includes('INSERT')&&!q.sql.includes('UPDATE')));

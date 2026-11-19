@@ -31,6 +31,7 @@ import { formatCurrency } from "@/lib/money";
 import { useToast } from "@/hooks/use-toast";
 import { apiErrorMessage } from "../_lib";
 import { researchFilterParams, type ResearchFilters } from "./ui-model";
+import { ResearchDeleteAction } from "./delete-action";
 import {
   Choice,
   dateText,
@@ -51,10 +52,12 @@ export function ResearchDashboard({
   financial,
   onOpen,
   editable,
+  archivable = false,
 }: {
   financial: boolean;
   onOpen: (id: number) => void;
   editable: boolean;
+  archivable?: boolean;
 }) {
   const query = useQuery<ResearchRecord>({
     queryKey: ["research", "dashboard"],
@@ -120,6 +123,7 @@ export function ResearchDashboard({
       <ResearchOrders
         financial={financial}
         editable={editable}
+        archivable={archivable}
         onOpen={onOpen}
         compact
       />
@@ -139,6 +143,7 @@ export function ResearchDashboard({
             items={data.recent}
             financial={financial}
             onOpen={onOpen}
+            archivable={archivable}
           />
         </Panel>
         <Panel
@@ -186,10 +191,12 @@ export function ResearchOrderTable({
   items,
   financial,
   onOpen,
+  archivable = false,
 }: {
   items: ResearchRecord[];
   financial: boolean;
   onOpen: (id: number) => void;
+  archivable?: boolean;
 }) {
   if (!items?.length) return <ResearchEmpty />;
   return (
@@ -204,6 +211,7 @@ export function ResearchOrderTable({
             <TableHead>الحالة</TableHead>
             <TableHead>الإنجاز</TableHead>
             {financial && <TableHead>المتبقي</TableHead>}
+            {archivable && <TableHead>الإجراءات</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -253,6 +261,7 @@ export function ResearchOrderTable({
                   </bdi>
                 </TableCell>
               )}
+              {archivable && <TableCell><ResearchDeleteAction order={order} archivable={archivable} /></TableCell>}
             </TableRow>
           ))}
         </TableBody>
@@ -266,12 +275,14 @@ export function ResearchOrders({
   compact = false,
   financial,
   editable,
+  archivable = false,
   onOpen,
 }: {
   library?: boolean;
   compact?: boolean;
   financial: boolean;
   editable: boolean;
+  archivable?: boolean;
   onOpen: (id: number) => void;
 }) {
   const [filters, setFilters] = useState<ResearchFilters>({
@@ -351,6 +362,7 @@ export function ResearchOrders({
           columns={query.data.columns}
           financial={financial}
           editable={editable}
+          archivable={archivable}
           onOpen={onOpen}
         />
       ) : (
@@ -359,6 +371,7 @@ export function ResearchOrders({
             items={query.data.items}
             financial={financial}
             onOpen={onOpen}
+            archivable={archivable}
           />
         </Panel>
       )}
@@ -382,18 +395,21 @@ function ResearchBoard({
   columns,
   financial,
   editable,
+  archivable,
   onOpen,
   onStage,
 }: {
   columns: ResearchRecord[];
   financial: boolean;
   editable: boolean;
+  archivable: boolean;
   onOpen: (id: number) => void;
   onStage: (stage: string) => void;
 }) {
   const { toast } = useToast();
   const cache = useQueryClient();
   const move = useMutation({
+    mutationKey: ["research", "order-write"],
     mutationFn: ({ id, status }: { id: number; status: string }) =>
       researchFetch(`/orders/${id}`, {
         method: "PATCH",
@@ -482,6 +498,7 @@ function ResearchBoard({
                     onChange={(status) => move.mutate({ id: order.id, status })}
                   />
                 )}
+                <div className="flex justify-end"><ResearchDeleteAction order={order} archivable={archivable} disabled={move.isPending} /></div>
               </article>
             ))
           ) : (
