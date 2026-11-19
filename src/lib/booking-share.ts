@@ -15,6 +15,7 @@ export type SharePhoto = BookingWorkspacePhoto;
 export type PreparedSharePhoto = SharePhoto & { dataUrl: string };
 export type ShareFinancialSummary = { source: string; id: number; finalTotal: number; paid: number; remaining: number; paymentStatus: string };
 const SERVICES: Record<string, string> = { kosha: "الكوشة", photography: "التصوير", sound: "الصوتيات", flowers: "الورد", gifts: "الهدايا", graduation: "التخرج", led: "شاشات LED", transportation: "النقل", decorations: "الديكور" };
+export const bookingShareServiceLabel = (type: string) => SERVICES[type] || type;
 
 /** Map the existing canonical read. Do not reconstruct balances or trust card snapshots. */
 export function bookingShareWithFinancialSummary(booking: ShareBooking, input: unknown): ShareBooking {

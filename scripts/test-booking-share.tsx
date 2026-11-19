@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import * as share from "../src/lib/booking-share";
+import * as documents from "../src/lib/booking-share-documents";
 import { prepareBookingShareCards } from "../src/lib/booking-share-image";
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -19,6 +20,22 @@ assert.equal(typeof share.bookingShareWithFinancialSummary,"function","Sharing m
 const authoritative={source:"service",id:151,finalTotal:200000,paid:50000,remaining:150000,paymentStatus:"partial"};
 const approvedBooking=share.bookingShareWithFinancialSummary(booking,authoritative);
 assert.equal(approvedBooking.total,200000);assert.equal(approvedBooking.paid,50000);assert.equal(approvedBooking.remaining,150000);
+const receipt = documents.bookingShareReceiptHtml(approvedBooking, "ملاحظة مرسلة");
+assert.match(receipt,/ajn-r--a5/);assert.match(receipt,/وصل حجز/);assert.match(receipt,/200,000/);assert.match(receipt,/50,000/);assert.match(receipt,/150,000/);assert.doesNotMatch(receipt,/500,000|PRIVATE|SECRET|admin\//);
+const prepInput={source:"service",id:151,items:[{key:"p:8",name:"ورد <أحمر>",department:"flowers",kind:"product",required:12,available:44,status:"ready",preparationState:null,note:"PRIVATE-NOTE",unitPrice:987654,assigneeName:"PRIVATE-STAFF",qrToken:"SECRET-QR"},{key:"a:9",name:"سماعة الحجز",department:"sound",kind:"asset",required:2,sku:"AJN-A0009",status:"shortage",preparationState:"preparing"},{key:"manual:1",name:"إضافة يدوية",department:"other",kind:"manual",required:1,infoOnly:true,status:"note"}]};
+const preparation=documents.bookingSharePreparation(booking,prepInput);
+assert.equal(preparation.items.length,3);
+assert.doesNotMatch(JSON.stringify(preparation),/PRIVATE|SECRET|987654|available/);
+for(const bad of [null,{...prepInput,id:152},{...prepInput,source:"kosha"},{...prepInput,items:null},{...prepInput,items:[{name:"سماعة",required:null}]},{...prepInput,items:[{name:"سماعة",required:false}]},{...prepInput,items:[{name:"سماعة",required:-1}]}])assert.throws(()=>documents.bookingSharePreparation(booking,bad),/التجهيز/);
+const prepPages=documents.bookingSharePreparationHtml(booking,preparation);
+assert.equal(prepPages.length,1);assert.match(prepPages[0],/قائمة التجهيز/);assert.match(prepPages[0],/ورد &lt;أحمر&gt;/);assert.match(prepPages[0],/سماعة الحجز/);assert.match(prepPages[0],/إضافة يدوية/);assert.match(prepPages[0],/لم يُؤكّد التجهيز/);assert.match(prepPages[0],/قيد التجهيز/);assert.doesNotMatch(prepPages[0],/PRIVATE|SECRET|987654|500,000|200,000|300,000/);
+assert.match(documents.bookingSharePreparationHtml(booking,documents.bookingSharePreparation(booking,{source:"service",id:151,items:[]}))[0],/لا توجد عناصر تجهيز/);
+const manyPrep=documents.bookingSharePreparation(booking,{...prepInput,items:Array.from({length:25},(_,index)=>({name:`مادة تجهيز ${index}`,department:"other",required:index+1,status:"ready"}))});
+assert.equal(documents.bookingSharePreparationHtml(booking,manyPrep).length,3);assert.match(documents.bookingSharePreparationHtml(booking,manyPrep)[2],/مادة تجهيز 24/);
+const damagedPrep=documents.bookingSharePreparation(booking,{...prepInput,items:[{name:"أصل تالف",required:1,status:"damaged",preparationState:"damaged"},{name:"أصل مفقود",required:1,status:"lost",preparationState:"lost"}]});
+const damagedPage=documents.bookingSharePreparationHtml(booking,damagedPrep)[0];assert.match(damagedPage,/تالف/);assert.match(damagedPage,/مفقود/);assert.doesNotMatch(damagedPage,/لم يُؤكّد التجهيز/);
+assert.match(prepPages[0],/حالة القائمة/);assert.doesNotMatch(prepPages[0],/الحالة: متوفر/);
+assert.match(documents.bookingShareReceiptHtml({...approvedBooking,raw:{customFields:{contractNumber:'CON-123'}}},''),/CON-123/);
 for(const bad of [undefined,{...authoritative,source:"kosha"},{...authoritative,id:152},{...authoritative,paid:null}])assert.throws(()=>share.bookingShareWithFinancialSummary(booking,bad),/المالي/);
 for (const value of ["500,000", "200,000", "300,000"]) assert.ok(financial.includes(value));
 assert.throws(() => share.bookingShareText({ ...booking, paid: NaN }, true, ""), /المالية/);
@@ -51,6 +68,16 @@ const itemCards=await prepareBookingShareCards({booking:{...booking,bookedItems:
 assert.equal(itemCards.length,3);assert.match(lastItemHtml,/عنصر 44/);assert.doesNotMatch(lastItemHtml,/عنصر 0</);
 await assert.rejects(prepareBookingShareCards({booking,financial:false,note:"",photos,signal,onProgress(){}},{loadPhoto:async()=>{throw Error("image unavailable")},render:async()=>{throw Error("must not render a partial card")}}),/image unavailable/);
 const abort = new AbortController();
+const attachmentProgress: number[] = [],attachmentHtml: string[] = [];
+const attachmentFiles=await prepareBookingShareCards({booking:approvedBooking,financial:true,note:"",photos:[],receipt:true,preparation:manyPrep,signal,onProgress:done=>attachmentProgress.push(done)},{loadPhoto:async()=>{throw Error("no photos selected")},render:async html=>{attachmentHtml.push(html);return new Blob(["png"],{type:"image/png"})}});
+assert.equal(attachmentFiles.length,5);assert.equal(attachmentProgress.at(-1),5);
+assert.deepEqual(attachmentFiles.map(file=>file.name),['AJN-151-1.png','AJN-151-receipt.png','AJN-151-preparation-1.png','AJN-151-preparation-2.png','AJN-151-preparation-3.png']);
+assert.match(attachmentHtml[1],/50,000/);assert.match(attachmentHtml.at(-1)!,/مادة تجهيز 24/);assert.ok(attachmentHtml.slice(2).every(html=>!/(50,000|200,000|150,000|PRIVATE|SECRET)/.test(html)));
+assert.equal(documents.bookingShareFileLabel(attachmentFiles[1].name,1),'صورة وصل الحجز');assert.equal(documents.bookingShareFileLabel(attachmentFiles[4].name,4),'قائمة التجهيز — الجزء 3');
+await assert.rejects(prepareBookingShareCards({booking,financial:false,note:"",photos:[],receipt:true,signal,onProgress(){}},{loadPhoto:async()=>"",render:async()=>{throw Error("must not render without financial inclusion")}}),/الوصل/);
+let attemptedDocuments=0;
+await assert.rejects(prepareBookingShareCards({booking:approvedBooking,financial:true,note:"",photos:[],receipt:true,preparation,signal,onProgress(){}},{loadPhoto:async()=>"",render:async()=>{if(++attemptedDocuments===2)throw Error("receipt capture failed");return new Blob(["png"])}}),/receipt capture failed/);
+assert.equal(attemptedDocuments,2,'a selected document failure rejects the complete bundle');
 await assert.rejects(prepareBookingShareCards({booking,financial:false,note:"",photos:[],signal:abort.signal,onProgress(){}},{loadPhoto:async()=>"",render:async()=>{abort.abort();return new Blob(["png"])}}),{name:"AbortError"});
 
 // Exercise the actual narrow staff-directory read branch. Existing staff API callers

@@ -11,6 +11,7 @@ import { EmployeeSelect } from "@/components/employee-select";
 import { employeeDisplayName, type EmployeeIdentity } from "@/lib/employee-identity";
 import { bookingShareText, bookingShareWhatsAppHref, bookingShareWithFinancialSummary, type ShareBooking, type SharePhoto, type ShareFinancialSummary } from "@/lib/booking-share";
 import { prepareBookingShareCards } from "@/lib/booking-share-image";
+import { bookingShareContractNumber, bookingShareFileLabel, bookingSharePreparation, type SharePreparation } from "@/lib/booking-share-documents";
 import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
 
 export function BookingShareDialog({ booking, photos, photosLoading, photosError, onRetryPhotos, onClose }: {
@@ -21,6 +22,8 @@ export function BookingShareDialog({ booking, photos, photosLoading, photosError
   const [employeeId, setEmployeeId] = useState("");
   const [phone, setPhone] = useState(booking.phone || "");
   const [financial, setFinancial] = useState(true);
+  const [includeReceipt, setIncludeReceipt] = useState(true);
+  const [includePreparation, setIncludePreparation] = useState(true);
   const [note, setNote] = useState("");
   const [selected, setSelected] = useState(() => new Set(photos.map(photo => photo.key)));
   const [files, setFiles] = useState<File[]>([]);
@@ -34,6 +37,7 @@ export function BookingShareDialog({ booking, photos, photosLoading, photosError
   const selectionEdited = useRef(false);
   const finance = useQuery<ShareFinancialSummary>({
     queryKey: ["admin", "booking-operations", booking.source, booking.id, "share-financial-summary"], enabled: financial,
+    staleTime: 0,
     refetchOnWindowFocus: false,
     queryFn: async () => {
       const result = await adminFetch<{ summary: ShareFinancialSummary }>(`/admin/booking-operations/${booking.source}/${booking.id}/finance?summary=1`);
@@ -41,14 +45,22 @@ export function BookingShareDialog({ booking, photos, photosLoading, photosError
       return result.summary;
     },
   });
+  const preparation = useQuery<SharePreparation>({
+    queryKey: ["admin", "booking-operations", booking.source, booking.id, "share-preparation"], enabled: includePreparation,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+    queryFn: async () => bookingSharePreparation(booking, await adminFetch(`/admin/booking-operations/${booking.source}/${booking.id}/preparation`)),
+  });
+  const preparationIdentity = JSON.stringify(includePreparation ? preparation.data : null);
+  const preparationBlocked = includePreparation && (!preparation.isSuccess || preparation.isFetching);
   let preparedBooking = booking, financialDataFailure = "";
   try { if (financial && finance.data) preparedBooking = bookingShareWithFinancialSummary(booking, finance.data); } catch (cause) { financialDataFailure = apiErrorMessage(cause); }
   const photoIdentity = JSON.stringify(photos.map(photo => [photo.key, photo.url, photo.name]));
   const fields = (booking.source === "kosha" ? booking.raw.bookingDetails : booking.raw.customFields) || {};
-  const bookingIdentity = JSON.stringify([booking.number, booking.customerName, booking.phone, booking.eventDate, booking.eventTime, booking.eventType, fields.eventType, booking.hall, booking.services, booking.bookedItems, booking.raw.serviceItems, booking.raw.items, fields.flowerItems, fields.giftItems, fields.soundItems, fields.videoItems, fields.photographyItems, fields.koshaSelection, preparedBooking.total, preparedBooking.paid, preparedBooking.remaining]);
+  const bookingIdentity = JSON.stringify([booking.number, bookingShareContractNumber(booking), booking.customerName, booking.phone, booking.eventDate, booking.eventTime, booking.eventType, fields.eventType, booking.hall, booking.services, booking.bookedItems, booking.raw.serviceItems, booking.raw.items, fields.flowerItems, fields.giftItems, fields.soundItems, fields.videoItems, fields.photographyItems, fields.koshaSelection, preparedBooking.total, preparedBooking.paid, preparedBooking.remaining, preparedBooking.paymentStatus]);
   useEffect(() => { if (recipient === "customer") { setPhone(booking.phone || ""); setFiles([]); } }, [booking.phone, booking.customerName, recipient]);
   useEffect(() => { const available = new Set(photos.map(photo => photo.key)); setSelected(current => selectionEdited.current ? new Set([...current].filter(key => available.has(key))) : available); }, [photoIdentity]);
-  useEffect(() => { controller.current?.abort(); submitting.current = false; setBusy(false); setFiles([]); }, [photoIdentity, bookingIdentity, Boolean(photosError), financial && finance.isFetching]);
+  useEffect(() => { controller.current?.abort(); submitting.current = false; setBusy(false); setFiles([]); }, [photoIdentity, bookingIdentity, Boolean(photosError), financial && finance.isFetching, includeReceipt, includePreparation, preparationIdentity, includePreparation && preparation.isFetching, Boolean(includePreparation && preparation.error)]);
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => { const next = files.map(file => URL.createObjectURL(file)); setUrls(next); return () => next.forEach(url => URL.revokeObjectURL(url)); }, [files]);
   const employees = useQuery<EmployeeIdentity[]>({
@@ -62,16 +74,16 @@ export function BookingShareDialog({ booking, photos, photosLoading, photosError
   if (financial && finance.isError) dataFailure = apiErrorMessage(finance.error);
   const href = bookingShareWhatsAppHref(phone, text);
   const validRecipient = Boolean(href && recipientName && !dataFailure && (!financial || (finance.isSuccess && !finance.isFetching)) && (recipient === "customer" || (!employees.isError && !employees.isPending)));
-  const ready = files.length > 0 && validRecipient && !photosError && !photosLoading;
+  const ready = files.length > 0 && validRecipient && !photosError && !photosLoading && !preparationBlocked;
   const nativeShare = files.length > 0 && typeof navigator !== "undefined" && typeof navigator.share === "function" && navigator.canShare?.({ files });
 
   function reset() { setFiles([]); setFailure(""); setFeedback(""); }
   function close() { controller.current?.abort(); onClose(); }
   async function prepare() {
-    if (submitting.current || !validRecipient || photosLoading || photosError) return;
+    if (submitting.current || !validRecipient || photosLoading || photosError || preparationBlocked) return;
     submitting.current = true; controller.current = new AbortController(); setBusy(true); reset();
     const activeController = controller.current, signal = activeController.signal;
-    try { const result = await prepareBookingShareCards({ booking: preparedBooking, financial, note, photos: photos.filter(photo => selected.has(photo.key)), signal, onProgress: (done, total) => setProgress([done, total]) }); if (!signal.aborted) setFiles(result); }
+    try { const result = await prepareBookingShareCards({ booking: preparedBooking, financial, note, photos: photos.filter(photo => selected.has(photo.key)), receipt: includeReceipt, preparation: includePreparation ? preparation.data : undefined, signal, onProgress: (done, total) => setProgress([done, total]) }); if (!signal.aborted) setFiles(result); }
     catch (cause) { if (!signal.aborted) setFailure(apiErrorMessage(cause)); }
     finally { if (controller.current === activeController) { submitting.current = false; if (!signal.aborted) setBusy(false); } }
   }
@@ -95,7 +107,7 @@ export function BookingShareDialog({ booking, photos, photosLoading, photosError
       <DialogHeader><DialogTitle>إرسال تفاصيل الحجز وصور المحجوزات</DialogTitle><DialogDescription>الحجز {booking.number} · اختر المستلم والصور وراجع المعاينة. تأكيد الإرسال يتم داخل واتساب.</DialogDescription></DialogHeader>
       <FieldGroup className="gap-4">
         <FieldSet disabled={busy}><FieldLegend variant="label">نوع المستلم</FieldLegend>
-          <ToggleGroup type="single" value={recipient} variant="outline" className="justify-start" onValueChange={value => { if (value !== "customer" && value !== "employee") return; setRecipient(value); setPhone(value === "customer" ? booking.phone || "" : ""); setEmployeeId(""); setFinancial(value === "customer"); reset(); }} aria-label="نوع المستلم">
+          <ToggleGroup type="single" value={recipient} variant="outline" className="justify-start" onValueChange={value => { if (value !== "customer" && value !== "employee") return; setRecipient(value); setPhone(value === "customer" ? booking.phone || "" : ""); setEmployeeId(""); setFinancial(value === "customer"); setIncludeReceipt(value === "customer"); reset(); }} aria-label="نوع المستلم">
             <ToggleGroupItem value="customer">الزبون</ToggleGroupItem><ToggleGroupItem value="employee">موظف أختاره</ToggleGroupItem>
           </ToggleGroup>
         </FieldSet>
@@ -107,9 +119,18 @@ export function BookingShareDialog({ booking, photos, photosLoading, photosError
         </Field> : <p className="text-sm font-semibold">الزبون: {booking.customerName}</p>}
         <Field data-invalid={!href || undefined} data-disabled={busy}><FieldLabel htmlFor="booking-share-phone">رقم واتساب المستلم</FieldLabel><Input id="booking-share-phone" type="tel" dir="ltr" aria-invalid={!href} value={phone} disabled={busy} onChange={event => { setPhone(event.target.value); reset(); }} /></Field>
         {!href ? <p role="status" className="text-sm text-destructive">أدخل رقم موبايل عراقي صحيحاً.</p> : null}
-        <Field orientation="horizontal" data-disabled={busy}><input id="booking-share-financial" type="checkbox" checked={financial} disabled={busy} onChange={event => { setFinancial(event.target.checked); reset(); }} /><FieldLabel htmlFor="booking-share-financial">تضمين الإجمالي والمدفوع والمتبقي في النسخة المرسلة</FieldLabel></Field>
+        <Field orientation="horizontal" data-disabled={busy}><input id="booking-share-financial" type="checkbox" checked={financial} disabled={busy} onChange={event => { setFinancial(event.target.checked); if (!event.target.checked) setIncludeReceipt(false); reset(); }} /><FieldLabel htmlFor="booking-share-financial">تضمين الإجمالي والمدفوع والمتبقي في النسخة المرسلة</FieldLabel></Field>
         {financial && finance.isFetching ? <p role="status" className="text-sm text-muted-foreground">جارٍ قراءة المبالغ من حساب الحجز المعتمد…</p> : null}
         {financial && finance.isError ? <div role="alert" className="text-sm text-destructive">تعذر قراءة المبالغ المعتمدة. <Button type="button" variant="outline" onClick={() => void finance.refetch()}>إعادة قراءة الحساب</Button><p>يمكن إلغاء تضمين المبالغ لمشاركة التفاصيل التشغيلية فقط.</p></div> : null}
+        <FieldSet aria-label="مرفقات الحجز الإضافية" className="rounded-lg border p-3">
+          <FieldLegend variant="label">المرفقات مع تفاصيل الحجز والصور</FieldLegend>
+          <Field orientation="horizontal" data-disabled={busy || !financial}><input id="booking-share-receipt" type="checkbox" checked={includeReceipt} disabled={busy || !financial} onChange={event => { setIncludeReceipt(event.target.checked); reset(); }} /><FieldLabel htmlFor="booking-share-receipt">إرفاق صورة وصل الحجز</FieldLabel></Field>
+          {!financial ? <p className="text-xs text-muted-foreground">فعّل تضمين المبالغ المعتمدة لإرفاق صورة الوصل.</p> : null}
+          <Field orientation="horizontal" data-disabled={busy}><input id="booking-share-preparation" type="checkbox" checked={includePreparation} disabled={busy} onChange={event => { setIncludePreparation(event.target.checked); reset(); }} /><FieldLabel htmlFor="booking-share-preparation">إرفاق قائمة التجهيز</FieldLabel></Field>
+          {includePreparation && preparation.isFetching ? <p role="status" className="text-sm text-muted-foreground">جارٍ قراءة قائمة التجهيز الأصلية…</p> : null}
+          {includePreparation && preparation.isError ? <div role="alert" className="text-sm text-destructive">تعذر تحميل قائمة التجهيز. {apiErrorMessage(preparation.error)}<Button type="button" variant="outline" onClick={() => void preparation.refetch()}>إعادة تحميل القائمة</Button></div> : null}
+          {includePreparation && preparation.isSuccess && !preparation.isFetching ? <p className="text-xs text-muted-foreground">{preparation.data.items.length ? `${preparation.data.items.length} عنصر من مواد ومعدات وتجهيزات الحجز.` : "القائمة الأصلية لا تحتوي عناصر تجهيز؛ ستظهر هذه الحالة في المرفق."}</p> : null}
+        </FieldSet>
         <Field data-disabled={busy}><FieldLabel htmlFor="booking-share-note">ملاحظة للمستلم (اختياري)</FieldLabel><Textarea id="booking-share-note" rows={2} maxLength={600} value={note} disabled={busy} onChange={event => { setNote(event.target.value); reset(); }} /></Field>
         <FieldSet className="min-w-0" aria-label="اختيار صور المحجوزات">
           <FieldLegend variant="label">صور المحجوزات ({selected.size} / {photos.length})</FieldLegend>
@@ -119,12 +140,12 @@ export function BookingShareDialog({ booking, photos, photosLoading, photosError
           </label>)}</div> : <p className="text-sm text-muted-foreground">لا توجد صور محجوزات مرتبطة؛ يمكنك تجهيز تفاصيل الحجز وحدها.</p>}
         </FieldSet>
         <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-semibold">معاينة نص التفاصيل</summary><p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7">{text}</p></details>
-        <Button type="button" disabled={!validRecipient || busy || photosLoading || Boolean(photosError)} onClick={() => void prepare()}>{busy ? <Loader2 className="animate-spin" /> : <ImagePlus />} {busy ? `جارٍ التجهيز ${progress[0]} / ${progress[1]}` : "تجهيز التفاصيل والصور"}</Button>
+        <Button type="button" disabled={!validRecipient || busy || photosLoading || Boolean(photosError) || preparationBlocked} onClick={() => void prepare()}>{busy ? <Loader2 className="animate-spin" /> : <ImagePlus />} {busy ? `جارٍ التجهيز ${progress[0]} / ${progress[1]}` : "تجهيز التفاصيل والصور"}</Button>
         {failure || dataFailure ? <p role="alert" className="break-words rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{failure || dataFailure}</p> : null}
         {ready ? <section className="flex flex-col gap-3" aria-label="معاينة الصور الجاهزة للمشاركة">
           <p className="text-sm font-semibold">المستلم: {recipientName} · <bdi>{phone}</bdi> · {files.length} صورة جاهزة</p>
           <p className="text-xs leading-6 text-muted-foreground">رابط واتساب يفتح محادثة الشخص المختار مع النص. انسخ الصور أو نزّلها وأرفقها بنفسك. مشاركة الجهاز تتيح اختيار واتساب والمستلم من هاتفك.</p>
-          <div className="grid gap-3 sm:grid-cols-2">{files.map((file, index) => <article key={file.name} className="flex min-w-0 flex-col gap-2 rounded-xl border p-2">{urls[index] ? <a href={urls[index]} target="_blank" rel="noopener noreferrer"><img src={urls[index]} alt={`معاينة تفاصيل الحجز وصور المحجوزات — الجزء ${index + 1}`} className="max-h-96 w-full object-contain" /></a> : null}<div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" disabled={!urls[index]} onClick={() => download(index)}><Download />حفظ الصورة {index + 1}</Button><Button type="button" size="sm" variant="outline" disabled={typeof ClipboardItem === "undefined" || !navigator.clipboard?.write} onClick={() => void copy(index)}><Copy />نسخ الصورة {index + 1}</Button></div></article>)}</div>
+          <div className="grid gap-3 sm:grid-cols-2">{files.map((file, index) => <article key={file.name} className="flex min-w-0 flex-col gap-2 rounded-xl border p-2"><h3 className="text-sm font-semibold">{bookingShareFileLabel(file.name, index)}</h3>{urls[index] ? <a href={urls[index]} target="_blank" rel="noopener noreferrer"><img src={urls[index]} alt={bookingShareFileLabel(file.name, index)} className="max-h-96 w-full object-contain" /></a> : null}<div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" disabled={!urls[index]} onClick={() => download(index)}><Download />حفظ الصورة {index + 1}</Button><Button type="button" size="sm" variant="outline" disabled={typeof ClipboardItem === "undefined" || !navigator.clipboard?.write} onClick={() => void copy(index)}><Copy />نسخ الصورة {index + 1}</Button></div></article>)}</div>
           <div className="flex flex-wrap gap-2">{href && validRecipient ? <Button asChild><a href={href} target="_blank" rel="noopener noreferrer"><MessageCircle />فتح واتساب للمستلم المختار</a></Button> : null}{nativeShare ? <Button type="button" variant="outline" onClick={() => void shareFiles()}><Share2 />مشاركة الصور من الجهاز</Button> : null}</div>
         </section> : null}
         {feedback ? <p role="status" className="text-sm text-primary">{feedback}</p> : null}

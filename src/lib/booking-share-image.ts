@@ -1,6 +1,7 @@
 import { receiptHtmlToPng } from "./receipt-image";
 import { IMAGE_UPLOAD_CONFIG } from "./image-upload-config";
 import { bookingShareCardHtml, bookingSharePhotoPages, bookingShareItems, type ShareBooking, type SharePhoto } from "./booking-share";
+import { bookingSharePreparationHtml, bookingShareReceiptHtml, type SharePreparation } from "./booking-share-documents";
 
 const cancelled = (signal: AbortSignal) => { if (signal.aborted) throw new DOMException("تم إلغاء التجهيز", "AbortError"); };
 const MAX_IMAGE_UPLOAD_BYTES = IMAGE_UPLOAD_CONFIG.maxSourceBytes;
@@ -29,11 +30,18 @@ export async function readBookingSharePhoto(photo: SharePhoto, signal: AbortSign
 
 export async function prepareBookingShareCards(input: {
   booking: ShareBooking; financial: boolean; note: string; photos: readonly SharePhoto[];
+  receipt?: boolean; preparation?: SharePreparation;
   signal: AbortSignal; onProgress: (completed: number, total: number) => void;
 }, adapters = { loadPhoto: readBookingSharePhoto, render: receiptHtmlToPng }): Promise<File[]> {
   const pages = bookingSharePhotoPages(input.photos), files: File[] = [];
+  if (input.receipt && !input.financial) throw Error("صورة الوصل تحتاج تضمين المبالغ المعتمدة");
+  const name = input.booking.number.replace(/[^\p{L}\p{N}_-]/gu, "-").slice(0, 70) || "booking";
+  const documents = [
+    ...(input.receipt ? [{ name: `${name}-receipt.png`, html: bookingShareReceiptHtml(input.booking, input.note) }] : []),
+    ...(input.preparation === undefined ? [] : bookingSharePreparationHtml(input.booking, input.preparation).map((html, index) => ({ name: `${name}-preparation-${index + 1}.png`, html }))),
+  ];
   while (pages.length < Math.ceil(bookingShareItems(input.booking).length / 20)) pages.push([]);
-  const total = input.photos.length + pages.length; let completed = 0;
+  const total = input.photos.length + pages.length + documents.length; let completed = 0;
   input.onProgress(0, total);
   for (const [index, page] of pages.entries()) {
     const photos = [];
@@ -45,8 +53,14 @@ export async function prepareBookingShareCards(input: {
     cancelled(input.signal);
     const blob = await adapters.render(bookingShareCardHtml(input.booking, input.financial, input.note, photos, index + 1, pages.length));
     cancelled(input.signal);
-    const name = input.booking.number.replace(/[^\p{L}\p{N}_-]/gu, "-").slice(0, 70) || "booking";
     files.push(new File([blob], `${name}-${index + 1}.png`, { type: "image/png" }));
+    input.onProgress(++completed, total);
+  }
+  for (const document of documents) {
+    cancelled(input.signal);
+    const blob = await adapters.render(document.html);
+    cancelled(input.signal);
+    files.push(new File([blob], document.name, { type: "image/png" }));
     input.onProgress(++completed, total);
   }
   return files;
