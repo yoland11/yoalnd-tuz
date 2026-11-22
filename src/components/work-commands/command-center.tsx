@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
+  AlarmClock,
   ArrowRight,
   Building2,
+  CircleCheckBig,
   Camera,
   CheckCheck,
   ClipboardList,
   ClipboardPlus,
   Clapperboard,
   FileText,
+  Filter,
   GraduationCap,
   Hash,
   Inbox,
@@ -25,12 +28,15 @@ import {
   Search,
   Send,
   Settings2,
+  ShieldCheck,
   Pencil,
   Archive,
   Sparkles,
   Square,
+  Timer,
   Trash2,
   Truck,
+  UserRound,
   Users,
   Warehouse,
   X,
@@ -48,17 +54,20 @@ import { PRIORITY_LABELS, type WorkOrderStatus } from "@/lib/work-commands";
 import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
 import { CreateWorkOrderDialog, StaffPicker, type WorkOrderDefaults } from "./create-order-dialog";
 import { WorkSettingsPanel } from "./settings-panel";
-import { OrderDetailsPanel, WorkOrderCard, bookingHref } from "./order-panel";
+import { OrderDetailsPanel, QuickActions, WorkOrderCard, bookingHref } from "./order-panel";
 import {
   Empty,
   Failure,
-  StatusChip,
+  PriorityBadge,
+  StageChip,
   dueText,
   fieldClass,
   formatDateTime,
   formatDay,
+  formatShortDateTime,
   formatTime,
   newClientKey,
+  orderDelay,
   useWorkCatalog,
   useWorkMe,
   useWorkStaff,
@@ -94,6 +103,22 @@ function useMediaQuery(query: string) {
     return () => media.removeEventListener("change", update);
   }, [query]);
   return matches;
+}
+
+/** Width of an element (the board's own width, so an open sidebar counts). */
+function useElementWidth<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    setWidth(node.getBoundingClientRect().width);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, width] as const;
 }
 
 function readParam(name: string) {
@@ -836,8 +861,22 @@ function ChatPanel({
       {openOrders.length ? (
         <div className="flex gap-1.5 overflow-x-auto border-b border-border bg-muted/30 px-3 py-2 [scrollbar-width:thin]" aria-label="أوامر مفتوحة في هذه المحادثة">
           {openOrders.map((order) => (
-            <Button key={order.id} type="button" size="compact" variant="outline" onClick={() => onOpenOrder(order)} className={`max-w-[15rem] shrink-0 gap-1.5 ${order.overdue ? "border-destructive/40" : ""}`}>
-              <StatusChip status={order.status} /><span className="truncate">{order.title}</span>
+            <Button
+              key={order.id}
+              type="button"
+              variant="outline"
+              onClick={() => onOpenOrder(order)}
+              className={`flex h-auto w-[15.5rem] shrink-0 flex-col items-stretch gap-1 rounded-xl px-2.5 py-1.5 text-start ${order.overdue ? "border-destructive/40" : ""}`}
+            >
+              <span className="flex min-w-0 items-center gap-1.5">
+                <StageChip order={order} />
+                <span className="min-w-0 truncate text-xs font-extrabold">{order.title}</span>
+              </span>
+              <span className="flex min-w-0 items-center gap-1 text-[11px] font-normal text-muted-foreground">
+                <UserRound className="h-3 w-3 shrink-0" />
+                <span className="min-w-0 truncate">{order.assigneeNames || "بدون مسؤول"}</span>
+                {order.dueAt ? <span className={`shrink-0 ${order.overdue ? "font-bold text-destructive" : ""}`}>· {dueText(order)}</span> : null}
+              </span>
             </Button>
           ))}
         </div>
@@ -908,18 +947,81 @@ function ChatPanel({
 
 // ─── Board, my orders, search ───────────────────────────────────────────────
 
+type BoardSummary = { created: number; pendingApproval: number; inProgress: number; completed: number; overdue: number };
 type BoardData = {
   stats: { new: number; acknowledged: number; inProgress: number; review: number; completed: number; overdue: number; total: number };
+  summary?: BoardSummary;
   total: number;
   page: number;
   totalPages: number;
   orders: WorkOrder[];
 };
 
-function Board({ onOpenOrder, isWide, canOpenBookings }: { onOpenOrder: (order: WorkOrder) => void; isWide: boolean; canOpenBookings: boolean }) {
-  const [filters, setFilters] = useState({ department: "", staffId: "", priority: "", status: "", from: "", to: "", customer: "", page: 1 });
+/** The five cards; each one is also a filter. */
+const SUMMARY_CARDS: Array<{ stage: string; label: string; field: keyof BoardSummary; icon: typeof Inbox; tone: string }> = [
+  { stage: "created", label: "أوامر جديدة", field: "created", icon: Inbox, tone: "text-primary bg-primary/10" },
+  { stage: "pending_approval", label: "بانتظار الاعتماد", field: "pendingApproval", icon: ShieldCheck, tone: "text-violet-700 bg-violet-500/10 dark:text-violet-300" },
+  { stage: "active", label: "قيد التنفيذ", field: "inProgress", icon: Timer, tone: "text-amber-800 bg-amber-500/12 dark:text-amber-300" },
+  { stage: "completed", label: "مكتملة", field: "completed", icon: CircleCheckBig, tone: "text-emerald-700 bg-emerald-500/12 dark:text-emerald-300" },
+  { stage: "overdue", label: "متأخرة", field: "overdue", icon: AlarmClock, tone: "text-destructive bg-destructive/10" },
+];
+
+const STAGE_FILTERS: Array<{ value: string; label: string }> = [
+  { value: "created", label: "جديد" },
+  { value: "received", label: "تم الاستلام" },
+  { value: "active", label: "قيد التنفيذ" },
+  { value: "pending_approval", label: "بانتظار الاعتماد" },
+  { value: "completed", label: "مكتمل" },
+  { value: "cancelled", label: "ملغي" },
+  { value: "overdue", label: "متأخر" },
+];
+
+const EMPTY_FILTERS = { q: "", department: "", staffId: "", stage: "", priority: "", from: "", to: "", page: 1 };
+
+function summaryOf(data: BoardData | undefined): BoardSummary | undefined {
+  if (!data) return undefined;
+  if (data.summary) return data.summary;
+  const { stats } = data;
+  return { created: stats.new, pendingApproval: stats.review, inProgress: stats.acknowledged + stats.inProgress, completed: stats.completed, overdue: stats.overdue };
+}
+
+function BookingCell({ order, canOpenBookings }: { order: WorkOrder; canOpenBookings: boolean }) {
+  if (!order.customer?.name && !order.booking) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span className="block min-w-0">
+      {order.customer?.name ? <span className="block truncate font-bold" title={order.customer.name}>{order.customer.name}</span> : null}
+      {order.booking ? (
+        canOpenBookings ? (
+          <Link href={bookingHref(order.booking)} className="text-xs font-bold text-primary underline-offset-4 hover:underline">حجز <bdi dir="ltr">#{order.booking.id}</bdi></Link>
+        ) : (
+          <span className="text-xs text-muted-foreground">حجز <bdi dir="ltr" className="tabular-nums">#{order.booking.id}</bdi></span>
+        )
+      ) : null}
+    </span>
+  );
+}
+
+function Board({
+  onOpenOrder,
+  isWide,
+  canOpenBookings,
+  canCreate,
+}: {
+  onOpenOrder: (order: WorkOrder) => void;
+  isWide: boolean;
+  canOpenBookings: boolean;
+  canCreate: boolean;
+}) {
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [query, setQuery] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+  const [creating, setCreating] = useState(false);
   const staff = useWorkStaff(true);
   const catalog = useWorkCatalog();
+  useEffect(() => {
+    const timer = window.setTimeout(() => setFilters((current) => (current.q === query.trim() ? current : { ...current, q: query.trim(), page: 1 })), 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
   const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== "" && value !== null).map(([key, value]) => [key, String(value)]));
   const board = useQuery({
     queryKey: workKeys.dashboard(filters),
@@ -928,84 +1030,170 @@ function Board({ onOpenOrder, isWide, canOpenBookings }: { onOpenOrder: (order: 
     placeholderData: (previous) => previous,
   });
   const set = (patch: Partial<typeof filters>) => setFilters((current) => ({ ...current, page: 1, ...patch }));
-  const stats = board.data?.stats;
-  const tiles: Array<{ key: string; label: string; value: number | undefined; tone?: string }> = [
-    { key: "new", label: "جديدة", value: stats?.new },
-    { key: "accepted", label: "تم استلامها", value: stats?.acknowledged },
-    { key: "in_progress", label: "قيد التنفيذ", value: stats?.inProgress },
-    { key: "review", label: "بانتظار الاعتماد", value: stats?.review },
-    { key: "done", label: "منجزة", value: stats?.completed },
-    { key: "overdue", label: "متأخرة", value: stats?.overdue, tone: "text-destructive" },
-  ];
+  const activeFilters = (["department", "staffId", "stage", "priority", "from", "to"] as const).filter((key) => filters[key]).length;
+  const filtered = activeFilters > 0 || Boolean(filters.q);
+  const clear = () => {
+    setQuery("");
+    setFilters(EMPTY_FILTERS);
+  };
+  const summary = summaryOf(board.data);
+  const orders = board.data?.orders ?? [];
+  // The table needs room for a readable title; below that the same rows show as cards.
+  const [rootRef, rootWidth] = useElementWidth<HTMLDivElement>();
+  const asTable = rootWidth ? rootWidth >= 940 : isWide;
+
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-6" role="group" aria-label="تصفية حسب الحالة">
-        {tiles.map((tile) => {
-          const active = filters.status === tile.key;
+    <div ref={rootRef} className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5" role="group" aria-label="ملخص الأوامر (اضغط للتصفية)">
+        {SUMMARY_CARDS.map((card, index) => {
+          const active = filters.stage === card.stage;
+          const value = summary?.[card.field];
+          const Icon = card.icon;
           return (
-            <Button key={tile.key} type="button" variant="ghost" aria-pressed={active} onClick={() => set({ status: active ? "" : tile.key })} className={`flex h-auto min-h-16 flex-col items-start gap-0.5 rounded-none bg-card px-3 py-2.5 text-start ${active ? "bg-primary/10 hover:bg-primary/12" : ""}`}>
-              <span className={`text-xl font-extrabold tabular-nums ${tile.tone ?? "text-foreground"}`}>{tile.value ?? "—"}</span>
-              <span className="text-xs font-semibold text-muted-foreground">{tile.label}</span>
+            <Button
+              key={card.stage}
+              type="button"
+              variant="outline"
+              aria-pressed={active}
+              onClick={() => set({ stage: active ? "" : card.stage })}
+              className={`flex h-auto min-h-[5.25rem] flex-col items-start justify-between gap-2 rounded-xl p-3 text-start active:scale-[0.98] motion-safe:transition-[transform,background-color,border-color] motion-safe:duration-150 ${active ? "border-primary/50 bg-primary/5 ring-1 ring-primary/30" : ""} ${index === SUMMARY_CARDS.length - 1 ? "max-sm:col-span-2" : ""}`}
+            >
+              <span className="flex w-full items-center justify-between gap-2">
+                <span className="text-xs font-bold text-muted-foreground">{card.label}</span>
+                <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${card.tone}`}><Icon className="h-3.5 w-3.5" /></span>
+              </span>
+              <span className={`text-2xl font-extrabold leading-none tabular-nums ${card.field === "overdue" && value ? "text-destructive" : "text-foreground"}`}>
+                {board.isLoading && value === undefined ? <span className="inline-block h-6 w-8 animate-pulse rounded bg-muted align-middle" /> : value ?? "—"}
+              </span>
             </Button>
           );
         })}
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        <select value={filters.department} onChange={(event) => set({ department: event.target.value })} className={fieldClass} aria-label="القسم">
-          <option value="">كل الأقسام</option>
-          {catalog.departments.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
-        </select>
-        <select value={filters.staffId} onChange={(event) => set({ staffId: event.target.value })} className={fieldClass} aria-label="الموظف">
-          <option value="">كل الموظفين</option>
-          {(staff.data ?? []).map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
-        </select>
-        <select value={filters.priority} onChange={(event) => set({ priority: event.target.value })} className={fieldClass} aria-label="الأولوية">
-          <option value="">كل الأولويات</option>
-          {Object.entries(PRIORITY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-        <label className="flex items-center gap-2 text-xs font-bold text-muted-foreground">من<Input type="date" value={filters.from} onChange={(event) => set({ from: event.target.value })} aria-label="من تاريخ" className="min-h-11 flex-1" dir="ltr" /></label>
-        <label className="flex items-center gap-2 text-xs font-bold text-muted-foreground">إلى<Input type="date" value={filters.to} onChange={(event) => set({ to: event.target.value })} aria-label="إلى تاريخ" className="min-h-11 flex-1" dir="ltr" /></label>
-        <Input value={filters.customer} onChange={(event) => set({ customer: event.target.value })} placeholder="اسم الزبون" aria-label="اسم الزبون" className="col-span-2 min-h-11 sm:col-span-1" />
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-0 flex-1 basis-60">
+            <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input value={query} onChange={(event) => setQuery(event.target.value)} type="search" placeholder="رقم أمر، عنوان، زبون، موظف" aria-label="بحث في أوامر العمل" className="min-h-11 pr-9" />
+          </div>
+          <Button type="button" variant={showFilters || activeFilters ? "selected" : "outline"} className="min-h-11 gap-1.5 lg:hidden" aria-expanded={showFilters} onClick={() => setShowFilters((value) => !value)}>
+            <Filter className="h-4 w-4" />تصفية{activeFilters ? <span className="tabular-nums">({activeFilters})</span> : null}
+          </Button>
+          {canCreate ? (
+            <Button type="button" className="min-h-11 gap-1.5" onClick={() => setCreating(true)}><ClipboardPlus className="h-4 w-4" />إصدار أمر عمل</Button>
+          ) : null}
+        </div>
+        <div className={`grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6 ${showFilters ? "" : "max-lg:hidden"}`}>
+          <select value={filters.department} onChange={(event) => set({ department: event.target.value })} className={fieldClass} aria-label="القسم">
+            <option value="">كل الأقسام</option>
+            {catalog.departments.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+          </select>
+          <select value={filters.staffId} onChange={(event) => set({ staffId: event.target.value })} className={fieldClass} aria-label="الموظف">
+            <option value="">كل الموظفين</option>
+            {(staff.data ?? []).map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+          </select>
+          <select value={filters.stage} onChange={(event) => set({ stage: event.target.value })} className={fieldClass} aria-label="الحالة">
+            <option value="">كل الحالات</option>
+            {STAGE_FILTERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+          <select value={filters.priority} onChange={(event) => set({ priority: event.target.value })} className={fieldClass} aria-label="الأولوية">
+            <option value="">كل الأولويات</option>
+            {Object.entries(PRIORITY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+          <Input type="date" value={filters.from} onChange={(event) => set({ from: event.target.value })} aria-label="أُصدر من تاريخ" placeholder="أُصدر من" className="min-h-11" dir="ltr" />
+          <Input type="date" value={filters.to} onChange={(event) => set({ to: event.target.value })} aria-label="أُصدر إلى تاريخ" placeholder="أُصدر إلى" className="min-h-11" dir="ltr" />
+        </div>
+        <div className="flex min-h-6 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span aria-live="polite">
+            {board.data ? (board.data.total === 1 ? "أمر واحد" : `${board.data.total} أمر`) : board.isLoading ? "جارٍ التحميل…" : ""}
+            {board.isFetching && board.data ? <Loader2 className="ms-1.5 inline h-3 w-3 animate-spin align-[-2px]" /> : null}
+          </span>
+          {filtered ? <Button type="button" variant="link" size="flush" className="border-transparent text-xs" onClick={clear}>مسح البحث والتصفية</Button> : null}
+          <span className="ms-auto max-sm:hidden">التواريخ حسب تاريخ الإصدار · التأخير يُحسب حتى تسليم الموظف</span>
+        </div>
       </div>
 
       {board.isError ? <Failure title="تعذر تحميل لوحة المتابعة" error={board.error} onRetry={() => void board.refetch()} /> : null}
       {staff.isError ? <Failure title="تعذر تحميل قائمة الموظفين للتصفية" error={staff.error} onRetry={() => void staff.refetch()} /> : null}
-      {board.isLoading ? <div className="h-48 animate-pulse rounded-xl bg-muted" aria-busy="true" /> : null}
+
+      {board.isLoading ? (
+        <div className="space-y-2" aria-busy="true" aria-label="جارٍ تحميل الأوامر">
+          {Array.from({ length: 5 }, (_, index) => <div key={index} className="h-14 animate-pulse rounded-xl bg-muted" />)}
+        </div>
+      ) : null}
 
       {board.data ? (
-        board.data.orders.length ? (
-          isWide ? (
-            <div className="overflow-hidden rounded-xl border border-border">
-              <table className="w-full text-sm">
+        orders.length ? (
+          asTable ? (
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
+              <table className="w-full table-fixed text-sm">
+                <colgroup>
+                  <col />
+                  <col className="w-[8rem]" />
+                  <col className="w-[6rem]" />
+                  <col className="w-[7rem]" />
+                  <col className="w-[7.5rem]" />
+                  <col className="w-[5rem]" />
+                  <col className="w-[10rem]" />
+                </colgroup>
                 <thead className="bg-muted/40 text-right text-xs text-muted-foreground">
-                  <tr>{["الأمر", "الزبون", "القسم", "المسؤول", "الحالة", "الموعد", "التأخير", "الحجز"].map((label) => <th key={label} scope="col" className="px-3 py-2.5 font-bold">{label}</th>)}</tr>
+                  <tr>
+                    {["رقم الأمر / العنوان", "الزبون / الحجز", "القسم", "الموظف", "الموعد", "الأولوية", "الحالة والإجراء"].map((label) => <th key={label} scope="col" className="px-3 py-2.5 font-bold">{label}</th>)}
+                  </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {board.data.orders.map((order) => (
-                    <tr key={order.id} className="bg-card hover:bg-muted/30">
-                      <td className="max-w-[18rem] px-3 py-2">
-                        <Button type="button" variant="link" size="flush" onClick={() => onOpenOrder(order)} className="block h-auto max-w-full border-transparent truncate text-start font-extrabold text-foreground">{order.title}</Button>
-                        <span className="text-[11px] tabular-nums text-muted-foreground" dir="ltr">{order.orderNo}</span>
-                        {order.description ? <span className="line-clamp-2 text-xs leading-5 text-muted-foreground" title={order.description}>{order.description}</span> : null}
-                      </td>
-                      <td className="max-w-[10rem] truncate px-3 py-2 font-bold">{order.customer?.name ?? "—"}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{order.departmentLabel}</td>
-                      <td className="max-w-[10rem] truncate px-3 py-2">{order.assigneeNames ?? "—"}</td>
-                      <td className="px-3 py-2"><StatusChip status={order.status} /></td>
-                      <td className={`px-3 py-2 tabular-nums ${order.overdue ? "font-bold text-destructive" : ""}`}>{formatDateTime(order.dueAt)}</td>
-                      <td className="px-3 py-2 tabular-nums">{order.delayMinutes ? <span className="font-bold text-destructive">{order.delayMinutes >= 60 ? `${Math.round(order.delayMinutes / 60)} س` : `${order.delayMinutes} د`}</span> : "—"}</td>
-                      <td className="px-3 py-2">{order.booking ? canOpenBookings ? <Link href={bookingHref(order.booking)} className="font-bold text-primary underline-offset-4 hover:underline"><bdi dir="ltr">#{order.booking.id}</bdi></Link> : <bdi dir="ltr" className="tabular-nums">#{order.booking.id}</bdi> : "—"}</td>
-                    </tr>
-                  ))}
+                  {orders.map((order) => {
+                    const delay = orderDelay(order);
+                    return (
+                      <tr
+                        key={order.id}
+                        className="cursor-pointer align-top hover:bg-muted/30"
+                        onClick={(event) => {
+                          const target = event.target as HTMLElement;
+                          if (!event.currentTarget.contains(target) || target.closest("a,button,input,select,textarea")) return;
+                          onOpenOrder(order);
+                        }}
+                      >
+                        <td className="px-3 py-2.5">
+                          <span className="block text-[11px] font-bold tabular-nums text-muted-foreground"><bdi dir="ltr">{order.orderNo}</bdi></span>
+                          <Button type="button" variant="link" size="flush" onClick={() => onOpenOrder(order)} className="line-clamp-2 h-auto max-w-full whitespace-normal border-transparent text-start font-extrabold leading-6 text-foreground" title={order.title}>{order.title}</Button>
+                          {order.templateLabel ? <span className="block truncate text-xs text-muted-foreground">{order.templateLabel}</span> : null}
+                        </td>
+                        <td className="px-3 py-2.5"><BookingCell order={order} canOpenBookings={canOpenBookings} /></td>
+                        <td className="truncate px-3 py-2.5 text-muted-foreground" title={order.departmentLabel}>{order.departmentLabel}</td>
+                        <td className="truncate px-3 py-2.5 font-semibold" title={order.assigneeNames ?? undefined}>{order.assigneeNames || <span className="font-normal text-muted-foreground">بدون مسؤول</span>}</td>
+                        <td className="px-3 py-2.5">
+                          <span className={`block whitespace-nowrap tabular-nums ${order.overdue ? "font-bold text-destructive" : ""}`} title={order.dueAt ? formatDateTime(order.dueAt) : undefined}>{order.dueAt ? formatShortDateTime(order.dueAt) : "بدون موعد"}</span>
+                          {order.dueAt && order.taskStatus !== "cancelled" ? <span className={`block text-xs leading-5 ${delay ? "font-bold text-destructive" : order.dueSoon ? "font-bold text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`}>{dueText(order)}</span> : null}
+                        </td>
+                        <td className="px-3 py-2.5"><PriorityBadge priority={order.priority} /></td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap items-center gap-1">
+                            <StageChip order={order} />
+                            <QuickActions order={order} onOpen={onOpenOrder} className="justify-start" />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           ) : (
-            <div className="grid gap-2">{board.data.orders.map((order) => <WorkOrderCard key={order.id} order={order} onOpen={onOpenOrder} actionLimit={1} />)}</div>
+            <div className="grid gap-2 md:grid-cols-2">{orders.map((order) => <WorkOrderCard key={order.id} order={order} onOpen={onOpenOrder} actionLimit={1} />)}</div>
           )
         ) : (
-          <Empty>لا توجد أوامر مطابقة للتصفية.</Empty>
+          <Empty
+            action={
+              filtered ? (
+                <Button type="button" variant="outline" size="compact" onClick={clear}>مسح البحث والتصفية</Button>
+              ) : canCreate ? (
+                <Button type="button" size="compact" className="gap-1.5" onClick={() => setCreating(true)}><ClipboardPlus className="h-3.5 w-3.5" />إصدار أول أمر</Button>
+              ) : null
+            }
+          >
+            {filtered ? "لا توجد أوامر مطابقة للبحث أو التصفية." : "لا توجد أوامر عمل بعد."}
+          </Empty>
         )
       ) : null}
 
@@ -1016,6 +1204,8 @@ function Board({ onOpenOrder, isWide, canOpenBookings }: { onOpenOrder: (order: 
           <Button type="button" variant="outline" size="compact" disabled={filters.page >= board.data.totalPages} onClick={() => setFilters((current) => ({ ...current, page: current.page + 1 }))}>التالي</Button>
         </div>
       ) : null}
+
+      {canCreate ? <CreateWorkOrderDialog open={creating} onOpenChange={setCreating} onCreated={(order) => onOpenOrder(order)} /> : null}
     </div>
   );
 }
@@ -1122,11 +1312,14 @@ export function WorkCommandCenter({ mode = "admin" }: { mode?: "admin" | "staff"
   const showBoard = Boolean(me.data);
   const boardIsManagers = Boolean(me.data && (me.data.access.manager || me.data.access.canApprove));
   const showSettings = Boolean(me.data && (me.data.access.canManageCatalog || me.data.access.canGrant));
-  const [tab, setTab] = useState<Tab>(() => {
-    if (typeof window === "undefined") return "chat";
-    const value = new URLSearchParams(window.location.search).get("view");
-    return value === "board" || value === "mine" || value === "search" || value === "settings" ? value : "chat";
+  const [chosenTab, setTab] = useState<Tab | null>(() => {
+    if (typeof window === "undefined") return null;
+    const search = new URLSearchParams(window.location.search);
+    const value = search.get("view");
+    if (value === "board" || value === "mine" || value === "search" || value === "settings" || value === "chat") return value;
+    return search.get("channel") ? "chat" : null;
   });
+  const tab: Tab = chosenTab ?? (boardIsManagers ? "board" : "mine");
   const [channelId, setChannelId] = useState<number | null>(() => readParam("channel"));
   const [orderId, setOrderId] = useState<number | null>(() => readParam("order"));
   const [mobileChat, setMobileChat] = useState(() => Boolean(readParam("channel")));
@@ -1139,7 +1332,7 @@ export function WorkCommandCenter({ mode = "admin" }: { mode?: "admin" | "staff"
 
   const selectTab = (next: Tab) => {
     setTab(next);
-    writeParams({ view: next === "chat" ? null : next });
+    writeParams({ view: next });
   };
   const openChannel = (id: number) => {
     setChannelId(id);
@@ -1218,7 +1411,7 @@ export function WorkCommandCenter({ mode = "admin" }: { mode?: "admin" | "staff"
         </div>
       ) : null}
 
-      {tab === "board" && showBoard ? <Board onOpenOrder={openOrder} isWide={isLarge} canOpenBookings={Boolean(me.data?.access.manager)} /> : null}
+      {tab === "board" && showBoard ? <Board onOpenOrder={openOrder} isWide={isWide} canOpenBookings={Boolean(me.data?.access.manager)} canCreate={Boolean(me.data?.access.canCreate)} /> : null}
       {tab === "mine" ? <MyOrders onOpenOrder={openOrder} /> : null}
       {tab === "search" ? <SearchPanel onOpenOrder={openOrder} onOpenChannel={openChannel} /> : null}
       {tab === "settings" && showSettings ? <WorkSettingsPanel /> : null}

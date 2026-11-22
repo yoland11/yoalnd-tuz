@@ -126,6 +126,8 @@ import {
   workAccess,
   workCommandsReady,
   workOrderAction,
+  addWorkOrderNote,
+  addWorkOrderFiles,
   workOrderChannelNote,
   workOrderCompletionPolicy,
   workOrderDetails,
@@ -50298,6 +50300,17 @@ async function handleAdmin(
         }
         if (parts[4] === "actions" && method === "POST") {
           const b = await body(req);
+          // Notes and files are not status changes; same route, same per-order check.
+          if (b?.action === "note") {
+            const noted = await addWorkOrderNote(db, user, taskId, { body: b?.body ?? b?.notes }, { notify });
+            void logAdminActivity(req, "work_order_note", "task", taskId, {});
+            return json(noted);
+          }
+          if (b?.action === "attach") {
+            const attached = await addWorkOrderFiles(db, user, taskId, { files: b?.files ?? b?.evidence, caption: b?.caption }, { notify, insertMedia });
+            void logAdminActivity(req, "work_order_files", "task", taskId, {});
+            return json(attached);
+          }
           const action = String(b?.action ?? "") as WorkOrderAction;
           if (!(WORK_ORDER_ACTIONS as readonly string[]).includes(action)) return error("إجراء غير معروف", 400);
           const result = await workOrderAction(db, user, taskId, {
@@ -50325,6 +50338,8 @@ async function handleAdmin(
           staffId: optionalPositiveId(params.get("staffId")),
           priority: params.get("priority"),
           status: params.get("status"),
+          stage: params.get("stage"),
+          q: params.get("q"),
           from: params.get("from"),
           to: params.get("to"),
           bookingId: optionalPositiveId(params.get("bookingId")),

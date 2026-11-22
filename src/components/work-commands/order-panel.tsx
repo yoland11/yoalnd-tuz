@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   CalendarClock,
+  Check,
   CheckCircle2,
   Contact,
   Clock3,
@@ -10,32 +11,40 @@ import {
   FileText,
   Hand,
   History,
+  ImagePlus,
   Link2,
   ListChecks,
   Loader2,
+  MoreHorizontal,
   Pencil,
   MessageSquareText,
   PlayCircle,
   RotateCcw,
+  StickyNote,
   UserRound,
   UsersRound,
   XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { TaskFileList, TaskFilePicker, TaskPhotoGallery, TaskPhotoPicker, type TaskFile, type TaskPhoto } from "@/components/task-photo-gallery";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/query-client";
-import { PRIORITY_LABELS, WORK_ORDER_ACTION_LABELS, type WorkOrderAction } from "@/lib/work-commands";
+import { PRIORITY_LABELS, WORK_ORDER_ACTION_LABELS, WORK_ORDER_STAGE_LABELS, workOrderSteps, type WorkOrderAction } from "@/lib/work-commands";
 import { adminFetch, apiErrorMessage } from "@/views/admin/_lib";
 import { StaffPicker } from "./create-order-dialog";
 import {
   Failure,
+  PriorityBadge,
   PriorityChip,
+  StageChip,
   StatusChip,
   dueText,
+  orderDelay,
+  orderStage,
   fieldClass,
   formatDateTime,
   fromLocalInput,
@@ -45,6 +54,7 @@ import {
   useWorkStaff,
   viewerActions,
   workKeys,
+  type WorkMe,
   type WorkOrder,
 } from "./shared";
 
@@ -62,6 +72,8 @@ type OrderDetails = {
 
 /** Actions that need input open a dialog; the rest run with one tap. */
 const DIRECT_ACTIONS: WorkOrderAction[] = ["acknowledge", "start", "approve"];
+/** The step that moves the order forward (receive → start → deliver → approve). */
+const PRIMARY_ACTIONS: WorkOrderAction[] = ["acknowledge", "start", "complete", "approve"];
 const ACTION_ICONS: Partial<Record<WorkOrderAction, typeof CheckCircle2>> = {
   acknowledge: Hand,
   start: PlayCircle,
@@ -79,10 +91,16 @@ export function bookingHref(booking: { type: string; id: number }) {
   return `/admin/bookings/${booking.type === "service_order" ? "service" : "kosha"}/${booking.id}`;
 }
 
+/** Assignee, management or the issuer: the people who may add notes and files (the server re-checks). */
+export function canWorkOnOrder(order: WorkOrder, me: WorkMe | undefined) {
+  if (!me) return false;
+  return order.assignedStaffIds.includes(me.user.id) || me.access.canApprove || order.createdBy === me.user.id;
+}
+
 export function useOrderAction(orderId: number) {
   const { toast } = useToast();
   return useMutation({
-    mutationFn: (payload: Record<string, unknown> & { action: WorkOrderAction }) =>
+    mutationFn: (payload: Record<string, unknown> & { action: WorkOrderAction | "note" | "attach" }) =>
       adminFetch<{ order: WorkOrder; label: string }>(`/admin/work-commands/orders/${orderId}/actions`, { method: "POST", body: JSON.stringify(payload) }),
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["work-commands"] });
@@ -99,19 +117,25 @@ export function ActionButtons({
   onDialog,
   compact = false,
   limit,
+  large = false,
+  inline = false,
 }: {
   order: WorkOrder;
   actions: WorkOrderAction[];
   onDialog: (action: WorkOrderAction) => void;
   compact?: boolean;
   limit?: number;
+  /** Full-height buttons for the main step in the details panel. */
+  large?: boolean;
+  /** Buttons join the surrounding row instead of wrapping in their own. */
+  inline?: boolean;
 }) {
   const run = useOrderAction(order.id);
   const shown = typeof limit === "number" ? actions.slice(0, limit) : actions;
   if (!shown.length) return null;
-  const primary: WorkOrderAction[] = ["acknowledge", "start", "complete", "approve"];
+  const primary: WorkOrderAction[] = PRIMARY_ACTIONS;
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div className={inline ? "contents" : "flex flex-wrap gap-1.5"}>
       {shown.map((action) => {
         const Icon = ACTION_ICONS[action] ?? CheckCircle2;
         const busy = run.isPending && run.variables?.action === action;
@@ -119,10 +143,10 @@ export function ActionButtons({
           <Button
             key={action}
             type="button"
-            size="compact"
+            size={large ? "lg" : "compact"}
             variant={primary.includes(action) ? "default" : action === "cancel" ? "destructive" : "outline"}
             disabled={run.isPending}
-            className={compact ? "gap-1.5 px-2.5" : "gap-1.5"}
+            className={compact ? "gap-1.5 px-2.5" : large ? "gap-2 max-sm:flex-1" : "gap-1.5"}
             onClick={() => (DIRECT_ACTIONS.includes(action) ? run.mutate({ action }) : onDialog(action))}
           >
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5" />}
@@ -273,7 +297,7 @@ export function WorkOrderCard({ order, onOpen, actionLimit = 2 }: { order: WorkO
     <article className={`w-full rounded-xl border bg-card p-3 shadow-[0_1px_2px_hsl(var(--foreground)/0.06)] ${order.overdue ? "border-destructive/40" : "border-border"}`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] font-bold tabular-nums text-muted-foreground" dir="ltr">{order.orderNo}</span>
-        <StatusChip status={order.status} />
+        <StageChip order={order} />
         {order.overdue ? <span className="rounded-full bg-destructive px-2 py-0.5 text-[11px] font-bold text-destructive-foreground">متأخر</span> : order.dueSoon ? <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-800 dark:text-amber-300">قريب الموعد</span> : null}
         <span className="ms-auto text-[11px] text-muted-foreground">{order.departmentLabel}</span>
       </div>
@@ -282,7 +306,7 @@ export function WorkOrderCard({ order, onOpen, actionLimit = 2 }: { order: WorkO
       </Button>
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1"><UserRound className="h-3.5 w-3.5" />{order.assigneeNames || "—"}</span>
-        <span className={`inline-flex items-center gap-1 ${order.overdue ? "font-bold text-destructive" : order.dueSoon ? "font-bold text-amber-700 dark:text-amber-300" : ""}`}><Clock3 className="h-3.5 w-3.5" />{dueText(order)}</span>
+        <span className={`inline-flex items-center gap-1 ${order.overdue || orderDelay(order) ? "font-bold text-destructive" : order.dueSoon ? "font-bold text-amber-700 dark:text-amber-300" : ""}`}><Clock3 className="h-3.5 w-3.5" />{dueText(order)}</span>
         <PriorityChip priority={order.priority} />
       </div>
       <CustomerLine order={order} className="mt-1.5" />
@@ -404,6 +428,151 @@ export function EditOrderDialog({ order, open, onClose }: { order: WorkOrder; op
   );
 }
 
+/** Board row: the next step as one button, the rest in a menu. */
+export function QuickActions({ order, onOpen, className = "justify-end" }: { order: WorkOrder; onOpen: (order: WorkOrder) => void; className?: string }) {
+  const me = useWorkMe();
+  const run = useOrderAction(order.id);
+  const [dialog, setDialog] = useState<WorkOrderAction | null>(null);
+  const actions = viewerActions(order, me.data);
+  const next = actions.find((action) => PRIMARY_ACTIONS.includes(action));
+  const rest = actions.filter((action) => action !== next);
+  const trigger = (action: WorkOrderAction) => (DIRECT_ACTIONS.includes(action) ? run.mutate({ action }) : setDialog(action));
+  const NextIcon = next ? ACTION_ICONS[next] ?? CheckCircle2 : null;
+  return (
+    <div className={`flex items-center gap-1 ${className}`}>
+      {next && NextIcon ? (
+        <Button type="button" size="compact" variant="outline" className="gap-1.5 px-2" disabled={run.isPending} onClick={() => trigger(next)}>
+          {run.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <NextIcon className="h-3.5 w-3.5" />}
+          {WORK_ORDER_ACTION_LABELS[next]}
+        </Button>
+      ) : null}
+      <DropdownMenu dir="rtl">
+        <DropdownMenuTrigger asChild>
+          <Button type="button" size="iconSm" variant="quiet" aria-label={`إجراءات الأمر ${order.orderNo}`}><MoreHorizontal className="h-4 w-4" /></Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-[12rem]">
+          <DropdownMenuItem onSelect={() => onOpen(order)}><FileText />فتح التفاصيل</DropdownMenuItem>
+          {rest.length ? <DropdownMenuSeparator /> : null}
+          {rest.map((action) => {
+            const Icon = ACTION_ICONS[action] ?? CheckCircle2;
+            return (
+              <DropdownMenuItem key={action} onSelect={() => trigger(action)} className={action === "cancel" ? "text-destructive focus:text-destructive" : undefined}>
+                <Icon />{WORK_ORDER_ACTION_LABELS[action]}
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <OrderActionDialog order={order} action={dialog} onClose={() => setDialog(null)} />
+    </div>
+  );
+}
+
+/** Created → received → in progress → (awaiting approval) → completed. */
+export function WorkflowStepper({ order }: { order: WorkOrder }) {
+  const stage = orderStage(order);
+  if (stage === "cancelled")
+    return <p className="rounded-xl bg-muted px-3 py-2.5 text-sm font-bold text-muted-foreground">أُلغي هذا الأمر، ويبقى محفوظاً في السجل.</p>;
+  // Older orders may wait for approval without the flag; still show that step.
+  const steps = workOrderSteps(order.requiresApproval || stage === "pending_approval");
+  const current = steps.indexOf(stage);
+  const finished = stage === "completed";
+  return (
+    <ol className="grid gap-1" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }} aria-label="مراحل الأمر">
+      {steps.map((step, index) => {
+        const done = finished || index < current;
+        const active = !finished && index === current;
+        return (
+          <li key={step} className="relative flex flex-col items-center gap-1.5 text-center" aria-current={active ? "step" : undefined}>
+            {index > 0 ? <span aria-hidden className={`absolute top-3 -start-1/2 h-0.5 w-full ${index <= current ? "bg-primary" : "bg-border"}`} /> : null}
+            <span className={`relative z-[1] grid h-6 w-6 place-items-center rounded-full text-[11px] font-bold tabular-nums ${done ? "bg-primary text-primary-foreground" : active ? "bg-card text-primary ring-2 ring-primary" : "bg-muted text-muted-foreground"}`}>
+              {done ? <Check className="h-3.5 w-3.5" /> : index + 1}
+            </span>
+            <span className={`text-[11px] leading-4 ${active ? "font-extrabold text-foreground" : done ? "font-semibold text-foreground/80" : "text-muted-foreground"}`}>{WORK_ORDER_STAGE_LABELS[step]}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** An internal note on the order (task_comments); the text stays if sending fails. */
+function NoteComposer({ order, inputRef }: { order: WorkOrder; inputRef: React.RefObject<HTMLTextAreaElement | null> }) {
+  const run = useOrderAction(order.id);
+  const [body, setBody] = useState("");
+  const ready = body.trim().length >= 2 && !run.isPending;
+  const submit = () => {
+    if (ready) run.mutate({ action: "note", body: body.trim() }, { onSuccess: () => setBody("") });
+  };
+  return (
+    <div className="space-y-2 rounded-xl border border-border p-2.5 focus-within:border-primary/40">
+      <Textarea
+        ref={inputRef}
+        value={body}
+        onChange={(event) => setBody(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            submit();
+          }
+        }}
+        rows={2}
+        maxLength={2000}
+        placeholder="اكتب ملاحظة للفريق…"
+        aria-label="ملاحظة داخلية"
+        className="min-h-16 resize-y border-0 bg-transparent p-1 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+      />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-[11px] leading-4 text-muted-foreground">تُحفظ في سجل الأمر ويصل إشعار للمسؤول ومُصدر الأمر.</span>
+        <Button type="button" size="compact" className="gap-1.5" disabled={!ready} onClick={submit}>
+          {run.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <StickyNote className="h-3.5 w-3.5" />}إضافة ملاحظة
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Photos or files on an open order: the assignee's become work photos, management's become references. */
+function UploadFilesDialog({ order, open, onClose, asAssignee }: { order: WorkOrder; open: boolean; onClose: () => void; asAssignee: boolean }) {
+  const run = useOrderAction(order.id);
+  const [photos, setPhotos] = useState<TaskPhoto[]>([]);
+  const [files, setFiles] = useState<TaskFile[]>([]);
+  const [caption, setCaption] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    setPhotos([]);
+    setFiles([]);
+    setCaption("");
+  }, [open]);
+  const items = [
+    ...photos.map((item) => ({ url: item.url, thumbnailUrl: item.thumbnailUrl ?? null, fileName: item.fileName ?? null, mediaType: item.mediaType || "image", caption: item.caption || null })),
+    ...files.map((item) => ({ url: item.url, fileName: item.fileName ?? null, mediaType: item.mediaType || "application/pdf", caption: item.caption || null })),
+  ];
+  return (
+    <Dialog open={open} onOpenChange={(next) => (!next && !run.isPending ? onClose() : undefined)}>
+      <DialogContent className="w-[min(calc(100%-2rem),36rem)]">
+        <DialogHeader className="text-start">
+          <DialogTitle className="text-lg font-extrabold">رفع صور أو ملفات</DialogTitle>
+          <DialogDescription className="leading-6">
+            {order.orderNo} · {order.title}. {asAssignee ? "تظهر مع صور العمل في هذا الأمر." : "تظهر للموظف في مرفقات الأمر."}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <TaskPhotoPicker photos={photos} onChange={setPhotos} label="الصور" description={asAssignee ? "صور مراحل العمل أو النتيجة." : "صور مرجعية توضح المطلوب."} disabled={run.isPending} />
+          <TaskFilePicker files={files} onChange={setFiles} disabled={run.isPending} />
+          <Input value={caption} onChange={(event) => setCaption(event.target.value)} maxLength={500} placeholder="وصف قصير (اختياري)" aria-label="وصف المرفقات" className="min-h-11" />
+        </div>
+        <DialogFooter className="gap-2 sm:justify-start">
+          <Button type="button" className="min-h-11 gap-2" disabled={!items.length || run.isPending} onClick={() => run.mutate({ action: "attach", files: items, caption }, { onSuccess: onClose })}>
+            {run.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4" />}رفع
+          </Button>
+          <Button type="button" variant="outline" className="min-h-11" disabled={run.isPending} onClick={onClose}>رجوع</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { orderId: number; onOpenOrder?: (id: number) => void; onOpenChannel?: (channelId: number) => void }) {
   const details = useQuery({
     queryKey: workKeys.order(orderId),
@@ -412,6 +581,8 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
   });
   const [dialog, setDialog] = useState<WorkOrderAction | null>(null);
   const [editing, setEditing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const noteRef = useRef<HTMLTextAreaElement>(null);
   const me = useWorkMe();
 
   if (details.isLoading)
@@ -419,6 +590,7 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
       <div className="space-y-3 p-4" aria-busy="true">
         <div className="h-4 w-24 animate-pulse rounded bg-muted" />
         <div className="h-6 w-3/4 animate-pulse rounded bg-muted" />
+        <div className="h-10 animate-pulse rounded-xl bg-muted" />
         <div className="h-24 animate-pulse rounded-xl bg-muted" />
       </div>
     );
@@ -431,13 +603,25 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
   const evidence = data.attachments.filter((item) => item.category.startsWith("employee_"));
   const asPhoto = (item: OrderDetails["attachments"][number]) => ({ url: item.url, thumbnailUrl: item.thumbnailUrl, fileName: item.fileName, mediaType: item.mediaType, caption: null });
   const isImage = (item: OrderDetails["attachments"][number]) => item.mediaType === "image" || item.mediaType.startsWith("image/");
+  const canWork = canWorkOnOrder(order, me.data);
+  const isAssignee = Boolean(me.data && order.assignedStaffIds.includes(me.data.user.id));
+  const canEdit = Boolean(me.data && (me.data.access.canApprove || order.createdBy === me.data.user.id) && !["completed", "cancelled"].includes(order.taskStatus));
+  const mainActions = data.actions.filter((action) => PRIMARY_ACTIONS.includes(action));
+  const otherActions = data.actions.filter((action) => !PRIMARY_ACTIONS.includes(action));
+  const delay = orderDelay(order);
+  const focusNote = () => {
+    const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    noteRef.current?.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+    noteRef.current?.focus({ preventScroll: true });
+  };
 
   return (
     <div className="space-y-5 p-4">
       <header className="space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-bold tabular-nums text-muted-foreground" dir="ltr">{order.orderNo}</span>
-          <StatusChip status={order.status} />
+          <StageChip order={order} />
+          <PriorityBadge priority={order.priority} />
           {order.overdue ? <span className="rounded-full bg-destructive px-2 py-0.5 text-[11px] font-bold text-destructive-foreground">متأخر</span> : null}
         </div>
         <h2 className="text-lg font-extrabold leading-7 [text-wrap:balance]">{order.title}</h2>
@@ -447,15 +631,7 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
         <CustomerLine order={order} className="pt-1 text-sm" />
       </header>
 
-      <section className="space-y-1.5 rounded-xl bg-muted/60 px-3 py-2.5" aria-label="تعليمات الأمر">
-        <h3 className="flex items-center gap-1.5 text-xs font-extrabold text-muted-foreground"><FileText className="h-3.5 w-3.5" />تعليمات {order.createdByName || "الإدارة"}</h3>
-        {order.description ? <p className="whitespace-pre-line text-sm leading-7 text-foreground">{order.description}</p> : null}
-        {order.notes ? <p className="whitespace-pre-line text-sm leading-7 text-foreground"><b>ملاحظات: </b>{order.notes}</p> : null}
-        {voiceNotes.map((item) => <audio key={item.url} controls preload="none" src={item.url} className="h-10 w-full" aria-label="رسالة صوتية من الإدارة" />)}
-        {!order.description && !order.notes && !voiceNotes.length ? (
-          <p className="text-sm text-muted-foreground">لم تُكتب تعليمات لهذا الأمر.{me.data && (me.data.access.canApprove || order.createdBy === me.data.user.id) ? " أضفها من «تعديل الأمر»." : ""}</p>
-        ) : null}
-      </section>
+      <WorkflowStepper order={order} />
 
       {order.status === "needs_rework" && order.returnReason ? (
         <div className="rounded-xl bg-destructive/10 px-3 py-2.5 text-sm leading-6 text-destructive"><b>يحتاج تعديل:</b> {order.returnReason}</div>
@@ -466,17 +642,36 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-start gap-1.5">
-        <ActionButtons order={order} actions={data.actions} onDialog={setDialog} />
-        {me.data && (me.data.access.canApprove || order.createdBy === me.data.user.id) && !["completed", "cancelled"].includes(order.taskStatus) ? (
-          <Button type="button" variant="outline" size="compact" className="gap-1.5" onClick={() => setEditing(true)}><Pencil className="h-3.5 w-3.5" />تعديل الأمر</Button>
+      {mainActions.length || otherActions.length || canWork || canEdit ? (
+        <section className="space-y-2" aria-label="إجراءات الأمر">
+          {mainActions.length ? <ActionButtons order={order} actions={mainActions} onDialog={setDialog} large /> : null}
+          <div className="flex flex-wrap gap-1.5">
+            {canWork ? <Button type="button" variant="outline" size="compact" className="gap-1.5" onClick={focusNote}><StickyNote className="h-3.5 w-3.5" />إضافة ملاحظة</Button> : null}
+            {canWork && order.taskStatus !== "cancelled" ? <Button type="button" variant="outline" size="compact" className="gap-1.5" onClick={() => setUploading(true)}><ImagePlus className="h-3.5 w-3.5" />رفع صورة</Button> : null}
+            {canEdit ? <Button type="button" variant="outline" size="compact" className="gap-1.5" onClick={() => setEditing(true)}><Pencil className="h-3.5 w-3.5" />تعديل الأمر</Button> : null}
+            <ActionButtons order={order} actions={otherActions} onDialog={setDialog} inline />
+          </div>
+        </section>
+      ) : null}
+
+      <section className="space-y-1.5 rounded-xl bg-muted/60 px-3 py-2.5" aria-label="تعليمات الأمر">
+        <h3 className="flex items-center gap-1.5 text-xs font-extrabold text-muted-foreground"><FileText className="h-3.5 w-3.5" />تعليمات {order.createdByName || "الإدارة"}</h3>
+        {order.description ? <p className="whitespace-pre-line text-sm leading-7 text-foreground">{order.description}</p> : null}
+        {order.notes ? <p className="whitespace-pre-line text-sm leading-7 text-foreground"><b>ملاحظات: </b>{order.notes}</p> : null}
+        {voiceNotes.map((item) => <audio key={item.url} controls preload="none" src={item.url} className="h-10 w-full" aria-label="رسالة صوتية من الإدارة" />)}
+        {!order.description && !order.notes && !voiceNotes.length ? (
+          <p className="text-sm text-muted-foreground">لم تُكتب تعليمات لهذا الأمر.{canEdit ? " أضفها من «تعديل الأمر»." : ""}</p>
         ) : null}
-      </div>
+      </section>
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-border p-3">
         <Fact label="المسؤول">{order.assigneeNames || "—"}</Fact>
         <Fact label="أصدره">{order.createdByName || "—"}</Fact>
-        <Fact label="موعد الإنجاز"><span className={order.overdue ? "text-destructive" : undefined}>{formatDateTime(order.dueAt)}</span><span className="block text-xs font-semibold text-muted-foreground">{dueText(order)}</span></Fact>
+        <Fact label="موعد الإنجاز">
+          <span className={order.overdue ? "text-destructive" : undefined}>{formatDateTime(order.dueAt)}</span>
+          <span className={`block text-xs font-semibold ${delay ? "text-destructive" : "text-muted-foreground"}`}>{dueText(order)}</span>
+        </Fact>
+        {order.submittedAt ? <Fact label="تاريخ التسليم">{formatDateTime(order.submittedAt)}</Fact> : null}
         <Fact label="الأولوية">{PRIORITY_LABELS[order.priority] ?? order.priority}</Fact>
         <Fact label="القسم">{order.departmentLabel}</Fact>
         {order.templateLabel ? <Fact label="نوع الأمر">{order.templateLabel}</Fact> : null}
@@ -547,7 +742,7 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
 
       {evidence.length ? (
         <section className="space-y-2">
-          <h3 className="text-sm font-extrabold">دليل الإنجاز</h3>
+          <h3 className="text-sm font-extrabold">صور العمل ودليل الإنجاز</h3>
           {evidence.some(isImage) ? <TaskPhotoGallery photos={evidence.filter(isImage).map(asPhoto)} /> : null}
           {evidence.some((item) => !isImage(item) && item.mediaType !== "link") ? <TaskFileList files={evidence.filter((item) => !isImage(item) && item.mediaType !== "link").map(asPhoto)} /> : null}
           {evidence.filter((item) => item.mediaType === "link").map((item) => (
@@ -556,17 +751,20 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
         </section>
       ) : null}
 
-      {data.comments.length ? (
+      {data.comments.length || canWork ? (
         <section className="space-y-2">
-          <h3 className="text-sm font-extrabold">ملاحظات</h3>
-          <ul className="space-y-2">
-            {data.comments.map((item, index) => (
-              <li key={`${item.at}-${index}`} className="rounded-lg bg-muted/40 px-3 py-2 text-sm leading-6">
-                <span className="block text-xs font-bold text-muted-foreground">{item.name ?? "—"} · {formatDateTime(item.at)}</span>
-                {item.body}
-              </li>
-            ))}
-          </ul>
+          <h3 className="flex items-center gap-1.5 text-sm font-extrabold"><StickyNote className="h-4 w-4 text-muted-foreground" />ملاحظات داخلية</h3>
+          {data.comments.length ? (
+            <ul className="space-y-2">
+              {data.comments.map((item, index) => (
+                <li key={`${item.at}-${index}`} className="rounded-lg bg-muted/40 px-3 py-2 text-sm leading-6">
+                  <span className="block text-xs font-bold text-muted-foreground">{item.name ?? "—"} · {formatDateTime(item.at)}</span>
+                  <span className="whitespace-pre-line">{item.body}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {canWork ? <NoteComposer order={order} inputRef={noteRef} /> : null}
         </section>
       ) : null}
 
@@ -578,7 +776,7 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
               <li key={`${event.type}-${event.at}-${index}`} className="relative">
                 <span className="absolute -start-[21.5px] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-card bg-primary" aria-hidden />
                 <p className="text-sm font-bold leading-6">{event.title}</p>
-                {event.body ? <p className="text-sm leading-6 text-foreground/80">{event.body}</p> : null}
+                {event.body ? <p className="whitespace-pre-line text-sm leading-6 text-foreground/80">{event.body}</p> : null}
                 <p className="text-[11px] text-muted-foreground">{event.actor ?? "النظام"} · {formatDateTime(event.at)}</p>
               </li>
             ))}
@@ -590,7 +788,7 @@ export function OrderDetailsPanel({ orderId, onOpenOrder, onOpenChannel }: { ord
 
       <OrderActionDialog order={order} action={dialog} onClose={() => setDialog(null)} />
       <EditOrderDialog order={order} open={editing} onClose={() => setEditing(false)} />
+      <UploadFilesDialog order={order} open={uploading} onClose={() => setUploading(false)} asAssignee={isAssignee} />
     </div>
   );
 }
-

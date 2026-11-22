@@ -6,14 +6,19 @@ import {
   catalogDepartment,
   catalogDepartmentLabel,
   catalogProblems,
+  departmentOrderTypes,
   extractWorkOrderFields,
+  formatDuration,
   normalizeCatalog,
   isDueSoon,
   isOverdue,
   subtaskProgress,
   transitionProblem,
   workDepartment,
+  workOrderDelay,
+  workOrderStage,
   workOrderStatus,
+  workOrderSteps,
 } from "../src/lib/work-commands";
 
 // ── 1. Pure rules ────────────────────────────────────────────────────────────
@@ -59,7 +64,48 @@ import {
   assert.deepEqual(unknown.assigneeIds, []);
   assert.ok(unknown.notes.some((note) => note.includes("اختره يدوياً")), "an unknown employee is flagged, never guessed");
   assert.equal(unknown.templateKey, "printing");
-  console.log("PASS  work order rules: departments, statuses, transitions, subtasks, deadlines, text extraction");
+
+  // Delay: running while open, frozen at the employee's delivery (never the later approval).
+  const dueAt = "2026-10-18T08:00:00Z";
+  assert.deepEqual(workOrderDelay({ taskStatus: "in_progress", dueAt }, now), { minutes: 60, running: true });
+  assert.equal(workOrderDelay({ taskStatus: "accepted", dueAt: "2026-10-18T10:00:00Z" }, now), null, "not yet due");
+  assert.equal(workOrderDelay({ taskStatus: "in_progress", dueAt: null }, now), null, "no deadline, no delay");
+  assert.equal(workOrderDelay({ taskStatus: "cancelled", dueAt }, now), null, "cancelled orders stop counting");
+  assert.deepEqual(
+    workOrderDelay({ taskStatus: "completed", dueAt, submittedAt: "2026-10-18T08:30:00Z", completedAt: "2026-10-30T08:00:00Z" }, now),
+    { minutes: 30, running: false },
+    "approved 12 days later, still only 30 minutes late",
+  );
+  assert.equal(workOrderDelay({ taskStatus: "review", dueAt, submittedAt: "2026-10-18T07:00:00Z" }, now), null, "delivered on time, waiting for approval");
+  assert.deepEqual(workOrderDelay({ taskStatus: "completed", dueAt, submittedAt: null, completedAt: "2026-10-18T10:00:00Z" }, now), { minutes: 120, running: false }, "legacy rows without a delivery time use completion");
+  assert.equal(workOrderDelay({ taskStatus: "completed", dueAt, submittedAt: null, completedAt: null }, now), null, "no end time, no invented delay");
+  assert.equal(workOrderDelay({ taskStatus: "in_progress", dueAt: "not a date" }, now), null);
+  assert.equal(formatDuration(1), "دقيقة");
+  assert.equal(formatDuration(45), "45 دقيقة");
+  assert.equal(formatDuration(120), "ساعتان");
+  assert.equal(formatDuration(5 * 60 + 20), "5 ساعات و20 دقيقة");
+  assert.equal(formatDuration(3 * 1440 + 4 * 60), "3 أيام و4 ساعات");
+  assert.ok(!formatDuration(312 * 60).includes("312"), "hundreds of hours read as days");
+
+  // Simplified workflow over the existing statuses (nothing is renamed in the database).
+  assert.deepEqual(
+    (["new", "accepted", "in_progress", "needs_rework", "review", "done", "approved", "cancelled"] as const).map(workOrderStage),
+    ["created", "received", "in_progress", "in_progress", "pending_approval", "completed", "completed", "cancelled"],
+  );
+  assert.deepEqual(workOrderSteps(true), ["created", "received", "in_progress", "pending_approval", "completed"]);
+  assert.deepEqual(workOrderSteps(false), ["created", "received", "in_progress", "completed"]);
+
+  // Work types follow the department, from the same editable catalog.
+  const keys = (department: string) => departmentOrderTypes(DEFAULT_WORK_CATALOG, department).map((item) => item.key);
+  for (const key of ["photo_session", "album_preparation"]) assert.ok(keys("photography").includes(key), key);
+  for (const key of ["equipment_preparation", "kosha_installation", "equipment_return"]) assert.ok(keys("koshas").includes(key), key);
+  for (const key of ["photo_printing", "album_printing", "poster_printing"]) assert.ok(keys("printing").includes(key), key);
+  for (const key of ["driver_assignment", "delivery_confirmation"]) assert.ok(keys("delivery").includes(key), key);
+  assert.ok(!keys("photography").some((key) => keys("koshas").includes(key)), "no type shows under two departments");
+  const switchedOff = normalizeCatalog({ orderTypes: [{ key: "photo_session", active: false }] });
+  assert.ok(!departmentOrderTypes(switchedOff, "photography").some((item) => item.key === "photo_session"), "a switched-off type disappears from the form");
+  assert.ok(switchedOff.orderTypes.some((item) => item.key === "photo_session"), "and stays in the catalog");
+  console.log("PASS  work order rules: departments, statuses, transitions, subtasks, deadlines, text extraction, delay, stages, department work types");
 }
 
 // ── 2. Server module against a SQL-level mock ───────────────────────────────
@@ -67,6 +113,7 @@ const dialect = new PgDialect();
 type Order = {
   id: number; title: string; status: string; assigned: number[]; createdBy: number; dueAt: Date | null; rejection: string | null; approvedBy: number | null;
   channelId: number | null; parentId: number | null; mandatory: boolean; requiresApproval: boolean; evidenceRequired: boolean; pendingDueAt: Date | null;
+  submittedAt?: Date | null; completedAt?: Date | null;
 };
 type Statement = { sql: string; params: unknown[] };
 
@@ -75,6 +122,8 @@ const FORBIDDEN = /\b(stock_movements|warehouse_stock|financial_transactions|cas
 type HarnessOptions = {
   ready?: boolean; orders?: Order[]; idempotent?: number | null; sourceActive?: number | null; evidence?: number; notified?: boolean; lockedStatus?: string;
   catalog?: unknown; booking?: Record<string, unknown> | null; customers?: Record<number, Record<string, unknown>>; openInChannel?: number; staffRows?: Array<Record<string, unknown>>;
+  /** The dashboard query returns every top-level order. */
+  dashboardRows?: boolean;
 };
 function harness(options: HarnessOptions = {}) {
   const statements: Statement[] = [];
@@ -88,7 +137,7 @@ function harness(options: HarnessOptions = {}) {
   const orderRow = (order: Order) => ({
     id: order.id, task_no: `TSK-${String(order.id).padStart(6, "0")}`, title: order.title, description: null, status: order.status, priority: "high", department: "editing",
     task_type: "editing", due_at: order.dueAt, assigned_staff_ids: order.assigned, related_type: "kosha_booking", related_id: 120, notes: null, created_by: order.createdBy,
-    created_at: new Date(), updated_at: new Date(), completed_at: null, approved_by: order.approvedBy, approved_at: null, rejection_reason: order.rejection, submitted_at: null,
+    created_at: new Date(), updated_at: new Date(), completed_at: order.completedAt ?? null, approved_by: order.approvedBy, approved_at: null, rejection_reason: order.rejection, submitted_at: order.submittedAt ?? null,
     channel_id: order.channelId, parent_task_id: order.parentId, mandatory: order.mandatory, template_key: "editing", requires_approval: order.requiresApproval, evidence_required: order.evidenceRequired,
     customer_id: null, customer_name: "أحمد", product_id: null, source_type: null, source_id: null,
     pending_due_at: order.pendingDueAt, pending_due_reason: order.pendingDueAt ? "ضغط عمل" : null, pending_due_by: order.pendingDueAt ? 7 : null, pending_due_requested_at: null,
@@ -145,6 +194,7 @@ function harness(options: HarnessOptions = {}) {
       if (q.includes("WHERE t.id IN (")) return rows(params.map((id) => orders.get(Number(id))).filter(Boolean).map((order) => orderRow(order!)));
       if (q.includes("WHERE w.parent_task_id = $1")) return rows([...orders.values()].filter((order) => order.parentId === Number(params[0])).map(orderRow));
       if (q.includes("t.due_at < now() + interval '2 hours'")) return rows([...orders.values()].filter((order) => ["new", "accepted", "in_progress"].includes(order.status)).map(orderRow));
+      if (options.dashboardRows && q.includes("ORDER BY t.id DESC LIMIT 1000")) return rows([...orders.values()].filter((order) => order.parentId === null).map(orderRow));
       return rows([]);
     }
     if (/^SELECT (type, title, body, actor_name, metadata, created_at FROM entity_timeline|to_jsonb\(a\) AS item FROM task_attachments|c\.body, c\.created_at, COALESCE\(NULLIF\(s\.full_name, ''\), s\.username\) AS name FROM task_comments|id, title, required_quantity, completed_quantity FROM task_checklist_items)/.test(q)) return rows([]);
@@ -513,10 +563,78 @@ async function run() {
     for (const statement of h.statements) assert.doesNotMatch(statement.sql, FORBIDDEN);
   }
 
+  {
+    // Dashboard: five summary cards, stage filters, search, and delays that stop at delivery.
+    const hour = 3_600_000;
+    const at = (offset: number) => new Date(Date.now() + offset);
+    const orders = [
+      baseOrder({ id: 40, status: "completed", approvedBy: 1, dueAt: at(-10 * hour), submittedAt: at(-9 * hour), completedAt: at(0) }),
+      baseOrder({ id: 41, status: "in_progress", dueAt: at(-2 * hour) }),
+      baseOrder({ id: 42, status: "new", dueAt: null }),
+      baseOrder({ id: 43, status: "review", dueAt: at(-5 * hour), submittedAt: at(-6 * hour), requiresApproval: true }),
+      baseOrder({ id: 44, status: "cancelled", dueAt: at(-50 * hour) }),
+    ];
+    const all = await server.dashboard(harness({ orders, dashboardRows: true }).db as any, manager, {});
+    assert.deepEqual(all.summary, { created: 1, pendingApproval: 1, inProgress: 1, completed: 1, overdue: 1 });
+    const byId = new Map(all.orders.map((order: any) => [order.id, order]));
+    assert.equal(byId.get(40)!.delayMinutes, 60, "approved 9 hours after delivery, still one hour late");
+    assert.equal(byId.get(40)!.stage, "completed");
+    assert.equal(byId.get(41)!.delay?.running, true);
+    assert.ok(Math.abs(byId.get(41)!.delayMinutes - 120) <= 1, "an open late order keeps counting");
+    assert.equal(byId.get(42)!.delay, null, "no deadline, no delay");
+    assert.equal(byId.get(43)!.delay, null, "delivered before the deadline");
+    assert.equal(byId.get(44)!.delay, null, "cancelled orders are never late");
+    assert.deepEqual(byId.get(41)!.actions, ["reassign", "cancel"], "rows carry the viewer's actions");
+    const stageIds = async (stage: string) => (await server.dashboard(harness({ orders, dashboardRows: true }).db as any, manager, { stage })).orders.map((order: any) => order.id);
+    assert.deepEqual(await stageIds("overdue"), [41]);
+    assert.deepEqual(await stageIds("active"), [41]);
+    assert.deepEqual(await stageIds("pending_approval"), [43]);
+    assert.deepEqual(await stageIds("completed"), [40]);
+    assert.equal((await server.dashboard(harness({ orders, dashboardRows: true }).db as any, manager, { status: "overdue" })).orders.length, 1, "the old status filter still works");
+    const searching = harness({ orders, dashboardRows: true });
+    await server.dashboard(searching.db as any, manager, { q: "أحمد_%" });
+    const searchSql = searching.statements.find((statement) => statement.sql.includes("ORDER BY t.id DESC LIMIT 1000"))!;
+    assert.ok(searchSql.sql.includes("t.title ILIKE") && searchSql.sql.includes("w.customer_name ILIKE") && searchSql.sql.includes("FROM staff s"), "searches title, customer and employee");
+    assert.ok(searchSql.params.includes("%أحمد\\_\\%%"), "wildcards in the search text are escaped");
+    const byNumber = harness({ orders, dashboardRows: true });
+    await server.dashboard(byNumber.db as any, manager, { q: "TSK-000040" });
+    assert.ok(byNumber.statements.find((statement) => statement.sql.includes("ORDER BY t.id DESC LIMIT 1000"))!.params.includes(40), "an order number also matches the id");
+  }
+  {
+    // Internal notes: assignee or management, into task_comments and the history, the others are told.
+    const h = harness({ orders: [baseOrder()] });
+    const tools = helpers();
+    const noted = await server.addWorkOrderNote(h.db as any, editor, 40, { body: "  الملفات جاهزة على الدرايف  " }, tools);
+    assert.equal(noted.action, "note");
+    const comment = h.statements.find((statement) => statement.sql.startsWith("INSERT INTO task_comments"))!;
+    assert.deepEqual(comment.params, [40, 7, "الملفات جاهزة على الدرايف"]);
+    assert.ok(h.statements.some((statement) => statement.sql.startsWith("INSERT INTO entity_timeline") && statement.params.includes("task_note_added")));
+    assert.deepEqual(tools.notices.map((notice) => [notice.staffId, notice.type, notice.href]), [[1, "work_task_note", "/admin/work-commands?order=40"]], "the issuer hears about it, not the writer");
+    await rejects(server.addWorkOrderNote(harness({ orders: [baseOrder()] }).db as any, photographer, 40, { body: "ملاحظة" }, helpers()), 403, /للموظف المسؤول والإدارة/);
+    await rejects(server.addWorkOrderNote(harness({ orders: [baseOrder()] }).db as any, editor, 40, { body: " " }, helpers()), 422, /اكتب الملاحظة/);
+    for (const statement of h.statements) assert.doesNotMatch(statement.sql, FORBIDDEN);
+  }
+  {
+    // Files: the assignee's are work photos, management's are references; never on a cancelled order.
+    const file = { url: "https://cdn.example.com/work.jpg", mediaType: "image/jpeg" };
+    const pdf = { url: "https://cdn.example.com/brief.pdf", mediaType: "application/pdf", fileName: "brief.pdf" };
+    const h = harness({ orders: [baseOrder()] });
+    const tools = helpers();
+    await server.addWorkOrderFiles(h.db as any, editor, 40, { files: [file, pdf] }, tools);
+    assert.deepEqual(tools.media, [{ taskId: 40, category: "employee_photo", count: 1 }, { taskId: 40, category: "employee_document", count: 1 }]);
+    assert.ok(h.statements.some((statement) => statement.sql.startsWith("INSERT INTO entity_timeline") && statement.params.includes("task_files_added")));
+    const managed = helpers();
+    await server.addWorkOrderFiles(harness({ orders: [baseOrder()] }).db as any, manager, 40, { files: [file] }, managed);
+    assert.deepEqual(managed.media, [{ taskId: 40, category: "manager_photo", count: 1 }]);
+    await rejects(server.addWorkOrderFiles(harness({ orders: [baseOrder({ status: "cancelled" })] }).db as any, editor, 40, { files: [file] }, helpers()), 409, /ملغي/);
+    await rejects(server.addWorkOrderFiles(harness({ orders: [baseOrder()] }).db as any, editor, 40, { files: [] }, helpers()), 422, /اختر صورة/);
+    await rejects(server.addWorkOrderFiles(harness({ orders: [baseOrder()] }).db as any, photographer, 40, { files: [file] }, helpers()), 403, /للموظف المسؤول والإدارة/);
+  }
+
   // Transcription boundary: nothing is configured, nothing is sent anywhere.
   assert.equal(server.transcriptionProvider(), null);
   assert.equal(server.TRANSCRIPTION_UNAVAILABLE.available, false);
-  console.log("PASS  work command server: readiness, access, create, idempotency, transitions, evidence, subtasks, extensions, messages, deadlines, catalog, customer links, issue permission, channel and order edits");
+  console.log("PASS  work command server: readiness, access, create, idempotency, transitions, evidence, subtasks, extensions, messages, deadlines, catalog, customer links, issue permission, channel and order edits, dashboard summary/search/delay, notes, files");
 }
 
 run().catch((error) => {

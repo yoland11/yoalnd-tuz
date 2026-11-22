@@ -15,9 +15,12 @@ import {
   normalizeCatalog,
   subtaskProgress,
   transitionProblem,
+  workOrderDelay,
+  workOrderStage,
   workOrderStatus,
   type WorkCatalog,
   type WorkOrderAction,
+  type WorkOrderStage,
 } from "@/lib/work-commands";
 import { shortBookingNumber } from "@/lib/booking-number";
 
@@ -504,6 +507,10 @@ function orderFromRow(row: any) {
     dueAt: task.dueAt,
     overdue: isOverdue(task),
     dueSoon: isDueSoon(task),
+    stage: workOrderStage(status),
+    submittedAt: iso(row.submitted_at),
+    /** Running while open; frozen at the employee's delivery (not the later approval). */
+    delay: workOrderDelay({ taskStatus: task.status, dueAt: task.dueAt, submittedAt: iso(row.submitted_at), completedAt: iso(row.completed_at) }),
     assignedStaffIds,
     assigneeNames: row.assignee_names ?? null,
     createdBy: row.created_by == null ? null : Number(row.created_by),
@@ -1025,6 +1032,75 @@ export async function workOrderAction(
   return { order: await loadOrder(database, taskId), action: input.action, label: WORK_ORDER_ACTION_LABELS[input.action] };
 }
 
+// ─── Notes and files on an order ────────────────────────────────────────────
+// Same people who may act on the order (assignee, management, the issuer).
+// Notes go to task_comments, files to task_attachments, both into the timeline.
+
+function requireActor(order: WorkOrder, user: WorkUser) {
+  const context = actionContext(order, user);
+  if (!context.isAssignee && !context.canManage) throw new WorkCommandError("الملاحظات والمرفقات للموظف المسؤول والإدارة فقط", 403);
+  return context;
+}
+
+function othersOnOrder(order: WorkOrder, user: WorkUser, type: string, title: string, body: string): Notice[] {
+  const ids = new Set<number>([...order.assignedStaffIds, ...(order.createdBy ? [order.createdBy] : [])]);
+  ids.delete(user.id);
+  return [...ids].map((staffId) => ({
+    audienceType: "staff",
+    staffId,
+    type,
+    title,
+    body,
+    entityType: "task",
+    entityId: order.id,
+    href: order.assignedStaffIds.includes(staffId) ? `/staff?tab=work&order=${order.id}` : `/admin/work-commands?order=${order.id}`,
+  }));
+}
+
+export async function addWorkOrderNote(database: Database, user: WorkUser, taskId: number, input: { body?: unknown }, helpers: { notify: Notifier }) {
+  await requireReady(database);
+  const order = await loadOrder(database, taskId);
+  requireActor(order, user);
+  const body = String(input.body ?? "").trim().slice(0, 2_000);
+  if (body.length < 2) throw new WorkCommandError("اكتب الملاحظة أولاً", 422);
+  await database.transaction(async (tx) => {
+    await tx.execute(sql`INSERT INTO task_comments (task_id, staff_id, body) VALUES (${taskId}, ${user.id}, ${body})`);
+    await tx.execute(sql`UPDATE tasks SET updated_at = now() WHERE id = ${taskId}`);
+    await timeline(tx, taskId, user, "task_note_added", "ملاحظة داخلية", body);
+  });
+  for (const notice of othersOnOrder(order, user, "work_task_note", `ملاحظة من ${user.name}`, `${order.orderNo} · ${body.slice(0, 120)}`)) await helpers.notify(notice);
+  return { order: await loadOrder(database, taskId), action: "note" as const, label: "إضافة ملاحظة" };
+}
+
+export async function addWorkOrderFiles(
+  database: Database,
+  user: WorkUser,
+  taskId: number,
+  input: { files?: unknown; caption?: unknown },
+  helpers: { notify: Notifier; insertMedia: MediaWriter },
+) {
+  await requireReady(database);
+  const order = await loadOrder(database, taskId);
+  const context = requireActor(order, user);
+  if (order.taskStatus === "cancelled") throw new WorkCommandError("الأمر ملغي؛ لا تُضاف له مرفقات", 409);
+  const files = cleanAttachments(input.files);
+  if (!files.length) throw new WorkCommandError("اختر صورة أو ملفاً لرفعه", 422);
+  // The assignee's uploads are work photos (shown with the delivery); management's are references.
+  const owner = context.isAssignee ? "employee" : "manager";
+  const images = files.filter((item) => item.mediaType.startsWith("image"));
+  const videos = files.filter((item) => item.mediaType.startsWith("video/"));
+  const documents = files.filter((item) => !item.mediaType.startsWith("image") && !item.mediaType.startsWith("video/"));
+  await database.transaction(async (tx) => {
+    if (images.length) await helpers.insertMedia(tx, taskId, images, `${owner}_photo`);
+    if (videos.length) await helpers.insertMedia(tx, taskId, videos, `${owner}_video`);
+    if (documents.length) await helpers.insertMedia(tx, taskId, documents, `${owner}_document`);
+    await tx.execute(sql`UPDATE tasks SET updated_at = now() WHERE id = ${taskId}`);
+    await timeline(tx, taskId, user, "task_files_added", files.length === 1 ? "أُضيف مرفق" : `أُضيفت ${files.length} مرفقات`, String(input.caption ?? "").trim().slice(0, 500) || null, { count: files.length });
+  });
+  for (const notice of othersOnOrder(order, user, "work_task_files", `مرفقات جديدة من ${user.name}`, `${order.orderNo} · ${order.title}`)) await helpers.notify(notice);
+  return { order: await loadOrder(database, taskId), action: "attach" as const, label: "رفع مرفقات" };
+}
+
 // ─── Inbox, dashboard, search ───────────────────────────────────────────────
 
 export async function myOrders(executor: Executor, user: WorkUser) {
@@ -1059,6 +1135,10 @@ export type DashboardFilters = {
   staffId?: number | null;
   priority?: string | null;
   status?: string | null;
+  /** A simplified stage (created, received, in_progress, pending_approval, completed, cancelled) or "overdue". */
+  stage?: string | null;
+  /** Order number, title, instructions, customer or employee name. */
+  q?: string | null;
   from?: string | null;
   to?: string | null;
   bookingId?: number | null;
@@ -1077,6 +1157,17 @@ export async function dashboard(executor: Executor, user: WorkUser, filters: Das
   if (day(filters.to)) conditions.push(sql`t.created_at < ${day(filters.to)}::date + 1`);
   if (filters.bookingId) conditions.push(sql`t.related_id = ${filters.bookingId}`);
   if (filters.customer) conditions.push(sql`w.customer_name ILIKE ${`%${filters.customer.replace(/[\\%_]/g, "\\$&")}%`}`);
+  const text = String(filters.q ?? "").trim().slice(0, 120);
+  if (text) {
+    const like = `%${text.replace(/[\\%_]/g, "\\$&")}%`;
+    const number = /^#?(?:TSK-?)?0*(\d{1,9})$/i.exec(text)?.[1];
+    conditions.push(sql`(
+      t.title ILIKE ${like} OR t.task_no ILIKE ${like} OR t.description ILIKE ${like} OR w.customer_name ILIKE ${like}
+      OR EXISTS (SELECT 1 FROM staff s WHERE s.id IN (SELECT jsonb_array_elements_text(t.assigned_staff_ids)::int)
+                 AND COALESCE(NULLIF(s.full_name, ''), s.username) ILIKE ${like})
+      ${number ? sql`OR t.id = ${Number(number)} OR t.related_id = ${Number(number)}` : sql``}
+    )`);
+  }
   const where = sql.join(conditions, sql` AND `);
   const rows = rowsOf(await executor.execute(sql`${ORDER_SELECT} WHERE ${where} ORDER BY t.id DESC LIMIT 1000`));
   let orders = rows.map(orderFromRow);
@@ -1089,22 +1180,32 @@ export async function dashboard(executor: Executor, user: WorkUser, filters: Das
     overdue: orders.filter((order) => order.overdue).length,
     total: orders.length,
   };
-  if (filters.status === "overdue") orders = orders.filter((order) => order.overdue);
+  // The five summary cards of the simplified workflow.
+  const stageCount = (stage: WorkOrderStage) => orders.filter((order) => order.stage === stage).length;
+  const summary = {
+    created: stageCount("created"),
+    pendingApproval: stageCount("pending_approval"),
+    inProgress: stageCount("received") + stageCount("in_progress"),
+    completed: stageCount("completed"),
+    overdue: stats.overdue,
+  };
+  if (filters.status === "overdue" || filters.stage === "overdue") orders = orders.filter((order) => order.overdue);
+  else if (filters.stage === "active") orders = orders.filter((order) => order.stage === "received" || order.stage === "in_progress");
+  else if (filters.stage) orders = orders.filter((order) => order.stage === filters.stage);
   else if (filters.status) orders = orders.filter((order) => order.status === filters.status);
   const page = Math.max(1, Math.floor(filters.page ?? 1));
   const pageSize = 30;
-  const now = Date.now();
   return {
     stats,
+    summary,
     total: orders.length,
     page,
     totalPages: Math.max(1, Math.ceil(orders.length / pageSize)),
     orders: orders.slice((page - 1) * pageSize, page * pageSize).map((order) => ({
       ...order,
-      delayMinutes:
-        order.dueAt && (order.overdue || (order.completedAt && new Date(order.completedAt).getTime() > new Date(order.dueAt).getTime()))
-          ? Math.round(((order.completedAt ? new Date(order.completedAt).getTime() : now) - new Date(order.dueAt).getTime()) / 60_000)
-          : 0,
+      // Kept for older screens; same rule as `delay` (delivery time, not approval time).
+      delayMinutes: order.delay?.minutes ?? 0,
+      actions: allowedActions(actionContext(order, user)),
     })),
   };
 }

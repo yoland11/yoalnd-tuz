@@ -6,11 +6,16 @@ import { adminFetch } from "@/views/admin/_lib";
 import {
   DEFAULT_WORK_CATALOG,
   PRIORITY_LABELS,
+  WORK_ORDER_STAGE_LABELS,
   WORK_ORDER_STATUS_LABELS,
   allowedActions,
   catalogDepartmentLabel,
+  formatDuration,
+  workOrderDelay,
+  workOrderStage,
   type WorkCatalog,
   type WorkOrderAction,
+  type WorkOrderStage,
   type WorkOrderStatus,
 } from "@/lib/work-commands";
 
@@ -55,6 +60,12 @@ export type WorkOrder = {
   source: { type: string; id: number } | null;
   pendingExtension: { dueAt: string | null; reason: string | null; requestedBy: number | null; requestedAt: string | null } | null;
   delayMinutes?: number;
+  /** Simplified workflow stage (server-computed; derived from `status` when absent). */
+  stage?: WorkOrderStage;
+  /** When the employee delivered the work (before any approval). */
+  submittedAt?: string | null;
+  /** Running while open; frozen at delivery. Null when on time, cancelled or without a deadline. */
+  delay?: { minutes: number; running: boolean } | null;
   actions?: WorkOrderAction[];
 };
 
@@ -156,6 +167,51 @@ export function StatusChip({ status }: { status: WorkOrderStatus }) {
   return <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-bold ${STATUS_TONE[status]}`}>{WORK_ORDER_STATUS_LABELS[status]}</span>;
 }
 
+const STAGE_TONE: Record<WorkOrderStage, string> = {
+  created: "bg-primary/10 text-primary",
+  received: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  in_progress: "bg-amber-500/12 text-amber-800 dark:text-amber-300",
+  pending_approval: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
+  completed: "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
+  cancelled: "bg-muted text-muted-foreground",
+};
+
+export function orderStage(order: Pick<WorkOrder, "stage" | "status">): WorkOrderStage {
+  return order.stage ?? workOrderStage(order.status);
+}
+
+/** The simplified status (new · received · in progress · awaiting approval · completed). */
+export function StageChip({ order }: { order: Pick<WorkOrder, "stage" | "status"> }) {
+  const stage = orderStage(order);
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-bold ${STAGE_TONE[stage]}`}>
+      {WORK_ORDER_STAGE_LABELS[stage]}
+      {order.status === "needs_rework" ? <span className="font-semibold opacity-80">· تعديل</span> : null}
+    </span>
+  );
+}
+
+/** Delay, computed the same way as the server (delivery time, never approval time). */
+export function orderDelay(order: Pick<WorkOrder, "delay" | "taskStatus" | "dueAt" | "submittedAt" | "completedAt">) {
+  if (order.delay !== undefined) {
+    // The server's value is a snapshot; a still-running delay keeps counting on screen.
+    if (order.delay?.running) return workOrderDelay({ taskStatus: order.taskStatus, dueAt: order.dueAt }) ?? order.delay;
+    return order.delay;
+  }
+  return workOrderDelay({ taskStatus: order.taskStatus, dueAt: order.dueAt, submittedAt: order.submittedAt ?? null, completedAt: order.completedAt });
+}
+
+const PRIORITY_TONE: Record<string, string> = {
+  urgent: "bg-destructive text-destructive-foreground",
+  high: "bg-destructive/10 text-destructive",
+  medium: "bg-muted text-foreground/80",
+  low: "bg-muted/60 text-muted-foreground",
+};
+
+export function PriorityBadge({ priority }: { priority: string }) {
+  return <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-bold ${PRIORITY_TONE[priority] ?? PRIORITY_TONE.medium}`}>{PRIORITY_LABELS[priority] ?? PRIORITY_LABELS.medium}</span>;
+}
+
 export function PriorityChip({ priority }: { priority: string }) {
   const tone = priority === "urgent" || priority === "high" ? "text-destructive" : priority === "low" ? "text-muted-foreground" : "text-foreground/80";
   return <span className={`text-[11px] font-bold ${tone}`}>أولوية {PRIORITY_LABELS[priority] ?? PRIORITY_LABELS.medium}</span>;
@@ -163,12 +219,20 @@ export function PriorityChip({ priority }: { priority: string }) {
 
 const dateFormat = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 const timeFormat = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { hour: "numeric", minute: "2-digit" });
+const shortDateFormat = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { day: "numeric", month: "numeric", hour: "numeric", minute: "2-digit" });
 const dayFormat = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { weekday: "long", day: "numeric", month: "long" });
 
 export function formatDateTime(value: string | null | undefined) {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? dateFormat.format(date) : "—";
+}
+
+/** «22/11، 10:01 م» for narrow table cells. */
+export function formatShortDateTime(value: string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? shortDateFormat.format(date) : "—";
 }
 
 export function formatTime(value: string | null | undefined) {
@@ -189,14 +253,21 @@ export function formatDay(value: string | null | undefined) {
   return dayFormat.format(date);
 }
 
-/** "متبقي ٣ ساعات" / "متأخر ٢٠ دقيقة" for a deadline. */
-export function dueText(order: Pick<WorkOrder, "dueAt" | "overdue" | "taskStatus">) {
+/**
+ * «متبقي ٣ ساعات» / «متأخر يومان» while open; «سُلّم متأخراً ٥ ساعات» once delivered
+ * late; «سُلّم في الموعد» otherwise. No deadline → «بدون موعد», never a delay.
+ */
+export function dueText(order: Pick<WorkOrder, "dueAt" | "overdue" | "taskStatus"> & Partial<Pick<WorkOrder, "delay" | "submittedAt" | "completedAt">>) {
   if (!order.dueAt) return "بدون موعد";
-  if (!["new", "accepted", "in_progress"].includes(order.taskStatus)) return `الموعد ${formatDateTime(order.dueAt)}`;
-  const minutes = Math.round((new Date(order.dueAt).getTime() - Date.now()) / 60_000);
-  const span = (value: number) =>
-    value < 60 ? `${value} دقيقة` : value < 48 * 60 ? `${Math.round(value / 60)} ساعة` : `${Math.round(value / 1440)} يوم`;
-  return minutes < 0 ? `متأخر ${span(-minutes)}` : `متبقي ${span(minutes)}`;
+  const delay = orderDelay({ delay: order.delay, taskStatus: order.taskStatus, dueAt: order.dueAt, submittedAt: order.submittedAt ?? null, completedAt: order.completedAt ?? null });
+  if (["new", "accepted", "in_progress"].includes(order.taskStatus)) {
+    if (delay) return `متأخر ${formatDuration(delay.minutes)}`;
+    const minutes = Math.max(1, Math.round((new Date(order.dueAt).getTime() - Date.now()) / 60_000));
+    // «متبقي 5 ساعات», not «4 ساعات و59 دقيقة»: minutes only matter in the last hour.
+    return `متبقي ${formatDuration(minutes >= 60 ? Math.round(minutes / 60) * 60 : minutes)}`;
+  }
+  if (order.taskStatus === "cancelled") return `الموعد ${formatDateTime(order.dueAt)}`;
+  return delay ? `سُلّم متأخراً ${formatDuration(delay.minutes)}` : "سُلّم في الموعد";
 }
 
 export function Failure({ title, error, onRetry }: { title: string; error: unknown; onRetry?: () => void }) {

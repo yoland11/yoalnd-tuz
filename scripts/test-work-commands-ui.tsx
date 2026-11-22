@@ -51,8 +51,23 @@ const details = {
   attachments: [], comments: [], checklist: [{ id: 1, title: "استلام الملفات", done: true }, { id: 2, title: "المونتاج", done: false }],
 };
 
+const lateDelivered = {
+  ...order, id: 41, orderNo: "TSK-000041", title: "طباعة ألبوم سارة", taskStatus: "completed", status: "approved", statusLabel: "معتمد", stage: "completed",
+  dueAt: new Date(now.getTime() - 10 * 3_600_000).toISOString(), submittedAt: new Date(now.getTime() - 8 * 3_600_000).toISOString(), completedAt: now.toISOString(),
+  delay: { minutes: 120, running: false }, delayMinutes: 120, booking: null, customer: { id: 9, name: "سارة" }, actions: [],
+};
+const boardData = {
+  stats: { new: 1, acknowledged: 0, inProgress: 0, review: 0, completed: 1, overdue: 0, total: 2 },
+  summary: { created: 1, pendingApproval: 0, inProgress: 0, completed: 1, overdue: 0 },
+  total: 2, page: 1, totalPages: 1,
+  orders: [{ ...order, stage: "created", delay: null, actions: ["reassign", "cancel"] }, lateDelivered],
+};
+const EMPTY_BOARD_FILTERS = { q: "", department: "", staffId: "", stage: "", priority: "", from: "", to: "", page: 1 };
+
 function render(me: unknown, actions: string[] = details.actions, orderPatch: Record<string, unknown> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchInterval: false } } });
+  client.setQueryData(["work-commands", "dashboard", EMPTY_BOARD_FILTERS], boardData);
+  client.setQueryData(["work-commands", "my"], { orders: [order], counts: { overdue: 0 } });
   client.setQueryData(["work-commands", "me"], me);
   client.setQueryData(["work-commands", "channels"], [channel]);
   client.setQueryData(["work-commands", "messages", 1], thread);
@@ -87,6 +102,13 @@ const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove:
   assert.ok(html.includes("الزبون: <!-- -->أحمد") || html.includes("الزبون: أحمد"), "the customer name reaches the employee");
   assert.match(html, /<img src="https:\/\/cdn\.example\.com\/zainab\.jpg" alt="زينب"/, "the sender's photo is shown beside their message");
   assert.match(html, /role="img" aria-label="المدير"/, "without a photo, the sender's initials are shown");
+  // Details: the workflow steps, notes and uploads for the person doing the work.
+  assert.match(html, /aria-label="مراحل الأمر"/);
+  for (const text of ["تم الاستلام", "قيد التنفيذ", "بانتظار الاعتماد", "مكتمل", "إضافة ملاحظة", "رفع صورة", "ملاحظات داخلية"]) assert.ok(html.includes(text), `details show «${text}»`);
+  assert.match(html, /aria-label="ملاحظة داخلية"/, "the note box is in the panel");
+  assert.match(html, /aria-current="step"/, "the current step is marked");
+  // The open-orders strip in the conversation names who has each order.
+  assert.match(html, /أوامر مفتوحة في هذه المحادثة[\s\S]*?علي حسن/, "open orders show their assignee");
 }
 
 // An order without written instructions says so instead of showing nothing.
@@ -104,6 +126,23 @@ const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove:
   for (const text of ["إصدار أمر عمل", "قناة", "تحويل إلى أمر عمل", "تغيير المسؤول", "إلغاء الأمر", "الإعدادات", "تعديل المحادثة", "تعديل الأمر", "نوع الأمر", "أمر مونتاج"]) assert.ok(html.includes(text), `manager view shows «${text}»`);
   assert.ok(!html.includes(">استلام الأمر<"), "only the assignee acknowledges");
   assert.match(html, /href="\/admin\/bookings\/kosha\/120"/, "managers get the link to the booking");
+}
+
+// Without a link to a view: managers land on the board, employees on their own orders.
+{
+  (globalThis as any).window.location.search = "";
+  const managerHtml = render({ ready: true, user: { id: 1, name: "المدير", department: "general" }, access: access(true) });
+  for (const text of ["أوامر جديدة", "بانتظار الاعتماد", "قيد التنفيذ", "مكتملة", "متأخرة", "رقم الأمر", "العنوان", "الزبون / الحجز", "الموظف", "الموعد", "الأولوية", "الحالة", "كل الحالات", "إصدار أمر عمل"])
+    assert.ok(managerHtml.includes(text), `the board shows «${text}»`);
+  assert.match(managerHtml, /aria-label="بحث في أوامر العمل"/, "the board has a search");
+  assert.match(managerHtml, /aria-label="إجراءات الأمر TSK-000040"/, "each row has quick actions");
+  assert.ok(managerHtml.includes("سُلّم متأخراً"), "a late delivery shows how late it was delivered");
+  assert.ok(!managerHtml.includes(" س<") && !/\d+ س</.test(managerHtml), "no raw hour counts like «312 س»");
+  assert.ok(managerHtml.includes("طباعة ألبوم سارة") && managerHtml.includes("سارة"), "rows list the order and its customer");
+  const employeeHtml = render({ ready: true, user: { id: 7, name: "علي حسن", department: "editing" }, access: access(false) });
+  assert.ok(employeeHtml.includes("بانتظار الاستلام") && employeeHtml.includes("مونتاج حفلة أحمد"), "employees start on their own orders");
+  assert.ok(!employeeHtml.includes("أوامر جديدة"), "the board is one tab away, not the landing view");
+  (globalThis as any).window.location.search = "?channel=1&order=40";
 }
 
 // Settings: editable order types, departments (with their staff departments) and the issue permission.
@@ -140,4 +179,4 @@ const access = (manager: boolean) => ({ manager, canCreate: manager, canApprove:
   assert.ok(!html.includes("لا توجد محادثات"), "never presented as 'no data'");
 }
 
-console.log("PASS  work command center UI: employee/manager views, order card, details, voice, unread, settings, pre-migration state");
+console.log("PASS  work command center UI: employee/manager views, default tabs, board cards/table/search/quick actions, delay text, order card, details steps/notes/uploads, voice, unread, settings, pre-migration state");

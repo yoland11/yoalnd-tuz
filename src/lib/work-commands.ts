@@ -84,6 +84,86 @@ export function isDueSoon(task: { status: string; dueAt: string | Date | null },
   return remaining > 0 && remaining <= windowMinutes * 60_000;
 }
 
+/**
+ * How late an order is, or was. While the order is still open (new, received,
+ * in progress) the delay keeps running to `now`. Once the employee delivers it
+ * stops at the delivery time (`submittedAt`) — never at the manager's later
+ * approval — and falls back to `completedAt` for older rows. Cancelled orders
+ * and orders without a deadline have no delay. Instants are absolute, so the
+ * viewer's or server's timezone cannot shift the result.
+ */
+export function workOrderDelay(
+  order: { taskStatus: string; dueAt: string | Date | null; submittedAt?: string | Date | null; completedAt?: string | Date | null },
+  now = new Date(),
+): { minutes: number; running: boolean } | null {
+  if (!order.dueAt || order.taskStatus === "cancelled") return null;
+  const due = new Date(order.dueAt).getTime();
+  if (!Number.isFinite(due)) return null;
+  const running = ACTIVE_TASK_STATUSES.includes(order.taskStatus);
+  const endValue = running ? now : order.submittedAt ?? order.completedAt ?? null;
+  if (!endValue) return null;
+  const end = new Date(endValue).getTime();
+  if (!Number.isFinite(end)) return null;
+  const minutes = Math.floor((end - due) / 60_000);
+  return minutes > 0 ? { minutes, running } : null;
+}
+
+/** «45 دقيقة», «5 ساعات», «3 أيام و4 ساعات» — readable at any length, never «312 س». */
+const countWord = (count: number, one: string, two: string, few: string, many: string) =>
+  count === 1 ? one : count === 2 ? two : `${count} ${count <= 10 ? few : many}`;
+
+export function formatDuration(totalMinutes: number) {
+  const minutes = Math.max(0, Math.round(totalMinutes));
+  if (minutes < 60) return countWord(Math.max(minutes, 1), "دقيقة", "دقيقتان", "دقائق", "دقيقة");
+  if (minutes < 24 * 60) {
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return `${countWord(hours, "ساعة", "ساعتان", "ساعات", "ساعة")}${hours < 6 && rest >= 5 ? ` و${countWord(rest, "دقيقة", "دقيقتان", "دقائق", "دقيقة")}` : ""}`;
+  }
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  return `${countWord(days, "يوم", "يومان", "أيام", "يوماً")}${days < 7 && hours ? ` و${countWord(hours, "ساعة", "ساعتان", "ساعات", "ساعة")}` : ""}`;
+}
+
+/**
+ * The simplified workflow the screens show. Every stored status maps to one
+ * stage; nothing is renamed or migrated (needs_rework shows as in progress with
+ * its return reason; approval happens after the employee delivers).
+ */
+export type WorkOrderStage = "created" | "received" | "in_progress" | "pending_approval" | "completed" | "cancelled";
+
+export const WORK_ORDER_STAGE_LABELS: Record<WorkOrderStage, string> = {
+  created: "جديد",
+  received: "تم الاستلام",
+  in_progress: "قيد التنفيذ",
+  pending_approval: "بانتظار الاعتماد",
+  completed: "مكتمل",
+  cancelled: "ملغي",
+};
+
+export function workOrderStage(status: WorkOrderStatus): WorkOrderStage {
+  switch (status) {
+    case "new":
+      return "created";
+    case "accepted":
+      return "received";
+    case "review":
+      return "pending_approval";
+    case "done":
+    case "approved":
+      return "completed";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return "in_progress";
+  }
+}
+
+/** The steps an order goes through; approval appears only when the order requires it. */
+export function workOrderSteps(requiresApproval: boolean): WorkOrderStage[] {
+  return ["created", "received", "in_progress", ...(requiresApproval ? (["pending_approval"] as const) : []), "completed"];
+}
+
 export const WORK_ORDER_ACTIONS = [
   "acknowledge",
   "start",
@@ -173,6 +253,17 @@ export const WORK_ORDER_TEMPLATES: WorkOrderTemplate[] = [
   { key: "sewing", label: "أمر خياطة", department: "graduation", title: "خياطة", priority: "medium", estimatedMinutes: 480, checklist: ["القص", "الخياطة", "الفحص"], evidenceRequired: true, evidenceHint: "صورة الملابس الجاهزة", requiresApproval: false, needsBooking: false },
   { key: "embroidery", label: "أمر تطريز", department: "graduation", title: "تطريز", priority: "medium", estimatedMinutes: 240, checklist: ["تجهيز التصميم", "التطريز", "التدقيق"], evidenceRequired: true, evidenceHint: "صورة التطريز", requiresApproval: false, needsBooking: false },
   { key: "delivery", label: "أمر توصيل", department: "delivery", title: "توصيل", priority: "medium", estimatedMinutes: 120, checklist: ["الاستلام من المخزن", "التوصيل", "تأكيد التسليم"], evidenceRequired: false, evidenceHint: "صورة التسليم (اختياري)", requiresApproval: false, needsBooking: false },
+  // Department work types (Nov 2026). Appended so existing keys and their order stay put.
+  { key: "photo_session", label: "جلسة تصوير", department: "photography", title: "جلسة تصوير", priority: "high", estimatedMinutes: 180, checklist: ["تجهيز الكاميرات والإضاءة", "التصوير", "نسخ الملفات"], evidenceRequired: true, evidenceHint: "صور من الجلسة أو رابط الملفات", requiresApproval: false, needsBooking: true },
+  { key: "album_preparation", label: "تجهيز ألبوم", department: "photography", title: "تجهيز ألبوم", priority: "medium", estimatedMinutes: 360, checklist: ["فرز الصور", "اختيار صور الألبوم", "إرسالها للتصميم"], evidenceRequired: false, evidenceHint: "قائمة الصور المختارة (اختياري)", requiresApproval: false, needsBooking: true },
+  { key: "equipment_preparation", label: "تجهيز معدات", department: "koshas", title: "تجهيز معدات", priority: "high", estimatedMinutes: 120, checklist: ["مطابقة قائمة المعدات", "الفحص", "التغليف"], evidenceRequired: false, evidenceHint: "صورة المعدات الجاهزة (اختياري)", requiresApproval: false, needsBooking: true },
+  { key: "kosha_installation", label: "تنصيب كوشة", department: "koshas", title: "تنصيب كوشة", priority: "high", estimatedMinutes: 180, checklist: ["التنصيب", "الإضاءة", "الفحص النهائي"], evidenceRequired: true, evidenceHint: "صورة الكوشة بعد التنصيب", requiresApproval: false, needsBooking: true },
+  { key: "equipment_return", label: "إرجاع معدات", department: "koshas", title: "إرجاع معدات", priority: "medium", estimatedMinutes: 120, checklist: ["الفك", "التحميل", "التسليم للمخزن"], evidenceRequired: false, evidenceHint: "صورة المعدات المرجعة (اختياري)", requiresApproval: false, needsBooking: true },
+  { key: "photo_printing", label: "طباعة صور", department: "printing", title: "طباعة صور", priority: "medium", estimatedMinutes: 60, checklist: ["تجهيز الصور", "الطباعة", "فحص الجودة"], evidenceRequired: true, evidenceHint: "صورة المطبوعات", requiresApproval: false, needsBooking: false },
+  { key: "album_printing", label: "طباعة ألبوم", department: "printing", title: "طباعة ألبوم", priority: "medium", estimatedMinutes: 240, checklist: ["استلام التصميم النهائي", "الطباعة", "التجليد", "فحص الجودة"], evidenceRequired: true, evidenceHint: "صورة الألبوم الجاهز", requiresApproval: false, needsBooking: true },
+  { key: "poster_printing", label: "طباعة بوستر", department: "printing", title: "طباعة بوستر", priority: "medium", estimatedMinutes: 60, checklist: ["تجهيز الملف بالمقاس", "الطباعة", "فحص الجودة"], evidenceRequired: true, evidenceHint: "صورة البوستر", requiresApproval: false, needsBooking: false },
+  { key: "driver_assignment", label: "تعيين سائق", department: "delivery", title: "تعيين سائق", priority: "high", estimatedMinutes: 30, checklist: ["اختيار السائق والمركبة", "إبلاغ السائق بالموعد والعنوان"], evidenceRequired: false, evidenceHint: "تأكيد السائق (اختياري)", requiresApproval: false, needsBooking: false },
+  { key: "delivery_confirmation", label: "تأكيد التسليم", department: "delivery", title: "تأكيد التسليم", priority: "medium", estimatedMinutes: 30, checklist: ["التسليم للزبون", "صورة أو توقيع الاستلام"], evidenceRequired: true, evidenceHint: "صورة التسليم أو توقيع الزبون", requiresApproval: false, needsBooking: false },
 ];
 
 export function workOrderTemplate(key: unknown) {
@@ -416,6 +507,11 @@ export function catalogDepartmentLabel(catalog: WorkCatalog, value: unknown) {
 
 export function catalogOrderType(catalog: WorkCatalog, key: unknown) {
   return catalog.orderTypes.find((item) => item.key === key) ?? null;
+}
+
+/** The active work types of one department, as set in «الإعدادات» (built-ins plus the manager's own). */
+export function departmentOrderTypes(catalog: WorkCatalog, department: string) {
+  return catalog.orderTypes.filter((item) => item.active && item.department === department);
 }
 
 /** A new unique key for a custom entry, e.g. "dept_9" / "type_10". */
