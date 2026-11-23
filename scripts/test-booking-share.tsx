@@ -90,7 +90,7 @@ let selectedFields:string[]=[],limit=0;
 const table=new Proxy({},{get:(_target,key)=>key});
 const chain={from(value:unknown){assert.equal(value,table);return this},where(value:unknown){assert.deepEqual(value,["isActive",true]);return this},orderBy(){return this},limit(value:number){limit=value;return Promise.resolve([{id:8,fullName:"الموظف المختار"}])}};
 const directory=await new AsyncFunction("db","staffTable","eq","asc","json",body)({select(fields:Record<string,unknown>){selectedFields=Object.keys(fields);return chain}},table,(...args:unknown[])=>args,(value:unknown)=>value,(value:unknown)=>new Response(JSON.stringify(value)));
-assert.deepEqual(selectedFields.sort(),["department","fullName","id","jobTitle","photoUrl","role","username"].sort());
+assert.deepEqual(selectedFields.sort(),["department","fullName","id","jobTitle","phone","photoUrl","role","username"].sort());
 assert.equal(limit,500);assert.equal(directory.headers.get("Cache-Control"),"private, no-store");
 await assert.rejects(new AsyncFunction("db","staffTable","eq","asc","json",body)({select(){throw Error("database unavailable")}},table,()=>null,()=>null,()=>null),/database unavailable/);
 const productsStart = api.indexOf('if (resource === "products")'), productsBodyStart = api.indexOf("const items = await bookingOperationProducts(reference);",productsStart);

@@ -8,6 +8,7 @@ import { EmployeeAvatar } from "@/components/employee-avatar";
 import { ImageUploadEditor } from "@/components/image-upload-editor";
 import { adminFetch, ALL_PERMISSIONS, hasPerm, PERMISSION_LABELS, type AdminMe } from "./_lib";
 import { employeePhotoUrlFromUpload } from "@/lib/employee-identity";
+import { formatIraqiPhone } from "@/lib/phone";
 import {
   canAssignStaffRole as canAssignStaffRoleForUser,
   canManageStaffPermissionSets,
@@ -25,6 +26,7 @@ type Staff = {
   id: number;
   username: string;
   fullName: string;
+  phone?: string | null;
   photoUrl?: string | null;
   role: string;
   permissions: string[];
@@ -139,6 +141,7 @@ type Editing = {
   username: string;
   password: string;
   fullName: string;
+  phone: string;
   photoUrl: string | null;
   role: string;
   department: string;
@@ -215,6 +218,7 @@ const blank: Editing = {
   username: "",
   password: "",
   fullName: "",
+  phone: "",
   photoUrl: null,
   role: "booking_staff",
   department: "general",
@@ -398,6 +402,7 @@ export default function StaffPage() {
     mutationFn: (e: Editing) => {
       const body: any = {
         fullName: e.fullName ?? "",
+        phone: e.phone.trim(),
         photoUrl: e.photoUrl ?? null,
         department: e.department ?? "general",
         hiredAt: e.hiredAt || undefined,
@@ -552,6 +557,7 @@ export default function StaffPage() {
                     <p className="font-semibold text-foreground">
                       {s.fullName || s.username}
                     </p>
+                    {s.phone ? <p className="text-xs text-muted-foreground">رقم الموبايل: <bdi dir="ltr">{formatIraqiPhone(s.phone)}</bdi></p> : null}
                     <p className="text-xs text-muted-foreground">
                       @{s.username} • {roleLabel(s.role)}
                     </p>
@@ -627,6 +633,7 @@ export default function StaffPage() {
                       username: s.username,
                       password: "",
                       fullName: s.fullName,
+                      phone: s.phone ? formatIraqiPhone(s.phone) : "",
                       photoUrl: s.photoUrl ?? null,
                       role: s.role === "staff" ? "employee" : s.role,
                       department: s.department ?? "general",
@@ -715,6 +722,11 @@ export default function StaffPage() {
               value={editing.fullName}
               onChange={(v) => setEditing((s) => ({ ...s!, fullName: v }))}
             />
+            <div>
+              <label htmlFor="staff-phone" className="mb-1 block text-xs text-muted-foreground">رقم الموبايل (اختياري)</label>
+              <input id="staff-phone" type="tel" dir="ltr" autoComplete="tel" maxLength={40} placeholder="07701234567" value={editing.phone} onChange={event => setEditing(current => ({ ...current!, phone: event.target.value }))} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+              <p className="mt-1 text-xs text-muted-foreground">يظهر تلقائياً عند اختيار الموظف لإرسال تفاصيل الحجز عبر واتساب.</p>
+            </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="القسم" value={editing.department} onChange={(v) => setEditing((s) => ({ ...s!, department: v }))} />
               {canEditStaffPay ? <Field label="الراتب الأساسي (IQD)" type="number" value={editing.baseSalary} onChange={(v) => setEditing((s) => ({ ...s!, baseSalary: v }))} /> : null}

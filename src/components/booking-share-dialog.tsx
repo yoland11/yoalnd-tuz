@@ -8,6 +8,7 @@ import { Field, FieldGroup, FieldLabel, FieldSet, FieldLegend } from "@/componen
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { EmployeeSelect } from "@/components/employee-select";
+import { formatIraqiPhone } from "@/lib/phone";
 import { employeeDisplayName, type EmployeeIdentity } from "@/lib/employee-identity";
 import { bookingShareText, bookingShareWhatsAppHref, bookingShareWithFinancialSummary, type ShareBooking, type SharePhoto, type ShareFinancialSummary } from "@/lib/booking-share";
 import { prepareBookingShareCards } from "@/lib/booking-share-image";
@@ -64,16 +65,21 @@ export function BookingShareDialog({ booking, photos, photosLoading, photosError
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => { const next = files.map(file => URL.createObjectURL(file)); setUrls(next); return () => next.forEach(url => URL.revokeObjectURL(url)); }, [files]);
   const employees = useQuery<EmployeeIdentity[]>({
-    queryKey: ["admin", "staff", "share-directory"], enabled: recipient === "employee", staleTime: 60_000,
+    queryKey: ["admin", "staff", "share-directory"], enabled: recipient === "employee", staleTime: 0, refetchOnWindowFocus: false,
     queryFn: async () => { const rows = await adminFetch<EmployeeIdentity[]>("/admin/staff?view=directory"); if (!Array.isArray(rows)) throw Error("تعذر قراءة دليل الموظفين"); return rows; },
   });
   const employee = employees.data?.find(row => String(row.id) === employeeId);
+  useEffect(() => {
+    if (recipient !== "employee" || !employeeId) return;
+    setPhone(employee?.phone ? formatIraqiPhone(employee.phone) : "");
+    controller.current?.abort(); submitting.current = false; setBusy(false); setFiles([]);
+  }, [recipient, employeeId, employee?.phone]);
   const recipientName = recipient === "customer" ? String(booking.customerName || "").trim() || "الزبون" : employee ? employeeDisplayName(employee) : "";
   let text = "", dataFailure = financialDataFailure;
   try { text = bookingShareText(preparedBooking, financial && finance.isSuccess, note); } catch (cause) { dataFailure = apiErrorMessage(cause); }
   if (financial && finance.isError) dataFailure = apiErrorMessage(finance.error);
   const href = bookingShareWhatsAppHref(phone, text);
-  const validRecipient = Boolean(href && recipientName && !dataFailure && (!financial || (finance.isSuccess && !finance.isFetching)) && (recipient === "customer" || (!employees.isError && !employees.isPending)));
+  const validRecipient = Boolean(href && recipientName && !dataFailure && (!financial || (finance.isSuccess && !finance.isFetching)) && (recipient === "customer" || (!employees.isError && !employees.isPending && !employees.isFetching)));
   const ready = files.length > 0 && validRecipient && !photosError && !photosLoading && !preparationBlocked;
   const nativeShare = files.length > 0 && typeof navigator !== "undefined" && typeof navigator.share === "function" && navigator.canShare?.({ files });
 
@@ -113,9 +119,9 @@ export function BookingShareDialog({ booking, photos, photosLoading, photosError
         </FieldSet>
         {recipient === "employee" ? <Field>
           <FieldLabel htmlFor="booking-share-employee">الموظف المستلم</FieldLabel>
-          <EmployeeSelect id="booking-share-employee" employees={employees.data || []} value={employeeId} disabled={busy || employees.isPending || employees.isError} onValueChange={value => { setEmployeeId(value); setPhone(""); reset(); }} aria-label="اختر الموظف المستلم" />
+          <EmployeeSelect id="booking-share-employee" employees={employees.data || []} value={employeeId} disabled={busy || employees.isPending || employees.isError} onValueChange={value => { const contact = employees.data?.find(row => String(row.id) === value); setEmployeeId(value); setPhone(contact?.phone ? formatIraqiPhone(contact.phone) : ""); reset(); }} aria-label="اختر الموظف المستلم" />
           {employees.isPending ? <p role="status" className="text-sm">جارٍ تحميل دليل الموظفين…</p> : employees.isError ? <div role="alert" className="text-sm text-destructive">{apiErrorMessage(employees.error)}<Button type="button" variant="outline" onClick={() => void employees.refetch()}>إعادة تحميل الموظفين</Button></div> : null}
-          <p className="text-xs text-muted-foreground">أدخل رقم واتساب الموظف لهذا الإرسال؛ لا يوجد رقم هاتف محفوظ في سجل الموظفين الحالي.</p>
+          <p className="text-xs text-muted-foreground">{employee?.phone ? <>الرقم المحفوظ: <bdi dir="ltr">{formatIraqiPhone(employee.phone)}</bdi>. يمكنك تعديل رقم المستلم لهذا الإرسال فقط.</> : "لا يوجد رقم موبايل محفوظ لهذا الموظف؛ أدخله لهذا الإرسال أو احفظه من صفحة الموظفين."}</p>
         </Field> : <p className="text-sm font-semibold">الزبون: {booking.customerName}</p>}
         <Field data-invalid={!href || undefined} data-disabled={busy}><FieldLabel htmlFor="booking-share-phone">رقم واتساب المستلم</FieldLabel><Input id="booking-share-phone" type="tel" dir="ltr" aria-invalid={!href} value={phone} disabled={busy} onChange={event => { setPhone(event.target.value); reset(); }} /></Field>
         {!href ? <p role="status" className="text-sm text-destructive">أدخل رقم موبايل عراقي صحيحاً.</p> : null}

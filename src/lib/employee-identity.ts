@@ -1,6 +1,7 @@
 export type EmployeeIdentity = {
   id: number;
   fullName?: string | null;
+  phone?: string | null;
   name?: string | null;
   username?: string | null;
   photoUrl?: string | null;

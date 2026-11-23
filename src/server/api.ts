@@ -94,6 +94,7 @@ import {
 } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { staffPhotoUpdateSchema } from "./staff-photo";
+import { staffPhoneUpdateSchema } from "./staff-phone";
 import {
   executeIndividualCustody,
   IndividualCustodyError,
@@ -9157,6 +9158,7 @@ function formatService(s: any) {
 function formatStaff(s: any) {
   return {
     id: s.id,
+    phone: s.phone ?? null,
     username: s.username,
     fullName: s.fullName,
     role: s.role,
@@ -51534,7 +51536,7 @@ async function handleAdmin(
     const auth = await requirePermission(req, "staff.view");
     if (isResponse(auth)) return auth;
     if (method === "GET" && req.nextUrl.searchParams.get("view") === "directory") {
-      const directory = await db.select({ id: staffTable.id, fullName: staffTable.fullName, username: staffTable.username, photoUrl: staffTable.photoUrl, department: staffTable.department, jobTitle: staffTable.jobTitle, role: staffTable.role })
+      const directory = await db.select({ id: staffTable.id, fullName: staffTable.fullName, username: staffTable.username, phone: staffTable.phone, photoUrl: staffTable.photoUrl, department: staffTable.department, jobTitle: staffTable.jobTitle, role: staffTable.role })
         .from(staffTable).where(eq(staffTable.isActive, true)).orderBy(asc(staffTable.fullName), asc(staffTable.id)).limit(500);
       const response = json(directory);
       response.headers.set("Cache-Control", "private, no-store");
@@ -52001,6 +52003,8 @@ async function handleAdmin(
       const cleanPassword = password.trim();
       const photoUpdate = staffPhotoUpdateSchema({ storageUrl: STORAGE_URL, bucket: STORAGE_BUCKET }).safeParse(payload);
       if (!photoUpdate.success) return validationError("staff.create", photoUpdate);
+      const phoneUpdate = staffPhoneUpdateSchema.safeParse(payload);
+      if (!phoneUpdate.success) return validationError("staff.create", phoneUpdate);
       const canEditStaffPay = auth.role === "admin" || auth.permissions.includes("staff") || hasPermission(auth, "salary_settings_edit");
       if (!canEditStaffPay && ["baseSalary", "salaryType", "currency", "workingDaysPerWeek", "dailyWorkingHours", "hourlyRate", "overtimeRate", "attendanceAllowance", "transportationAllowance", "foodAllowance", "phoneAllowance", "housingAllowance", "otherFixedAllowances", "fixedDeduction", "salesCommissionPercentage", "profitCommissionPercentage", "paymentMethod", "paymentReference", "salaryStatus", "salaryNotes"].some((key) => payload?.[key] !== undefined))
         return error("ليس لديك صلاحية إدارة بيانات الرواتب", 403);
@@ -52024,6 +52028,7 @@ async function handleAdmin(
             username,
             passwordHash: hashPassword(cleanPassword),
             fullName: String(payload?.fullName ?? ""),
+            phone: phoneUpdate.data.phone ?? null,
             photoUrl: photoUpdate.data.photoUrl ?? null,
             role: normalizedRole,
             department:
@@ -52184,7 +52189,9 @@ async function handleAdmin(
         return error("ليس لديك صلاحية إدارة بيانات الرواتب", 403);
       const photoUpdate = staffPhotoUpdateSchema({ storageUrl: STORAGE_URL, bucket: STORAGE_BUCKET }).safeParse(b);
       if (!photoUpdate.success) return validationError("staff.update", photoUpdate);
-      const update: any = { ...photoUpdate.data };
+      const phoneUpdate = staffPhoneUpdateSchema.safeParse(b);
+      if (!phoneUpdate.success) return validationError("staff.update", phoneUpdate);
+      const update: any = { ...photoUpdate.data, ...phoneUpdate.data };
       if (b?.fullName !== undefined) update.fullName = String(b.fullName ?? "");
       if (b?.department !== undefined)
         update.department =
