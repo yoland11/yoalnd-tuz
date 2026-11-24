@@ -8,6 +8,7 @@ const students: PrepStudent[] = [
   {
     name: "سارة علي",
     studentCode: "G-001",
+    phones: ["07701234567", "07809876543"],
     size: "M",
     sash: sash("المهندسة سارة علي"),
     references: [
@@ -17,7 +18,7 @@ const students: PrepStudent[] = [
       { placement: "other", note: "", imageUrl: "javascript:alert(1)" },
     ],
   },
-  { name: "<script>alert(1)</script>", studentCode: "G-002", size: "", sash: sash(""), references: [] },
+  { name: "<script>alert(1)</script>", studentCode: "G-002", phones: [], size: "", sash: sash(""), references: [] },
 ];
 
 const blocks = preparationBlocks({ title: "هندسة مدني 2026", details: "جامعة تكريت · رقم المجموعة 12", students, logo: "/images/logo.png", generatedAt: new Date(2026, 10, 24) });
@@ -33,6 +34,10 @@ assert.ok(names.includes("قائمة الأسماء على الوشاح") && nam
 assert.ok(names.includes("غير محدد"), "a missing sash name is visible in the list");
 assert.ok(first.includes("الاسم على الوشاح") && first.includes("المهندسة سارة علي"));
 assert.ok(second.includes("لم يُحدد الاسم على الوشاح"), "a missing sash name is visible on the card");
+// Mobile numbers: in the list and on the card, every saved number, left-to-right; flagged when none.
+assert.ok(names.includes("رقم الموبايل") && names.includes('<bdi dir="ltr">07701234567</bdi><br><bdi dir="ltr">07809876543</bdi>'));
+assert.ok(first.includes('رقم الموبايل: <b><bdi dir="ltr">07701234567</bdi> · <bdi dir="ltr">07809876543</bdi></b>'));
+assert.ok(second.includes("رقم الموبايل: ") && second.includes("غير مسجل"), "a student without a number says so");
 for (const text of ["نوع الوشاح", "أمريكي", "الخط", "النسخ", "#7b1e3a", "لون التطريز", "#d4af37"]) assert.ok(first.includes(text), text);
 
 // The student's photos and notes, by placement; only http(s) images are embedded.
@@ -46,7 +51,7 @@ assert.ok(second.includes("لم يرسل الطالب صوراً أو ملاحظ
 assert.ok(!blocks.join("").includes("<script>") && second.includes(escapeHtml("<script>alert(1)</script>")));
 
 // Long groups: the name list is split so each block fits on a page.
-const many = Array.from({ length: 50 }, (_, index): PrepStudent => ({ name: `طالب ${index + 1}`, studentCode: `G-${index + 1}`, size: "L", sash: sash(`الاسم ${index + 1}`), references: [] }));
+const many = Array.from({ length: 50 }, (_, index): PrepStudent => ({ name: `طالب ${index + 1}`, studentCode: `G-${index + 1}`, phones: [`0770000${String(index).padStart(4, "0")}`], size: "L", sash: sash(`الاسم ${index + 1}`), references: [] }));
 const manyBlocks = preparationBlocks({ title: "مجموعة كبيرة", details: "", students: many });
 assert.equal(manyBlocks.length, 1 + 3 + 50, "22 names per list block");
 assert.ok(manyBlocks[3].includes("الاسم 50") && !manyBlocks[3].includes("قائمة الأسماء على الوشاح"), "only the first list block carries the title");
@@ -62,6 +67,8 @@ assert.match(portal, /tailorApi\(`\/group\/\$\{g\.id\}`\)/, "the dashboard butto
 assert.ok(portal.includes("PDF صور التجهيز ({rows.length})") && portal.includes("PDF المحدد ({sel.size})"));
 assert.ok(portal.includes("PRINT_FALLBACK_NOTE"), "the print fallback is announced, never silent");
 const server = readFileSync("src/server/tailoring.ts", "utf8");
+assert.match(server, /phone: order\.phone \?\? "",\n\s+phone2: order\.phone2 \?\? "",/, "group rows carry the student's numbers");
+assert.ok(portal.includes("phones: [...new Set([row.phone, row.phone2]"), "both numbers reach the PDF, without duplicates");
 assert.match(server, /studentReferences: studentReferencesOf\(order\.previewAssets\),\n\s+sash: sashDetailsOf\(order\),/, "group rows carry references and sash text");
 
 console.log("PASS tailor preparation PDF: sash name per student (flagged when missing), photos and notes by placement, safe URLs, escaped text, page-sized blocks, portal buttons");

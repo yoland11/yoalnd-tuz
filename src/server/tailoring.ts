@@ -367,6 +367,9 @@ function serializeGroupRow(order: OrderRow) {
     studentCode: order.studentCode,
     name: order.customerName,
     qrToken: order.qrToken,
+    // Same contact numbers the tailor already sees on the student page.
+    phone: order.phone ?? "",
+    phone2: order.phone2 ?? "",
     height: num("height"), weight: num("weight"), shoulder: num("shoulder"),
     sleeveLength: num("sleeveLength"), robeLength: num("robeLength"), capSize: num("capSize"),
     sashLength: num("sashLength"), sashWidth: num("sashWidth"), americanSashBack: num("americanSashBack"),

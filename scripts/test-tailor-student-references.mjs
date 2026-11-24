@@ -61,11 +61,14 @@ const groupRow = (order) => JSON.parse(JSON.stringify(context.groupRow({
   updatedAt: null, garmentDetails: {}, customText: {}, colors: {}, previewAssets: {}, ...order,
 })));
 const row = groupRow({
+  phone: "07701234567",
   customText: { text: "المهندسة سارة علي", sashType: "american", font: "naskh", embroideryColor: "#d4af37" },
   colors: { sash: "#7b1e3a" },
   previewAssets: { studentReferences: [{ placement: "sash_back", note: "الاسم بخط كبير", imageUrl: "https://assets.example/back.png", imageData: "raw" }] },
 });
 assert.deepEqual(row.sash, { name: "المهندسة سارة علي", type: "أمريكي", font: "النسخ", color: "#7b1e3a", embroideryColor: "#d4af37" });
+assert.equal(row.phone, "07701234567");
+assert.equal(row.phone2, "", "a missing second number is an empty string, never undefined");
 assert.deepEqual(row.studentReferences, [{ placement: "sash_back", note: "الاسم بخط كبير", imageUrl: "https://assets.example/back.png" }]);
 // Older orders: the sash name/type saved in garment details, colours from the sash override.
 const legacy = groupRow({ garmentDetails: { sashName: "د. أحمد", sashType: "وشاح كلاسيكي" }, customText: { sashColor: "#000000" } });

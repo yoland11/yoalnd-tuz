@@ -108,6 +108,7 @@ function prepStudents(rows: any[]): PrepStudent[] {
   return rows.map((row) => ({
     name: row.name || "",
     studentCode: row.studentCode || "",
+    phones: [...new Set([row.phone, row.phone2].map((phone) => String(phone ?? "").trim()).filter(Boolean))],
     size: row.finalSize || row.suggestedSize || "",
     sash: {
       name: row.sash?.name || "",

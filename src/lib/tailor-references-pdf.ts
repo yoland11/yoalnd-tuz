@@ -14,7 +14,7 @@ import { STUDENT_REFERENCE_PLACEMENTS } from "@/lib/graduation-student-flow";
 
 export type PrepReference = { placement: string; note: string; imageUrl?: string };
 export type PrepSash = { name: string; type: string; font: string; color: string; embroideryColor: string };
-export type PrepStudent = { name: string; studentCode: string; size: string; sash: PrepSash; references: PrepReference[] };
+export type PrepStudent = { name: string; studentCode: string; phones: string[]; size: string; sash: PrepSash; references: PrepReference[] };
 export type PrepDocument = {
   /** Group (or list) title, e.g. «هندسة مدني 2026». */
   title: string;
@@ -80,6 +80,10 @@ function headerBlock(doc: PrepDocument, font: string) {
   );
 }
 
+/** The student's saved numbers, each kept left-to-right; empty when none is saved. */
+const phoneLines = (phones: string[], separator: string) =>
+  phones.length ? phones.map((phone) => `<bdi dir="ltr">${escapeHtml(phone)}</bdi>`).join(separator) : "";
+
 /** «الاسم على الوشاح» for every student, in chunks that fit a page. */
 function nameBlocks(doc: PrepDocument, font: string) {
   const blocks: string[] = [];
@@ -90,6 +94,7 @@ function nameBlocks(doc: PrepDocument, font: string) {
         <td style="border:1px solid ${LINE};padding:4px 6px;text-align:center;color:${MUTED}">${index}</td>
         <td style="border:1px solid ${LINE};padding:4px 6px;font-weight:700">${escapeHtml(student.name)}</td>
         <td style="border:1px solid ${LINE};padding:4px 6px;text-align:center;color:${MUTED}"><bdi dir="ltr">${escapeHtml(student.studentCode)}</bdi></td>
+        <td style="border:1px solid ${LINE};padding:4px 6px;text-align:center;white-space:nowrap">${phoneLines(student.phones, "<br>") || "—"}</td>
         <td style="border:1px solid ${LINE};padding:4px 6px;font-weight:800;color:${ACCENT}">${student.sash.name ? escapeHtml(student.sash.name) : `<span style="color:#b00020;font-weight:700">غير محدد</span>`}</td>
         <td style="border:1px solid ${LINE};padding:4px 6px;text-align:center">${escapeHtml(student.size || "—")}</td>
         <td style="border:1px solid ${LINE};padding:4px 6px;text-align:center">${student.references.length || "—"}</td>
@@ -103,7 +108,8 @@ function nameBlocks(doc: PrepDocument, font: string) {
           <thead><tr style="background:#f6eff1">
             <th style="border:1px solid ${LINE};padding:5px 6px;width:34px">#</th>
             <th style="border:1px solid ${LINE};padding:5px 6px;text-align:right">الطالب</th>
-            <th style="border:1px solid ${LINE};padding:5px 6px;width:96px">رمز الطالب</th>
+            <th style="border:1px solid ${LINE};padding:5px 6px;width:84px">رمز الطالب</th>
+            <th style="border:1px solid ${LINE};padding:5px 6px;width:98px;white-space:nowrap">رقم الموبايل</th>
             <th style="border:1px solid ${LINE};padding:5px 6px;text-align:right">الاسم على الوشاح</th>
             <th style="border:1px solid ${LINE};padding:5px 6px;width:54px">المقاس</th>
             <th style="border:1px solid ${LINE};padding:5px 6px;width:88px;white-space:nowrap">صور/ملاحظات</th>
@@ -144,6 +150,7 @@ function studentBlock(student: PrepStudent, index: number, font: string) {
         <span style="font-size:17px;font-weight:800;min-width:0">${escapeHtml(student.name)}</span>
         <span style="margin-inline-start:auto;font-size:12px;color:${MUTED};white-space:nowrap"><bdi dir="ltr">${escapeHtml(student.studentCode)}</bdi>${student.size ? ` · مقاس ${escapeHtml(student.size)}` : ""}</span>
       </div>
+      <div style="margin-top:4px;font-size:13px;color:#333">رقم الموبايل: ${student.phones.length ? `<b>${phoneLines(student.phones, " · ")}</b>` : `<span style="color:${MUTED}">غير مسجل</span>`}</div>
       <div style="margin-top:10px;border:1.5px solid ${ACCENT};border-radius:8px;padding:6px 12px 12px;background:#fbf5f7">
         <div style="font-size:11px;font-weight:800;color:${ACCENT}">الاسم على الوشاح</div>
         ${student.sash.name
