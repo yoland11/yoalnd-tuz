@@ -8,7 +8,7 @@ import ts from "typescript";
 // must expose only its placement, note and saved image URL to that detail view.
 const source = readFileSync("src/server/tailoring.ts", "utf8");
 const ast = ts.createSourceFile("tailoring.ts", source, ts.ScriptTarget.Latest, true);
-const names = new Set(["serializeDetail", "studentReferencesOf"]);
+const names = new Set(["serializeDetail", "studentReferencesOf", "serializeGroupRow", "sashDetailsOf"]);
 const declarations = ast.statements
   .filter((node) => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
   .map((node) => node.getText(ast));
@@ -16,8 +16,11 @@ assert.ok(declarations.some((code) => code.includes("function serializeDetail"))
 const context = vm.createContext({
   rec: (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
   serializeSummary: (order) => ({ id: order.id, name: order.customerName }),
+  deriveStatus: () => "complete",
+  SASH_TYPES: [{ key: "american", label: "أمريكي" }],
+  SASH_FONTS: [{ key: "naskh", label: "النسخ" }],
 });
-const compiled = ts.transpileModule(`${declarations.join("\n")}\nglobalThis.serialize = serializeDetail;`, {
+const compiled = ts.transpileModule(`${declarations.join("\n")}\nglobalThis.serialize = serializeDetail;\nglobalThis.groupRow = serializeGroupRow;`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText;
 vm.runInContext(compiled, context);
@@ -51,4 +54,22 @@ assert.deepEqual(detail({ studentReferences: [
   { placement: "other", note: "لا تُرسل بيانات خام" },
 ]);
 assert.deepEqual(detail({}).studentReferences, []);
-console.log("PASS assigned tailor detail exposes saved student references without copying media or leaking raw uploads");
+
+// Group rows carry the same references plus the sash text, for the group preparation PDF.
+const groupRow = (order) => JSON.parse(JSON.stringify(context.groupRow({
+  id: 7, studentCode: "G-7", customerName: "سارة علي", qrToken: "q", measurements: {}, studentProfile: {}, productionEstimate: {},
+  updatedAt: null, garmentDetails: {}, customText: {}, colors: {}, previewAssets: {}, ...order,
+})));
+const row = groupRow({
+  customText: { text: "المهندسة سارة علي", sashType: "american", font: "naskh", embroideryColor: "#d4af37" },
+  colors: { sash: "#7b1e3a" },
+  previewAssets: { studentReferences: [{ placement: "sash_back", note: "الاسم بخط كبير", imageUrl: "https://assets.example/back.png", imageData: "raw" }] },
+});
+assert.deepEqual(row.sash, { name: "المهندسة سارة علي", type: "أمريكي", font: "النسخ", color: "#7b1e3a", embroideryColor: "#d4af37" });
+assert.deepEqual(row.studentReferences, [{ placement: "sash_back", note: "الاسم بخط كبير", imageUrl: "https://assets.example/back.png" }]);
+// Older orders: the sash name/type saved in garment details, colours from the sash override.
+const legacy = groupRow({ garmentDetails: { sashName: "د. أحمد", sashType: "وشاح كلاسيكي" }, customText: { sashColor: "#000000" } });
+assert.deepEqual(legacy.sash, { name: "د. أحمد", type: "وشاح كلاسيكي", font: "", color: "#000000", embroideryColor: "" });
+assert.deepEqual(legacy.studentReferences, []);
+assert.equal(groupRow({ customText: { text: 42 } }).sash.name, "", "non-text values are never printed as a sash name");
+console.log("PASS assigned tailor detail and group rows expose saved student references and the sash text without copying media or leaking raw uploads");

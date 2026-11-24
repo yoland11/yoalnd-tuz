@@ -6,6 +6,7 @@ import {
   graduationOrdersTable,
 } from "@workspace/db";
 import { getGraduationMeasurementStatus } from "@/lib/graduation-measurements";
+import { SASH_FONTS, SASH_TYPES } from "@/lib/graduation-student-flow";
 import { getGraduationProductionMeasurementBlock } from "@/server/graduation-measurements";
 import { readRequestBody } from "@/server/request-body";
 
@@ -191,6 +192,25 @@ function studentReferencesOf(previewAssets: unknown) {
   });
 }
 
+/**
+ * What the tailor prepares on the sash: the printed name (the student's own name
+ * plus the group title), its type, font and colours. Read-only; no prices.
+ */
+function sashDetailsOf(order: Pick<OrderRow, "customText" | "colors" | "garmentDetails">) {
+  const text = rec(order.customText);
+  const colors = rec(order.colors);
+  const garment = rec(order.garmentDetails);
+  const label = (list: ReadonlyArray<{ key: string; label: string }>, key: unknown) => list.find((item) => item.key === key)?.label ?? "";
+  const plain = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  return {
+    name: plain(text.text) || plain(garment.sashName),
+    type: label(SASH_TYPES, text.sashType) || plain(garment.sashType),
+    font: label(SASH_FONTS, text.font) || plain(text.font),
+    color: plain(text.sashColor) || plain(colors.sash),
+    embroideryColor: plain(text.embroideryColor) || plain(colors.embroidery),
+  };
+}
+
 function serializeSummary(order: OrderRow, group?: GroupRow | null) {
   const m = rec(order.measurements);
   const assignment = tailorAssignmentOf(order);
@@ -356,6 +376,9 @@ function serializeGroupRow(order: OrderRow) {
     tailorName: (rec(rec(order.productionEstimate).tailorAssignment).tailorName as string) ?? "",
     updatedAt: m.updatedAt ?? order.updatedAt,
     measurements: m,
+    // For the group preparation PDF: what the student asked for, and the sash text.
+    studentReferences: studentReferencesOf(order.previewAssets),
+    sash: sashDetailsOf(order),
   };
 }
 

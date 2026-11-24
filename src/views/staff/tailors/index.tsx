@@ -3,7 +3,7 @@ import { SessionLoadError } from "@/components/session-load-error";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 import {
-  ArrowRight, Camera, CheckCircle2, ClipboardList, Copy, Download, Filter,
+  ArrowRight, Camera, CheckCircle2, ClipboardList, Copy, Download, FileDown, Filter,
   Loader2, LogOut, Pause, Play, Plus, Printer, QrCode, Ruler, Save, Scissors,
   Search, Send, ShieldCheck, Table2, Tag, Tags, Upload, User, Users, Wrench, X, XCircle,
 } from "lucide-react";
@@ -18,6 +18,7 @@ import { printTailorSheet, type ReceiptFormat, type TailorSheetInput } from "@/l
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { stickerDocument, stickerQr, stickerSize } from "@/lib/tailor-sticker";
 import { DateField } from "@/components/ui/date-field";
+import { downloadPreparationPdf, type PrepStudent } from "@/lib/tailor-references-pdf";
 
 /** All tailor data flows through the assignment-scoped /admin/tailoring API. */
 function tailorApi<T = any>(path: string, init?: RequestInit): Promise<T> {
@@ -102,6 +103,36 @@ const ALTER_TYPES: { key: string; label: string }[] = [
 ];
 const alterLabel = (k: string) => ALTER_TYPES.find((a) => a.key === k)?.label ?? k;
 
+/** Group rows (from /group/:id) as students of the preparation PDF. */
+function prepStudents(rows: any[]): PrepStudent[] {
+  return rows.map((row) => ({
+    name: row.name || "",
+    studentCode: row.studentCode || "",
+    size: row.finalSize || row.suggestedSize || "",
+    sash: {
+      name: row.sash?.name || "",
+      type: row.sash?.type || "",
+      font: row.sash?.font || "",
+      color: row.sash?.color || "",
+      embroideryColor: row.sash?.embroideryColor || "",
+    },
+    references: Array.isArray(row.studentReferences) ? row.studentReferences : [],
+  }));
+}
+
+/** «صور وملاحظات الطلبة للتجهيز» with the name on the sash, for the given students of one group. */
+function exportGroupPreparation(group: any, rows: any[], logo: string, onProgress: (done: number, total: number) => void, part = "") {
+  const details = [group?.university, group?.college, group?.department, group?.groupNo ? `رقم المجموعة ${group.groupNo}` : ""].filter(Boolean).join(" · ");
+  const name = String(group?.groupNo || group?.title || group?.id || "group").replace(/[\\/:*?"<>|]+/g, "-").trim();
+  return downloadPreparationPdf(
+    { title: group?.title || "مجموعة تخرج", details, logo, students: prepStudents(rows) },
+    `صور-التجهيز-${name}${part ? `-${part}` : ""}.pdf`,
+    onProgress,
+  );
+}
+
+const PRINT_FALLBACK_NOTE = "هذا المتصفح لا يدعم إنشاء الملف مباشرة؛ فُتحت نافذة الطباعة: اختر «حفظ كملف PDF».";
+
 function Spinner() {
   return <div className="flex min-h-dvh items-center justify-center bg-background"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
 }
@@ -173,6 +204,25 @@ function Dashboard() {
   const [list, setList] = useState<any[] | null>(null);
   const [groups, setGroups] = useState<any[]>([]);
   const [scanning, setScanning] = useState(false);
+  const [pdfFor, setPdfFor] = useState<{ id: number; text: string } | null>(null);
+  const [pdfMsg, setPdfMsg] = useState<string | null>(null);
+  const { data: settings } = usePublicSettings();
+
+  async function groupPdf(g: any) {
+    if (pdfFor) return;
+    setPdfMsg(null);
+    setPdfFor({ id: g.id, text: `جارٍ تحميل طلبة ${g.title || "المجموعة"}…` });
+    try {
+      const r = await tailorApi(`/group/${g.id}`);
+      const students = r.students ?? [];
+      const how = await exportGroupPreparation(r.group ?? g, students, logoSrc(settings), (done, total) => setPdfFor({ id: g.id, text: `جارٍ تجهيز ملف ${g.title || "المجموعة"}: ${done}/${total}` }));
+      setPdfMsg(how === "pdf" ? `تم تنزيل ملف PDF لـ ${g.title || "المجموعة"} (${students.length} طالب)` : PRINT_FALLBACK_NOTE);
+    } catch (e: any) {
+      setPdfMsg(e?.message ?? "تعذر إنشاء ملف PDF");
+    } finally {
+      setPdfFor(null);
+    }
+  }
 
   useEffect(() => {
     tailorApi("/dashboard").then(setData).catch(() => setData({ buckets: {}, orders: [] })).finally(() => setLoading(false));
@@ -245,14 +295,33 @@ function Dashboard() {
       {groups.length > 0 && (
         <div className="space-y-2">
           <h3 className="flex items-center gap-2 text-sm font-bold text-muted-foreground"><Table2 className="h-4 w-4" /> مجموعات التخرج</h3>
+          <p className="text-xs text-muted-foreground">زر PDF: صور وملاحظات كل طلبة المجموعة للتجهيز مع الاسم على الوشاح.</p>
+          {pdfFor ? (
+            <div role="status" className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm"><Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />{pdfFor.text}</div>
+          ) : pdfMsg ? (
+            <div role="status" className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{pdfMsg}</div>
+          ) : null}
           {groups.map((g: any) => (
-            <Link key={g.id} href={`/staff/tailors/group/${g.id}`} className="flex items-center justify-between gap-3 rounded-xl border border-border bg-card p-3 active:scale-[0.99]">
-              <div className="min-w-0">
-                <div className="truncate font-semibold">{g.title}</div>
-                <div className="truncate text-xs text-muted-foreground">{[g.groupNo, g.university, g.department].filter(Boolean).join(" — ")}</div>
-              </div>
-              <span className="shrink-0 text-xs text-muted-foreground">{g.completeCount}/{g.studentCount} مكتمل</span>
-            </Link>
+            <div key={g.id} className="flex items-stretch gap-2">
+              <Link href={`/staff/tailors/group/${g.id}`} className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-xl border border-border bg-card p-3 active:scale-[0.99]">
+                <div className="min-w-0">
+                  <div className="truncate font-semibold">{g.title}</div>
+                  <div className="truncate text-xs text-muted-foreground">{[g.groupNo, g.university, g.department].filter(Boolean).join(" — ")}</div>
+                </div>
+                <span className="shrink-0 text-xs text-muted-foreground">{g.completeCount}/{g.studentCount} مكتمل</span>
+              </Link>
+              <Button
+                variant="ghost"
+                type="button"
+                disabled={Boolean(pdfFor)}
+                onClick={() => void groupPdf(g)}
+                aria-label={`تنزيل PDF صور وملاحظات التجهيز مع الاسم على الوشاح — ${g.title}`}
+                title="PDF صور وملاحظات التجهيز مع الاسم على الوشاح"
+                className="flex h-auto w-16 shrink-0 flex-col items-center justify-center gap-0.5 rounded-xl border border-border bg-card px-2 text-[11px] font-bold text-primary disabled:opacity-50"
+              >
+                {pdfFor?.id === g.id ? <Loader2 className="h-5 w-5 animate-spin" /> : <FileDown className="h-5 w-5" />}PDF
+              </Button>
+            </div>
           ))}
         </div>
       )}
@@ -777,6 +846,24 @@ function GroupPage({ id }: { id: string }) {
   const [applySize, setApplySize] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [pdfProgress, setPdfProgress] = useState<string | null>(null);
+  const { data: settings } = usePublicSettings();
+
+  async function downloadPreparation(list: any[]) {
+    if (!list.length) { setMsg("حدّد طلاباً أولاً"); return; }
+    if (pdfProgress) return;
+    setMsg(null);
+    setPdfProgress("جارٍ تحميل صور الطلبة…");
+    try {
+      const part = list.length === rows.length ? "" : `المحدد-${list.length}`;
+      const how = await exportGroupPreparation(group ?? { id }, list, logoSrc(settings), (done, total) => setPdfProgress(`جارٍ تجهيز الملف ${done}/${total}…`), part);
+      setMsg(how === "pdf" ? `تم تنزيل ملف PDF لـ ${list.length} طالب` : PRINT_FALLBACK_NOTE);
+    } catch (e: any) {
+      setMsg(e?.message ?? "تعذر إنشاء ملف PDF");
+    } finally {
+      setPdfProgress(null);
+    }
+  }
 
   const load = useCallback(() => {
     setLoading(true); setErr(null);
@@ -967,8 +1054,12 @@ function GroupPage({ id }: { id: string }) {
         <span className="mx-1 h-4 w-px bg-border" />
         <Button variant="ghost" type="button" disabled={!sel.size} onClick={() => void printStickers(rows.filter((r) => sel.has(r.id)))} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 disabled:opacity-50"><Tag className="h-3.5 w-3.5" /> ملصقات المحدد ({sel.size})</Button>
         <Button variant="ghost" type="button" disabled={!rows.length} onClick={() => void printStickers(rows)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 disabled:opacity-50"><Tags className="h-3.5 w-3.5" /> ملصقات الكل ({rows.length})</Button>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <Button variant="ghost" type="button" disabled={!rows.length || Boolean(pdfProgress)} onClick={() => void downloadPreparation(rows)} title="صور وملاحظات الطلبة للتجهيز مع الاسم على الوشاح" className="inline-flex items-center gap-1 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 font-bold text-primary disabled:opacity-50"><FileDown className="h-3.5 w-3.5" /> PDF صور التجهيز ({rows.length})</Button>
+        <Button variant="ghost" type="button" disabled={!sel.size || Boolean(pdfProgress)} onClick={() => void downloadPreparation(rows.filter((r) => sel.has(r.id)))} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 disabled:opacity-50"><FileDown className="h-3.5 w-3.5" /> PDF المحدد ({sel.size})</Button>
       </div>
-      {msg && <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}
+      {pdfProgress && <div role="status" className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm"><Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />{pdfProgress}</div>}
+      {msg && <div role="status" className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}
       <p className="text-xs text-muted-foreground">الحقول الستة هي قياسات الطلب الحالي. المقاس المثالي للمرجع، والمقاس النهائي يحدده الخياط. يمكن عرض القياسات القديمة عند الحاجة.</p>
       <details className="rounded-lg border border-border bg-card px-3 text-xs text-muted-foreground">
         <summary className="cursor-pointer py-2 font-medium text-primary">كيف أقيس؟</summary>

@@ -56,7 +56,8 @@ const PDF_SAFE_VARIABLE_OVERRIDES = `
   }
 `;
 
-function preparePdfClone(doc: Document) {
+/** Exported for callers that rasterise their own blocks with html2pdf. */
+export function preparePdfClone(doc: Document) {
   const style = doc.createElement("style");
   style.textContent = `
     ${PDF_SAFE_VARIABLE_OVERRIDES}
