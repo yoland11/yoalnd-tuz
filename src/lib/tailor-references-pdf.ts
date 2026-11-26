@@ -14,7 +14,31 @@ import { STUDENT_REFERENCE_PLACEMENTS } from "@/lib/graduation-student-flow";
 
 export type PrepReference = { placement: string; note: string; imageUrl?: string };
 export type PrepSash = { name: string; type: string; font: string; color: string; embroideryColor: string };
-export type PrepStudent = { name: string; studentCode: string; phones: string[]; size: string; sash: PrepSash; references: PrepReference[] };
+/**
+ * The tailor's measurements, in the portal's order, with short labels so the
+ * whole set fits on one line of the student card. Lengths in cm, weight in kg.
+ */
+export const PREP_MEASUREMENTS = [
+  { key: "robeLength", label: "روب" },
+  { key: "sashLength", label: "وشاح" },
+  { key: "sleeveLength", label: "ردن" },
+  { key: "americanSashBack", label: "خلف أمريكي" },
+  { key: "shoulder", label: "كتف" },
+  { key: "capSize", label: "قبعة" },
+  { key: "height", label: "الطول" },
+  { key: "weight", label: "الوزن", unit: "كغم" },
+] as const;
+export type PrepMeasurementKey = (typeof PREP_MEASUREMENTS)[number]["key"];
+export type PrepStudent = {
+  name: string;
+  studentCode: string;
+  phones: string[];
+  size: string;
+  /** Saved values only; a missing measurement is left out of the strip. */
+  measurements: Partial<Record<PrepMeasurementKey, string>>;
+  sash: PrepSash;
+  references: PrepReference[];
+};
 export type PrepDocument = {
   /** Group (or list) title, e.g. «هندسة مدني 2026». */
   title: string;
@@ -135,6 +159,21 @@ function referenceCell(reference: PrepReference) {
   </div>`;
 }
 
+/** One compact row of cells: «القياسات (سم)» then each saved measurement. */
+function measurementStrip(student: PrepStudent) {
+  // Hugs its content on one line; only an unusually long value wraps inside its own cell.
+  const cell = `border:1px solid ${LINE};padding:3px 6px`;
+  const cells = PREP_MEASUREMENTS.flatMap((item) => {
+    const value = String(student.measurements?.[item.key] ?? "").trim();
+    if (!value) return [];
+    const unit = "unit" in item ? ` <span style="color:${MUTED};white-space:nowrap">${item.unit}</span>` : "";
+    return [`<td style="${cell}"><span style="color:${MUTED};white-space:nowrap">${item.label}</span> <b style="white-space:nowrap"><bdi dir="ltr">${escapeHtml(value)}</bdi></b>${unit}</td>`];
+  });
+  const head = `<th style="${cell};white-space:nowrap;background:#f6eff1;color:${ACCENT};font-weight:800">القياسات (سم)</th>`;
+  const body = cells.length ? cells.join("") : `<td style="${cell};color:${MUTED}">لم تُسجل بعد</td>`;
+  return `<table data-prep-measurements style="margin-top:6px;max-width:100%;border-collapse:collapse;font-size:11.5px;font-variant-numeric:tabular-nums"><tr>${head}${body}</tr></table>`;
+}
+
 function studentBlock(student: PrepStudent, index: number, font: string) {
   const facts = [
     student.sash.type ? `نوع الوشاح: <b>${escapeHtml(student.sash.type)}</b>` : "",
@@ -151,6 +190,7 @@ function studentBlock(student: PrepStudent, index: number, font: string) {
         <span style="margin-inline-start:auto;font-size:12px;color:${MUTED};white-space:nowrap"><bdi dir="ltr">${escapeHtml(student.studentCode)}</bdi>${student.size ? ` · مقاس ${escapeHtml(student.size)}` : ""}</span>
       </div>
       <div style="margin-top:4px;font-size:13px;color:#333">رقم الموبايل: ${student.phones.length ? `<b>${phoneLines(student.phones, " · ")}</b>` : `<span style="color:${MUTED}">غير مسجل</span>`}</div>
+      ${measurementStrip(student)}
       <div style="margin-top:10px;border:1.5px solid ${ACCENT};border-radius:8px;padding:6px 12px 12px;background:#fbf5f7">
         <div style="font-size:11px;font-weight:800;color:${ACCENT}">الاسم على الوشاح</div>
         ${student.sash.name

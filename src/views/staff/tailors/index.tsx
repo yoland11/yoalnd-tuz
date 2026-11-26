@@ -18,7 +18,7 @@ import { printTailorSheet, type ReceiptFormat, type TailorSheetInput } from "@/l
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { stickerDocument, stickerQr, stickerSize } from "@/lib/tailor-sticker";
 import { DateField } from "@/components/ui/date-field";
-import { downloadPreparationPdf, type PrepStudent } from "@/lib/tailor-references-pdf";
+import { downloadPreparationPdf, PREP_MEASUREMENTS, type PrepStudent } from "@/lib/tailor-references-pdf";
 
 /** All tailor data flows through the assignment-scoped /admin/tailoring API. */
 function tailorApi<T = any>(path: string, init?: RequestInit): Promise<T> {
@@ -110,6 +110,7 @@ function prepStudents(rows: any[]): PrepStudent[] {
     studentCode: row.studentCode || "",
     phones: [...new Set([row.phone, row.phone2].map((phone) => String(phone ?? "").trim()).filter(Boolean))],
     size: row.finalSize || row.suggestedSize || "",
+    measurements: Object.fromEntries(PREP_MEASUREMENTS.map(({ key }) => [key, String(row[key] ?? "").trim()])),
     sash: {
       name: row.sash?.name || "",
       type: row.sash?.type || "",

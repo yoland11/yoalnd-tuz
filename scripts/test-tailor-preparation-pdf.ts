@@ -1,7 +1,7 @@
 /** Group preparation PDF: content, escaping, missing data made explicit, page-sized blocks, portal wiring. */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { escapeHtml, preparationBlocks, preparationPrintHtml, type PrepStudent } from "../src/lib/tailor-references-pdf";
+import { escapeHtml, PREP_MEASUREMENTS, preparationBlocks, preparationPrintHtml, type PrepStudent } from "../src/lib/tailor-references-pdf";
 
 const sash = (name: string) => ({ name, type: "أمريكي", font: "النسخ", color: "#7b1e3a", embroideryColor: "#d4af37" });
 const students: PrepStudent[] = [
@@ -10,6 +10,7 @@ const students: PrepStudent[] = [
     studentCode: "G-001",
     phones: ["07701234567", "07809876543"],
     size: "M",
+    measurements: { robeLength: "140", sashLength: "152.5", sleeveLength: "", shoulder: "44", height: "165", weight: "58" },
     sash: sash("المهندسة سارة علي"),
     references: [
       { placement: "sash_back", note: "الاسم بخط كبير خلف الوشاح", imageUrl: "https://assets.example/back.png" },
@@ -18,7 +19,7 @@ const students: PrepStudent[] = [
       { placement: "other", note: "", imageUrl: "javascript:alert(1)" },
     ],
   },
-  { name: "<script>alert(1)</script>", studentCode: "G-002", phones: [], size: "", sash: sash(""), references: [] },
+  { name: "<script>alert(1)</script>", studentCode: "G-002", phones: [], size: "", measurements: {}, sash: sash(""), references: [] },
 ];
 
 const blocks = preparationBlocks({ title: "هندسة مدني 2026", details: "جامعة تكريت · رقم المجموعة 12", students, logo: "/images/logo.png", generatedAt: new Date(2026, 10, 24) });
@@ -38,6 +39,16 @@ assert.ok(second.includes("لم يُحدد الاسم على الوشاح"), "a 
 assert.ok(names.includes("رقم الموبايل") && names.includes('<bdi dir="ltr">07701234567</bdi><br><bdi dir="ltr">07809876543</bdi>'));
 assert.ok(first.includes('رقم الموبايل: <b><bdi dir="ltr">07701234567</bdi> · <bdi dir="ltr">07809876543</bdi></b>'));
 assert.ok(second.includes("رقم الموبايل: ") && second.includes("غير مسجل"), "a student without a number says so");
+// Measurements: one row of cells on the card, saved values only, in the portal's order; flagged when none.
+const strip = (html: string) => html.match(/<table data-prep-measurements[\s\S]*?<\/table>/)?.[0] ?? "";
+assert.equal((strip(first).match(/<tr>/g) ?? []).length, 1, "the measurements are a single row");
+assert.ok(strip(first).includes("القياسات (سم)"));
+const order = ["روب", "وشاح", "كتف", "الطول", "الوزن"].map((label) => strip(first).indexOf(`>${label}</span>`));
+assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1])), "portal order");
+assert.ok(strip(first).includes('<bdi dir="ltr">152.5</bdi></b>') && strip(first).includes("كغم"), "values kept as entered; weight in kg");
+assert.ok(strip(first).includes("max-width:100%"), "a long value wraps inside its cell instead of spilling past the card");
+assert.ok(!strip(first).includes(">ردن</span>") && !strip(first).includes("قبعة"), "an empty measurement is left out");
+assert.ok(strip(second).includes("لم تُسجل بعد"), "a student without measurements says so");
 for (const text of ["نوع الوشاح", "أمريكي", "الخط", "النسخ", "#7b1e3a", "لون التطريز", "#d4af37"]) assert.ok(first.includes(text), text);
 
 // The student's photos and notes, by placement; only http(s) images are embedded.
@@ -51,7 +62,7 @@ assert.ok(second.includes("لم يرسل الطالب صوراً أو ملاحظ
 assert.ok(!blocks.join("").includes("<script>") && second.includes(escapeHtml("<script>alert(1)</script>")));
 
 // Long groups: the name list is split so each block fits on a page.
-const many = Array.from({ length: 50 }, (_, index): PrepStudent => ({ name: `طالب ${index + 1}`, studentCode: `G-${index + 1}`, phones: [`0770000${String(index).padStart(4, "0")}`], size: "L", sash: sash(`الاسم ${index + 1}`), references: [] }));
+const many = Array.from({ length: 50 }, (_, index): PrepStudent => ({ name: `طالب ${index + 1}`, studentCode: `G-${index + 1}`, phones: [`0770000${String(index).padStart(4, "0")}`], size: "L", measurements: { robeLength: "150" }, sash: sash(`الاسم ${index + 1}`), references: [] }));
 const manyBlocks = preparationBlocks({ title: "مجموعة كبيرة", details: "", students: many });
 assert.equal(manyBlocks.length, 1 + 3 + 50, "22 names per list block");
 assert.ok(manyBlocks[3].includes("الاسم 50") && !manyBlocks[3].includes("قائمة الأسماء على الوشاح"), "only the first list block carries the title");
@@ -69,6 +80,8 @@ assert.ok(portal.includes("PRINT_FALLBACK_NOTE"), "the print fallback is announc
 const server = readFileSync("src/server/tailoring.ts", "utf8");
 assert.match(server, /phone: order\.phone \?\? "",\n\s+phone2: order\.phone2 \?\? "",/, "group rows carry the student's numbers");
 assert.ok(portal.includes("phones: [...new Set([row.phone, row.phone2]"), "both numbers reach the PDF, without duplicates");
+assert.ok(portal.includes("measurements: Object.fromEntries(PREP_MEASUREMENTS.map("), "the group row's measurements reach the PDF");
+for (const { key } of PREP_MEASUREMENTS) assert.match(server, new RegExp(`\\b${key}: num\\("${key}"\\)`), `group rows carry ${key}`);
 assert.match(server, /studentReferences: studentReferencesOf\(order\.previewAssets\),\n\s+sash: sashDetailsOf\(order\),/, "group rows carry references and sash text");
 
 console.log("PASS tailor preparation PDF: sash name per student (flagged when missing), photos and notes by placement, safe URLs, escaped text, page-sized blocks, portal buttons");
