@@ -77,6 +77,7 @@ const DeliveryOrdersPage = lazy(() => import("./delivery-orders"));
 const SystemHealthPage = lazy(() => import("./system-health"));
 const PhotographyOperationsPage = lazy(() => import("./photography-operations"));
 const PhotographyProductionPage = lazy(() => import("./photography-production"));
+const AlbumsPage = lazy(() => import("./albums"));
 const RecycleBinPage = lazy(() => import("./recycle-bin"));
 const DocumentScannerPage = lazy(() => import("./document-scanner"));
 const DocumentLibraryPage = lazy(() => import("./document-library"));
@@ -910,6 +911,13 @@ export default function Admin() {
                 ]}
               >
                 <PhotographyProductionPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/albums">
+            {() => (
+              <Guard me={me} anyPerm={["albums", "albums.manage", "albums.financials", "albums.deliver", "photography", "photography.portal.view", "photography.status.update", "photography.assignment.manage", "photography.reports.view", "photography.financials.view", "photography.delivery.confirm"]}>
+                <AlbumsPage />
               </Guard>
             )}
           </Route>

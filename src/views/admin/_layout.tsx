@@ -47,6 +47,7 @@ import {
   Activity,
   Camera,
   Clapperboard,
+  BookOpen,
   Trash2,
   QrCode,
   UserCheck,
@@ -803,6 +804,13 @@ export const NAV: NavItem[] = [
     ],
   },
   {
+    href: "/admin/albums",
+    label: "إدارة الألبومات",
+    icon: BookOpen,
+    perm: "albums",
+    anyPerm: ["albums", "albums.manage", "albums.financials", "albums.deliver", "photography", "photography.portal.view", "photography.status.update", "photography.assignment.manage", "photography.reports.view", "photography.financials.view", "photography.delivery.confirm"],
+  },
+  {
     href: "/admin/recycle-bin",
     label: "سلة المحذوفات",
     icon: Trash2,
@@ -965,6 +973,12 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/delivery"),
 
     ],
+  },
+  {
+    id: "photography",
+    label: "التصوير",
+    icon: Camera,
+    items: [navItem("/admin/photography-operations"), navItem("/admin/photography-production"), navItem("/admin/albums")],
   },
   { id: "customers", label: "العملاء", icon: Users, items: [navItem("/admin/customers"), navItem("/admin/customer-hub"), navItem("/admin/customer-followups")] },
   {

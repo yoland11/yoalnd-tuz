@@ -648,7 +648,7 @@ export async function resolveOrderCustomer(
   return { customerId: bookingCustomer ?? customer?.id ?? null, customerName: String(booking.customer_name ?? customer?.name ?? "") || null };
 }
 
-const SOURCE_TYPES = new Set(["photography_production_item", "print_job", "graduation_order", "graduation_group", "kosha_booking", "service_order", "product", "asset", "vehicle", "warehouse_transfer"]);
+const SOURCE_TYPES = new Set(["photography_production_item", "album_task", "print_job", "graduation_order", "graduation_group", "kosha_booking", "service_order", "product", "asset", "vehicle", "warehouse_transfer"]);
 const PRIORITIES = new Set(["low", "medium", "high", "urgent"]);
 
 function cleanDate(value: unknown) {

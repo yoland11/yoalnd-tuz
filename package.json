@@ -126,6 +126,7 @@
     "test:graduation-archive": "node ./scripts/test-graduation-archive.mjs",
     "test:graduation-archive-ui": "node ./scripts/test-graduation-archive-ui.mjs",
     "test:graduation-archive-browser": "node ./scripts/test-graduation-archive-browser.mjs",
+    "test:albums": "node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-album-management.ts",
     "test:tailor-student-references": "node ./scripts/test-tailor-student-references.mjs && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-tailor-student-references-ui.ts && node ./scripts/run-tsx.mjs --tsconfig ./tsconfig.json ./scripts/test-tailor-preparation-pdf.ts",
     "test:graduation-invoice-number": "node ./scripts/test-graduation-invoice-number.mjs",
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",

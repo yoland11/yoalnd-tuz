@@ -167,6 +167,7 @@ import {
   totalQuantity,
 } from "@/lib/quantity-assets";
 import { handlePhotographyProduction, productionDeadlineAlerts } from "./photography-production";
+import { albumDeadlineAlerts, handleAlbums } from "./albums";
 import { PRODUCTION_KIND_LABELS } from "@/lib/photography-production";
 import {
   canAssignStaffRole,
@@ -1067,6 +1068,10 @@ export const ALL_PERMISSIONS = [
   "photography.delivery.confirm",
   "photography.financials.view",
   "photography.reports.view",
+  "albums",
+  "albums.manage",
+  "albums.financials",
+  "albums.deliver",
   "graduation",
   // Granular graduation permissions (kept separate from the "graduation"
   // module gate). The module gate implies all of these — see hasPermission —
@@ -5234,6 +5239,27 @@ async function runSmartNotificationsSweep() {
     // A production-specific failure (including the table not yet migrated) must
     // not abort the rest of the sweep.
     console.warn("[smart-notifications] photography production alerts failed", {
+      error: err instanceof Error ? err.message.slice(0, 200) : "unknown",
+    });
+  }
+
+  // ── Album deadlines ──
+  // Albums past their delivery date and not yet ready. Deduped per album like
+  // the production alerts; returns nothing before migration 0141 is applied.
+  try {
+    for (const alert of await albumDeadlineAlerts()) {
+      await add({
+        type: "album_overdue",
+        title: "ألبوم متأخر عن موعد التسليم",
+        body: `${alert.albumNo} · ${alert.customerName || "زبون"} · متأخر ${alert.daysLate} يوم · التسليم ${alert.dueDate}`,
+        entityType: "album_order",
+        entityId: alert.id,
+        href: `/admin/albums?album=${alert.id}`,
+        metadata: { dueDate: alert.dueDate, stage: alert.stage },
+      });
+    }
+  } catch (err) {
+    console.warn("[smart-notifications] album alerts failed", {
       error: err instanceof Error ? err.message.slice(0, 200) : "unknown",
     });
   }
@@ -40981,6 +41007,41 @@ async function handleAdmin(
 
   const bookingOperations = await handleBookingOperations(req, parts, section);
   if (bookingOperations) return bookingOperations;
+
+  if (section === "albums") {
+    const albumUser = await getAdminUser(req);
+    if (!albumUser) return error("غير مخول", 401);
+    const notify = (notice: Parameters<typeof createNotification>[0]) => createNotification(notice);
+    return handleAlbums(req, parts, albumUser, {
+      notify,
+      notifyOnce: createNotificationOnce,
+      // The existing stock engine: ledger row first under the idempotency key.
+      adjustStock: (productId, delta, meta, tx) => adjustProductStock(productId, delta, meta, tx as any),
+      createWorkTask: async (user, input) => {
+        const storageShape = await taskStorageShape();
+        const created = await createWorkOrder(db, workUserFromAdmin(albumUser), {
+          channelId: null,
+          title: input.title,
+          description: input.description,
+          department: input.department,
+          templateKey: input.templateKey,
+          assigneeIds: [input.assigneeId],
+          dueAt: input.dueAt,
+          booking: input.bookingId ? { type: "service_order", id: input.bookingId } : null,
+          customerId: input.customerId,
+          source: { type: "album_task", id: input.sourceId },
+          idempotencyKey: input.idempotencyKey,
+        }, {
+          notify,
+          insertMedia: (tx: any, taskId: number, media: Array<{ url: string; thumbnailUrl?: string | null; fileName?: string | null; mediaType: string; caption?: string | null }>, category: string) =>
+            insertTaskMedia(tx, taskId, media.map((item) => ({ id: null, url: item.url, thumbnailUrl: item.thumbnailUrl ?? null, fileName: item.fileName ?? null, mediaType: item.mediaType, caption: item.caption ?? null })), category, albumUser, storageShape),
+        });
+        void user;
+        return { taskId: created.order.id, existing: created.existing };
+      },
+      audit: (action, entityId, details) => void logAdminActivity(req, action, "album_order", entityId, details),
+    });
+  }
 
   if (section === "photography-production") {
     const productionUser = await getAdminUser(req);

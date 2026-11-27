@@ -66,3 +66,4 @@ export * from "./preparation";
 export * from "./attendance";
 export * from "./customer-followups";
 export * from './event-messaging';
+export * from "./albums";

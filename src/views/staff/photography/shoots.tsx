@@ -185,9 +185,10 @@ export function ShootsListPage() {
   return (
     <div className="space-y-3 p-4">
       {/* Post-production surfaces live one tap away rather than crowding the tab bar. */}
-      <nav className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <nav className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         {[
           { href: "/staff/photography/production", label: "أعمال الإنتاج" },
+          { href: "/staff/photography/albums", label: "الألبومات" },
           { href: "/staff/photography/editing", label: "المونتاج" },
           { href: "/staff/photography/cards", label: "البطاقات" },
           { href: "/staff/photography/ops-reports", label: "تقارير العمليات" },

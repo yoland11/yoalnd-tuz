@@ -26,6 +26,7 @@ const steps = [
   ["Graduation archive, pending payments and original production writer safety", "pnpm", ["run", "test:graduation-archive"]],
   ["Graduation archival UI scope, permissions and failure retention", "pnpm", ["run", "test:graduation-archive-ui"]],
   ["Tailor student reference visibility", "pnpm", ["run", "test:tailor-student-references"]],
+  ["Album management: stages, permissions, invoice/cash-box/stock reuse and additive migration", "pnpm", ["run", "test:albums"]],
   ["Graduation invoice number length", "pnpm", ["run", "test:graduation-invoice-number"]],
   ["Graduation group per-sash pricing", "pnpm", ["run", "test:graduation-group-pricing"]],
   ["Graduation group confirmation navigation", "pnpm", ["run", "test:graduation-group-step-flow"]],
